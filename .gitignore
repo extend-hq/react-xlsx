@@ -1,0 +1,5 @@
+node_modules
+dist
+apps/playground/dist
+packages/*/dist
+pnpm-debug.log*
