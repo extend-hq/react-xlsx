@@ -362,6 +362,16 @@ function buildPresetShapePath(shape: XlsxShape) {
         path: "M 0 50 L 100 50",
         viewBox: { width: 100, height: 100 }
       };
+    case "leftBrace":
+      return {
+        path: "M 82 0 C 46 0 52 24 52 38 C 52 46 46 50 24 50 C 46 50 52 54 52 62 C 52 76 46 100 82 100",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "arc":
+      return {
+        path: "M 8 74 C 18 24 82 24 92 74",
+        viewBox: { width: 100, height: 100 }
+      };
     case "rightArrowCallout":
       return {
         path: "M 0 18 L 62 18 L 62 0 L 100 50 L 62 100 L 62 82 L 0 82 L 0 18 Z",
@@ -521,6 +531,10 @@ function columnLabel(col: number): string {
   }
 
   return label;
+}
+
+function cellAddressToA1(cell: XlsxCellAddress): string {
+  return `${columnLabel(cell.col)}${cell.row + 1}`;
 }
 
 function parseA1CellReference(reference: string): XlsxCellAddress | null {
@@ -897,13 +911,18 @@ function canReceiveOverflowText(data: CellRenderData) {
   return !data.isMergedSecondary && !data.colSpan && data.value.length === 0;
 }
 
-function getCellDisplayValue(worksheet: Worksheet, row: number, col: number): string {
+function getCellDisplayValue(worksheet: Worksheet, row: number, col: number, activeSheet?: XlsxSheetData | null): string {
+  const formula = worksheet.getFormulaAt(row, col);
+  const cachedFormulaValue = formula ? activeSheet?.cachedFormulaValues?.[cellAddressToA1({ row, col })] : undefined;
   const formatted = worksheet.getFormattedValueAt(row, col);
-  if (formatted) {
+  if (formatted && !(formula && cachedFormulaValue !== undefined && formatted.startsWith("#"))) {
     return decodeHtmlEntities(formatted);
   }
 
   const cellValue = worksheet.getCalculatedValueAt(row, col);
+  if (formula && cachedFormulaValue !== undefined && cellValue.is_error) {
+    return cachedFormulaValue;
+  }
   if (cellValue.is_error) {
     return cellValue.asError() ?? "";
   }
@@ -2093,7 +2112,7 @@ function XlsxGrid({
       hyperlink: rawHyperlink ?? null,
       isMergedSecondary: false,
       style: buildCellStyle(rawStyle, palette, activeSheet?.themePalette, { showGridLines: activeSheet?.showGridLines }),
-      value: getCellDisplayValue(worksheet, row, col)
+      value: getCellDisplayValue(worksheet, row, col, activeSheet)
     };
 
     if (canCellTextOverflow(nextData)) {
@@ -2131,7 +2150,7 @@ function XlsxGrid({
 
     cellRenderCacheRef.current.set(cacheKey, nextData);
     return nextData;
-  }, [colIndexByActual, effectiveColWidths, palette, visibleCols, worksheet]);
+  }, [activeSheet, colIndexByActual, effectiveColWidths, palette, visibleCols, worksheet]);
 
   const selectionOverlay = React.useMemo(() => {
     if (!displayedSelection) {
@@ -3278,6 +3297,8 @@ function XlsxGrid({
                         paddingRight: inset?.right ?? 6,
                         paddingTop: inset?.top ?? 4,
                         pointerEvents: "none",
+                        position: "relative",
+                        zIndex: 1,
                         width: "100%"
                       }}
                     >

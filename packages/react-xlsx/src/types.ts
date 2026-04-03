@@ -6,6 +6,7 @@ export interface XlsxThemePalette {
 }
 
 export interface XlsxSheetData {
+  cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
   name: string;
   defaultColWidthPx: number;

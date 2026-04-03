@@ -33,6 +33,7 @@ type WorkbookSheetInfo = {
 };
 
 type WorkbookSheetState = {
+  cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
   defaultColWidthPx: number;
   defaultRowHeightPx: number;
@@ -141,6 +142,10 @@ function dirname(path: string) {
 function resolveArchiveTarget(baseDocumentPath: string, target: string) {
   if (!target) {
     return normalizeArchivePath(baseDocumentPath);
+  }
+
+  if (target.startsWith("#")) {
+    return target;
   }
 
   if (target.startsWith("/")) {
@@ -432,6 +437,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     return null;
   }
 
+  const cachedFormulaValues: Record<string, string> = {};
   const sheetFormatNode = getLocalElements(document, "sheetFormatPr")[0] ?? null;
   const sheetViewNode = getLocalElements(document, "sheetView")[0] ?? null;
   const rowHeightOverridesPx: Record<number, number> = {};
@@ -450,6 +456,15 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     if (rowIndex >= 0 && Number.isFinite(height)) {
       rowHeightOverridesPx[rowIndex] = Math.max(MIN_ROW_HEIGHT_PX, Math.round(height * 1.33));
     }
+
+    getChildElements(rowNode, "c").forEach((cellNode) => {
+      const formulaNode = getFirstChild(cellNode, "f");
+      const valueNode = getFirstChild(cellNode, "v");
+      const cellRef = cellNode.getAttribute("r");
+      if (formulaNode && valueNode && cellRef) {
+        cachedFormulaValues[cellRef] = valueNode.textContent ?? "";
+      }
+    });
   });
 
   getLocalElements(document, "col").forEach((colNode) => {
@@ -469,6 +484,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
   });
 
   return {
+    cachedFormulaValues,
     colWidthOverridesPx,
     defaultColWidthPx: Math.max(MIN_COL_WIDTH_PX, Math.round(defaultColWidth * 7.5)),
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),

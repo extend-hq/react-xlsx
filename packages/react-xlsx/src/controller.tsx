@@ -134,6 +134,7 @@ function resolveDisplayFileName(src?: string, fileName?: string): string {
 function buildSheetList(
   workbook: Workbook,
   sheetStatesByWorkbookSheetIndex?: Array<{
+    cachedFormulaValues?: Record<string, string>;
     colWidthOverridesPx?: Record<number, number>;
     defaultColWidthPx?: number;
     defaultRowHeightPx?: number;
@@ -172,6 +173,7 @@ function buildSheetList(
     const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
     if (!usedRange) {
       sheets.push({
+        cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
         colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
         defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
         defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
@@ -209,6 +211,7 @@ function buildSheetList(
     }
 
     sheets.push({
+      cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
       colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
       defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
       defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
@@ -891,12 +894,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return "";
     }
 
+    const formula = worksheet.getFormulaAt(cell.row, cell.col);
+    const cachedFormulaValue = formula ? activeSheet?.cachedFormulaValues?.[cellAddressToA1(cell)] : undefined;
     const formatted = worksheet.getFormattedValueAt(cell.row, cell.col);
-    if (formatted) {
+    if (formatted && !(formula && cachedFormulaValue !== undefined && formatted.startsWith("#"))) {
       return decodeHtmlEntities(formatted);
     }
 
     const calculated = worksheet.getCalculatedValueAt(cell.row, cell.col);
+    if (formula && cachedFormulaValue !== undefined && calculated.is_error) {
+      return cachedFormulaValue;
+    }
     if (calculated.is_error) {
       return calculated.asError() ?? "";
     }
@@ -905,7 +913,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     return calculated.toString();
-  }, [getActiveWorksheet]);
+  }, [activeSheet?.cachedFormulaValues, getActiveWorksheet]);
 
   const getCellFormula = React.useCallback((cell?: XlsxCellAddress | null) => {
     const worksheet = getActiveWorksheet();
