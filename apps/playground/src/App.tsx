@@ -493,7 +493,7 @@ function WorkbookToolbar({
 function SheetTabs() {
   const { activeSheetIndex, setActiveSheetIndex, sheets } = useXlsxViewer();
 
-  if (sheets.length <= 1) {
+  if (sheets.length === 0) {
     return null;
   }
 

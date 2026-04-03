@@ -1,0 +1,1897 @@
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import type { XlsxImage, XlsxImageRect, XlsxImageResizeHandlePosition, XlsxShape, XlsxThemePalette } from "./types";
+
+const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+const CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types";
+const DRAWING_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
+const IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+const HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const DRAWING_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.drawing+xml";
+const EMU_PER_PIXEL = 9525;
+const MIN_COL_WIDTH_PX = 30;
+const MIN_ROW_HEIGHT_PX = 16;
+
+type ArchiveEntries = Record<string, Uint8Array>;
+
+type ContentTypesState = {
+  defaultEntries: Map<string, string>;
+  overrideEntries: Map<string, string>;
+};
+
+type RelationshipRecord = {
+  id: string;
+  target: string;
+  targetMode: string | null;
+  type: string;
+};
+
+type WorkbookSheetInfo = {
+  name: string;
+  path: string;
+};
+
+type WorkbookSheetState = {
+  colWidthOverridesPx: Record<number, number>;
+  defaultColWidthPx: number;
+  defaultRowHeightPx: number;
+  rowHeightOverridesPx: Record<number, number>;
+  showGridLines: boolean;
+};
+
+type ThemeState = {
+  colors: Map<string, string>;
+  majorLatinFont: string | null;
+  minorLatinFont: string | null;
+};
+
+type DrawingColor = {
+  color: string;
+  opacity: number;
+};
+
+type DrawingRectEmu = {
+  cx: number;
+  cy: number;
+  x: number;
+  y: number;
+};
+
+type ShapeVectorPath = {
+  path: string;
+  viewBox: {
+    height: number;
+    width: number;
+  };
+};
+
+type GroupTransform = {
+  chCx: number;
+  chCy: number;
+  chX: number;
+  chY: number;
+  cx: number;
+  cy: number;
+  x: number;
+  y: number;
+};
+
+type XlsxImageAttachment = {
+  drawingPath: string;
+  drawingRelsPath: string | null;
+  mediaPaths: string[];
+};
+
+type WorkbookImageOrigin = {
+  anchorIndex: number;
+  workbookSheetIndex: number;
+};
+
+export type WorkbookImageSheetOrigin = {
+  attachments: XlsxImageAttachment[];
+  workbookSheetIndex: number;
+};
+
+export type WorkbookImageAssets = {
+  archive: ArchiveEntries;
+  imageOriginsById: Map<string, WorkbookImageOrigin>;
+  imagesByWorkbookSheetIndex: XlsxImage[][];
+  objectUrls: string[];
+  shapesByWorkbookSheetIndex: XlsxShape[][];
+  sheetStatesByWorkbookSheetIndex: Array<WorkbookSheetState | null>;
+  sheetOrigins: Array<WorkbookImageSheetOrigin | null>;
+  themePalette: XlsxThemePalette;
+};
+
+function buildThemePalette(theme: ThemeState): XlsxThemePalette {
+  const themeOrder = ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
+  const colorsByIndex: Record<number, string> = {};
+
+  themeOrder.forEach((key, index) => {
+    const color = theme.colors.get(key);
+    if (color) {
+      colorsByIndex[index] = color;
+    }
+  });
+
+  return { colorsByIndex };
+}
+
+function cloneBytes(bytes: Uint8Array) {
+  const nextBytes = new Uint8Array(bytes.byteLength);
+  nextBytes.set(bytes);
+  return nextBytes;
+}
+
+function normalizeArchivePath(path: string) {
+  return path.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function joinArchivePath(...parts: string[]) {
+  return normalizeArchivePath(parts.join("/"));
+}
+
+function dirname(path: string) {
+  const normalized = normalizeArchivePath(path);
+  const lastSlash = normalized.lastIndexOf("/");
+  return lastSlash >= 0 ? normalized.slice(0, lastSlash) : "";
+}
+
+function resolveArchiveTarget(baseDocumentPath: string, target: string) {
+  if (!target) {
+    return normalizeArchivePath(baseDocumentPath);
+  }
+
+  if (target.startsWith("/")) {
+    return normalizeArchivePath(target);
+  }
+
+  const baseParts = dirname(baseDocumentPath).split("/").filter(Boolean);
+  for (const segment of target.split("/")) {
+    if (!segment || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      baseParts.pop();
+      continue;
+    }
+    baseParts.push(segment);
+  }
+
+  return normalizeArchivePath(baseParts.join("/"));
+}
+
+function relativeArchivePath(fromDocumentPath: string, toPath: string) {
+  const fromParts = dirname(fromDocumentPath).split("/").filter(Boolean);
+  const toParts = normalizeArchivePath(toPath).split("/").filter(Boolean);
+  let shared = 0;
+  while (shared < fromParts.length && shared < toParts.length && fromParts[shared] === toParts[shared]) {
+    shared += 1;
+  }
+
+  const upSegments = fromParts.slice(shared).map(() => "..");
+  const downSegments = toParts.slice(shared);
+  return [...upSegments, ...downSegments].join("/") || ".";
+}
+
+function relsPathForDocument(documentPath: string) {
+  const baseName = documentPath.split("/").pop();
+  const parentDir = dirname(documentPath);
+  return joinArchivePath(parentDir, "_rels", `${baseName}.rels`);
+}
+
+function parseXml(xml: string) {
+  const parser = new DOMParser();
+  const document = parser.parseFromString(xml, "application/xml");
+  if (document.querySelector("parsererror")) {
+    return null;
+  }
+  return document;
+}
+
+function serializeXml(document: XMLDocument) {
+  return new XMLSerializer().serializeToString(document);
+}
+
+function readArchiveText(archive: ArchiveEntries, path: string) {
+  const entry = archive[path];
+  return entry ? strFromU8(entry) : null;
+}
+
+function isElementNode(node: Node | null | undefined): node is Element {
+  return Boolean(node && node.nodeType === 1);
+}
+
+function getLocalElements(parent: Document | Element, localName: string) {
+  return Array.from(parent.getElementsByTagName("*")).filter((node): node is Element => isElementNode(node) && node.localName === localName);
+}
+
+function getChildElements(parent: Element, localName: string) {
+  return Array.from(parent.childNodes).filter((node): node is Element => isElementNode(node) && node.localName === localName);
+}
+
+function getFirstChild(parent: Element, localName: string) {
+  return getChildElements(parent, localName)[0] ?? null;
+}
+
+function getFirstDescendant(parent: Document | Element, localName: string) {
+  return getLocalElements(parent, localName)[0] ?? null;
+}
+
+function getRelationshipId(element: Element) {
+  return element.getAttributeNS(REL_NS, "id") ?? element.getAttribute("r:id") ?? element.getAttribute("id");
+}
+
+function getEmbeddedRelationshipId(element: Element) {
+  return element.getAttributeNS(REL_NS, "embed") ?? element.getAttribute("r:embed") ?? element.getAttribute("embed");
+}
+
+function setChildText(parent: Element, localName: string, value: string) {
+  const child = getFirstChild(parent, localName);
+  if (child) {
+    child.textContent = value;
+  }
+}
+
+function updateMarkerElement(element: Element | null, marker: { col: number; colOffsetEmu: number; row: number; rowOffsetEmu: number }) {
+  if (!element) {
+    return;
+  }
+
+  setChildText(element, "col", String(Math.max(0, marker.col)));
+  setChildText(element, "colOff", String(Math.max(0, Math.round(marker.colOffsetEmu))));
+  setChildText(element, "row", String(Math.max(0, marker.row)));
+  setChildText(element, "rowOff", String(Math.max(0, Math.round(marker.rowOffsetEmu))));
+}
+
+function parseContentTypes(archive: ArchiveEntries): ContentTypesState {
+  const xml = readArchiveText(archive, "[Content_Types].xml");
+  const defaultEntries = new Map<string, string>();
+  const overrideEntries = new Map<string, string>();
+  if (!xml) {
+    return { defaultEntries, overrideEntries };
+  }
+
+  const document = parseXml(xml);
+  if (!document) {
+    return { defaultEntries, overrideEntries };
+  }
+
+  for (const defaultNode of getLocalElements(document, "Default")) {
+    const extension = defaultNode.getAttribute("Extension");
+    const contentType = defaultNode.getAttribute("ContentType");
+    if (extension && contentType) {
+      defaultEntries.set(extension.toLowerCase(), contentType);
+    }
+  }
+
+  for (const overrideNode of getLocalElements(document, "Override")) {
+    const partName = overrideNode.getAttribute("PartName");
+    const contentType = overrideNode.getAttribute("ContentType");
+    if (partName && contentType) {
+      overrideEntries.set(normalizeArchivePath(partName), contentType);
+    }
+  }
+
+  return { defaultEntries, overrideEntries };
+}
+
+function resolveContentType(contentTypes: ContentTypesState, path: string) {
+  const normalized = normalizeArchivePath(path);
+  const override = contentTypes.overrideEntries.get(normalized);
+  if (override) {
+    return override;
+  }
+
+  const extension = normalized.split(".").pop()?.toLowerCase();
+  if (!extension) {
+    return "application/octet-stream";
+  }
+
+  return contentTypes.defaultEntries.get(extension) ?? "application/octet-stream";
+}
+
+function parseRelationships(archive: ArchiveEntries, relsPath: string, baseDocumentPath: string) {
+  const xml = readArchiveText(archive, relsPath);
+  const relationships = new Map<string, RelationshipRecord>();
+  if (!xml) {
+    return relationships;
+  }
+
+  const document = parseXml(xml);
+  if (!document) {
+    return relationships;
+  }
+
+  for (const relationshipNode of getLocalElements(document, "Relationship")) {
+    const id = relationshipNode.getAttribute("Id");
+    const target = relationshipNode.getAttribute("Target");
+    const type = relationshipNode.getAttribute("Type");
+    if (!id || !target || !type) {
+      continue;
+    }
+
+    relationships.set(id, {
+      id,
+      target: resolveArchiveTarget(baseDocumentPath, target),
+      targetMode: relationshipNode.getAttribute("TargetMode"),
+      type
+    });
+  }
+
+  return relationships;
+}
+
+function parseWorkbookSheets(archive: ArchiveEntries) {
+  const workbookXml = readArchiveText(archive, "xl/workbook.xml");
+  if (!workbookXml) {
+    return [];
+  }
+
+  const workbookDocument = parseXml(workbookXml);
+  if (!workbookDocument) {
+    return [];
+  }
+
+  const workbookRelationships = parseRelationships(archive, "xl/_rels/workbook.xml.rels", "xl/workbook.xml");
+  const sheets: WorkbookSheetInfo[] = [];
+
+  for (const sheetNode of getLocalElements(workbookDocument, "sheet")) {
+    const relationshipId = getRelationshipId(sheetNode);
+    if (!relationshipId) {
+      continue;
+    }
+
+    const relationship = workbookRelationships.get(relationshipId);
+    if (!relationship) {
+      continue;
+    }
+
+    sheets.push({
+      name: sheetNode.getAttribute("name") ?? `Sheet ${sheets.length + 1}`,
+      path: relationship.target
+    });
+  }
+
+  return sheets;
+}
+
+function parseWorkbookTheme(archive: ArchiveEntries): ThemeState {
+  const defaultTheme: ThemeState = {
+    colors: new Map([
+      ["accent1", "#5b9bd5"],
+      ["accent2", "#ed7d31"],
+      ["accent3", "#a5a5a5"],
+      ["accent4", "#ffc000"],
+      ["accent5", "#4472c4"],
+      ["accent6", "#70ad47"],
+      ["bg1", "#ffffff"],
+      ["bg2", "#e7e6e6"],
+      ["dk1", "#000000"],
+      ["dk2", "#6e747a"],
+      ["folHlink", "#993366"],
+      ["hlink", "#085296"],
+      ["lt1", "#ffffff"],
+      ["lt2", "#e7e6e6"],
+      ["tx1", "#000000"],
+      ["tx2", "#6e747a"]
+    ]),
+    majorLatinFont: null,
+    minorLatinFont: null
+  };
+
+  const themeXml = readArchiveText(archive, "xl/theme/theme1.xml");
+  if (!themeXml) {
+    return defaultTheme;
+  }
+
+  const themeDocument = parseXml(themeXml);
+  if (!themeDocument) {
+    return defaultTheme;
+  }
+
+  const colors = new Map(defaultTheme.colors);
+  const colorSchemeNode = getLocalElements(themeDocument, "clrScheme")[0] ?? null;
+  if (colorSchemeNode) {
+    for (const colorNode of Array.from(colorSchemeNode.childNodes).filter(isElementNode)) {
+      const key = colorNode.localName;
+      const srgbNode = getFirstChild(colorNode, "srgbClr");
+      const sysNode = getFirstChild(colorNode, "sysClr");
+      const hex = srgbNode?.getAttribute("val") ?? sysNode?.getAttribute("lastClr");
+      if (hex) {
+        colors.set(key, normalizeHexColor(hex));
+      }
+    }
+  }
+
+  const fontSchemeNode = getLocalElements(themeDocument, "fontScheme")[0] ?? null;
+  const majorLatinFont = getFirstChild(getFirstChild(fontSchemeNode, "majorFont"), "latin")?.getAttribute("typeface") ?? null;
+  const minorLatinFont = getFirstChild(getFirstChild(fontSchemeNode, "minorFont"), "latin")?.getAttribute("typeface") ?? null;
+
+  colors.set("bg1", colors.get("lt1") ?? defaultTheme.colors.get("bg1") ?? "#ffffff");
+  colors.set("tx1", colors.get("dk1") ?? defaultTheme.colors.get("tx1") ?? "#000000");
+  colors.set("bg2", colors.get("lt2") ?? defaultTheme.colors.get("bg2") ?? "#e7e6e6");
+  colors.set("tx2", colors.get("dk2") ?? defaultTheme.colors.get("tx2") ?? "#6e747a");
+
+  return {
+    colors,
+    majorLatinFont,
+    minorLatinFont
+  };
+}
+
+function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetState | null {
+  const xml = readArchiveText(archive, path);
+  if (!xml) {
+    return null;
+  }
+
+  const document = parseXml(xml);
+  if (!document) {
+    return null;
+  }
+
+  const sheetFormatNode = getLocalElements(document, "sheetFormatPr")[0] ?? null;
+  const sheetViewNode = getLocalElements(document, "sheetView")[0] ?? null;
+  const rowHeightOverridesPx: Record<number, number> = {};
+  const colWidthOverridesPx: Record<number, number> = {};
+
+  const defaultRowHeight = Number(sheetFormatNode?.getAttribute("defaultRowHeight") ?? 15);
+  const defaultColWidth = Number(
+    sheetFormatNode?.getAttribute("defaultColWidth")
+    ?? sheetFormatNode?.getAttribute("baseColWidth")
+    ?? 8.43
+  );
+
+  getLocalElements(document, "row").forEach((rowNode) => {
+    const rowIndex = Number(rowNode.getAttribute("r") ?? 0) - 1;
+    const height = Number(rowNode.getAttribute("ht") ?? Number.NaN);
+    if (rowIndex >= 0 && Number.isFinite(height)) {
+      rowHeightOverridesPx[rowIndex] = Math.max(MIN_ROW_HEIGHT_PX, Math.round(height * 1.33));
+    }
+  });
+
+  getLocalElements(document, "col").forEach((colNode) => {
+    const min = Number(colNode.getAttribute("min") ?? 0) - 1;
+    const max = Number(colNode.getAttribute("max") ?? 0) - 1;
+    const width = Number(colNode.getAttribute("width") ?? Number.NaN);
+    if (!Number.isFinite(width)) {
+      return;
+    }
+
+    const widthPx = Math.max(MIN_COL_WIDTH_PX, Math.round(width * 7.5));
+    for (let col = min; col <= max; col += 1) {
+      if (col >= 0) {
+        colWidthOverridesPx[col] = widthPx;
+      }
+    }
+  });
+
+  return {
+    colWidthOverridesPx,
+    defaultColWidthPx: Math.max(MIN_COL_WIDTH_PX, Math.round(defaultColWidth * 7.5)),
+    defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
+    rowHeightOverridesPx,
+    showGridLines: (sheetViewNode?.getAttribute("showGridLines") ?? "1") !== "0"
+  };
+}
+
+function clampChannel(value: number) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function normalizeHexColor(value: string) {
+  const hex = value.replace(/^#/, "");
+  if (hex.length === 8) {
+    return `#${hex.slice(2).toLowerCase()}`;
+  }
+  if (hex.length === 6) {
+    return `#${hex.toLowerCase()}`;
+  }
+  return "#000000";
+}
+
+function hexToRgb(hex: string) {
+  const normalized = normalizeHexColor(hex);
+  return {
+    b: Number.parseInt(normalized.slice(5, 7), 16),
+    g: Number.parseInt(normalized.slice(3, 5), 16),
+    r: Number.parseInt(normalized.slice(1, 3), 16)
+  };
+}
+
+function rgbToHex(red: number, green: number, blue: number) {
+  return `#${[red, green, blue]
+    .map((value) => clampChannel(value).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function applyDrawingColorTransforms(
+  baseColor: string,
+  transformNodes: Element[]
+): DrawingColor {
+  let { r, g, b } = hexToRgb(baseColor);
+  let opacity = 1;
+  let lumMod = 1;
+  let lumOff = 0;
+
+  transformNodes.forEach((node) => {
+    const rawValue = Number(node.getAttribute("val") ?? 0);
+    const value = Number.isFinite(rawValue) ? rawValue / 100000 : 0;
+    switch (node.localName) {
+      case "alpha":
+        opacity *= value;
+        break;
+      case "lumMod":
+        lumMod *= value;
+        break;
+      case "lumOff":
+        lumOff += value;
+        break;
+      case "shade":
+        r *= value;
+        g *= value;
+        b *= value;
+        break;
+      case "tint":
+        r = r + (255 - r) * value;
+        g = g + (255 - g) * value;
+        b = b + (255 - b) * value;
+        break;
+      default:
+        break;
+    }
+  });
+
+  if (lumMod !== 1 || lumOff !== 0) {
+    r = r * lumMod + 255 * lumOff;
+    g = g * lumMod + 255 * lumOff;
+    b = b * lumMod + 255 * lumOff;
+  }
+
+  return {
+    color: rgbToHex(r, g, b),
+    opacity: Math.max(0, Math.min(1, opacity))
+  };
+}
+
+function resolveThemeColorName(theme: ThemeState, name: string | null) {
+  if (!name) {
+    return null;
+  }
+
+  const aliases: Record<string, string> = {
+    bg1: "bg1",
+    bg2: "bg2",
+    tx1: "tx1",
+    tx2: "tx2"
+  };
+  const key = aliases[name] ?? name;
+  return theme.colors.get(key) ?? null;
+}
+
+function resolveColorValue(colorNode: Element | null, theme: ThemeState): DrawingColor | null {
+  if (!colorNode) {
+    return null;
+  }
+
+  let baseColor: string | null = null;
+  if (colorNode.localName === "srgbClr") {
+    baseColor = normalizeHexColor(colorNode.getAttribute("val") ?? "");
+  } else if (colorNode.localName === "schemeClr") {
+    baseColor = resolveThemeColorName(theme, colorNode.getAttribute("val"));
+  } else if (colorNode.localName === "scrgbClr") {
+    const r = Number(colorNode.getAttribute("r") ?? 0) * 255 / 100000;
+    const g = Number(colorNode.getAttribute("g") ?? 0) * 255 / 100000;
+    const b = Number(colorNode.getAttribute("b") ?? 0) * 255 / 100000;
+    baseColor = rgbToHex(r, g, b);
+  } else if (colorNode.localName === "sysClr") {
+    baseColor = normalizeHexColor(colorNode.getAttribute("lastClr") ?? "");
+  }
+
+  if (!baseColor) {
+    return null;
+  }
+
+  return applyDrawingColorTransforms(baseColor, Array.from(colorNode.childNodes).filter(isElementNode));
+}
+
+function resolveFillColor(fillParent: Element | null, theme: ThemeState): DrawingColor | null {
+  if (!fillParent) {
+    return null;
+  }
+
+  const solidFillNode = getFirstChild(fillParent, "solidFill");
+  if (!solidFillNode) {
+    return null;
+  }
+
+  return resolveColorValue(Array.from(solidFillNode.childNodes).filter(isElementNode)[0] ?? null, theme);
+}
+
+function resolveTextTypeface(typeface: string | null, theme: ThemeState) {
+  if (!typeface) {
+    return undefined;
+  }
+
+  if (typeface === "+mn-lt" || typeface === "+mn-ea" || typeface === "+mn-cs") {
+    return theme.minorLatinFont ?? undefined;
+  }
+  if (typeface === "+mj-lt" || typeface === "+mj-ea" || typeface === "+mj-cs") {
+    return theme.majorLatinFont ?? undefined;
+  }
+
+  return typeface;
+}
+
+function isThemeTypeface(typeface: string | null | undefined) {
+  return Boolean(typeface && typeface.startsWith("+"));
+}
+
+function resolvePreferredTextTypeface(node: Element | null, theme: ThemeState) {
+  if (!node) {
+    return undefined;
+  }
+
+  const latin = getFirstChild(node, "latin")?.getAttribute("typeface") ?? null;
+  const eastAsian = getFirstChild(node, "ea")?.getAttribute("typeface") ?? null;
+  const complexScript = getFirstChild(node, "cs")?.getAttribute("typeface") ?? null;
+  const candidates = [latin, eastAsian, complexScript];
+  const explicit = candidates.find((candidate) => candidate && !isThemeTypeface(candidate));
+  if (explicit) {
+    return explicit;
+  }
+
+  return resolveTextTypeface(candidates.find(Boolean) ?? null, theme);
+}
+
+type ShapeTextStyle = {
+  bold?: boolean;
+  color?: string;
+  fontFamily?: string;
+  fontSizePt?: number;
+  italic?: boolean;
+  underline?: boolean;
+};
+
+function parseShapeTextStyle(node: Element | null, theme: ThemeState, fallbackColor?: DrawingColor | null): ShapeTextStyle {
+  if (!node) {
+    return {
+      color: fallbackColor?.color
+    };
+  }
+
+  const fillColor = resolveFillColor(node, theme) ?? fallbackColor ?? null;
+  const underlineValue = node.getAttribute("u");
+  return {
+    bold: node.getAttribute("b") === "1" || undefined,
+    color: fillColor?.color,
+    fontFamily: resolvePreferredTextTypeface(node, theme),
+    fontSizePt: node.getAttribute("sz") ? Number(node.getAttribute("sz")) / 100 : undefined,
+    italic: node.getAttribute("i") === "1" || undefined,
+    underline: underlineValue && underlineValue !== "none" ? true : undefined
+  };
+}
+
+function mergeShapeTextStyles(...styles: Array<ShapeTextStyle | undefined>): ShapeTextStyle {
+  return styles.reduce<ShapeTextStyle>((acc, style) => {
+    if (!style) {
+      return acc;
+    }
+    return {
+      bold: style.bold ?? acc.bold,
+      color: style.color ?? acc.color,
+      fontFamily: style.fontFamily ?? acc.fontFamily,
+      fontSizePt: style.fontSizePt ?? acc.fontSizePt,
+      italic: style.italic ?? acc.italic,
+      underline: style.underline ?? acc.underline
+    };
+  }, {});
+}
+
+function parseMarker(node: Element | null) {
+  if (!node) {
+    return null;
+  }
+
+  const col = Number(getFirstChild(node, "col")?.textContent ?? 0);
+  const row = Number(getFirstChild(node, "row")?.textContent ?? 0);
+  const colOffsetEmu = Number(getFirstChild(node, "colOff")?.textContent ?? 0);
+  const rowOffsetEmu = Number(getFirstChild(node, "rowOff")?.textContent ?? 0);
+
+  return {
+    col,
+    colOffsetEmu,
+    row,
+    rowOffsetEmu
+  };
+}
+
+function parseAnchor(anchorNode: Element) {
+  if (anchorNode.localName === "twoCellAnchor") {
+    const from = parseMarker(getFirstChild(anchorNode, "from"));
+    const to = parseMarker(getFirstChild(anchorNode, "to"));
+    return from && to ? { from, kind: "two-cell" as const, to } : null;
+  }
+
+  if (anchorNode.localName === "oneCellAnchor") {
+    const from = parseMarker(getFirstChild(anchorNode, "from"));
+    const extNode = getFirstChild(anchorNode, "ext");
+    return from && extNode
+      ? {
+          from,
+          kind: "one-cell" as const,
+          sizeEmu: {
+            cx: Number(extNode.getAttribute("cx") ?? 0),
+            cy: Number(extNode.getAttribute("cy") ?? 0)
+          }
+        }
+      : null;
+  }
+
+  const positionNode = getFirstChild(anchorNode, "pos");
+  const extNode = getFirstChild(anchorNode, "ext");
+  return positionNode && extNode
+    ? {
+        kind: "absolute" as const,
+        positionEmu: {
+          x: Number(positionNode.getAttribute("x") ?? 0),
+          y: Number(positionNode.getAttribute("y") ?? 0)
+        },
+        sizeEmu: {
+          cx: Number(extNode.getAttribute("cx") ?? 0),
+          cy: Number(extNode.getAttribute("cy") ?? 0)
+        }
+      }
+    : null;
+}
+
+function anchorToRect(anchor: XlsxImage["anchor"]): DrawingRectEmu {
+  if (anchor.kind === "absolute") {
+    return {
+      cx: anchor.sizeEmu.cx,
+      cy: anchor.sizeEmu.cy,
+      x: anchor.positionEmu.x,
+      y: anchor.positionEmu.y
+    };
+  }
+
+  if (anchor.kind === "one-cell") {
+    return {
+      cx: anchor.sizeEmu.cx,
+      cy: anchor.sizeEmu.cy,
+      x: anchor.from.colOffsetEmu,
+      y: anchor.from.rowOffsetEmu
+    };
+  }
+
+  return {
+    cx: Math.max(0, (anchor.to.col - anchor.from.col) * EMU_PER_PIXEL + anchor.to.colOffsetEmu - anchor.from.colOffsetEmu),
+    cy: Math.max(0, (anchor.to.row - anchor.from.row) * EMU_PER_PIXEL + anchor.to.rowOffsetEmu - anchor.from.rowOffsetEmu),
+    x: anchor.from.colOffsetEmu,
+    y: anchor.from.rowOffsetEmu
+  };
+}
+
+function rectToAbsoluteAnchor(rect: DrawingRectEmu): XlsxImage["anchor"] {
+  return {
+    kind: "absolute",
+    positionEmu: {
+      x: rect.x,
+      y: rect.y
+    },
+    sizeEmu: {
+      cx: rect.cx,
+      cy: rect.cy
+    }
+  };
+}
+
+function parseTransformRect(xfrmNode: Element | null) {
+  if (!xfrmNode) {
+    return null;
+  }
+
+  const offNode = getFirstChild(xfrmNode, "off");
+  const extNode = getFirstChild(xfrmNode, "ext");
+  if (!offNode || !extNode) {
+    return null;
+  }
+
+  return {
+    cx: Number(extNode.getAttribute("cx") ?? 0),
+    cy: Number(extNode.getAttribute("cy") ?? 0),
+    flipH: xfrmNode.getAttribute("flipH") === "1",
+    flipV: xfrmNode.getAttribute("flipV") === "1",
+    rot: Number(xfrmNode.getAttribute("rot") ?? 0) / 60000,
+    x: Number(offNode.getAttribute("x") ?? 0),
+    y: Number(offNode.getAttribute("y") ?? 0)
+  };
+}
+
+function applyGroupTransform(rect: DrawingRectEmu, group: GroupTransform): DrawingRectEmu {
+  const scaleX = group.chCx !== 0 ? group.cx / group.chCx : 1;
+  const scaleY = group.chCy !== 0 ? group.cy / group.chCy : 1;
+  return {
+    cx: rect.cx * scaleX,
+    cy: rect.cy * scaleY,
+    x: group.x + (rect.x - group.chX) * scaleX,
+    y: group.y + (rect.y - group.chY) * scaleY
+  };
+}
+
+function parseGroupTransform(groupNode: Element, parentGroup: GroupTransform | null, fallbackAnchor: XlsxImage["anchor"]) {
+  const xfrmNode = getFirstDescendant(getFirstChild(groupNode, "grpSpPr") ?? groupNode, "xfrm");
+  const rect = parseTransformRect(xfrmNode) ?? anchorToRect(fallbackAnchor);
+  const chOffNode = getFirstChild(xfrmNode ?? groupNode, "chOff");
+  const chExtNode = getFirstChild(xfrmNode ?? groupNode, "chExt");
+  const localGroup: GroupTransform = {
+    chCx: Number(chExtNode?.getAttribute("cx") ?? rect.cx),
+    chCy: Number(chExtNode?.getAttribute("cy") ?? rect.cy),
+    chX: Number(chOffNode?.getAttribute("x") ?? 0),
+    chY: Number(chOffNode?.getAttribute("y") ?? 0),
+    cx: rect.cx,
+    cy: rect.cy,
+    x: rect.x,
+    y: rect.y
+  };
+
+  return parentGroup ? { ...applyGroupTransform(rect, parentGroup), chCx: localGroup.chCx, chCy: localGroup.chCy, chX: localGroup.chX, chY: localGroup.chY } : localGroup;
+}
+
+function anchorFromNodeOrFallback(
+  node: Element,
+  fallbackAnchor: XlsxImage["anchor"],
+  parentGroup: GroupTransform | null
+) {
+  const xfrmNode = getFirstDescendant(node, "xfrm");
+  const rect = parseTransformRect(xfrmNode);
+  if (rect) {
+    const absoluteRect = parentGroup ? applyGroupTransform(rect, parentGroup) : rect;
+    return {
+      anchor: rectToAbsoluteAnchor(absoluteRect),
+      flipH: rect.flipH,
+      flipV: rect.flipV,
+      rotationDeg: rect.rot
+    };
+  }
+
+  return {
+    anchor: fallbackAnchor,
+    flipH: false,
+    flipV: false,
+    rotationDeg: 0
+  };
+}
+
+function mapParagraphAlign(value: string | null | undefined): XlsxShape["paragraphs"][number]["align"] {
+  switch (value) {
+    case "ctr":
+      return "center";
+    case "just":
+      return "justify";
+    case "r":
+      return "right";
+    default:
+      return "left";
+  }
+}
+
+function mapVerticalAnchor(value: string | null | undefined): "bottom" | "middle" | "top" {
+  switch (value) {
+    case "b":
+      return "bottom";
+    case "ctr":
+      return "middle";
+    default:
+      return "top";
+  }
+}
+
+function createImageAnchorNodes(document: XMLDocument) {
+  return document.documentElement
+    ? Array.from(document.documentElement.childNodes).filter(
+        (node): node is Element =>
+          isElementNode(node) &&
+          (node.localName === "twoCellAnchor" || node.localName === "oneCellAnchor" || node.localName === "absoluteAnchor")
+      )
+    : [];
+}
+
+function createImageSource(bytes: Uint8Array, mimeType: string, objectUrls: string[]) {
+  if (typeof URL !== "undefined" && typeof Blob !== "undefined") {
+    const objectUrl = URL.createObjectURL(new Blob([cloneBytes(bytes)], { type: mimeType }));
+    objectUrls.push(objectUrl);
+    return objectUrl;
+  }
+
+  let binary = "";
+  for (const value of bytes) {
+    binary += String.fromCharCode(value);
+  }
+  const base64 = typeof btoa === "function" ? btoa(binary) : "";
+  return `data:${mimeType};base64,${base64}`;
+}
+
+function parseShapeStroke(node: Element, theme: ThemeState): XlsxShape["stroke"] | undefined {
+  const lineNode = getFirstDescendant(node, "ln");
+  if (!lineNode) {
+    return undefined;
+  }
+
+  if (getFirstChild(lineNode, "noFill")) {
+    return { none: true };
+  }
+
+  const color = resolveFillColor(lineNode, theme);
+  const widthEmu = Number(lineNode.getAttribute("w") ?? 0);
+  return {
+    color: color?.color,
+    dash: getFirstChild(lineNode, "prstDash")?.getAttribute("val") ?? undefined,
+    none: false,
+    opacity: color?.opacity,
+    widthPx: widthEmu > 0 ? emuToPixels(widthEmu) : undefined
+  };
+}
+
+function parseShapeFill(node: Element, styleNode: Element | null, theme: ThemeState): XlsxShape["fill"] | undefined {
+  const shapePropsNode = getFirstChild(node, "spPr") ?? node;
+  const noFillNode = getFirstChild(shapePropsNode, "noFill");
+  if (noFillNode) {
+    return { none: true };
+  }
+
+  const fillRefNode = styleNode ? getFirstChild(styleNode, "fillRef") : null;
+  const fillColor = resolveFillColor(shapePropsNode, theme)
+    ?? resolveColorValue(Array.from(fillRefNode?.childNodes ?? []).filter(isElementNode)[0] ?? null, theme);
+  if (!fillColor) {
+    return undefined;
+  }
+
+  return {
+    color: fillColor.color,
+    none: false,
+    opacity: fillColor.opacity
+  };
+}
+
+function parsePointNode(pointNode: Element | null) {
+  if (!pointNode) {
+    return null;
+  }
+
+  const x = Number(pointNode.getAttribute("x") ?? Number.NaN);
+  const y = Number(pointNode.getAttribute("y") ?? Number.NaN);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+function parseCustomGeometryPath(shapeNode: Element): ShapeVectorPath | undefined {
+  const pathNode = getFirstDescendant(shapeNode, "path");
+  if (!pathNode) {
+    return undefined;
+  }
+
+  const width = Number(pathNode.getAttribute("w") ?? Number.NaN);
+  const height = Number(pathNode.getAttribute("h") ?? Number.NaN);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return undefined;
+  }
+
+  const commands: string[] = [];
+  for (const child of Array.from(pathNode.childNodes).filter(isElementNode)) {
+    if (child.localName === "moveTo") {
+      const point = parsePointNode(getFirstChild(child, "pt"));
+      if (point) {
+        commands.push(`M ${point.x} ${point.y}`);
+      }
+      continue;
+    }
+
+    if (child.localName === "lnTo") {
+      const point = parsePointNode(getFirstChild(child, "pt"));
+      if (point) {
+        commands.push(`L ${point.x} ${point.y}`);
+      }
+      continue;
+    }
+
+    if (child.localName === "cubicBezTo") {
+      const points = getChildElements(child, "pt").map(parsePointNode).filter((point): point is { x: number; y: number } => point !== null);
+      if (points.length === 3) {
+        commands.push(`C ${points[0].x} ${points[0].y} ${points[1].x} ${points[1].y} ${points[2].x} ${points[2].y}`);
+      }
+      continue;
+    }
+
+    if (child.localName === "close") {
+      commands.push("Z");
+    }
+  }
+
+  if (commands.length === 0) {
+    return undefined;
+  }
+
+  return {
+    path: commands.join(" "),
+    viewBox: {
+      height,
+      width
+    }
+  };
+}
+
+function parseShapeParagraphs(
+  shapeNode: Element,
+  styleNode: Element | null,
+  theme: ThemeState
+): XlsxShape["paragraphs"] {
+  const txBodyNode = getFirstChild(shapeNode, "txBody");
+  if (!txBodyNode) {
+    return [];
+  }
+
+  const defaultFontRef = styleNode ? getFirstChild(styleNode, "fontRef") : null;
+  const defaultFontColor = resolveColorValue(Array.from(defaultFontRef?.childNodes ?? []).filter(isElementNode)[0] ?? null, theme);
+  const listStyleNode = getFirstChild(txBodyNode, "lstStyle");
+  const paragraphs: XlsxShape["paragraphs"] = [];
+
+  getChildElements(txBodyNode, "p").forEach((paragraphNode) => {
+    const paragraphProps = getFirstChild(paragraphNode, "pPr");
+    const paragraphLevel = Number(paragraphProps?.getAttribute("lvl") ?? 0);
+    const listLevelProps = getFirstChild(listStyleNode ?? txBodyNode, `lvl${paragraphLevel + 1}pPr`);
+    const inheritedStyle = mergeShapeTextStyles(
+      parseShapeTextStyle(getFirstChild(listLevelProps ?? txBodyNode, "defRPr"), theme, defaultFontColor),
+      parseShapeTextStyle(getFirstChild(paragraphProps ?? paragraphNode, "defRPr"), theme, defaultFontColor)
+    );
+    const runs: XlsxShape["paragraphs"][number]["runs"] = [];
+
+    Array.from(paragraphNode.childNodes).filter(isElementNode).forEach((child) => {
+      if (child.localName === "br") {
+        runs.push({ text: "\n" });
+        return;
+      }
+      if (child.localName !== "r") {
+        return;
+      }
+
+      const text = getFirstChild(child, "t")?.textContent ?? "";
+      const runProps = getFirstChild(child, "rPr");
+      const runStyle = mergeShapeTextStyles(
+        inheritedStyle,
+        parseShapeTextStyle(runProps, theme, defaultFontColor)
+      );
+
+      runs.push({
+        bold: runStyle.bold,
+        color: runStyle.color,
+        fontFamily: runStyle.fontFamily,
+        fontSizePt: runStyle.fontSizePt,
+        italic: runStyle.italic,
+        text,
+        underline: runStyle.underline
+      });
+    });
+
+    if (runs.length === 0) {
+      return;
+    }
+
+    paragraphs.push({
+      align: mapParagraphAlign(paragraphProps?.getAttribute("algn")),
+      runs
+    });
+  });
+
+  return paragraphs;
+}
+
+function parseTextBox(shapeNode: Element): XlsxShape["textBox"] | undefined {
+  const txBodyNode = getFirstChild(shapeNode, "txBody");
+  if (!txBodyNode) {
+    return undefined;
+  }
+
+  const bodyProps = getFirstChild(txBodyNode, "bodyPr");
+  const leftInset = emuToPixels(Number(bodyProps?.getAttribute("lIns") ?? 91440));
+  const rightInset = emuToPixels(Number(bodyProps?.getAttribute("rIns") ?? 91440));
+  const topInset = emuToPixels(Number(bodyProps?.getAttribute("tIns") ?? 45720));
+  const bottomInset = emuToPixels(Number(bodyProps?.getAttribute("bIns") ?? 45720));
+
+  return {
+    insetPx: {
+      bottom: bottomInset,
+      left: leftInset,
+      right: rightInset,
+      top: topInset
+    },
+    verticalAlign: mapVerticalAnchor(bodyProps?.getAttribute("anchor"))
+  };
+}
+
+function getHyperlinkTarget(
+  node: Element | null,
+  drawingRelationships: Map<string, RelationshipRecord>
+) {
+  const hyperlinkNode = node ? getFirstDescendant(node, "hlinkClick") : null;
+  const hyperlinkTargetNode = hyperlinkNode ?? node;
+  const hyperlinkId = hyperlinkTargetNode ? getRelationshipId(hyperlinkTargetNode) : null;
+  return hyperlinkId ? drawingRelationships.get(hyperlinkId)?.target ?? undefined : undefined;
+}
+
+function parsePictureNode(
+  pictureNode: Element,
+  fallbackAnchor: XlsxImage["anchor"],
+  drawingRelationships: Map<string, RelationshipRecord>,
+  archive: ArchiveEntries,
+  contentTypes: ContentTypesState,
+  objectUrls: string[],
+  workbookSheetIndex: number,
+  imageId: string,
+  zIndex: number,
+  parentGroup: GroupTransform | null
+) {
+  const blipNode = getFirstDescendant(pictureNode, "blip");
+  const svgBlipNode = blipNode ? getFirstDescendant(blipNode, "svgBlip") : null;
+  const embedId = (svgBlipNode ? getEmbeddedRelationshipId(svgBlipNode) : null) ?? (blipNode ? getEmbeddedRelationshipId(blipNode) : null);
+  if (!embedId) {
+    return null;
+  }
+
+  const mediaRelationship = drawingRelationships.get(embedId);
+  if (!mediaRelationship || mediaRelationship.type !== IMAGE_REL_TYPE) {
+    return null;
+  }
+
+  const mediaBytes = archive[mediaRelationship.target];
+  if (!mediaBytes) {
+    return null;
+  }
+
+  const nonVisualProps = getFirstDescendant(pictureNode, "cNvPr");
+  const transform = parentGroup ? anchorFromNodeOrFallback(pictureNode, fallbackAnchor, parentGroup) : null;
+  return {
+    image: {
+      anchor: transform?.anchor ?? fallbackAnchor,
+      description: nonVisualProps?.getAttribute("descr") ?? undefined,
+      hyperlink: getHyperlinkTarget(nonVisualProps ?? pictureNode, drawingRelationships),
+      id: imageId,
+      mimeType: resolveContentType(contentTypes, mediaRelationship.target),
+      name: nonVisualProps?.getAttribute("name") ?? undefined,
+      sheetIndex: workbookSheetIndex,
+      src: createImageSource(mediaBytes, resolveContentType(contentTypes, mediaRelationship.target), objectUrls),
+      workbookSheetIndex,
+      zIndex
+    } satisfies XlsxImage,
+    mediaPath: mediaRelationship.target
+  };
+}
+
+function parseShapeNode(
+  shapeNode: Element,
+  fallbackAnchor: XlsxImage["anchor"],
+  drawingRelationships: Map<string, RelationshipRecord>,
+  theme: ThemeState,
+  workbookSheetIndex: number,
+  shapeId: string,
+  zIndex: number,
+  parentGroup: GroupTransform | null
+) {
+  const nonVisualProps = getFirstDescendant(shapeNode, "cNvPr");
+  const styleNode = getFirstChild(shapeNode, "style");
+  const transform = anchorFromNodeOrFallback(shapeNode, fallbackAnchor, parentGroup);
+  const geometry = getFirstDescendant(shapeNode, "prstGeom")?.getAttribute("prst")
+    ?? (getFirstDescendant(shapeNode, "custGeom") ? "custom" : "rect");
+  const customPath = geometry === "custom" ? parseCustomGeometryPath(shapeNode) : undefined;
+  return {
+    anchor: transform.anchor,
+    description: nonVisualProps?.getAttribute("descr") ?? undefined,
+    fill: parseShapeFill(shapeNode, styleNode, theme),
+    flipH: transform.flipH,
+    flipV: transform.flipV,
+    geometry,
+    hyperlink: getHyperlinkTarget(nonVisualProps ?? shapeNode, drawingRelationships),
+    id: shapeId,
+    name: nonVisualProps?.getAttribute("name") ?? undefined,
+    paragraphs: parseShapeParagraphs(shapeNode, styleNode, theme),
+    rotationDeg: transform.rotationDeg,
+    sheetIndex: workbookSheetIndex,
+    svgPath: customPath?.path,
+    svgViewBox: customPath?.viewBox,
+    stroke: parseShapeStroke(shapeNode, theme),
+    textBox: parseTextBox(shapeNode),
+    workbookSheetIndex,
+    zIndex
+  } satisfies XlsxShape;
+}
+
+function parseAnchorContents(
+  anchorNode: Element,
+  fallbackAnchor: XlsxImage["anchor"],
+  drawingRelationships: Map<string, RelationshipRecord>,
+  archive: ArchiveEntries,
+  contentTypes: ContentTypesState,
+  objectUrls: string[],
+  workbookSheetIndex: number,
+  theme: ThemeState,
+  ids: { image: number; shape: number; z: number },
+  imageOriginsById: Map<string, WorkbookImageOrigin>,
+  anchorIndex: number,
+  parentGroup: GroupTransform | null = null
+) {
+  const images: XlsxImage[] = [];
+  const shapes: XlsxShape[] = [];
+  const mediaPaths = new Set<string>();
+
+  Array.from(anchorNode.childNodes).filter(isElementNode).forEach((child) => {
+    if (child.localName === "pic") {
+      const imageId = `sheet-${workbookSheetIndex}-${ids.image}`;
+      const parsed = parsePictureNode(
+        child,
+        fallbackAnchor,
+        drawingRelationships,
+        archive,
+        contentTypes,
+        objectUrls,
+        workbookSheetIndex,
+        imageId,
+        ids.z++,
+        parentGroup
+      );
+      ids.image += 1;
+      if (parsed) {
+        images.push(parsed.image);
+        mediaPaths.add(parsed.mediaPath);
+        imageOriginsById.set(imageId, {
+          anchorIndex,
+          workbookSheetIndex
+        });
+      }
+      return;
+    }
+
+    if (child.localName === "sp") {
+      shapes.push(parseShapeNode(
+        child,
+        fallbackAnchor,
+        drawingRelationships,
+        theme,
+        workbookSheetIndex,
+        `shape-${workbookSheetIndex}-${ids.shape++}`,
+        ids.z++,
+        parentGroup
+      ));
+      return;
+    }
+
+    if (child.localName !== "grpSp") {
+      return;
+    }
+
+    const nextGroup = parseGroupTransform(child, parentGroup, fallbackAnchor);
+    const groupFallbackAnchor = rectToAbsoluteAnchor({
+      cx: nextGroup.cx,
+      cy: nextGroup.cy,
+      x: nextGroup.x,
+      y: nextGroup.y
+    });
+    const parsedGroup = parseAnchorContents(
+      child,
+      groupFallbackAnchor,
+      drawingRelationships,
+      archive,
+      contentTypes,
+      objectUrls,
+      workbookSheetIndex,
+      theme,
+      ids,
+      imageOriginsById,
+      anchorIndex,
+      nextGroup
+    );
+    parsedGroup.images.forEach((image) => images.push(image));
+    parsedGroup.shapes.forEach((shape) => shapes.push(shape));
+    parsedGroup.mediaPaths.forEach((path) => mediaPaths.add(path));
+  });
+
+  return {
+    images,
+    mediaPaths,
+    shapes
+  };
+}
+
+function parseDrawingObjects(
+  archive: ArchiveEntries,
+  contentTypes: ContentTypesState,
+  drawingPath: string,
+  objectUrls: string[],
+  workbookSheetIndex: number,
+  zIndexBase: number,
+  theme: ThemeState,
+  imageOriginsById: Map<string, WorkbookImageOrigin>
+) {
+  const drawingXml = readArchiveText(archive, drawingPath);
+  if (!drawingXml) {
+    return {
+      images: [] as XlsxImage[],
+      mediaPaths: [] as string[],
+      shapes: [] as XlsxShape[]
+    };
+  }
+
+  const drawingDocument = parseXml(drawingXml);
+  if (!drawingDocument) {
+    return {
+      images: [] as XlsxImage[],
+      mediaPaths: [] as string[],
+      shapes: [] as XlsxShape[]
+    };
+  }
+
+  const drawingRelationships = parseRelationships(archive, relsPathForDocument(drawingPath), drawingPath);
+  const images: XlsxImage[] = [];
+  const shapes: XlsxShape[] = [];
+  const mediaPaths = new Set<string>();
+  const anchorNodes = createImageAnchorNodes(drawingDocument);
+  const ids = {
+    image: zIndexBase,
+    shape: zIndexBase,
+    z: zIndexBase
+  };
+
+  anchorNodes.forEach((anchorNode, anchorIndex) => {
+    const anchor = parseAnchor(anchorNode);
+    if (!anchor) {
+      return;
+    }
+
+    const parsed = parseAnchorContents(
+      anchorNode,
+      anchor,
+      drawingRelationships,
+      archive,
+      contentTypes,
+      objectUrls,
+      workbookSheetIndex,
+      theme,
+      ids,
+      imageOriginsById,
+      anchorIndex
+    );
+    parsed.images.forEach((image) => images.push(image));
+    parsed.shapes.forEach((shape) => shapes.push(shape));
+    parsed.mediaPaths.forEach((path) => mediaPaths.add(path));
+  });
+
+  return {
+    images,
+    mediaPaths: [...mediaPaths],
+    shapes
+  };
+}
+
+export function revokeWorkbookImageAssets(assets: WorkbookImageAssets | null) {
+  if (!assets) {
+    return;
+  }
+
+  for (const objectUrl of assets.objectUrls) {
+    if (objectUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+}
+
+export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets {
+  const archive = unzipSync(bytes);
+  const contentTypes = parseContentTypes(archive);
+  const workbookSheets = parseWorkbookSheets(archive);
+  const theme = parseWorkbookTheme(archive);
+  const themePalette = buildThemePalette(theme);
+  const objectUrls: string[] = [];
+  const imagesByWorkbookSheetIndex: XlsxImage[][] = [];
+  const shapesByWorkbookSheetIndex: XlsxShape[][] = [];
+  const sheetStatesByWorkbookSheetIndex: Array<WorkbookSheetState | null> = [];
+  const sheetOrigins: Array<WorkbookImageSheetOrigin | null> = [];
+  const imageOriginsById = new Map<string, WorkbookImageOrigin>();
+
+  workbookSheets.forEach((sheet, workbookSheetIndex) => {
+    const sheetRelationships = parseRelationships(archive, relsPathForDocument(sheet.path), sheet.path);
+    const attachments: XlsxImageAttachment[] = [];
+    const imageList: XlsxImage[] = [];
+    const shapeList: XlsxShape[] = [];
+    sheetStatesByWorkbookSheetIndex[workbookSheetIndex] = parseSheetState(archive, sheet.path);
+    let zIndexBase = 1;
+
+    for (const relationship of sheetRelationships.values()) {
+      if (relationship.type !== DRAWING_REL_TYPE) {
+        continue;
+      }
+
+      const drawingPath = relationship.target;
+      const drawingRelsPath = relsPathForDocument(drawingPath);
+      const drawingImages = parseDrawingObjects(
+        archive,
+        contentTypes,
+        drawingPath,
+        objectUrls,
+        workbookSheetIndex,
+        zIndexBase,
+        theme,
+        imageOriginsById
+      );
+      imageList.push(...drawingImages.images);
+      shapeList.push(...drawingImages.shapes);
+      zIndexBase += drawingImages.images.length + drawingImages.shapes.length + 10;
+      attachments.push({
+        drawingPath,
+        drawingRelsPath: archive[drawingRelsPath] ? drawingRelsPath : null,
+        mediaPaths: drawingImages.mediaPaths
+      });
+    }
+
+    imagesByWorkbookSheetIndex[workbookSheetIndex] = imageList;
+    shapesByWorkbookSheetIndex[workbookSheetIndex] = shapeList;
+    sheetOrigins[workbookSheetIndex] = attachments.length > 0
+      ? {
+          attachments,
+          workbookSheetIndex
+        }
+      : null;
+  });
+
+  return {
+    archive,
+    imageOriginsById,
+    imagesByWorkbookSheetIndex,
+    objectUrls,
+    shapesByWorkbookSheetIndex,
+    sheetOrigins,
+    sheetStatesByWorkbookSheetIndex,
+    themePalette
+  };
+}
+
+function updateAnchorNode(anchorNode: Element, anchor: XlsxImage["anchor"]) {
+  if (anchor.kind === "two-cell") {
+    updateMarkerElement(getFirstChild(anchorNode, "from"), anchor.from);
+    updateMarkerElement(getFirstChild(anchorNode, "to"), anchor.to);
+    return;
+  }
+
+  if (anchor.kind === "one-cell") {
+    updateMarkerElement(getFirstChild(anchorNode, "from"), anchor.from);
+    const extNode = getFirstChild(anchorNode, "ext");
+    if (extNode) {
+      extNode.setAttribute("cx", String(Math.max(0, Math.round(anchor.sizeEmu.cx))));
+      extNode.setAttribute("cy", String(Math.max(0, Math.round(anchor.sizeEmu.cy))));
+    }
+    return;
+  }
+
+  const positionNode = getFirstChild(anchorNode, "pos");
+  if (positionNode) {
+    positionNode.setAttribute("x", String(Math.max(0, Math.round(anchor.positionEmu.x))));
+    positionNode.setAttribute("y", String(Math.max(0, Math.round(anchor.positionEmu.y))));
+  }
+  const extNode = getFirstChild(anchorNode, "ext");
+  if (extNode) {
+    extNode.setAttribute("cx", String(Math.max(0, Math.round(anchor.sizeEmu.cx))));
+    extNode.setAttribute("cy", String(Math.max(0, Math.round(anchor.sizeEmu.cy))));
+  }
+}
+
+export function updateWorkbookImageAnchor(
+  assets: WorkbookImageAssets,
+  imageId: string,
+  anchor: XlsxImage["anchor"]
+) {
+  const origin = assets.imageOriginsById.get(imageId);
+  if (!origin) {
+    return false;
+  }
+
+  const attachments = assets.sheetOrigins[origin.workbookSheetIndex]?.attachments ?? [];
+  for (const attachment of attachments) {
+    const drawingXml = readArchiveText(assets.archive, attachment.drawingPath);
+    if (!drawingXml) {
+      continue;
+    }
+
+    const drawingDocument = parseXml(drawingXml);
+    if (!drawingDocument) {
+      continue;
+    }
+
+    const anchorNodes = createImageAnchorNodes(drawingDocument);
+    const anchorNode = anchorNodes[origin.anchorIndex];
+    if (!anchorNode || !getFirstChild(anchorNode, "pic")) {
+      continue;
+    }
+
+    updateAnchorNode(anchorNode, anchor);
+    assets.archive[attachment.drawingPath] = strToU8(serializeXml(drawingDocument));
+    const imageList = assets.imagesByWorkbookSheetIndex[origin.workbookSheetIndex] ?? [];
+    const imageIndex = imageList.findIndex((image) => image.id === imageId);
+    if (imageIndex >= 0) {
+      imageList[imageIndex] = {
+        ...imageList[imageIndex],
+        anchor
+      };
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function ensureRelationshipsDocument(archive: ArchiveEntries, relsPath: string) {
+  const existing = readArchiveText(archive, relsPath);
+  if (existing) {
+    const parsed = parseXml(existing);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return parseXml(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${PKG_REL_NS}"></Relationships>`
+  );
+}
+
+function ensureContentTypesDocument(archive: ArchiveEntries) {
+  const existing = readArchiveText(archive, "[Content_Types].xml");
+  if (existing) {
+    const parsed = parseXml(existing);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return parseXml(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="${CONTENT_TYPES_NS}"></Types>`
+  );
+}
+
+function mergeContentTypeForPath(
+  targetDocument: XMLDocument,
+  originalDocument: XMLDocument | null,
+  partPath: string
+) {
+  const normalizedPartName = `/${normalizeArchivePath(partPath)}`;
+  const targetRoot = targetDocument.documentElement;
+  if (!targetRoot) {
+    return;
+  }
+
+  const existingOverride = getLocalElements(targetDocument, "Override").find(
+    (node) => node.getAttribute("PartName") === normalizedPartName
+  );
+  if (!existingOverride && originalDocument) {
+    const sourceOverride = getLocalElements(originalDocument, "Override").find(
+      (node) => node.getAttribute("PartName") === normalizedPartName
+    );
+    if (sourceOverride) {
+      targetRoot.appendChild(sourceOverride.cloneNode(true));
+      return;
+    }
+  }
+
+  const extension = normalizedPartName.split(".").pop()?.toLowerCase();
+  if (!extension) {
+    return;
+  }
+
+  const existingDefault = getLocalElements(targetDocument, "Default").find(
+    (node) => (node.getAttribute("Extension") ?? "").toLowerCase() === extension
+  );
+  if (existingDefault) {
+    return;
+  }
+
+  if (originalDocument) {
+    const sourceDefault = getLocalElements(originalDocument, "Default").find(
+      (node) => (node.getAttribute("Extension") ?? "").toLowerCase() === extension
+    );
+    if (sourceDefault) {
+      targetRoot.appendChild(sourceDefault.cloneNode(true));
+      return;
+    }
+  }
+
+  if (extension === "xml") {
+    const defaultNode = targetDocument.createElementNS(CONTENT_TYPES_NS, "Default");
+    defaultNode.setAttribute("Extension", extension);
+    defaultNode.setAttribute("ContentType", "application/xml");
+    targetRoot.appendChild(defaultNode);
+    return;
+  }
+
+  if (extension === "rels") {
+    const defaultNode = targetDocument.createElementNS(CONTENT_TYPES_NS, "Default");
+    defaultNode.setAttribute("Extension", extension);
+    defaultNode.setAttribute("ContentType", "application/vnd.openxmlformats-package.relationships+xml");
+    targetRoot.appendChild(defaultNode);
+  }
+}
+
+function removeDrawingReferences(sheetDocument: XMLDocument, relDocument: XMLDocument) {
+  getLocalElements(sheetDocument, "drawing").forEach((node) => node.remove());
+  getLocalElements(relDocument, "Relationship")
+    .filter((node) => node.getAttribute("Type") === DRAWING_REL_TYPE)
+    .forEach((node) => node.remove());
+}
+
+function nextRelationshipId(relDocument: XMLDocument) {
+  const existingIds = new Set(
+    getLocalElements(relDocument, "Relationship")
+      .map((node) => node.getAttribute("Id"))
+      .filter((value): value is string => Boolean(value))
+  );
+
+  let index = 1;
+  while (existingIds.has(`rIdReactXlsxImage${index}`)) {
+    index += 1;
+  }
+
+  return `rIdReactXlsxImage${index}`;
+}
+
+function appendSheetDrawingReference(
+  sheetDocument: XMLDocument,
+  relationshipId: string
+) {
+  const worksheet = sheetDocument.documentElement;
+  if (!worksheet) {
+    return;
+  }
+
+  const drawingNode = sheetDocument.createElementNS(SPREADSHEET_NS, "drawing");
+  drawingNode.setAttributeNS(REL_NS, "r:id", relationshipId);
+
+  const extLst = getFirstChild(worksheet, "extLst");
+  if (extLst) {
+    worksheet.insertBefore(drawingNode, extLst);
+    return;
+  }
+
+  worksheet.appendChild(drawingNode);
+}
+
+export function mergeWorkbookImageAssets(
+  savedBytes: Uint8Array,
+  sourceAssets: WorkbookImageAssets | null,
+  sheetOrigins: Array<WorkbookImageSheetOrigin | null>
+) {
+  if (!sourceAssets || sheetOrigins.every((origin) => !origin?.attachments.length)) {
+    return cloneBytes(savedBytes);
+  }
+
+  try {
+    const archive = unzipSync(savedBytes);
+    const workbookSheets = parseWorkbookSheets(archive);
+    const originalContentTypesDocument = parseXml(readArchiveText(sourceAssets.archive, "[Content_Types].xml") ?? "");
+    const targetContentTypesDocument = ensureContentTypesDocument(archive);
+    if (!targetContentTypesDocument) {
+      return cloneBytes(savedBytes);
+    }
+
+    sheetOrigins.forEach((origin, workbookSheetIndex) => {
+      if (!origin?.attachments.length) {
+        return;
+      }
+
+      const currentSheet = workbookSheets[workbookSheetIndex];
+      if (!currentSheet) {
+        return;
+      }
+
+      const sheetXml = readArchiveText(archive, currentSheet.path);
+      if (!sheetXml) {
+        return;
+      }
+
+      const sheetDocument = parseXml(sheetXml);
+      const relsPath = relsPathForDocument(currentSheet.path);
+      const relDocument = ensureRelationshipsDocument(archive, relsPath);
+      if (!sheetDocument || !relDocument) {
+        return;
+      }
+
+      removeDrawingReferences(sheetDocument, relDocument);
+
+      origin.attachments.forEach((attachment) => {
+        const drawingBytes = sourceAssets.archive[attachment.drawingPath];
+        if (!drawingBytes) {
+          return;
+        }
+
+        archive[attachment.drawingPath] = cloneBytes(drawingBytes);
+        mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, attachment.drawingPath);
+
+        if (attachment.drawingRelsPath) {
+          const drawingRelsBytes = sourceAssets.archive[attachment.drawingRelsPath];
+          if (drawingRelsBytes) {
+            archive[attachment.drawingRelsPath] = cloneBytes(drawingRelsBytes);
+            mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, attachment.drawingRelsPath);
+          }
+        }
+
+        attachment.mediaPaths.forEach((mediaPath) => {
+          const mediaBytes = sourceAssets.archive[mediaPath];
+          if (!mediaBytes) {
+            return;
+          }
+
+          archive[mediaPath] = cloneBytes(mediaBytes);
+          mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, mediaPath);
+        });
+
+        const relationshipId = nextRelationshipId(relDocument);
+        const relationshipNode = relDocument.createElementNS(PKG_REL_NS, "Relationship");
+        relationshipNode.setAttribute("Id", relationshipId);
+        relationshipNode.setAttribute("Type", DRAWING_REL_TYPE);
+        relationshipNode.setAttribute("Target", relativeArchivePath(currentSheet.path, attachment.drawingPath));
+        relDocument.documentElement?.appendChild(relationshipNode);
+        appendSheetDrawingReference(sheetDocument, relationshipId);
+      });
+
+      archive[currentSheet.path] = strToU8(serializeXml(sheetDocument));
+      archive[relsPath] = strToU8(serializeXml(relDocument));
+      mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, relsPath);
+    });
+
+    const hasDrawingOverride = getLocalElements(targetContentTypesDocument, "Override").some(
+      (node) => node.getAttribute("ContentType") === DRAWING_CONTENT_TYPE
+    );
+    if (!hasDrawingOverride) {
+      for (const path of Object.keys(archive)) {
+        if (path.startsWith("xl/drawings/") && path.endsWith(".xml")) {
+          mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, path);
+        }
+      }
+    }
+
+    archive["[Content_Types].xml"] = strToU8(serializeXml(targetContentTypesDocument));
+    return zipSync(archive, { level: 6 });
+  } catch {
+    return cloneBytes(savedBytes);
+  }
+}
+
+export function emuToPixels(value: number) {
+  return value / EMU_PER_PIXEL;
+}
+
+export function pixelsToEmu(value: number) {
+  return value * EMU_PER_PIXEL;
+}
+
+function markerFromOffset(offsetPx: number, getSizePx: (index: number) => number) {
+  let remaining = Math.max(0, offsetPx);
+  let index = 0;
+  while (remaining > 0) {
+    const size = Math.max(1, getSizePx(index));
+    if (remaining < size) {
+      break;
+    }
+    remaining -= size;
+    index += 1;
+  }
+
+  return {
+    index,
+    offsetPx: remaining
+  };
+}
+
+export function rectToImageAnchor(
+  rect: XlsxImageRect,
+  currentAnchor: XlsxImage["anchor"],
+  options: {
+    contentOffsetLeft: number;
+    contentOffsetTop: number;
+    getColumnWidthPx: (col: number) => number;
+    getRowHeightPx: (row: number) => number;
+  }
+): XlsxImage["anchor"] {
+  const contentLeft = Math.max(0, rect.left - options.contentOffsetLeft);
+  const contentTop = Math.max(0, rect.top - options.contentOffsetTop);
+  const contentRight = Math.max(contentLeft + 1, rect.left + rect.width - options.contentOffsetLeft);
+  const contentBottom = Math.max(contentTop + 1, rect.top + rect.height - options.contentOffsetTop);
+
+  if (currentAnchor.kind === "absolute") {
+    return {
+      kind: "absolute",
+      positionEmu: {
+        x: pixelsToEmu(contentLeft),
+        y: pixelsToEmu(contentTop)
+      },
+      sizeEmu: {
+        cx: pixelsToEmu(rect.width),
+        cy: pixelsToEmu(rect.height)
+      }
+    };
+  }
+
+  const fromCol = markerFromOffset(contentLeft, options.getColumnWidthPx);
+  const fromRow = markerFromOffset(contentTop, options.getRowHeightPx);
+  if (currentAnchor.kind === "one-cell") {
+    return {
+      from: {
+        col: fromCol.index,
+        colOffsetEmu: pixelsToEmu(fromCol.offsetPx),
+        row: fromRow.index,
+        rowOffsetEmu: pixelsToEmu(fromRow.offsetPx)
+      },
+      kind: "one-cell",
+      sizeEmu: {
+        cx: pixelsToEmu(rect.width),
+        cy: pixelsToEmu(rect.height)
+      }
+    };
+  }
+
+  const toCol = markerFromOffset(contentRight, options.getColumnWidthPx);
+  const toRow = markerFromOffset(contentBottom, options.getRowHeightPx);
+  return {
+    from: {
+      col: fromCol.index,
+      colOffsetEmu: pixelsToEmu(fromCol.offsetPx),
+      row: fromRow.index,
+      rowOffsetEmu: pixelsToEmu(fromRow.offsetPx)
+    },
+    kind: "two-cell",
+    to: {
+      col: toCol.index,
+      colOffsetEmu: pixelsToEmu(toCol.offsetPx),
+      row: toRow.index,
+      rowOffsetEmu: pixelsToEmu(toRow.offsetPx)
+    }
+  };
+}
+
+export function resizeImageRect(
+  rect: XlsxImageRect,
+  handle: XlsxImageResizeHandlePosition,
+  deltaX: number,
+  deltaY: number,
+  minimumSize = 16
+) {
+  let left = rect.left;
+  let top = rect.top;
+  let width = rect.width;
+  let height = rect.height;
+
+  if (handle.includes("w")) {
+    left += deltaX;
+    width -= deltaX;
+  }
+  if (handle.includes("e")) {
+    width += deltaX;
+  }
+  if (handle.includes("n")) {
+    top += deltaY;
+    height -= deltaY;
+  }
+  if (handle.includes("s")) {
+    height += deltaY;
+  }
+
+  if (width < minimumSize) {
+    if (handle.includes("w")) {
+      left -= minimumSize - width;
+    }
+    width = minimumSize;
+  }
+  if (height < minimumSize) {
+    if (handle.includes("n")) {
+      top -= minimumSize - height;
+    }
+    height = minimumSize;
+  }
+
+  return { height, left, top, width };
+}

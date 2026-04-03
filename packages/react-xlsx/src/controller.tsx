@@ -1,13 +1,32 @@
 import * as React from "react";
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { resolveWorkbookColor } from "./colors";
+import {
+  mergeWorkbookImageAssets,
+  parseWorkbookImageAssets,
+  rectToImageAnchor,
+  resizeImageRect,
+  revokeWorkbookImageAssets,
+  updateWorkbookImageAnchor,
+  type WorkbookImageAssets,
+  type WorkbookImageSheetOrigin
+} from "./images";
 import { getSheetsWasmModule } from "./wasm";
 import type {
   UseXlsxViewerControllerOptions,
   XlsxCellAddress,
   XlsxCellRange,
   XlsxClipboardData,
+  XlsxImage,
+  XlsxImageRect,
+  XlsxImageResizeHandlePosition,
+  XlsxShape,
   XlsxSheetData,
+  XlsxThemePalette,
+  XlsxTable,
+  XlsxTableSortDirection,
+  XlsxTableSortState,
   XlsxViewerController
 } from "./types";
 
@@ -18,6 +37,8 @@ const XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadshee
 const CSV_MIME_TYPE = "text/csv;charset=utf-8";
 const MIN_COL_WIDTH_PX = 30;
 const MIN_ROW_HEIGHT_PX = 16;
+const GRID_HEADER_HEIGHT = 24;
+const GRID_ROW_HEADER_WIDTH = 40;
 const HISTORY_LIMIT = 100;
 const INTERNAL_CLIPBOARD_MIME = "application/x-react-xlsx-range+json";
 const DEFAULT_DEFER_LOADING_ABOVE_BYTES = 0;
@@ -110,27 +131,62 @@ function resolveDisplayFileName(src?: string, fileName?: string): string {
   }
 }
 
-function buildSheetList(workbook: Workbook): XlsxSheetData[] {
+function buildSheetList(
+  workbook: Workbook,
+  sheetStatesByWorkbookSheetIndex?: Array<{
+    colWidthOverridesPx?: Record<number, number>;
+    defaultColWidthPx?: number;
+    defaultRowHeightPx?: number;
+    rowHeightOverridesPx?: Record<number, number>;
+    showGridLines: boolean;
+  } | null>,
+  themePalette?: XlsxThemePalette | null
+): XlsxSheetData[] {
   const sheets: XlsxSheetData[] = [];
 
   for (let index = 0; index < workbook.sheetCount; index += 1) {
     const worksheet = workbook.getSheet(index);
+    const sheetState = sheetStatesByWorkbookSheetIndex?.[index] ?? null;
     if (worksheet.visibility !== "visible") {
       continue;
     }
 
+    const resolveColumnWidthPx = (col: number) => {
+      const width = worksheet.getColumnWidth(col);
+      if (width !== undefined && width !== null) {
+        return Math.max(Math.round(width * 7.5), MIN_COL_WIDTH_PX);
+      }
+
+      return sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
+    };
+
+    const resolveRowHeightPx = (row: number) => {
+      const height = worksheet.getRowHeight(row);
+      if (height !== undefined && height !== null) {
+        return Math.max(Math.round(height * 1.33), MIN_ROW_HEIGHT_PX);
+      }
+
+      return sheetState?.rowHeightOverridesPx?.[row] ?? sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT;
+    };
+
     const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
     if (!usedRange) {
       sheets.push({
+        colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
+        defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
+        defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
         maxUsedCol: -1,
         maxUsedRow: -1,
         name: worksheet.name,
         rowCount: 0,
         colCount: 0,
+        rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
         visibleRows: [],
         visibleCols: [],
         colWidths: [],
         rowHeights: [],
+        showGridLines: sheetState?.showGridLines ?? true,
+        themePalette: themePalette ?? { colorsByIndex: {} },
         workbookSheetIndex: index
       });
       continue;
@@ -153,6 +209,9 @@ function buildSheetList(workbook: Workbook): XlsxSheetData[] {
     }
 
     sheets.push({
+      colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
+      defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
+      defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
       maxUsedCol: maxCol,
       maxUsedRow: maxRow,
       name: worksheet.name,
@@ -160,14 +219,11 @@ function buildSheetList(workbook: Workbook): XlsxSheetData[] {
       colCount: visibleCols.length,
       visibleRows,
       visibleCols,
-      colWidths: visibleCols.map((col) => {
-        const width = worksheet.getColumnWidth(col);
-        return width !== undefined && width !== null ? Math.max(Math.round(width * 7.5), 30) : DEFAULT_COL_WIDTH;
-      }),
-      rowHeights: visibleRows.map((row) => {
-        const height = worksheet.getRowHeight(row);
-        return height !== undefined && height !== null ? Math.max(Math.round(height * 1.33), 16) : DEFAULT_ROW_HEIGHT;
-      }),
+      colWidths: visibleCols.map(resolveColumnWidthPx),
+      rowHeights: visibleRows.map(resolveRowHeightPx),
+      rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
+      showGridLines: sheetState?.showGridLines ?? true,
+      themePalette: themePalette ?? { colorsByIndex: {} },
       workbookSheetIndex: index
     });
   }
@@ -189,6 +245,35 @@ function columnLabel(col: number): string {
 
 function cellAddressToA1(cell: XlsxCellAddress): string {
   return `${columnLabel(cell.col)}${cell.row + 1}`;
+}
+
+function parseA1CellReference(reference: string): XlsxCellAddress | null {
+  const match = /^([A-Z]+)(\d+)$/i.exec(reference.trim());
+  if (!match) {
+    return null;
+  }
+
+  const [, columnPart, rowPart] = match;
+  let col = 0;
+  for (const char of columnPart.toUpperCase()) {
+    col = col * 26 + (char.charCodeAt(0) - 64);
+  }
+
+  return {
+    col: col - 1,
+    row: Number(rowPart) - 1
+  };
+}
+
+function parseA1RangeReference(reference: string): XlsxCellRange | null {
+  const [startRef, endRef = startRef] = reference.split(":");
+  const start = parseA1CellReference(startRef ?? "");
+  const end = parseA1CellReference(endRef ?? "");
+  if (!start || !end) {
+    return null;
+  }
+
+  return normalizeRange({ start, end });
 }
 
 function normalizeRange(range: XlsxCellRange): XlsxCellRange {
@@ -219,6 +304,40 @@ function rangeContainsCell(range: XlsxCellRange, cell: XlsxCellAddress): boolean
     cell.col >= normalized.start.col &&
     cell.col <= normalized.end.col
   );
+}
+
+function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null): XlsxTable[] {
+  const rawTables = (worksheet?.tables ?? []) as Array<Record<string, unknown>>;
+  return rawTables.flatMap((table, index) => {
+    const reference = typeof table.reference === "string" ? table.reference : "";
+    const parsedRange = parseA1RangeReference(reference);
+    if (!parsedRange) {
+      return [];
+    }
+
+    const rawColumns = Array.isArray(table.columns) ? table.columns : [];
+    return [{
+      columns: rawColumns.map((column, columnIndex) => ({
+        id: typeof (column as { id?: unknown }).id === "number" ? ((column as { id?: number }).id ?? columnIndex + 1) : columnIndex + 1,
+        index: columnIndex,
+        name: typeof (column as { name?: unknown }).name === "string" ? ((column as { name?: string }).name ?? `Column ${columnIndex + 1}`) : `Column ${columnIndex + 1}`
+      })),
+      displayName:
+        typeof table.displayName === "string"
+          ? table.displayName
+          : typeof table.name === "string"
+            ? table.name
+            : `Table ${index + 1}`,
+      end: parsedRange.end,
+      headerRowCount: typeof table.headerRowCount === "number" ? table.headerRowCount : 1,
+      name: typeof table.name === "string" ? table.name : `Table${index + 1}`,
+      reference,
+      start: parsedRange.start,
+      styleInfo: table.styleInfo as XlsxTable["styleInfo"] | undefined,
+      totalsRowCount: typeof table.totalsRowCount === "number" ? table.totalsRowCount : 0,
+      totalsRowShown: Boolean(table.totalsRowShown)
+    }];
+  });
 }
 
 function fileStem(fileName: string): string {
@@ -472,9 +591,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [error, setError] = React.useState<Error | null>(null);
   const [workbook, setWorkbook] = React.useState<Workbook | null>(null);
   const [sheets, setSheets] = React.useState<XlsxSheetData[]>([]);
+  const [imagesByWorkbookSheetIndex, setImagesByWorkbookSheetIndex] = React.useState<XlsxImage[][]>([]);
+  const [shapesByWorkbookSheetIndex, setShapesByWorkbookSheetIndex] = React.useState<XlsxShape[][]>([]);
   const [activeSheetIndex, setActiveSheetIndexState] = React.useState(0);
   const [activeCell, setActiveCell] = React.useState<XlsxCellAddress | null>(null);
   const [selection, setSelection] = React.useState<XlsxCellRange | null>(null);
+  const [selectedImageId, setSelectedImageId] = React.useState<string | null>(null);
   const [revision, setRevision] = React.useState(0);
   const selectionAnchorRef = React.useRef<XlsxCellAddress | null>(null);
   const undoStackRef = React.useRef<HistoryEntry[]>([]);
@@ -482,20 +604,44 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const isApplyingHistoryRef = React.useRef(false);
   const [historyRevision, setHistoryRevision] = React.useState(0);
   const [shouldAutoCalculate, setShouldAutoCalculate] = React.useState(false);
+  const [sortState, setSortState] = React.useState<XlsxTableSortState | null>(null);
   const deferredBufferRef = React.useRef<ArrayBuffer | null>(null);
   const [deferredLoadFileSize, setDeferredLoadFileSize] = React.useState<number | null>(null);
+  const imageAssetsRef = React.useRef<WorkbookImageAssets | null>(null);
+  const sheetOriginsRef = React.useRef<Array<WorkbookImageSheetOrigin | null>>([]);
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
 
+  const clearImageAssets = React.useCallback(() => {
+    revokeWorkbookImageAssets(imageAssetsRef.current);
+    imageAssetsRef.current = null;
+    sheetOriginsRef.current = [];
+    setImagesByWorkbookSheetIndex([]);
+    setShapesByWorkbookSheetIndex([]);
+  }, []);
+
+  const setImageAssets = React.useCallback((assets: WorkbookImageAssets | null) => {
+    revokeWorkbookImageAssets(imageAssetsRef.current);
+    imageAssetsRef.current = assets;
+    sheetOriginsRef.current = assets?.sheetOrigins.slice() ?? [];
+    setImagesByWorkbookSheetIndex(assets?.imagesByWorkbookSheetIndex ?? []);
+    setShapesByWorkbookSheetIndex(assets?.shapesByWorkbookSheetIndex ?? []);
+  }, []);
+
   const refreshWorkbookState = React.useCallback((targetWorkbook: Workbook) => {
-    setSheets(buildSheetList(targetWorkbook));
+    setSheets(buildSheetList(targetWorkbook, imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex, imageAssetsRef.current?.themePalette));
     setRevision((current) => current + 1);
+  }, []);
+
+  React.useEffect(() => () => {
+    revokeWorkbookImageAssets(imageAssetsRef.current);
   }, []);
 
   React.useEffect(() => {
     if (!file && !src) {
       setWorkbook(null);
       setSheets([]);
+      clearImageAssets();
       setError(null);
       setIsLoading(false);
       deferredBufferRef.current = null;
@@ -503,11 +649,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveSheetIndexState(0);
       setActiveCell(null);
       setSelection(null);
+      setSelectedImageId(null);
       selectionAnchorRef.current = null;
       undoStackRef.current = [];
       redoStackRef.current = [];
       setHistoryRevision(0);
       setShouldAutoCalculate(false);
+      setSortState(null);
       setRevision(0);
       return;
     }
@@ -515,16 +663,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     let isCurrent = true;
     setIsLoading(true);
     setError(null);
+    clearImageAssets();
     deferredBufferRef.current = null;
     setDeferredLoadFileSize(null);
     setActiveSheetIndexState(0);
     setActiveCell(null);
     setSelection(null);
+    setSelectedImageId(null);
     selectionAnchorRef.current = null;
     undoStackRef.current = [];
     redoStackRef.current = [];
     setHistoryRevision(0);
     setShouldAutoCalculate(false);
+    setSortState(null);
     setRevision(0);
 
     void resolveWorkbookBuffer({ file, src })
@@ -547,9 +698,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           return;
         }
 
+        const nextImageAssets = parseWorkbookImageAssets(new Uint8Array(buffer));
+        if (!isCurrent) {
+          revokeWorkbookImageAssets(nextImageAssets);
+          return;
+        }
+
+        setImageAssets(nextImageAssets);
         setWorkbook(nextParsedWorkbook.workbook);
-        setSheets(buildSheetList(nextParsedWorkbook.workbook));
+        setSheets(buildSheetList(nextParsedWorkbook.workbook, nextImageAssets.sheetStatesByWorkbookSheetIndex, nextImageAssets.themePalette));
         setShouldAutoCalculate(nextParsedWorkbook.shouldAutoCalculate);
+        setSortState(null);
         setIsLoading(false);
       })
       .catch((nextError: unknown) => {
@@ -559,7 +718,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         setWorkbook(null);
         setSheets([]);
+        clearImageAssets();
         setShouldAutoCalculate(false);
+        setSortState(null);
         setError(nextError instanceof Error ? nextError : new Error("Could not load workbook."));
         setIsLoading(false);
       });
@@ -567,14 +728,16 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     return () => {
       isCurrent = false;
     };
-  }, [deferLoadingAboveBytes, file, shouldDeferLoading, src]);
+  }, [clearImageAssets, deferLoadingAboveBytes, file, setImageAssets, shouldDeferLoading, src]);
 
   const activeSheet = sheets[activeSheetIndex] ?? null;
 
   React.useEffect(() => {
     setActiveCell(null);
     setSelection(null);
+    setSelectedImageId(null);
     selectionAnchorRef.current = null;
+    setSortState(null);
   }, [activeSheetIndex]);
 
   const setActiveSheetIndex = React.useCallback((index: number) => {
@@ -596,11 +759,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setError(null);
     void parseWorkbookBuffer(deferredBuffer)
       .then((nextParsedWorkbook) => {
+        const nextImageAssets = parseWorkbookImageAssets(new Uint8Array(deferredBuffer));
         deferredBufferRef.current = null;
         setDeferredLoadFileSize(null);
+        setImageAssets(nextImageAssets);
         setWorkbook(nextParsedWorkbook.workbook);
-        setSheets(buildSheetList(nextParsedWorkbook.workbook));
+        setSheets(buildSheetList(nextParsedWorkbook.workbook, nextImageAssets.sheetStatesByWorkbookSheetIndex, nextImageAssets.themePalette));
         setShouldAutoCalculate(nextParsedWorkbook.shouldAutoCalculate);
+        setSortState(null);
         setIsLoading(false);
       })
       .catch((nextError: unknown) => {
@@ -608,11 +774,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         setDeferredLoadFileSize(null);
         setWorkbook(null);
         setSheets([]);
+        clearImageAssets();
         setShouldAutoCalculate(false);
+        setSortState(null);
         setError(nextError instanceof Error ? nextError : new Error("Could not load workbook."));
         setIsLoading(false);
       });
-  }, []);
+  }, [clearImageAssets, setImageAssets]);
 
   const maybeRecalculateWorkbook = React.useCallback((targetWorkbook: Workbook) => {
     if (!shouldAutoCalculate) {
@@ -629,6 +797,93 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     return workbook.getSheet(activeSheet.workbookSheetIndex);
   }, [activeSheet, workbook]);
+
+  const tables = React.useMemo(() => mapWorksheetTables(getActiveWorksheet()), [getActiveWorksheet, revision]);
+
+  const visibleSheetIndexByWorkbookSheetIndex = React.useMemo(
+    () => new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index])),
+    [sheets]
+  );
+
+  const mapPublicImage = React.useCallback((image: XlsxImage) => {
+    const visibleSheetIndex = visibleSheetIndexByWorkbookSheetIndex.get(image.workbookSheetIndex);
+    return {
+      ...image,
+      sheetIndex: visibleSheetIndex ?? image.workbookSheetIndex
+    };
+  }, [visibleSheetIndexByWorkbookSheetIndex]);
+
+  const getSheetImages = React.useCallback((sheetIndex = activeSheetIndex) => {
+    const targetSheet = sheets[sheetIndex];
+    if (!targetSheet) {
+      return [];
+    }
+
+    return (imagesByWorkbookSheetIndex[targetSheet.workbookSheetIndex] ?? []).map(mapPublicImage);
+  }, [activeSheetIndex, imagesByWorkbookSheetIndex, mapPublicImage, sheets]);
+
+  const images = React.useMemo(() => getSheetImages(activeSheetIndex), [activeSheetIndex, getSheetImages]);
+
+  const getSheetShapes = React.useCallback((sheetIndex = activeSheetIndex) => {
+    const targetSheet = sheets[sheetIndex];
+    if (!targetSheet) {
+      return [];
+    }
+
+    return (shapesByWorkbookSheetIndex[targetSheet.workbookSheetIndex] ?? []).map((shape) => {
+      const visibleSheetIndex = visibleSheetIndexByWorkbookSheetIndex.get(shape.workbookSheetIndex);
+      return {
+        ...shape,
+        sheetIndex: visibleSheetIndex ?? shape.workbookSheetIndex
+      };
+    });
+  }, [activeSheetIndex, shapesByWorkbookSheetIndex, sheets, visibleSheetIndexByWorkbookSheetIndex]);
+
+  const shapes = React.useMemo(() => getSheetShapes(activeSheetIndex), [activeSheetIndex, getSheetShapes]);
+
+  const getImageById = React.useCallback((id: string) => {
+    for (const sheetImages of imagesByWorkbookSheetIndex) {
+      const match = sheetImages?.find((image) => image.id === id);
+      if (match) {
+        return mapPublicImage(match);
+      }
+    }
+
+    return null;
+  }, [imagesByWorkbookSheetIndex, mapPublicImage]);
+
+  const selectedImage = React.useMemo(
+    () => (selectedImageId ? getImageById(selectedImageId) : null),
+    [getImageById, selectedImageId]
+  );
+
+  const selectImage = React.useCallback((id: string | null) => {
+    setSelectedImageId(id);
+  }, []);
+
+  const clearSelectedImage = React.useCallback(() => {
+    setSelectedImageId(null);
+  }, []);
+
+  const getColumnWidthPx = React.useCallback((worksheet: ReturnType<Workbook["getSheet"]>, col: number) => {
+    const sheetState = imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex[activeSheet?.workbookSheetIndex ?? -1] ?? null;
+    const width = worksheet.getColumnWidth(col);
+    if (width !== undefined && width !== null) {
+      return Math.max(Math.round(width * 7.5), MIN_COL_WIDTH_PX);
+    }
+
+    return sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
+  }, [activeSheet?.workbookSheetIndex]);
+
+  const getRowHeightPx = React.useCallback((worksheet: ReturnType<Workbook["getSheet"]>, row: number) => {
+    const sheetState = imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex[activeSheet?.workbookSheetIndex ?? -1] ?? null;
+    const height = worksheet.getRowHeight(row);
+    if (height !== undefined && height !== null) {
+      return Math.max(Math.round(height * 1.33), MIN_ROW_HEIGHT_PX);
+    }
+
+    return sheetState?.rowHeightOverridesPx?.[row] ?? sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT;
+  }, [activeSheet?.workbookSheetIndex]);
 
   const getCellDisplayValue = React.useCallback((cell?: XlsxCellAddress | null) => {
     const worksheet = getActiveWorksheet();
@@ -705,9 +960,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         if (fill) {
           const fillColor =
             fill.fillType === "solid"
-              ? cssColor(fill.color as Record<string, unknown> | undefined)
+              ? resolveWorkbookColor(fill.color as Record<string, unknown> | undefined, activeSheet?.themePalette)
               : fill.fillType === "pattern"
-                ? cssColor(fill.foreground as Record<string, unknown> | undefined)
+                ? resolveWorkbookColor(fill.foreground as Record<string, unknown> | undefined, activeSheet?.themePalette)
                 : null;
 
           if (fillColor && fillColor.toLowerCase() !== "#ffffff") {
@@ -729,7 +984,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           if (font.strikethrough) {
             cellStyles.push("text-decoration:line-through");
           }
-          const fontColor = cssColor(font.color as Record<string, unknown> | undefined);
+          const fontColor = resolveWorkbookColor(font.color as Record<string, unknown> | undefined, activeSheet?.themePalette);
           if (fontColor) {
             cellStyles.push(`color:${fontColor}`);
           }
@@ -806,6 +1061,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const canUndo = !readOnly && undoStackRef.current.length > 0;
   const canRedo = !readOnly && redoStackRef.current.length > 0;
 
+  const createSavedWorkbookBytes = React.useCallback((targetWorkbook: Workbook) => {
+    const sanitizedBytes = sanitizeSavedWorkbookBytes(targetWorkbook.saveXlsxBytes());
+    return mergeWorkbookImageAssets(sanitizedBytes, imageAssetsRef.current, sheetOriginsRef.current);
+  }, []);
+
   const createHistoryEntry = React.useCallback((): SnapshotHistoryEntry | null => {
     if (!workbook) {
       return null;
@@ -815,10 +1075,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       kind: "snapshot",
       activeCell,
       activeSheetIndex,
-      bytes: sanitizeSavedWorkbookBytes(workbook.saveXlsxBytes()),
+      bytes: createSavedWorkbookBytes(workbook),
       selection
     };
-  }, [activeCell, activeSheetIndex, selection, workbook]);
+  }, [activeCell, activeSheetIndex, createSavedWorkbookBytes, selection, workbook]);
 
   const captureCellMutationState = React.useCallback((cell: XlsxCellAddress): CellMutationState | null => {
     const worksheet = getActiveWorksheet();
@@ -835,11 +1095,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const restoreHistoryEntry = React.useCallback(async (entry: SnapshotHistoryEntry) => {
     const wasmModule = await getSheetsWasmModule();
     const nextWorkbook = wasmModule.Workbook.fromBytes(cloneBytes(entry.bytes));
-    const nextSheets = buildSheetList(nextWorkbook);
+    const nextSheets = buildSheetList(nextWorkbook, imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex, imageAssetsRef.current?.themePalette);
     const nextSheetIndex = Math.max(0, Math.min(entry.activeSheetIndex, Math.max(0, nextSheets.length - 1)));
+    const nextImageAssets = parseWorkbookImageAssets(entry.bytes);
 
     setError(null);
     setIsLoading(false);
+    setImageAssets(nextImageAssets);
     setWorkbook(nextWorkbook);
     setSheets(nextSheets);
     setActiveSheetIndexState(nextSheetIndex);
@@ -847,7 +1109,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSelection(entry.selection);
     selectionAnchorRef.current = entry.selection ? normalizeRange(entry.selection).start : entry.activeCell;
     setRevision((current) => current + 1);
-  }, []);
+  }, [setImageAssets]);
 
   const applyCellEditHistoryEntry = React.useCallback((
     entry: CellEditHistoryEntry,
@@ -967,6 +1229,121 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setHistoryRevision((current) => current + 1);
   }, [activeCell, activeSheet, selection]);
 
+  const sortTable = React.useCallback((tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => {
+    const worksheet = getActiveWorksheet();
+    const targetTable = tables.find((table) => table.name === tableName || table.displayName === tableName);
+    if (readOnly || !worksheet || !workbook || !activeSheet || !targetTable) {
+      return;
+    }
+
+    const dataStartRow = targetTable.start.row + Math.max(targetTable.headerRowCount, 1);
+    const totalsRowOffset = targetTable.totalsRowShown ? Math.max(targetTable.totalsRowCount, 1) : 0;
+    const dataEndRow = targetTable.end.row - totalsRowOffset;
+    const startCol = targetTable.start.col;
+    const endCol = targetTable.end.col;
+    const sortCol = startCol + columnIndex;
+
+    if (columnIndex < 0 || sortCol > endCol || dataStartRow > dataEndRow) {
+      return;
+    }
+
+    const rows: Array<{
+      cells: CellMutationState[];
+      index: number;
+      sortBoolean: boolean | undefined;
+      sortEmpty: boolean;
+      sortNumber: number | undefined;
+      sortText: string;
+    }> = [];
+
+    for (let row = dataStartRow; row <= dataEndRow; row += 1) {
+      const cells: CellMutationState[] = [];
+      for (let col = startCol; col <= endCol; col += 1) {
+        cells.push({
+          formula: worksheet.getFormulaAt(row, col) ?? null,
+          value: worksheet.getCellAt(row, col).toJs()
+        });
+      }
+
+      const calculated = worksheet.getCalculatedValueAt(row, sortCol);
+      const formatted = decodeHtmlEntities(worksheet.getFormattedValueAt(row, sortCol) ?? "");
+      rows.push({
+        cells,
+        index: row,
+        sortBoolean: calculated.is_boolean ? calculated.asBoolean() : undefined,
+        sortEmpty: calculated.is_empty || formatted.length === 0,
+        sortNumber: calculated.is_number ? calculated.asNumber() : undefined,
+        sortText: calculated.is_text ? (calculated.asText() ?? formatted) : formatted
+      });
+    }
+
+    const sortedRows = [...rows].sort((left, right) => {
+      if (left.sortEmpty !== right.sortEmpty) {
+        return left.sortEmpty ? 1 : -1;
+      }
+
+      if (left.sortNumber !== undefined && right.sortNumber !== undefined) {
+        return direction === "ascending" ? left.sortNumber - right.sortNumber : right.sortNumber - left.sortNumber;
+      }
+
+      if (left.sortBoolean !== undefined && right.sortBoolean !== undefined) {
+        const leftValue = left.sortBoolean ? 1 : 0;
+        const rightValue = right.sortBoolean ? 1 : 0;
+        return direction === "ascending" ? leftValue - rightValue : rightValue - leftValue;
+      }
+
+      const comparedText = left.sortText.localeCompare(right.sortText, undefined, { numeric: true, sensitivity: "base" });
+      return direction === "ascending" ? comparedText : -comparedText;
+    });
+
+    if (sortedRows.every((row, index) => row.index === rows[index]?.index)) {
+      setSortState({ columnIndex, direction, tableName: targetTable.name });
+      return;
+    }
+
+    const mutations: RangeCellMutation[] = [];
+    for (let rowOffset = 0; rowOffset < rows.length; rowOffset += 1) {
+      const targetRow = dataStartRow + rowOffset;
+      const sourceRow = sortedRows[rowOffset];
+      const beforeRow = rows[rowOffset];
+      if (!sourceRow || !beforeRow) {
+        continue;
+      }
+
+      for (let colOffset = 0; colOffset <= endCol - startCol; colOffset += 1) {
+        const before = beforeRow.cells[colOffset];
+        const after = sourceRow.cells[colOffset];
+        if (!before || !after) {
+          continue;
+        }
+
+        const cell = { row: targetRow, col: startCol + colOffset };
+        applyCellMutationState(worksheet, cell, after);
+        mutations.push({
+          after,
+          before,
+          cell
+        });
+      }
+    }
+
+    maybeRecalculateWorkbook(workbook);
+    refreshWorkbookState(workbook);
+    setSortState({ columnIndex, direction, tableName: targetTable.name });
+    recordRangeEditHistory(mutations, selection, activeCell);
+  }, [
+    activeCell,
+    activeSheet,
+    getActiveWorksheet,
+    maybeRecalculateWorkbook,
+    readOnly,
+    recordRangeEditHistory,
+    refreshWorkbookState,
+    selection,
+    tables,
+    workbook
+  ]);
+
   const download = React.useCallback(() => {
     if (file) {
       downloadArrayBuffer(file, displayFileName);
@@ -983,8 +1360,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    downloadBytes(sanitizeSavedWorkbookBytes(workbook.saveXlsxBytes()), `${fileStem(displayFileName)}.xlsx`, XLSX_MIME_TYPE);
-  }, [displayFileName, workbook]);
+    downloadBytes(createSavedWorkbookBytes(workbook), `${fileStem(displayFileName)}.xlsx`, XLSX_MIME_TYPE);
+  }, [createSavedWorkbookBytes, displayFileName, workbook]);
 
   const exportCsv = React.useCallback(() => {
     if (!workbook) {
@@ -1026,7 +1403,159 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     refreshWorkbookState(workbook);
   }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
+  const setImageRect = React.useCallback((id: string, rect: XlsxImageRect) => {
+    if (readOnly || !workbook || !activeSheet || !imageAssetsRef.current) {
+      return;
+    }
+
+    const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
+    const currentImage = getImageById(id);
+    if (!currentImage || currentImage.workbookSheetIndex !== activeSheet.workbookSheetIndex) {
+      return;
+    }
+
+    const nextAnchor = rectToImageAnchor(rect, currentImage.anchor, {
+      contentOffsetLeft: GRID_ROW_HEADER_WIDTH,
+      contentOffsetTop: GRID_HEADER_HEIGHT,
+      getColumnWidthPx: (col) => getColumnWidthPx(worksheet, col),
+      getRowHeightPx: (row) => getRowHeightPx(worksheet, row)
+    });
+
+    recordHistoryBeforeMutation();
+    if (!updateWorkbookImageAnchor(imageAssetsRef.current, id, nextAnchor)) {
+      return;
+    }
+
+    setImagesByWorkbookSheetIndex([...imageAssetsRef.current.imagesByWorkbookSheetIndex]);
+    setRevision((current) => current + 1);
+  }, [
+    activeSheet,
+    getColumnWidthPx,
+    getImageById,
+    getRowHeightPx,
+    readOnly,
+    recordHistoryBeforeMutation,
+    workbook
+  ]);
+
+  const moveImageBy = React.useCallback((id: string, deltaX: number, deltaY: number) => {
+    const currentImage = getImageById(id);
+    if (!currentImage) {
+      return;
+    }
+
+    const currentRect = (() => {
+      const worksheet = getActiveWorksheet();
+      if (!worksheet) {
+        return null;
+      }
+
+      const resolveAxisSum = (
+        index: number,
+        getSize: (target: number) => number
+      ) => {
+        let total = 0;
+        for (let cursor = 0; cursor < index; cursor += 1) {
+          total += getSize(cursor);
+        }
+        return total;
+      };
+
+      if (currentImage.anchor.kind === "absolute") {
+        return {
+          height: currentImage.anchor.sizeEmu.cy / 9525,
+          left: GRID_ROW_HEADER_WIDTH + currentImage.anchor.positionEmu.x / 9525,
+          top: GRID_HEADER_HEIGHT + currentImage.anchor.positionEmu.y / 9525,
+          width: currentImage.anchor.sizeEmu.cx / 9525
+        };
+      }
+
+      const left = GRID_ROW_HEADER_WIDTH + resolveAxisSum(currentImage.anchor.from.col, (col) => getColumnWidthPx(worksheet, col)) + currentImage.anchor.from.colOffsetEmu / 9525;
+      const top = GRID_HEADER_HEIGHT + resolveAxisSum(currentImage.anchor.from.row, (row) => getRowHeightPx(worksheet, row)) + currentImage.anchor.from.rowOffsetEmu / 9525;
+
+      if (currentImage.anchor.kind === "one-cell") {
+        return {
+          height: currentImage.anchor.sizeEmu.cy / 9525,
+          left,
+          top,
+          width: currentImage.anchor.sizeEmu.cx / 9525
+        };
+      }
+
+      const right = GRID_ROW_HEADER_WIDTH + resolveAxisSum(currentImage.anchor.to.col, (col) => getColumnWidthPx(worksheet, col)) + currentImage.anchor.to.colOffsetEmu / 9525;
+      const bottom = GRID_HEADER_HEIGHT + resolveAxisSum(currentImage.anchor.to.row, (row) => getRowHeightPx(worksheet, row)) + currentImage.anchor.to.rowOffsetEmu / 9525;
+
+      return {
+        height: Math.max(1, bottom - top),
+        left,
+        top,
+        width: Math.max(1, right - left)
+      };
+    })();
+
+    if (!currentRect) {
+      return;
+    }
+
+    setImageRect(id, {
+      ...currentRect,
+      left: currentRect.left + deltaX,
+      top: currentRect.top + deltaY
+    });
+  }, [getActiveWorksheet, getColumnWidthPx, getImageById, getRowHeightPx, setImageRect]);
+
+  const resizeImageBy = React.useCallback((
+    id: string,
+    handle: XlsxImageResizeHandlePosition,
+    deltaX: number,
+    deltaY: number
+  ) => {
+    const currentImage = getImageById(id);
+    if (!currentImage) {
+      return;
+    }
+
+    const worksheet = getActiveWorksheet();
+    if (!worksheet) {
+      return;
+    }
+
+    const resolveAxisSum = (
+      index: number,
+      getSize: (target: number) => number
+    ) => {
+      let total = 0;
+      for (let cursor = 0; cursor < index; cursor += 1) {
+        total += getSize(cursor);
+      }
+      return total;
+    };
+
+    const left = currentImage.anchor.kind === "absolute"
+      ? GRID_ROW_HEADER_WIDTH + currentImage.anchor.positionEmu.x / 9525
+      : GRID_ROW_HEADER_WIDTH + resolveAxisSum(currentImage.anchor.from.col, (col) => getColumnWidthPx(worksheet, col)) + currentImage.anchor.from.colOffsetEmu / 9525;
+    const top = currentImage.anchor.kind === "absolute"
+      ? GRID_HEADER_HEIGHT + currentImage.anchor.positionEmu.y / 9525
+      : GRID_HEADER_HEIGHT + resolveAxisSum(currentImage.anchor.from.row, (row) => getRowHeightPx(worksheet, row)) + currentImage.anchor.from.rowOffsetEmu / 9525;
+    const width = currentImage.anchor.kind === "two-cell"
+      ? Math.max(
+          1,
+          GRID_ROW_HEADER_WIDTH + resolveAxisSum(currentImage.anchor.to.col, (col) => getColumnWidthPx(worksheet, col)) + currentImage.anchor.to.colOffsetEmu / 9525 - left
+        )
+      : currentImage.anchor.sizeEmu.cx / 9525;
+    const height = currentImage.anchor.kind === "two-cell"
+      ? Math.max(
+          1,
+          GRID_HEADER_HEIGHT + resolveAxisSum(currentImage.anchor.to.row, (row) => getRowHeightPx(worksheet, row)) + currentImage.anchor.to.rowOffsetEmu / 9525 - top
+        )
+      : currentImage.anchor.sizeEmu.cy / 9525;
+
+    const nextRect = resizeImageRect({ height, left, top, width }, handle, deltaX, deltaY);
+    setImageRect(id, nextRect);
+  }, [getActiveWorksheet, getColumnWidthPx, getImageById, getRowHeightPx, setImageRect]);
+
   const selectCell = React.useCallback((cell: XlsxCellAddress, options?: { extend?: boolean }) => {
+    setSelectedImageId(null);
     setActiveCell(cell);
     if (options?.extend && selectionAnchorRef.current) {
       setSelection(normalizeRange({ start: selectionAnchorRef.current, end: cell }));
@@ -1039,6 +1568,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const selectRange = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
+    setSelectedImageId(null);
     selectionAnchorRef.current = normalized.start;
     setActiveCell(normalized.end);
     setSelection(normalized);
@@ -1048,6 +1578,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     selectionAnchorRef.current = null;
     setActiveCell(null);
     setSelection(null);
+    setSelectedImageId(null);
   }, []);
 
   const clearSelectedCells = React.useCallback(() => {
@@ -1251,7 +1782,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     workbook.addSheet(candidate);
-    const nextSheets = buildSheetList(workbook);
+    sheetOriginsRef.current = [...sheetOriginsRef.current, null];
+    setImagesByWorkbookSheetIndex((current) => [...current, []]);
+    setShapesByWorkbookSheetIndex((current) => [...current, []]);
+    const nextSheets = buildSheetList(workbook, imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex, imageAssetsRef.current?.themePalette);
     setSheets(nextSheets);
     const nextIndex = nextSheets.findIndex((sheet) => sheet.name === candidate);
     setActiveSheetIndexState(nextIndex >= 0 ? nextIndex : 0);
@@ -1265,7 +1799,15 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     recordHistoryBeforeMutation();
     workbook.removeSheet(activeSheet.workbookSheetIndex);
-    const nextSheets = buildSheetList(workbook);
+    sheetOriginsRef.current = sheetOriginsRef.current.filter((_, index) => index !== activeSheet.workbookSheetIndex);
+    setImagesByWorkbookSheetIndex((current) => current.filter((_, index) => index !== activeSheet.workbookSheetIndex));
+    setShapesByWorkbookSheetIndex((current) => current.filter((_, index) => index !== activeSheet.workbookSheetIndex));
+    if (imageAssetsRef.current) {
+      imageAssetsRef.current.sheetStatesByWorkbookSheetIndex = imageAssetsRef.current.sheetStatesByWorkbookSheetIndex.filter(
+        (_, index) => index !== activeSheet.workbookSheetIndex
+      );
+    }
+    const nextSheets = buildSheetList(workbook, imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex, imageAssetsRef.current?.themePalette);
     setSheets(nextSheets);
     setActiveSheetIndexState((current) => Math.max(0, Math.min(current, nextSheets.length - 1)));
     setRevision((current) => current + 1);
@@ -1573,6 +2115,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       canLoadDeferred,
       canUndo,
       clearSelectedCells,
+      clearSelectedImage,
       clearSelection,
       continueDeferredLoad,
       copySelectionToClipboard,
@@ -1584,14 +2127,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       exportXlsx,
       error,
       fillSelection,
+      getImageById,
+      getSheetImages,
+      getSheetShapes,
       file,
       getClipboardData,
       getCellDisplayValue,
       getCellFormula,
       getActiveWorksheet,
+      images,
       isLoadDeferred,
       isLoading,
       mergeSelection,
+      moveImageBy,
       pasteFromClipboard,
       pasteStructuredClipboardData,
       pasteText,
@@ -1600,21 +2148,30 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       recalculate,
       redo,
       revision,
+      resizeImageBy,
       resizeColumn,
       resizeRow,
       setCellFormula,
       setCellValue,
+      setImageRect,
       selectedFormula,
+      selectedImage,
+      selectedImageId,
       selectedRangeAddress,
       selectedValue,
       selectCell,
+      selectImage,
       selectRange,
       selection,
       setActiveSheetIndex,
       setSelectedCellFormula,
       setSelectedCellValue,
       sheets,
+      shapes,
       src,
+      sortState,
+      sortTable,
+      tables,
       undo,
       unmergeSelection,
       workbook
@@ -1629,6 +2186,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       canRedo,
       canUndo,
       clearSelectedCells,
+      clearSelectedImage,
       continueDeferredLoad,
       copySelectionToClipboard,
       deferredLoadFileSize,
@@ -1640,14 +2198,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       exportXlsx,
       file,
       fillSelection,
+      getImageById,
+      getSheetImages,
+      getSheetShapes,
       getClipboardData,
       getCellDisplayValue,
       getCellFormula,
       getActiveWorksheet,
       historyRevision,
+      images,
       isLoadDeferred,
       isLoading,
       mergeSelection,
+      moveImageBy,
       pasteFromClipboard,
       pasteStructuredClipboardData,
       pasteText,
@@ -1656,21 +2219,30 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       recalculate,
       redo,
       revision,
+      resizeImageBy,
       resizeColumn,
       resizeRow,
       setCellFormula,
       setCellValue,
+      setImageRect,
       selectedFormula,
+      selectedImage,
+      selectedImageId,
       selectedRangeAddress,
       selectedValue,
       selectCell,
+      selectImage,
       selectRange,
       selection,
       setActiveSheetIndex,
       setSelectedCellFormula,
       setSelectedCellValue,
       sheets,
+      shapes,
+      sortState,
+      sortTable,
       src,
+      tables,
       undo,
       unmergeSelection,
       workbook

@@ -1,16 +1,26 @@
 import type * as React from "react";
 import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
 
+export interface XlsxThemePalette {
+  colorsByIndex: Record<number, string>;
+}
+
 export interface XlsxSheetData {
+  colWidthOverridesPx: Record<number, number>;
   name: string;
+  defaultColWidthPx: number;
+  defaultRowHeightPx: number;
   maxUsedCol: number;
   maxUsedRow: number;
   rowCount: number;
   colCount: number;
+  rowHeightOverridesPx: Record<number, number>;
   visibleRows: number[];
   visibleCols: number[];
   colWidths: number[];
   rowHeights: number[];
+  showGridLines: boolean;
+  themePalette: XlsxThemePalette;
   workbookSheetIndex: number;
 }
 
@@ -28,6 +38,178 @@ export interface XlsxClipboardData {
   html: string;
   structured: string;
   text: string;
+}
+
+export interface XlsxTableColumn {
+  id: number;
+  index: number;
+  name: string;
+}
+
+export interface XlsxTableStyleInfo {
+  name?: string;
+  showColumnStripes?: boolean;
+  showFirstColumn?: boolean;
+  showLastColumn?: boolean;
+  showRowStripes?: boolean;
+}
+
+export interface XlsxTable {
+  columns: XlsxTableColumn[];
+  displayName: string;
+  end: XlsxCellAddress;
+  headerRowCount: number;
+  name: string;
+  reference: string;
+  start: XlsxCellAddress;
+  styleInfo?: XlsxTableStyleInfo;
+  totalsRowCount: number;
+  totalsRowShown: boolean;
+}
+
+export type XlsxTableSortDirection = "ascending" | "descending";
+
+export interface XlsxTableSortState {
+  columnIndex: number;
+  direction: XlsxTableSortDirection;
+  tableName: string;
+}
+
+export interface XlsxImageMarker {
+  col: number;
+  colOffsetEmu: number;
+  row: number;
+  rowOffsetEmu: number;
+}
+
+export type XlsxImageAnchor =
+  | {
+      from: XlsxImageMarker;
+      kind: "one-cell";
+      sizeEmu: {
+        cx: number;
+        cy: number;
+      };
+    }
+  | {
+      kind: "absolute";
+      positionEmu: {
+        x: number;
+        y: number;
+      };
+      sizeEmu: {
+        cx: number;
+        cy: number;
+      };
+    }
+  | {
+      from: XlsxImageMarker;
+      kind: "two-cell";
+      to: XlsxImageMarker;
+    };
+
+export interface XlsxImage {
+  anchor: XlsxImageAnchor;
+  description?: string;
+  hyperlink?: string;
+  id: string;
+  mimeType: string;
+  name?: string;
+  sheetIndex: number;
+  src: string;
+  workbookSheetIndex: number;
+  zIndex: number;
+}
+
+export interface XlsxShapeFill {
+  color?: string;
+  none?: boolean;
+  opacity?: number;
+}
+
+export interface XlsxShapeStroke {
+  color?: string;
+  dash?: string;
+  none?: boolean;
+  opacity?: number;
+  widthPx?: number;
+}
+
+export interface XlsxShapeTextRun {
+  bold?: boolean;
+  color?: string;
+  fontFamily?: string;
+  fontSizePt?: number;
+  italic?: boolean;
+  text: string;
+  underline?: boolean;
+}
+
+export interface XlsxShapeParagraph {
+  align?: "center" | "justify" | "left" | "right";
+  runs: XlsxShapeTextRun[];
+}
+
+export interface XlsxShapeTextBox {
+  insetPx?: {
+    bottom: number;
+    left: number;
+    right: number;
+    top: number;
+  };
+  verticalAlign?: "bottom" | "middle" | "top";
+}
+
+export interface XlsxShape {
+  anchor: XlsxImageAnchor;
+  description?: string;
+  fill?: XlsxShapeFill;
+  flipH?: boolean;
+  flipV?: boolean;
+  geometry: string;
+  hyperlink?: string;
+  id: string;
+  name?: string;
+  paragraphs: XlsxShapeParagraph[];
+  rotationDeg?: number;
+  sheetIndex: number;
+  svgPath?: string;
+  svgViewBox?: {
+    height: number;
+    width: number;
+  };
+  stroke?: XlsxShapeStroke;
+  textBox?: XlsxShapeTextBox;
+  workbookSheetIndex: number;
+  zIndex: number;
+}
+
+export interface XlsxImageRect {
+  height: number;
+  left: number;
+  top: number;
+  width: number;
+}
+
+export type XlsxImageResizeHandlePosition = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+export interface XlsxImageRenderProps {
+  defaultNode: React.ReactNode;
+  image: XlsxImage;
+  rect: XlsxImageRect;
+  style: React.CSSProperties;
+}
+
+export interface XlsxImageSelectionRenderProps {
+  defaultNode: React.ReactNode;
+  getHandleProps: (
+    position: XlsxImageResizeHandlePosition
+  ) => {
+    onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
+    style: React.CSSProperties;
+  };
+  image: XlsxImage;
+  rect: XlsxImageRect;
 }
 
 export interface UseXlsxViewerControllerOptions {
@@ -61,16 +243,29 @@ export interface XlsxViewerController {
   error: Error | null;
   file?: ArrayBuffer;
   fillSelection: (targetRange: XlsxCellRange) => void;
+  clearSelectedImage: () => void;
+  getImageById: (id: string) => XlsxImage | null;
+  getSheetImages: (sheetIndex?: number) => XlsxImage[];
+  getSheetShapes: (sheetIndex?: number) => XlsxShape[];
   getClipboardData: () => XlsxClipboardData | null;
   getCellDisplayValue: (cell?: XlsxCellAddress | null) => string;
   getCellFormula: (cell?: XlsxCellAddress | null) => string;
   isLoadDeferred: boolean;
   isLoading: boolean;
+  images: XlsxImage[];
+  shapes: XlsxShape[];
   mergeSelection: () => void;
+  moveImageBy: (id: string, deltaX: number, deltaY: number) => void;
   removeActiveSheet: () => void;
   readOnly: boolean;
   recalculate: () => void;
   revision: number;
+  resizeImageBy: (
+    id: string,
+    handle: XlsxImageResizeHandlePosition,
+    deltaX: number,
+    deltaY: number
+  ) => void;
   resizeColumn: (col: number, widthPx: number) => void;
   resizeRow: (row: number, heightPx: number) => void;
   redo: () => void;
@@ -86,10 +281,17 @@ export interface XlsxViewerController {
   selectRange: (range: XlsxCellRange) => void;
   selection: XlsxCellRange | null;
   setActiveSheetIndex: (index: number) => void;
+  selectedImage: XlsxImage | null;
+  selectedImageId: string | null;
   setSelectedCellFormula: (formula: string) => void;
   setSelectedCellValue: (value: string) => void;
   sheets: XlsxSheetData[];
   src?: string;
+  sortState: XlsxTableSortState | null;
+  sortTable: (tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => void;
+  selectImage: (id: string | null) => void;
+  setImageRect: (id: string, rect: XlsxImageRect) => void;
+  tables: XlsxTable[];
   undo: () => void;
   unmergeSelection: () => void;
   workbook: Workbook | null;
@@ -135,6 +337,40 @@ export interface XlsxViewerEditing {
   unmergeSelection: () => void;
 }
 
+export interface XlsxViewerTables {
+  sortState: XlsxTableSortState | null;
+  sortTable: (tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => void;
+  tables: XlsxTable[];
+}
+
+export interface XlsxViewerImages {
+  clearSelectedImage: () => void;
+  getImageById: (id: string) => XlsxImage | null;
+  getSheetImages: (sheetIndex?: number) => XlsxImage[];
+  images: XlsxImage[];
+  moveImageBy: (id: string, deltaX: number, deltaY: number) => void;
+  readOnly: boolean;
+  resizeImageBy: (
+    id: string,
+    handle: XlsxImageResizeHandlePosition,
+    deltaX: number,
+    deltaY: number
+  ) => void;
+  selectedImage: XlsxImage | null;
+  selectedImageId: string | null;
+  selectImage: (id: string | null) => void;
+  setImageRect: (id: string, rect: XlsxImageRect) => void;
+}
+
+export interface XlsxTableHeaderMenuRenderProps {
+  close: () => void;
+  column: XlsxTableColumn;
+  direction: XlsxTableSortDirection | null;
+  sortAscending: () => void;
+  sortDescending: () => void;
+  table: XlsxTable;
+}
+
 export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions {
   children: React.ReactNode;
   controller?: XlsxViewerController;
@@ -148,11 +384,15 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   height?: React.CSSProperties["height"];
   loadingComponent?: React.ReactElement;
   loadingState?: React.ReactNode;
+  renderImage?: (props: XlsxImageRenderProps) => React.ReactNode;
+  renderImageSelection?: (props: XlsxImageSelectionRenderProps) => React.ReactNode;
   rounded?: boolean;
   readOnly?: boolean;
   selectionColor?: string;
   selectionFillColor?: string;
   selectionHeaderColor?: string;
+  renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode;
+  showImages?: boolean;
   showDefaultToolbar?: boolean;
   toolbar?: React.ReactNode | ((controller: XlsxViewerController) => React.ReactNode);
 }
