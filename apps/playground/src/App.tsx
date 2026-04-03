@@ -134,7 +134,7 @@ function WorkbookToolbar({
     setActiveSheetIndex,
     sheets,
   } = useXlsxViewer();
-  const { activeCellAddress, selectedRangeAddress, selection } = useXlsxViewerSelection();
+  const { activeCell, activeCellAddress, selectedRangeAddress, selection } = useXlsxViewerSelection();
   const {
     addSheet,
     canRedo,
@@ -146,8 +146,8 @@ function WorkbookToolbar({
     redo,
     selectedFormula,
     selectedValue,
-    setSelectedCellFormula,
-    setSelectedCellValue,
+    setCellFormula,
+    setCellValue,
     undo,
     unmergeSelection,
   } = useXlsxViewerEditing();
@@ -158,31 +158,54 @@ function WorkbookToolbar({
   const [formulaDraft, setFormulaDraft] = React.useState("");
   const [valueDraft, setValueDraft] = React.useState("");
   const [namedRangeDraft, setNamedRangeDraft] = React.useState("");
+  const [focusedField, setFocusedField] = React.useState<"formula" | "value" | null>(null);
+  const formulaEditCellRef = React.useRef<typeof activeCell>(null);
+  const valueEditCellRef = React.useRef<typeof activeCell>(null);
+  const formulaInitialValueRef = React.useRef("");
+  const valueInitialValueRef = React.useRef("");
   const selectionLabel = selectedRangeAddress ?? activeCellAddress ?? "No selection";
 
   React.useEffect(() => {
+    if (focusedField === "formula") {
+      return;
+    }
     setFormulaDraft(selectedFormula);
-  }, [selectedFormula, activeCellAddress]);
+  }, [selectedFormula, activeCellAddress, focusedField]);
 
   React.useEffect(() => {
+    if (focusedField === "value") {
+      return;
+    }
     setValueDraft(selectedValue);
-  }, [selectedValue, activeCellAddress]);
+  }, [selectedValue, activeCellAddress, focusedField]);
 
-  const commitFormula = React.useCallback(() => {
-    if (!hasActiveCell) {
+  const commitFormula = React.useCallback((targetCell?: typeof activeCell | null, nextFormula?: string) => {
+    const resolvedCell = targetCell ?? formulaEditCellRef.current;
+    const resolvedFormula = nextFormula ?? formulaDraft;
+    if (!resolvedCell) {
       return;
     }
 
-    setSelectedCellFormula(formulaDraft);
-  }, [formulaDraft, hasActiveCell, setSelectedCellFormula]);
-
-  const commitValue = React.useCallback(() => {
-    if (!hasActiveCell) {
+    if (resolvedFormula === formulaInitialValueRef.current) {
       return;
     }
 
-    setSelectedCellValue(valueDraft);
-  }, [hasActiveCell, setSelectedCellValue, valueDraft]);
+    setCellFormula(resolvedCell, resolvedFormula);
+  }, [formulaDraft, setCellFormula]);
+
+  const commitValue = React.useCallback((targetCell?: typeof activeCell | null, nextValue?: string) => {
+    const resolvedCell = targetCell ?? valueEditCellRef.current;
+    const resolvedValue = nextValue ?? valueDraft;
+    if (!resolvedCell) {
+      return;
+    }
+
+    if (resolvedValue === valueInitialValueRef.current) {
+      return;
+    }
+
+    setCellValue(resolvedCell, resolvedValue);
+  }, [setCellValue, valueDraft]);
 
   const handleDefineNamedRange = React.useCallback(() => {
     const nextName = namedRangeDraft.trim();
@@ -284,10 +307,10 @@ function WorkbookToolbar({
                 Redo
               </MenubarItem>
               <MenubarSeparator />
-              <MenubarItem disabled={!hasActiveCell || isReadOnly} onClick={commitValue}>
+              <MenubarItem disabled={!hasActiveCell || isReadOnly} onClick={() => commitValue()}>
                 Apply Cell Value
               </MenubarItem>
-              <MenubarItem disabled={!hasActiveCell || isReadOnly} onClick={commitFormula}>
+              <MenubarItem disabled={!hasActiveCell || isReadOnly} onClick={() => commitFormula()}>
                 Apply Formula
               </MenubarItem>
             </MenubarContent>
@@ -373,12 +396,21 @@ function WorkbookToolbar({
             <Input className="font-mono text-xs" readOnly value={activeCellAddress ?? ""} />
             <Input
               disabled={!hasActiveCell || isReadOnly}
-              onBlur={commitFormula}
+              onBlur={() => {
+                commitFormula();
+                setFocusedField(null);
+              }}
               onChange={(event) => setFormulaDraft(event.target.value)}
+              onFocus={() => {
+                formulaEditCellRef.current = activeCell;
+                formulaInitialValueRef.current = formulaDraft;
+                setFocusedField("formula");
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
                   commitFormula();
+                  setFocusedField(null);
                 }
               }}
               placeholder="Formula"
@@ -387,12 +419,21 @@ function WorkbookToolbar({
             <Input className="font-mono text-xs" readOnly value={selectedRangeAddress ?? activeCellAddress ?? ""} />
             <Input
               disabled={!hasActiveCell || isReadOnly}
-              onBlur={commitValue}
+              onBlur={() => {
+                commitValue();
+                setFocusedField(null);
+              }}
               onChange={(event) => setValueDraft(event.target.value)}
+              onFocus={() => {
+                valueEditCellRef.current = activeCell;
+                valueInitialValueRef.current = valueDraft;
+                setFocusedField("value");
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
                   commitValue();
+                  setFocusedField(null);
                 }
               }}
               placeholder="Value"

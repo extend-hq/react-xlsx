@@ -19,6 +19,7 @@ const MIN_COL_WIDTH_PX = 30;
 const MIN_ROW_HEIGHT_PX = 16;
 const HISTORY_LIMIT = 100;
 const INTERNAL_CLIPBOARD_MIME = "application/x-react-xlsx-range+json";
+const DEFAULT_DEFER_LOADING_ABOVE_BYTES = 0;
 
 type SnapshotHistoryEntry = {
   kind: "snapshot";
@@ -334,8 +335,7 @@ function parseClipboardText(text: string): string[][] {
   return rows.map((row) => row.split("\t"));
 }
 
-async function loadWorkbook({ file, src }: UseXlsxViewerControllerOptions): Promise<Workbook> {
-  const wasmModule = await getSheetsWasmModule();
+async function resolveWorkbookBuffer({ file, src }: UseXlsxViewerControllerOptions): Promise<ArrayBuffer> {
   let buffer: ArrayBuffer;
 
   if (file) {
@@ -350,6 +350,11 @@ async function loadWorkbook({ file, src }: UseXlsxViewerControllerOptions): Prom
     throw new Error("Either `file` or `src` must be provided.");
   }
 
+  return buffer;
+}
+
+async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<Workbook> {
+  const wasmModule = await getSheetsWasmModule();
   const workbook = wasmModule.Workbook.fromBytes(new Uint8Array(buffer));
   let totalFormulas = 0;
 
@@ -413,7 +418,7 @@ function downloadUrl(src: string, fileName: string) {
 }
 
 export function useXlsxViewerController(options: UseXlsxViewerControllerOptions): XlsxViewerController {
-  const { file, fileName, readOnly = false, src } = options;
+  const { deferLoadingAboveBytes = DEFAULT_DEFER_LOADING_ABOVE_BYTES, file, fileName, readOnly = false, src } = options;
   const [isLoading, setIsLoading] = React.useState(Boolean(file ?? src));
   const [error, setError] = React.useState<Error | null>(null);
   const [workbook, setWorkbook] = React.useState<Workbook | null>(null);
@@ -427,7 +432,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const redoStackRef = React.useRef<HistoryEntry[]>([]);
   const isApplyingHistoryRef = React.useRef(false);
   const [historyRevision, setHistoryRevision] = React.useState(0);
+  const deferredBufferRef = React.useRef<ArrayBuffer | null>(null);
+  const [deferredLoadFileSize, setDeferredLoadFileSize] = React.useState<number | null>(null);
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
+  const shouldDeferLoading = deferLoadingAboveBytes > 0;
 
   const refreshWorkbookState = React.useCallback((targetWorkbook: Workbook) => {
     setSheets(buildSheetList(targetWorkbook));
@@ -440,6 +448,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setSheets([]);
       setError(null);
       setIsLoading(false);
+      deferredBufferRef.current = null;
+      setDeferredLoadFileSize(null);
       setActiveSheetIndexState(0);
       setActiveCell(null);
       setSelection(null);
@@ -454,6 +464,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     let isCurrent = true;
     setIsLoading(true);
     setError(null);
+    deferredBufferRef.current = null;
+    setDeferredLoadFileSize(null);
     setActiveSheetIndexState(0);
     setActiveCell(null);
     setSelection(null);
@@ -463,8 +475,22 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setHistoryRevision(0);
     setRevision(0);
 
-    void loadWorkbook({ file, src })
-      .then((nextWorkbook) => {
+    void resolveWorkbookBuffer({ file, src })
+      .then(async (buffer) => {
+        if (!isCurrent) {
+          return;
+        }
+
+        if (shouldDeferLoading && buffer.byteLength > deferLoadingAboveBytes) {
+          deferredBufferRef.current = buffer;
+          setDeferredLoadFileSize(buffer.byteLength);
+          setWorkbook(null);
+          setSheets([]);
+          setIsLoading(false);
+          return;
+        }
+
+        const nextWorkbook = await parseWorkbookBuffer(buffer);
         if (!isCurrent) {
           return;
         }
@@ -487,7 +513,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     return () => {
       isCurrent = false;
     };
-  }, [file, src]);
+  }, [deferLoadingAboveBytes, file, shouldDeferLoading, src]);
 
   const activeSheet = sheets[activeSheetIndex] ?? null;
 
@@ -505,6 +531,32 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return index;
     });
   }, [sheets.length]);
+
+  const continueDeferredLoad = React.useCallback(() => {
+    const deferredBuffer = deferredBufferRef.current;
+    if (!deferredBuffer) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    void parseWorkbookBuffer(deferredBuffer)
+      .then((nextWorkbook) => {
+        deferredBufferRef.current = null;
+        setDeferredLoadFileSize(null);
+        setWorkbook(nextWorkbook);
+        setSheets(buildSheetList(nextWorkbook));
+        setIsLoading(false);
+      })
+      .catch((nextError: unknown) => {
+        deferredBufferRef.current = null;
+        setDeferredLoadFileSize(null);
+        setWorkbook(null);
+        setSheets([]);
+        setError(nextError instanceof Error ? nextError : new Error("Could not load workbook."));
+        setIsLoading(false);
+      });
+  }, []);
 
   const getActiveWorksheet = React.useCallback(() => {
     if (!workbook || !activeSheet) {
@@ -685,6 +737,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const selectedRangeAddress = React.useMemo(() => (selection ? rangeToA1(selection) : null), [selection]);
   const selectedValue = React.useMemo(() => getCellDisplayValue(activeCell), [activeCell, getCellDisplayValue, revision]);
   const selectedFormula = React.useMemo(() => getCellFormula(activeCell), [activeCell, getCellFormula, revision]);
+  const isLoadDeferred = deferredLoadFileSize !== null;
+  const canLoadDeferred = !isLoading && isLoadDeferred;
   const canUndo = !readOnly && undoStackRef.current.length > 0;
   const canRedo = !readOnly && redoStackRef.current.length > 0;
 
@@ -1448,10 +1502,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       canRedo,
       canDownload: Boolean(file ?? src),
       canExport: Boolean(workbook),
+      canLoadDeferred,
       canUndo,
       clearSelectedCells,
       clearSelection,
+      continueDeferredLoad,
       copySelectionToClipboard,
+      deferredLoadFileSize,
       defineNamedRange,
       displayFileName,
       download,
@@ -1464,6 +1521,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       getCellDisplayValue,
       getCellFormula,
       getActiveWorksheet,
+      isLoadDeferred,
       isLoading,
       mergeSelection,
       pasteFromClipboard,
@@ -1499,10 +1557,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       activeSheet,
       activeSheetIndex,
       addSheet,
+      canLoadDeferred,
       canRedo,
       canUndo,
       clearSelectedCells,
+      continueDeferredLoad,
       copySelectionToClipboard,
+      deferredLoadFileSize,
       defineNamedRange,
       displayFileName,
       download,
@@ -1516,6 +1577,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       getCellFormula,
       getActiveWorksheet,
       historyRevision,
+      isLoadDeferred,
       isLoading,
       mergeSelection,
       pasteFromClipboard,

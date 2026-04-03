@@ -770,6 +770,79 @@ function renderEmpty(emptyState: XlsxViewerProps["emptyState"], palette: ViewerP
   );
 }
 
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function renderDeferredLoad(
+  controller: XlsxViewerController,
+  palette: ViewerPalette
+) {
+  return (
+    <div
+      style={{
+        alignItems: "center",
+        color: palette.text,
+        display: "flex",
+        height: "100%",
+        justifyContent: "center",
+        padding: 24
+      }}
+    >
+      <div
+        style={{
+          backgroundColor: palette.surface,
+          border: `1px solid ${palette.strongBorder}`,
+          borderRadius: 12,
+          boxShadow: palette.shadow,
+          maxWidth: 420,
+          padding: 20,
+          width: "100%"
+        }}
+      >
+        <div style={{ fontSize: 16, fontWeight: 600 }}>Large workbook detected</div>
+        <div style={{ color: palette.mutedText, fontSize: 13, lineHeight: 1.5, marginTop: 8 }}>
+          This workbook is {formatBytes(controller.deferredLoadFileSize ?? 0)}. Loading it immediately can block the main thread and freeze the page.
+        </div>
+        <div style={{ color: palette.mutedText, fontSize: 13, lineHeight: 1.5, marginTop: 8 }}>
+          Best practice is to gate large files or move parsing into a worker. You can still load it manually below.
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+          <button
+            onClick={controller.continueDeferredLoad}
+            style={{
+              background: palette.buttonSurface,
+              border: `1px solid ${palette.strongBorder}`,
+              borderRadius: 8,
+              color: palette.buttonText,
+              cursor: controller.canLoadDeferred ? "pointer" : "default",
+              fontSize: 12,
+              fontWeight: 600,
+              opacity: controller.canLoadDeferred ? 1 : 0.6,
+              padding: "8px 12px"
+            }}
+            type="button"
+          >
+            Load Anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function resolveSelectionColors({
   palette,
   selectionColor,
@@ -998,12 +1071,16 @@ function XlsxGrid({
     activeCell,
     activeSheet,
     activeSheetIndex,
+    canLoadDeferred,
     clearSelectedCells,
+    continueDeferredLoad,
+    deferredLoadFileSize,
     error,
     fillSelection,
     getActiveWorksheet,
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
+    isLoadDeferred,
     isLoading,
     copySelectionToClipboard,
     pasteFromClipboard,
@@ -1917,6 +1994,10 @@ function XlsxGrid({
 
   if (isLoading) {
     return <>{renderLoading(loadingComponent, loadingState, palette)}</>;
+  }
+
+  if (isLoadDeferred) {
+    return <>{renderDeferredLoad({ ...controller, canLoadDeferred, continueDeferredLoad, deferredLoadFileSize, isLoadDeferred }, palette)}</>;
   }
 
   if (error) {

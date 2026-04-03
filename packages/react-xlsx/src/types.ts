@@ -31,6 +31,7 @@ export interface XlsxClipboardData {
 }
 
 export interface UseXlsxViewerControllerOptions {
+  deferLoadingAboveBytes?: number;
   file?: ArrayBuffer;
   fileName?: string;
   readOnly?: boolean;
@@ -44,11 +45,14 @@ export interface XlsxViewerController {
   activeSheetIndex: number;
   canDownload: boolean;
   canExport: boolean;
+  canLoadDeferred: boolean;
   canRedo: boolean;
   canUndo: boolean;
   clearSelectedCells: () => void;
   clearSelection: () => void;
+  continueDeferredLoad: () => void;
   copySelectionToClipboard: () => Promise<boolean>;
+  deferredLoadFileSize: number | null;
   defineNamedRange: (name: string, range?: XlsxCellRange | null) => void;
   displayFileName: string;
   download: () => void;
@@ -60,6 +64,7 @@ export interface XlsxViewerController {
   getClipboardData: () => XlsxClipboardData | null;
   getCellDisplayValue: (cell?: XlsxCellAddress | null) => string;
   getCellFormula: (cell?: XlsxCellAddress | null) => string;
+  isLoadDeferred: boolean;
   isLoading: boolean;
   mergeSelection: () => void;
   removeActiveSheet: () => void;
