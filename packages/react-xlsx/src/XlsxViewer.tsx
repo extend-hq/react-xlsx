@@ -1637,6 +1637,8 @@ function GridRow({
   trailingSpacerWidth,
   visibleCols
 }: GridRowProps) {
+  const gutterSeparatorShadow = `inset -1px 0 0 ${palette.border}, inset 0 -1px 0 ${palette.border}`;
+
   return (
     <tr data-xlsx-row={actualRow} style={{ height: rowHeight }}>
       <td
@@ -1644,8 +1646,8 @@ function GridRow({
         style={{
           backgroundColor: rowSelected ? "var(--xlsx-selection-header)" : palette.rowHeaderSurface,
           borderBottom: "none",
-          borderRight: `1px solid ${palette.strongBorder}`,
-          boxShadow: `1px 0 0 ${palette.strongBorder}, inset 0 -1px 0 ${palette.border}`,
+          borderRight: "none",
+          boxShadow: gutterSeparatorShadow,
           color: palette.mutedText,
           fontSize: "11px",
           left: 0,
@@ -3253,10 +3255,12 @@ function XlsxGrid({
     selectionHeaderColor
   });
   const selectionBorderWidth = 1.5;
+  const gutterSeparatorShadow = `inset -1px 0 0 ${palette.border}, inset 0 -1px 0 ${palette.border}`;
   const headerCellStyle: React.CSSProperties = {
     backgroundColor: palette.headerSurface,
-    borderBottom: `2px solid ${palette.strongBorder}`,
-    borderRight: `1px solid ${palette.strongBorder}`,
+    borderBottom: "none",
+    borderRight: "none",
+    boxShadow: gutterSeparatorShadow,
     color: palette.mutedText,
     fontSize: "11px",
     fontWeight: 600,
@@ -3895,7 +3899,6 @@ function XlsxGrid({
                   style={{
                     ...headerCellStyle,
                     backgroundColor: palette.headerSurface,
-                    boxShadow: `1px 0 0 ${palette.strongBorder}`,
                     left: 0,
                     width: ROW_HEADER_WIDTH,
                     zIndex: 60
