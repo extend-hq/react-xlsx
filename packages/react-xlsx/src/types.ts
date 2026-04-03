@@ -5,17 +5,35 @@ export interface XlsxThemePalette {
   colorsByIndex: Record<number, string>;
 }
 
+export interface XlsxResolvedCellStyle {
+  [key: string]: unknown;
+  alignment?: Record<string, unknown>;
+  border?: Record<string, Record<string, unknown>>;
+  fill?: Record<string, unknown>;
+  font?: Record<string, unknown>;
+}
+
+export interface XlsxTableStyleDefinition {
+  [elementType: string]: XlsxResolvedCellStyle;
+}
+
 export interface XlsxSheetData {
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
+  colStyleIds: Record<number, number>;
   name: string;
   defaultColWidthPx: number;
   defaultRowHeightPx: number;
+  hasHorizontalMerges: boolean;
+  hasVerticalMerges: boolean;
   maxUsedCol: number;
   maxUsedRow: number;
   rowCount: number;
   colCount: number;
   rowHeightOverridesPx: Record<number, number>;
+  rowStyleIds: Record<number, number>;
+  styleById: Record<number, XlsxResolvedCellStyle>;
+  tableStyleByName: Record<string, XlsxTableStyleDefinition>;
   visibleRows: number[];
   visibleCols: number[];
   colWidths: number[];

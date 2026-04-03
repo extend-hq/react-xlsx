@@ -1,5 +1,13 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import type { XlsxImage, XlsxImageRect, XlsxImageResizeHandlePosition, XlsxShape, XlsxThemePalette } from "./types";
+import type {
+  XlsxImage,
+  XlsxImageRect,
+  XlsxImageResizeHandlePosition,
+  XlsxResolvedCellStyle,
+  XlsxShape,
+  XlsxTableStyleDefinition,
+  XlsxThemePalette
+} from "./types";
 
 const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -12,6 +20,8 @@ const DRAWING_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.draw
 const EMU_PER_PIXEL = 9525;
 const MIN_COL_WIDTH_PX = 30;
 const MIN_ROW_HEIGHT_PX = 16;
+const DEFAULT_COL_WIDTH_EMU = 64 * EMU_PER_PIXEL;
+const DEFAULT_ROW_HEIGHT_EMU = 20 * EMU_PER_PIXEL;
 
 type ArchiveEntries = Record<string, Uint8Array>;
 
@@ -35,9 +45,13 @@ type WorkbookSheetInfo = {
 type WorkbookSheetState = {
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
+  colStyleIds: Record<number, number>;
   defaultColWidthPx: number;
   defaultRowHeightPx: number;
+  hasHorizontalMerges: boolean;
+  hasVerticalMerges: boolean;
   rowHeightOverridesPx: Record<number, number>;
+  rowStyleIds: Record<number, number>;
   showGridLines: boolean;
 };
 
@@ -102,6 +116,8 @@ export type WorkbookImageAssets = {
   shapesByWorkbookSheetIndex: XlsxShape[][];
   sheetStatesByWorkbookSheetIndex: Array<WorkbookSheetState | null>;
   sheetOrigins: Array<WorkbookImageSheetOrigin | null>;
+  styleById: Record<number, XlsxResolvedCellStyle>;
+  tableStyleByName: Record<string, XlsxTableStyleDefinition>;
   themePalette: XlsxThemePalette;
 };
 
@@ -202,6 +218,39 @@ function serializeXml(document: XMLDocument) {
 function readArchiveText(archive: ArchiveEntries, path: string) {
   const entry = archive[path];
   return entry ? strFromU8(entry) : null;
+}
+
+function parseColumnReference(reference: string) {
+  let value = 0;
+  for (const character of reference.toUpperCase()) {
+    if (character < "A" || character > "Z") {
+      return null;
+    }
+    value = value * 26 + (character.charCodeAt(0) - 64);
+  }
+  return value > 0 ? value - 1 : null;
+}
+
+function parseA1CellReference(reference: string) {
+  const match = /^\$?([A-Za-z]+)\$?(\d+)$/.exec(reference.trim());
+  if (!match) {
+    return null;
+  }
+
+  const col = parseColumnReference(match[1] ?? "");
+  const row = Number(match[2] ?? Number.NaN) - 1;
+  if (col === null || !Number.isFinite(row) || row < 0) {
+    return null;
+  }
+
+  return { col, row };
+}
+
+function parseA1RangeReference(reference: string) {
+  const [startRef, endRef] = reference.split(":");
+  const start = parseA1CellReference(startRef ?? "");
+  const end = parseA1CellReference(endRef ?? startRef ?? "");
+  return start && end ? { end, start } : null;
 }
 
 function isElementNode(node: Node | null | undefined): node is Element {
@@ -426,6 +475,280 @@ function parseWorkbookTheme(archive: ArchiveEntries): ThemeState {
   };
 }
 
+function parseSpreadsheetColor(node: Element | null) {
+  if (!node) {
+    return undefined;
+  }
+
+  const color: Record<string, unknown> = {};
+  const rgb = node.getAttribute("rgb");
+  const theme = node.getAttribute("theme");
+  const tint = node.getAttribute("tint");
+  const indexed = node.getAttribute("indexed");
+  if (rgb) {
+    color.rgb = normalizeHexColor(rgb);
+  }
+  if (theme !== null) {
+    color.theme = Number(theme);
+  }
+  if (tint !== null) {
+    color.tint = Number(tint);
+  }
+  if (indexed !== null) {
+    color.indexed = Number(indexed);
+  }
+
+  return Object.keys(color).length > 0 ? color : undefined;
+}
+
+function hasEnabledSpreadsheetFlag(node: Element | null) {
+  if (!node) {
+    return false;
+  }
+
+  const value = node.getAttribute("val");
+  return value === null || (value !== "0" && value !== "false");
+}
+
+function parseSpreadsheetFont(node: Element | null): XlsxResolvedCellStyle["font"] {
+  if (!node) {
+    return undefined;
+  }
+
+  const font: Record<string, unknown> = {};
+  const size = getFirstChild(node, "sz")?.getAttribute("val");
+  const name = getFirstChild(node, "name")?.getAttribute("val");
+  const color = parseSpreadsheetColor(getFirstChild(node, "color"));
+  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "b"))) {
+    font.bold = true;
+  }
+  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "i"))) {
+    font.italic = true;
+  }
+  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "strike"))) {
+    font.strikethrough = true;
+  }
+  if (getFirstChild(node, "u")) {
+    font.underline = getFirstChild(node, "u")?.getAttribute("val") ?? "single";
+  }
+  if (size !== null && size !== undefined) {
+    font.size = Number(size);
+  }
+  if (name) {
+    font.name = name;
+  }
+  if (color) {
+    font.color = color;
+  }
+
+  return Object.keys(font).length > 0 ? font : undefined;
+}
+
+function parseSpreadsheetFill(node: Element | null): XlsxResolvedCellStyle["fill"] {
+  if (!node) {
+    return undefined;
+  }
+
+  const patternFill = getFirstChild(node, "patternFill");
+  if (!patternFill) {
+    return undefined;
+  }
+
+  const patternType = patternFill.getAttribute("patternType") ?? "none";
+  const foreground = parseSpreadsheetColor(getFirstChild(patternFill, "fgColor"));
+  const background = parseSpreadsheetColor(getFirstChild(patternFill, "bgColor"));
+  if (patternType === "solid" && foreground) {
+    return {
+      color: foreground,
+      fillType: "solid"
+    };
+  }
+  if (patternType !== "none" && patternType !== "gray125" && (foreground || background)) {
+    return {
+      background,
+      fillType: "pattern",
+      foreground,
+      patternType
+    };
+  }
+
+  return undefined;
+}
+
+function parseSpreadsheetBorderEdge(node: Element | null) {
+  if (!node) {
+    return undefined;
+  }
+
+  const style = node.getAttribute("style");
+  const color = parseSpreadsheetColor(getFirstChild(node, "color"));
+  if (!style || style === "none") {
+    return undefined;
+  }
+
+  return {
+    color,
+    style
+  };
+}
+
+function parseSpreadsheetBorder(node: Element | null): XlsxResolvedCellStyle["border"] {
+  if (!node) {
+    return undefined;
+  }
+
+  const border: Record<string, Record<string, unknown>> = {};
+  (["top", "right", "bottom", "left", "horizontal", "vertical"] as const).forEach((edge) => {
+    const parsedEdge = parseSpreadsheetBorderEdge(getFirstChild(node, edge));
+    if (parsedEdge) {
+      border[edge] = parsedEdge;
+    }
+  });
+
+  return Object.keys(border).length > 0 ? border : undefined;
+}
+
+function parseSpreadsheetAlignment(node: Element | null): XlsxResolvedCellStyle["alignment"] {
+  if (!node) {
+    return undefined;
+  }
+
+  const alignment: Record<string, unknown> = {};
+  const horizontal = node.getAttribute("horizontal");
+  const vertical = node.getAttribute("vertical");
+  const wrapText = node.getAttribute("wrapText");
+  const indent = node.getAttribute("indent");
+  if (horizontal) {
+    alignment.horizontal = horizontal;
+  }
+  if (vertical) {
+    alignment.vertical = vertical;
+  }
+  if (wrapText !== null) {
+    alignment.wrapText = wrapText === "1";
+  }
+  if (indent !== null) {
+    alignment.indent = Number(indent);
+  }
+
+  return Object.keys(alignment).length > 0 ? alignment : undefined;
+}
+
+function parseDifferentialStyle(node: Element | null): XlsxResolvedCellStyle {
+  if (!node) {
+    return {};
+  }
+
+  const style: XlsxResolvedCellStyle = {};
+  const font = parseSpreadsheetFont(getFirstChild(node, "font"));
+  const fill = parseSpreadsheetFill(getFirstChild(node, "fill"));
+  const border = parseSpreadsheetBorder(getFirstChild(node, "border"));
+  const alignment = parseSpreadsheetAlignment(getFirstChild(node, "alignment"));
+
+  if (font) {
+    style.font = font;
+  }
+  if (fill) {
+    style.fill = fill;
+  }
+  if (border) {
+    style.border = border;
+  }
+  if (alignment) {
+    style.alignment = alignment;
+  }
+
+  return style;
+}
+
+function parseWorkbookStyles(archive: ArchiveEntries) {
+  const xml = readArchiveText(archive, "xl/styles.xml");
+  if (!xml) {
+    return {
+      styleById: {},
+      tableStyleByName: {}
+    };
+  }
+
+  const document = parseXml(xml);
+  if (!document) {
+    return {
+      styleById: {},
+      tableStyleByName: {}
+    };
+  }
+
+  const fontsNode = getFirstDescendant(document, "fonts");
+  const fillsNode = getFirstDescendant(document, "fills");
+  const bordersNode = getFirstDescendant(document, "borders");
+  const cellXfsNode = getFirstDescendant(document, "cellXfs");
+  const dxfsNode = getFirstDescendant(document, "dxfs");
+  const tableStylesNode = getFirstDescendant(document, "tableStyles");
+  if (!cellXfsNode) {
+    return {
+      styleById: {},
+      tableStyleByName: {}
+    };
+  }
+
+  const fonts = getChildElements(fontsNode ?? document.documentElement, "font").map((node) => parseSpreadsheetFont(node));
+  const fills = getChildElements(fillsNode ?? document.documentElement, "fill").map((node) => parseSpreadsheetFill(node));
+  const borders = getChildElements(bordersNode ?? document.documentElement, "border").map((node) => parseSpreadsheetBorder(node));
+  const differentialStyles = getChildElements(dxfsNode ?? document.documentElement, "dxf").map((node) => parseDifferentialStyle(node));
+  const styleById: Record<number, XlsxResolvedCellStyle> = {};
+  const tableStyleByName: Record<string, XlsxTableStyleDefinition> = {};
+
+  getChildElements(cellXfsNode, "xf").forEach((xfNode, index) => {
+    const style: XlsxResolvedCellStyle = {};
+    const fontId = Number(xfNode.getAttribute("fontId") ?? Number.NaN);
+    const fillId = Number(xfNode.getAttribute("fillId") ?? Number.NaN);
+    const borderId = Number(xfNode.getAttribute("borderId") ?? Number.NaN);
+    const alignment = parseSpreadsheetAlignment(getFirstChild(xfNode, "alignment"));
+
+    if (Number.isFinite(fontId) && fonts[fontId]) {
+      style.font = fonts[fontId];
+    }
+    if (Number.isFinite(fillId) && fills[fillId]) {
+      style.fill = fills[fillId];
+    }
+    if (Number.isFinite(borderId) && borders[borderId]) {
+      style.border = borders[borderId];
+    }
+    if (alignment) {
+      style.alignment = alignment;
+    }
+
+    styleById[index] = style;
+  });
+
+  getChildElements(tableStylesNode ?? document.documentElement, "tableStyle").forEach((tableStyleNode) => {
+    const name = tableStyleNode.getAttribute("name");
+    if (!name) {
+      return;
+    }
+
+    const elements: XlsxTableStyleDefinition = {};
+    getChildElements(tableStyleNode, "tableStyleElement").forEach((elementNode) => {
+      const type = elementNode.getAttribute("type");
+      const dxfId = Number(elementNode.getAttribute("dxfId") ?? Number.NaN);
+      if (!type || !Number.isFinite(dxfId)) {
+        return;
+      }
+
+      const differentialStyle = differentialStyles[dxfId];
+      if (differentialStyle) {
+        elements[type] = differentialStyle;
+      }
+    });
+    tableStyleByName[name] = elements;
+  });
+
+  return {
+    styleById,
+    tableStyleByName
+  };
+}
+
 function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetState | null {
   const xml = readArchiveText(archive, path);
   if (!xml) {
@@ -442,6 +765,10 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
   const sheetViewNode = getLocalElements(document, "sheetView")[0] ?? null;
   const rowHeightOverridesPx: Record<number, number> = {};
   const colWidthOverridesPx: Record<number, number> = {};
+  const rowStyleIds: Record<number, number> = {};
+  const colStyleIds: Record<number, number> = {};
+  let hasHorizontalMerges = false;
+  let hasVerticalMerges = false;
 
   const defaultRowHeight = Number(sheetFormatNode?.getAttribute("defaultRowHeight") ?? 15);
   const defaultColWidth = Number(
@@ -453,8 +780,12 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
   getLocalElements(document, "row").forEach((rowNode) => {
     const rowIndex = Number(rowNode.getAttribute("r") ?? 0) - 1;
     const height = Number(rowNode.getAttribute("ht") ?? Number.NaN);
+    const styleId = Number(rowNode.getAttribute("s") ?? Number.NaN);
     if (rowIndex >= 0 && Number.isFinite(height)) {
       rowHeightOverridesPx[rowIndex] = Math.max(MIN_ROW_HEIGHT_PX, Math.round(height * 1.33));
+    }
+    if (rowIndex >= 0 && Number.isFinite(styleId)) {
+      rowStyleIds[rowIndex] = styleId;
     }
 
     getChildElements(rowNode, "c").forEach((cellNode) => {
@@ -471,24 +802,51 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     const min = Number(colNode.getAttribute("min") ?? 0) - 1;
     const max = Number(colNode.getAttribute("max") ?? 0) - 1;
     const width = Number(colNode.getAttribute("width") ?? Number.NaN);
+    const styleId = Number(colNode.getAttribute("style") ?? Number.NaN);
     if (!Number.isFinite(width)) {
+      if (!Number.isFinite(styleId)) {
+        return;
+      }
+    }
+
+    for (let col = min; col <= max; col += 1) {
+      if (col >= 0) {
+        if (Number.isFinite(width)) {
+          const widthPx = Math.max(MIN_COL_WIDTH_PX, Math.round(width * 7 + 5));
+          colWidthOverridesPx[col] = widthPx;
+        }
+        if (Number.isFinite(styleId)) {
+          colStyleIds[col] = styleId;
+        }
+      }
+    }
+  });
+
+  getLocalElements(document, "mergeCell").forEach((mergeNode) => {
+    const reference = mergeNode.getAttribute("ref");
+    const range = reference ? parseA1RangeReference(reference) : null;
+    if (!range) {
       return;
     }
 
-    const widthPx = Math.max(MIN_COL_WIDTH_PX, Math.round(width * 7.5));
-    for (let col = min; col <= max; col += 1) {
-      if (col >= 0) {
-        colWidthOverridesPx[col] = widthPx;
-      }
+    if (range.end.col > range.start.col) {
+      hasHorizontalMerges = true;
+    }
+    if (range.end.row > range.start.row) {
+      hasVerticalMerges = true;
     }
   });
 
   return {
     cachedFormulaValues,
     colWidthOverridesPx,
-    defaultColWidthPx: Math.max(MIN_COL_WIDTH_PX, Math.round(defaultColWidth * 7.5)),
+    colStyleIds,
+    defaultColWidthPx: Math.max(MIN_COL_WIDTH_PX, Math.round(defaultColWidth * 7 + 5)),
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
+    hasHorizontalMerges,
+    hasVerticalMerges,
     rowHeightOverridesPx,
+    rowStyleIds,
     showGridLines: (sheetViewNode?.getAttribute("showGridLines") ?? "1") !== "0"
   };
 }
@@ -783,8 +1141,8 @@ function anchorToRect(anchor: XlsxImage["anchor"]): DrawingRectEmu {
   }
 
   return {
-    cx: Math.max(0, (anchor.to.col - anchor.from.col) * EMU_PER_PIXEL + anchor.to.colOffsetEmu - anchor.from.colOffsetEmu),
-    cy: Math.max(0, (anchor.to.row - anchor.from.row) * EMU_PER_PIXEL + anchor.to.rowOffsetEmu - anchor.from.rowOffsetEmu),
+    cx: Math.max(0, (anchor.to.col - anchor.from.col) * DEFAULT_COL_WIDTH_EMU + anchor.to.colOffsetEmu - anchor.from.colOffsetEmu),
+    cy: Math.max(0, (anchor.to.row - anchor.from.row) * DEFAULT_ROW_HEIGHT_EMU + anchor.to.rowOffsetEmu - anchor.from.rowOffsetEmu),
     x: anchor.from.colOffsetEmu,
     y: anchor.from.rowOffsetEmu
   };
@@ -930,31 +1288,46 @@ function createImageSource(bytes: Uint8Array, mimeType: string, objectUrls: stri
   return `data:${mimeType};base64,${base64}`;
 }
 
-function parseShapeStroke(node: Element, theme: ThemeState): XlsxShape["stroke"] | undefined {
+function isStrokeOnlyGeometry(geometry: string) {
+  return geometry === "line" || geometry === "arc" || geometry === "leftBrace";
+}
+
+function parseShapeStroke(node: Element, styleNode: Element | null, theme: ThemeState): XlsxShape["stroke"] | undefined {
   const lineNode = getFirstDescendant(node, "ln");
-  if (!lineNode) {
+  const lineRefNode = styleNode ? getFirstChild(styleNode, "lnRef") : null;
+  if (!lineNode && !lineRefNode) {
     return undefined;
   }
 
-  if (getFirstChild(lineNode, "noFill")) {
+  if (lineNode && getFirstChild(lineNode, "noFill")) {
     return { none: true };
   }
 
-  const color = resolveFillColor(lineNode, theme);
-  const widthEmu = Number(lineNode.getAttribute("w") ?? 0);
+  const color = resolveFillColor(lineNode, theme)
+    ?? resolveColorValue(Array.from(lineRefNode?.childNodes ?? []).filter(isElementNode)[0] ?? null, theme);
+  const widthEmu = Number(lineNode?.getAttribute("w") ?? 0);
   return {
     color: color?.color,
-    dash: getFirstChild(lineNode, "prstDash")?.getAttribute("val") ?? undefined,
+    dash: getFirstChild(lineNode ?? node, "prstDash")?.getAttribute("val") ?? undefined,
     none: false,
     opacity: color?.opacity,
     widthPx: widthEmu > 0 ? emuToPixels(widthEmu) : undefined
   };
 }
 
-function parseShapeFill(node: Element, styleNode: Element | null, theme: ThemeState): XlsxShape["fill"] | undefined {
+function parseShapeFill(
+  node: Element,
+  styleNode: Element | null,
+  theme: ThemeState,
+  geometry: string
+): XlsxShape["fill"] | undefined {
   const shapePropsNode = getFirstChild(node, "spPr") ?? node;
   const noFillNode = getFirstChild(shapePropsNode, "noFill");
   if (noFillNode) {
+    return { none: true };
+  }
+
+  if (isStrokeOnlyGeometry(geometry)) {
     return { none: true };
   }
 
@@ -1062,9 +1435,11 @@ function parseShapeParagraphs(
       parseShapeTextStyle(getFirstChild(paragraphProps ?? paragraphNode, "defRPr"), theme, defaultFontColor)
     );
     const runs: XlsxShape["paragraphs"][number]["runs"] = [];
+    let sawRenderableChild = false;
 
     Array.from(paragraphNode.childNodes).filter(isElementNode).forEach((child) => {
       if (child.localName === "br") {
+        sawRenderableChild = true;
         runs.push({ text: "\n" });
         return;
       }
@@ -1072,6 +1447,7 @@ function parseShapeParagraphs(
         return;
       }
 
+      sawRenderableChild = true;
       const text = getFirstChild(child, "t")?.textContent ?? "";
       const runProps = getFirstChild(child, "rPr");
       const runStyle = mergeShapeTextStyles(
@@ -1091,7 +1467,19 @@ function parseShapeParagraphs(
     });
 
     if (runs.length === 0) {
-      return;
+      if (!sawRenderableChild && !getFirstChild(paragraphNode, "endParaRPr")) {
+        return;
+      }
+
+      runs.push({
+        bold: inheritedStyle.bold,
+        color: inheritedStyle.color,
+        fontFamily: inheritedStyle.fontFamily,
+        fontSizePt: inheritedStyle.fontSizePt,
+        italic: inheritedStyle.italic,
+        text: " ",
+        underline: inheritedStyle.underline
+      });
     }
 
     paragraphs.push({
@@ -1203,7 +1591,7 @@ function parseShapeNode(
   return {
     anchor: transform.anchor,
     description: nonVisualProps?.getAttribute("descr") ?? undefined,
-    fill: parseShapeFill(shapeNode, styleNode, theme),
+    fill: parseShapeFill(shapeNode, styleNode, theme, geometry),
     flipH: transform.flipH,
     flipV: transform.flipV,
     geometry,
@@ -1215,7 +1603,7 @@ function parseShapeNode(
     sheetIndex: workbookSheetIndex,
     svgPath: customPath?.path,
     svgViewBox: customPath?.viewBox,
-    stroke: parseShapeStroke(shapeNode, theme),
+    stroke: parseShapeStroke(shapeNode, styleNode, theme),
     textBox: parseTextBox(shapeNode),
     workbookSheetIndex,
     zIndex
@@ -1268,6 +1656,20 @@ function parseAnchorContents(
     }
 
     if (child.localName === "sp") {
+      shapes.push(parseShapeNode(
+        child,
+        fallbackAnchor,
+        drawingRelationships,
+        theme,
+        workbookSheetIndex,
+        `shape-${workbookSheetIndex}-${ids.shape++}`,
+        ids.z++,
+        parentGroup
+      ));
+      return;
+    }
+
+    if (child.localName === "cxnSp") {
       shapes.push(parseShapeNode(
         child,
         fallbackAnchor,
@@ -1406,6 +1808,7 @@ export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets
   const workbookSheets = parseWorkbookSheets(archive);
   const theme = parseWorkbookTheme(archive);
   const themePalette = buildThemePalette(theme);
+  const { styleById, tableStyleByName } = parseWorkbookStyles(archive);
   const objectUrls: string[] = [];
   const imagesByWorkbookSheetIndex: XlsxImage[][] = [];
   const shapesByWorkbookSheetIndex: XlsxShape[][] = [];
@@ -1466,6 +1869,8 @@ export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets
     shapesByWorkbookSheetIndex,
     sheetOrigins,
     sheetStatesByWorkbookSheetIndex,
+    styleById,
+    tableStyleByName,
     themePalette
   };
 }
