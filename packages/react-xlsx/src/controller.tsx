@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { Workbook } from "@dukelib/sheets-wasm";
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { getSheetsWasmModule } from "./wasm";
 import type {
   UseXlsxViewerControllerOptions,
@@ -291,6 +292,23 @@ function cloneBytes(bytes: Uint8Array): Uint8Array {
   return nextBytes;
 }
 
+function sanitizeSavedWorkbookBytes(bytes: Uint8Array): Uint8Array {
+  try {
+    const archive = unzipSync(bytes);
+    const stylesEntry = archive["xl/styles.xml"];
+    if (stylesEntry) {
+      const stylesXml = strFromU8(stylesEntry)
+        .replace(/&amp;quot;/g, "&quot;")
+        .replace(/&amp;apos;/g, "&apos;");
+      archive["xl/styles.xml"] = strToU8(stylesXml);
+    }
+
+    return zipSync(archive, { level: 6 });
+  } catch {
+    return cloneBytes(bytes);
+  }
+}
+
 function pushHistoryEntry(stack: HistoryEntry[], entry: HistoryEntry) {
   stack.push(entry);
   if (stack.length > HISTORY_LIMIT) {
@@ -300,6 +318,30 @@ function pushHistoryEntry(stack: HistoryEntry[], entry: HistoryEntry) {
 
 function normalizeCellValue(value: unknown) {
   return value ?? "";
+}
+
+function coerceUserEnteredValue(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (trimmed.startsWith("'")) {
+    return trimmed.slice(1);
+  }
+
+  if (/^(true|false)$/i.test(trimmed)) {
+    return trimmed.toLowerCase() === "true";
+  }
+
+  if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(trimmed)) {
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return value;
 }
 
 function applyCellMutationState(
@@ -353,7 +395,10 @@ async function resolveWorkbookBuffer({ file, src }: UseXlsxViewerControllerOptio
   return buffer;
 }
 
-async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<Workbook> {
+async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<{
+  shouldAutoCalculate: boolean;
+  workbook: Workbook;
+}> {
   const wasmModule = await getSheetsWasmModule();
   const workbook = wasmModule.Workbook.fromBytes(new Uint8Array(buffer));
   let totalFormulas = 0;
@@ -362,11 +407,15 @@ async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<Workbook> {
     totalFormulas += workbook.getSheet(index).formulaCount;
   }
 
-  if (totalFormulas <= FORMULA_COUNT_THRESHOLD) {
+  const shouldAutoCalculate = totalFormulas <= FORMULA_COUNT_THRESHOLD;
+  if (shouldAutoCalculate) {
     workbook.calculate();
   }
 
-  return workbook;
+  return {
+    shouldAutoCalculate,
+    workbook
+  };
 }
 
 function downloadArrayBuffer(file: ArrayBuffer, fileName: string) {
@@ -432,6 +481,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const redoStackRef = React.useRef<HistoryEntry[]>([]);
   const isApplyingHistoryRef = React.useRef(false);
   const [historyRevision, setHistoryRevision] = React.useState(0);
+  const [shouldAutoCalculate, setShouldAutoCalculate] = React.useState(false);
   const deferredBufferRef = React.useRef<ArrayBuffer | null>(null);
   const [deferredLoadFileSize, setDeferredLoadFileSize] = React.useState<number | null>(null);
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
@@ -457,6 +507,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       undoStackRef.current = [];
       redoStackRef.current = [];
       setHistoryRevision(0);
+      setShouldAutoCalculate(false);
       setRevision(0);
       return;
     }
@@ -473,6 +524,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     undoStackRef.current = [];
     redoStackRef.current = [];
     setHistoryRevision(0);
+    setShouldAutoCalculate(false);
     setRevision(0);
 
     void resolveWorkbookBuffer({ file, src })
@@ -490,13 +542,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           return;
         }
 
-        const nextWorkbook = await parseWorkbookBuffer(buffer);
+        const nextParsedWorkbook = await parseWorkbookBuffer(buffer);
         if (!isCurrent) {
           return;
         }
 
-        setWorkbook(nextWorkbook);
-        setSheets(buildSheetList(nextWorkbook));
+        setWorkbook(nextParsedWorkbook.workbook);
+        setSheets(buildSheetList(nextParsedWorkbook.workbook));
+        setShouldAutoCalculate(nextParsedWorkbook.shouldAutoCalculate);
         setIsLoading(false);
       })
       .catch((nextError: unknown) => {
@@ -506,6 +559,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         setWorkbook(null);
         setSheets([]);
+        setShouldAutoCalculate(false);
         setError(nextError instanceof Error ? nextError : new Error("Could not load workbook."));
         setIsLoading(false);
       });
@@ -541,11 +595,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setIsLoading(true);
     setError(null);
     void parseWorkbookBuffer(deferredBuffer)
-      .then((nextWorkbook) => {
+      .then((nextParsedWorkbook) => {
         deferredBufferRef.current = null;
         setDeferredLoadFileSize(null);
-        setWorkbook(nextWorkbook);
-        setSheets(buildSheetList(nextWorkbook));
+        setWorkbook(nextParsedWorkbook.workbook);
+        setSheets(buildSheetList(nextParsedWorkbook.workbook));
+        setShouldAutoCalculate(nextParsedWorkbook.shouldAutoCalculate);
         setIsLoading(false);
       })
       .catch((nextError: unknown) => {
@@ -553,10 +608,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         setDeferredLoadFileSize(null);
         setWorkbook(null);
         setSheets([]);
+        setShouldAutoCalculate(false);
         setError(nextError instanceof Error ? nextError : new Error("Could not load workbook."));
         setIsLoading(false);
       });
   }, []);
+
+  const maybeRecalculateWorkbook = React.useCallback((targetWorkbook: Workbook) => {
+    if (!shouldAutoCalculate) {
+      return;
+    }
+
+    targetWorkbook.calculate();
+  }, [shouldAutoCalculate]);
 
   const getActiveWorksheet = React.useCallback(() => {
     if (!workbook || !activeSheet) {
@@ -751,7 +815,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       kind: "snapshot",
       activeCell,
       activeSheetIndex,
-      bytes: cloneBytes(workbook.saveXlsxBytes()),
+      bytes: sanitizeSavedWorkbookBytes(workbook.saveXlsxBytes()),
       selection
     };
   }, [activeCell, activeSheetIndex, selection, workbook]);
@@ -799,7 +863,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     isApplyingHistoryRef.current = true;
     applyCellMutationState(worksheet, entry.cell, targetState);
-    workbook.calculate();
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
 
     const nextActiveCell = direction === "undo" ? entry.activeCellBefore : entry.activeCellAfter;
@@ -811,7 +875,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSelection(nextSelection);
     selectionAnchorRef.current = nextSelection ? normalizeRange(nextSelection).start : nextActiveCell;
     isApplyingHistoryRef.current = false;
-  }, [refreshWorkbookState, sheets, workbook]);
+  }, [maybeRecalculateWorkbook, refreshWorkbookState, sheets, workbook]);
 
   const applyRangeEditHistoryEntry = React.useCallback((
     entry: RangeEditHistoryEntry,
@@ -828,7 +892,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     for (const mutation of entry.mutations) {
       applyCellMutationState(worksheet, mutation.cell, direction === "undo" ? mutation.before : mutation.after);
     }
-    workbook.calculate();
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
 
     const nextActiveCell = direction === "undo" ? entry.activeCellBefore : entry.activeCellAfter;
@@ -840,7 +904,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSelection(nextSelection);
     selectionAnchorRef.current = nextSelection ? normalizeRange(nextSelection).start : nextActiveCell;
     isApplyingHistoryRef.current = false;
-  }, [refreshWorkbookState, sheets, workbook]);
+  }, [maybeRecalculateWorkbook, refreshWorkbookState, sheets, workbook]);
 
   const recordHistoryBeforeMutation = React.useCallback(() => {
     if (isApplyingHistoryRef.current) {
@@ -919,7 +983,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    downloadBytes(workbook.saveXlsxBytes(), `${fileStem(displayFileName)}.xlsx`, XLSX_MIME_TYPE);
+    downloadBytes(sanitizeSavedWorkbookBytes(workbook.saveXlsxBytes()), `${fileStem(displayFileName)}.xlsx`, XLSX_MIME_TYPE);
   }, [displayFileName, workbook]);
 
   const exportCsv = React.useCallback(() => {
@@ -1016,13 +1080,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       }
     }
 
-    workbook.calculate();
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     recordRangeEditHistory(mutations, normalized, activeCell ?? normalized.start);
   }, [
     activeCell,
     captureCellMutationState,
     getActiveWorksheet,
+    maybeRecalculateWorkbook,
     readOnly,
     recordRangeEditHistory,
     refreshWorkbookState,
@@ -1041,11 +1106,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    worksheet.setCell(cellAddressToA1(cell), value);
-    workbook.calculate();
+    const nextValue = coerceUserEnteredValue(value);
+    worksheet.setCell(cellAddressToA1(cell), nextValue);
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
-    recordCellEditHistory(cell, before, { formula: null, value });
-  }, [captureCellMutationState, getActiveWorksheet, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
+    recordCellEditHistory(cell, before, { formula: null, value: nextValue });
+  }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
   const setCellFormula = React.useCallback((cell: XlsxCellAddress, formula: string) => {
     const worksheet = getActiveWorksheet();
@@ -1064,13 +1130,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     } else {
       worksheet.setFormula(cellAddressToA1(cell), formula);
     }
-    workbook.calculate();
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     recordCellEditHistory(cell, before, {
       formula: trimmedFormula || null,
       value: trimmedFormula ? null : ""
     });
-  }, [captureCellMutationState, getActiveWorksheet, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
+  }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
   const setSelectedCellValue = React.useCallback((value: string) => {
     if (!activeCell) {
@@ -1140,13 +1206,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       }
     }
 
-    workbook.calculate();
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     setSelection(nextRange);
     setActiveCell(nextRange.end);
     selectionAnchorRef.current = nextRange.start;
     recordRangeEditHistory(mutations, nextRange, nextRange.end);
-  }, [captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+  }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
 
   const mergeSelection = React.useCallback(() => {
     const worksheet = getActiveWorksheet();
@@ -1258,9 +1324,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             cell: nextCell
           });
         } else {
-          worksheet.setCell(cellAddressToA1(nextCell), rawValue);
+          const nextValue = coerceUserEnteredValue(rawValue);
+          worksheet.setCell(cellAddressToA1(nextCell), nextValue);
           mutations.push({
-            after: { formula: null, value: rawValue },
+            after: { formula: null, value: nextValue },
             before,
             cell: nextCell
           });
@@ -1268,7 +1335,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       }
     }
 
-    workbook.calculate();
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     const nextRange = normalizeRange({
       start: targetCell,
@@ -1282,7 +1349,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     selectionAnchorRef.current = targetCell;
     recordRangeEditHistory(mutations, nextRange, targetCell);
     return true;
-  }, [activeCell, captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+  }, [activeCell, captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
 
   const pasteStructuredClipboardData = React.useCallback((serializedPayload: string) => {
     const worksheet = getActiveWorksheet();
@@ -1355,7 +1422,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       }
     }
 
-    workbook.calculate();
+    maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     const nextRange = normalizeRange({
       start: targetCell,
@@ -1375,6 +1442,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     activeCell,
     captureCellMutationState,
     getActiveWorksheet,
+    maybeRecalculateWorkbook,
     readOnly,
     recordHistoryBeforeMutation,
     recordRangeEditHistory,

@@ -25,7 +25,8 @@
   },
   "dependencies": {
     "@dukelib/sheets-wasm": "0.1.10",
-    "@tanstack/react-virtual": "^3.13.12"
+    "@tanstack/react-virtual": "^3.13.12",
+    "fflate": "^0.8.2"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --external react,react-dom",

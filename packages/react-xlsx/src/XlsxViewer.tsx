@@ -2028,9 +2028,12 @@ function XlsxGrid({
     height: HEADER_HEIGHT,
     overflow: "hidden",
     padding: "2px 4px",
+    position: "sticky",
     textAlign: "center",
+    top: 0,
     userSelect: "none",
-    whiteSpace: "nowrap"
+    whiteSpace: "nowrap",
+    zIndex: 30
   };
   const columnResizeHandleStyle: React.CSSProperties = {
     backgroundColor: "transparent",
@@ -2390,9 +2393,9 @@ function XlsxGrid({
                 />
               ))}
             </colgroup>
-            <thead style={{ position: "sticky", top: 0, zIndex: 2 }}>
+            <thead style={{ position: "sticky", top: 0, zIndex: 30 }}>
               <tr>
-                <th style={{ ...headerCellStyle, left: 0, position: "sticky", width: ROW_HEADER_WIDTH, zIndex: 3 }} />
+                <th style={{ ...headerCellStyle, left: 0, width: ROW_HEADER_WIDTH, zIndex: 40 }} />
                 {visibleCols.map((actualCol, index) => (
                   <th
                     data-xlsx-col-header={actualCol}
