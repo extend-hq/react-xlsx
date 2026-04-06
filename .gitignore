@@ -3,3 +3,5 @@ dist
 apps/playground/dist
 packages/*/dist
 pnpm-debug.log*
+.playwright-cli/
+output/

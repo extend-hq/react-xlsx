@@ -130,6 +130,7 @@ export type XlsxImageAnchor =
 export interface XlsxImage {
   anchor: XlsxImageAnchor;
   description?: string;
+  editable?: boolean;
   hyperlink?: string;
   id: string;
   mimeType: string;
@@ -149,8 +150,10 @@ export interface XlsxShapeFill {
 export interface XlsxShapeStroke {
   color?: string;
   dash?: string;
+  headEndType?: string;
   none?: boolean;
   opacity?: number;
+  tailEndType?: string;
   widthPx?: number;
 }
 
@@ -191,6 +194,8 @@ export interface XlsxShape {
   name?: string;
   paragraphs: XlsxShapeParagraph[];
   rotationDeg?: number;
+  scaleX?: number;
+  scaleY?: number;
   sheetIndex: number;
   svgPath?: string;
   svgViewBox?: {

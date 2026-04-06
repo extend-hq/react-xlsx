@@ -5,7 +5,12 @@ import { resolveWorkbookColor } from "./colors";
 import {
   mergeWorkbookImageAssets,
   parseWorkbookImageAssets,
+  pxToSheetColumnWidth,
   rectToImageAnchor,
+  resolveContentSheetAxisPixels,
+  resolveSheetColumnWidthPixels,
+  resolveRenderedSheetAxisPixels,
+  resolveSheetRowHeightPixels,
   resizeImageRect,
   revokeWorkbookImageAssets,
   updateWorkbookImageAnchor,
@@ -44,6 +49,8 @@ const GRID_ROW_HEADER_WIDTH = 40;
 const HISTORY_LIMIT = 100;
 const INTERNAL_CLIPBOARD_MIME = "application/x-react-xlsx-range+json";
 const DEFAULT_DEFER_LOADING_ABOVE_BYTES = 0;
+const EMU_PER_PIXEL = 9525;
+const IMAGE_BATCH_ROW_COUNT = 256;
 
 type SnapshotHistoryEntry = {
   kind: "snapshot";
@@ -84,6 +91,27 @@ type RangeEditHistoryEntry = {
   selectionAfter: XlsxCellRange | null;
   selectionBefore: XlsxCellRange | null;
   sheetIndex: number;
+};
+
+type WorksheetApiImageInfo = {
+  altText?: unknown;
+  height?: unknown;
+  source?: unknown;
+  width?: unknown;
+};
+
+type WorksheetApiRowCell = {
+  col?: unknown;
+  image?: WorksheetApiImageInfo | null;
+};
+
+type WorksheetApiRow = {
+  cells?: unknown;
+  index?: unknown;
+};
+
+type WorksheetWithRowsBatch = ReturnType<Workbook["getSheet"]> & {
+  getRowsBatch?: (startRow: number, maxRows: number, options?: unknown) => unknown;
 };
 
 type HistoryEntry = SnapshotHistoryEntry | CellEditHistoryEntry | RangeEditHistoryEntry;
@@ -163,7 +191,7 @@ function buildSheetList(
     const resolveColumnWidthPx = (col: number) => {
       const width = worksheet.getColumnWidth(col);
       if (width !== undefined && width !== null) {
-        return Math.max(Math.round(width * 7 + 5), MIN_COL_WIDTH_PX);
+        return resolveSheetColumnWidthPixels(width);
       }
 
       return sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
@@ -209,22 +237,62 @@ function buildSheetList(
     }
 
     const [, , maxRow, maxCol] = usedRange;
-    const visibleRows: number[] = [];
-    const visibleCols: number[] = [];
+    let visibleRowsCache: number[] | null = null;
+    let visibleColsCache: number[] | null = null;
+    let rowHeightsCache: number[] | null = null;
+    let colWidthsCache: number[] | null = null;
 
-    for (let row = 0; row <= maxRow; row += 1) {
-      if (!worksheet.isRowHidden(row)) {
-        visibleRows.push(row);
+    const getVisibleRows = () => {
+      if (visibleRowsCache) {
+        return visibleRowsCache;
       }
-    }
 
-    for (let col = 0; col <= maxCol; col += 1) {
-      if (!worksheet.isColumnHidden(col)) {
-        visibleCols.push(col);
+      const nextVisibleRows: number[] = [];
+      for (let row = 0; row <= maxRow; row += 1) {
+        if (!worksheet.isRowHidden(row)) {
+          nextVisibleRows.push(row);
+        }
       }
-    }
 
-    sheets.push({
+      visibleRowsCache = nextVisibleRows;
+      return nextVisibleRows;
+    };
+
+    const getVisibleCols = () => {
+      if (visibleColsCache) {
+        return visibleColsCache;
+      }
+
+      const nextVisibleCols: number[] = [];
+      for (let col = 0; col <= maxCol; col += 1) {
+        if (!worksheet.isColumnHidden(col)) {
+          nextVisibleCols.push(col);
+        }
+      }
+
+      visibleColsCache = nextVisibleCols;
+      return nextVisibleCols;
+    };
+
+    const getRowHeights = () => {
+      if (rowHeightsCache) {
+        return rowHeightsCache;
+      }
+
+      rowHeightsCache = getVisibleRows().map(resolveRowHeightPx);
+      return rowHeightsCache;
+    };
+
+    const getColWidths = () => {
+      if (colWidthsCache) {
+        return colWidthsCache;
+      }
+
+      colWidthsCache = getVisibleCols().map(resolveColumnWidthPx);
+      return colWidthsCache;
+    };
+
+    const sheet: XlsxSheetData = {
       cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
       colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
       colStyleIds: sheetState?.colStyleIds ?? {},
@@ -235,20 +303,34 @@ function buildSheetList(
       maxUsedCol: maxCol,
       maxUsedRow: maxRow,
       name: worksheet.name,
-      rowCount: visibleRows.length,
-      colCount: visibleCols.length,
-      visibleRows,
-      visibleCols,
-      colWidths: visibleCols.map(resolveColumnWidthPx),
-      rowHeights: visibleRows.map(resolveRowHeightPx),
       rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
       rowStyleIds: sheetState?.rowStyleIds ?? {},
       showGridLines: sheetState?.showGridLines ?? true,
       styleById: styleById ?? {},
       tableStyleByName: tableStyleByName ?? {},
       themePalette: themePalette ?? { colorsByIndex: {} },
-      workbookSheetIndex: index
-    });
+      workbookSheetIndex: index,
+      get rowCount() {
+        return getVisibleRows().length;
+      },
+      get colCount() {
+        return getVisibleCols().length;
+      },
+      get visibleRows() {
+        return getVisibleRows();
+      },
+      get visibleCols() {
+        return getVisibleCols();
+      },
+      get colWidths() {
+        return getColWidths();
+      },
+      get rowHeights() {
+        return getRowHeights();
+      }
+    };
+
+    sheets.push(sheet);
   }
 
   return sheets;
@@ -385,10 +467,6 @@ function fileStem(fileName: string): string {
   const normalized = fileName.trim();
   const lastDot = normalized.lastIndexOf(".");
   return lastDot > 0 ? normalized.slice(0, lastDot) : normalized;
-}
-
-function pxToSheetColumnWidth(widthPx: number): number {
-  return (Math.max(widthPx, MIN_COL_WIDTH_PX) - 5) / 7;
 }
 
 function pxToSheetRowHeight(heightPx: number): number {
@@ -578,6 +656,167 @@ async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<{
   };
 }
 
+function asFiniteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function inferImageMimeType(source: string) {
+  if (source.startsWith("data:")) {
+    const separatorIndex = source.indexOf(";");
+    if (separatorIndex > 5) {
+      return source.slice(5, separatorIndex);
+    }
+  }
+
+  const normalized = source.split("?")[0]?.toLowerCase() ?? "";
+  if (normalized.endsWith(".gif")) {
+    return "image/gif";
+  }
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (normalized.endsWith(".svg")) {
+    return "image/svg+xml";
+  }
+  if (normalized.endsWith(".webp")) {
+    return "image/webp";
+  }
+
+  return "image/png";
+}
+
+function buildWorksheetApiImage(
+  workbookSheetIndex: number,
+  row: number,
+  col: number,
+  info: WorksheetApiImageInfo,
+  zIndex: number
+): XlsxImage | null {
+  if (typeof info.source !== "string" || !info.source) {
+    return null;
+  }
+
+  const width = Math.max(1, Math.round(asFiniteNumber(info.width) ?? DEFAULT_COL_WIDTH));
+  const height = Math.max(1, Math.round(asFiniteNumber(info.height) ?? DEFAULT_ROW_HEIGHT));
+  const description = typeof info.altText === "string" && info.altText.trim() ? info.altText : undefined;
+
+  return {
+    anchor: {
+      from: {
+        col,
+        colOffsetEmu: 0,
+        row,
+        rowOffsetEmu: 0
+      },
+      kind: "one-cell",
+      sizeEmu: {
+        cx: width * EMU_PER_PIXEL,
+        cy: height * EMU_PER_PIXEL
+      }
+    },
+    description,
+    editable: false,
+    id: `worksheet-image-${workbookSheetIndex}-${row}-${col}-${zIndex}`,
+    mimeType: inferImageMimeType(info.source),
+    sheetIndex: workbookSheetIndex,
+    src: info.source,
+    workbookSheetIndex,
+    zIndex
+  };
+}
+
+function collectWorksheetApiImages(workbook: Workbook) {
+  const imagesByWorkbookSheetIndex = Array.from({ length: workbook.sheetCount }, () => [] as XlsxImage[]);
+
+  for (let workbookSheetIndex = 0; workbookSheetIndex < workbook.sheetCount; workbookSheetIndex += 1) {
+    const worksheet = workbook.getSheet(workbookSheetIndex) as WorksheetWithRowsBatch;
+    if (typeof worksheet.getRowsBatch !== "function") {
+      continue;
+    }
+
+    const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
+    const maxRow = usedRange?.[2] ?? -1;
+    if (maxRow < 0) {
+      continue;
+    }
+
+    let zIndex = 1;
+    let sheetFailed = false;
+    for (let startRow = 0; startRow <= maxRow; startRow += IMAGE_BATCH_ROW_COUNT) {
+      let rows: unknown;
+      try {
+        rows = worksheet.getRowsBatch(startRow, IMAGE_BATCH_ROW_COUNT, { includeImages: true });
+      } catch {
+        sheetFailed = true;
+        break;
+      }
+
+      if (!Array.isArray(rows)) {
+        continue;
+      }
+
+      for (const rowEntry of rows as WorksheetApiRow[]) {
+        const row = typeof rowEntry.index === "number" ? rowEntry.index : null;
+        if (row === null || !Array.isArray(rowEntry.cells)) {
+          continue;
+        }
+
+        for (const cellEntry of rowEntry.cells as WorksheetApiRowCell[]) {
+          const col = typeof cellEntry.col === "number" ? cellEntry.col : null;
+          if (col === null || !cellEntry.image || typeof cellEntry.image !== "object") {
+            continue;
+          }
+
+          const image = buildWorksheetApiImage(workbookSheetIndex, row, col, cellEntry.image, zIndex);
+          if (!image) {
+            continue;
+          }
+
+          imagesByWorkbookSheetIndex[workbookSheetIndex].push(image);
+          zIndex += 1;
+        }
+      }
+    }
+
+    if (sheetFailed) {
+      imagesByWorkbookSheetIndex[workbookSheetIndex] = [];
+    }
+  }
+
+  return imagesByWorkbookSheetIndex;
+}
+
+function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook) {
+  const parsedAssets = parseWorkbookImageAssets(bytes);
+  const apiImagesByWorkbookSheetIndex = collectWorksheetApiImages(workbook);
+  let didApplyFallback = false;
+
+  const imagesByWorkbookSheetIndex = Array.from(
+    { length: Math.max(workbook.sheetCount, parsedAssets.imagesByWorkbookSheetIndex.length, apiImagesByWorkbookSheetIndex.length) },
+    (_, index) => {
+      const parsedImages = parsedAssets.imagesByWorkbookSheetIndex[index] ?? [];
+      if (parsedImages.length > 0) {
+        return parsedImages;
+      }
+
+      const apiImages = apiImagesByWorkbookSheetIndex[index] ?? [];
+      if (apiImages.length > 0) {
+        didApplyFallback = true;
+      }
+      return apiImages;
+    }
+  );
+
+  if (!didApplyFallback) {
+    return parsedAssets;
+  }
+
+  return {
+    ...parsedAssets,
+    imagesByWorkbookSheetIndex
+  };
+}
+
 function downloadArrayBuffer(file: ArrayBuffer, fileName: string) {
   const blob = new Blob([file], { type: XLSX_MIME_TYPE });
   const objectUrl = URL.createObjectURL(blob);
@@ -747,7 +986,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           return;
         }
 
-        const nextImageAssets = parseWorkbookImageAssets(new Uint8Array(buffer));
+        const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(buffer), nextParsedWorkbook.workbook);
         if (!isCurrent) {
           revokeWorkbookImageAssets(nextImageAssets);
           return;
@@ -816,7 +1055,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setError(null);
     void parseWorkbookBuffer(deferredBuffer)
       .then((nextParsedWorkbook) => {
-        const nextImageAssets = parseWorkbookImageAssets(new Uint8Array(deferredBuffer));
+        const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(deferredBuffer), nextParsedWorkbook.workbook);
         deferredBufferRef.current = null;
         setDeferredLoadFileSize(null);
         setImageAssets(nextImageAssets);
@@ -933,22 +1172,30 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const getColumnWidthPx = React.useCallback((worksheet: ReturnType<Workbook["getSheet"]>, col: number) => {
     const sheetState = imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex[activeSheet?.workbookSheetIndex ?? -1] ?? null;
     const width = worksheet.getColumnWidth(col);
+    const showGridLines = activeSheet?.showGridLines ?? true;
     if (width !== undefined && width !== null) {
-      return Math.max(Math.round(width * 7 + 5), MIN_COL_WIDTH_PX);
+      return resolveRenderedSheetAxisPixels(resolveSheetColumnWidthPixels(width), showGridLines);
     }
 
-    return sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
-  }, [activeSheet?.workbookSheetIndex]);
+    return resolveRenderedSheetAxisPixels(
+      sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
+      showGridLines
+    );
+  }, [activeSheet?.showGridLines, activeSheet?.workbookSheetIndex]);
 
   const getRowHeightPx = React.useCallback((worksheet: ReturnType<Workbook["getSheet"]>, row: number) => {
     const sheetState = imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex[activeSheet?.workbookSheetIndex ?? -1] ?? null;
     const height = worksheet.getRowHeight(row);
+    const showGridLines = activeSheet?.showGridLines ?? true;
     if (height !== undefined && height !== null) {
-      return Math.max(Math.round(height * 1.33), MIN_ROW_HEIGHT_PX);
+      return resolveRenderedSheetAxisPixels(resolveSheetRowHeightPixels(height), showGridLines);
     }
 
-    return sheetState?.rowHeightOverridesPx?.[row] ?? sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT;
-  }, [activeSheet?.workbookSheetIndex]);
+    return resolveRenderedSheetAxisPixels(
+      sheetState?.rowHeightOverridesPx?.[row] ?? sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+      showGridLines
+    );
+  }, [activeSheet?.showGridLines, activeSheet?.workbookSheetIndex]);
 
   const getCellDisplayValue = React.useCallback((cell?: XlsxCellAddress | null) => {
     const worksheet = getActiveWorksheet();
@@ -1167,15 +1414,15 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const restoreHistoryEntry = React.useCallback(async (entry: SnapshotHistoryEntry) => {
     const wasmModule = await getSheetsWasmModule();
     const nextWorkbook = wasmModule.Workbook.fromBytes(cloneBytes(entry.bytes));
+    const nextImageAssets = loadWorkbookImageAssets(entry.bytes, nextWorkbook);
     const nextSheets = buildSheetList(
       nextWorkbook,
-      imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex,
-      imageAssetsRef.current?.themePalette,
-      imageAssetsRef.current?.styleById,
-      imageAssetsRef.current?.tableStyleByName
+      nextImageAssets.sheetStatesByWorkbookSheetIndex,
+      nextImageAssets.themePalette,
+      nextImageAssets.styleById,
+      nextImageAssets.tableStyleByName
     );
     const nextSheetIndex = Math.max(0, Math.min(entry.activeSheetIndex, Math.max(0, nextSheets.length - 1)));
-    const nextImageAssets = parseWorkbookImageAssets(entry.bytes);
 
     setError(null);
     setIsLoading(false);
@@ -1466,7 +1713,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     recordHistoryBeforeMutation();
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
-    worksheet.setColumnWidth(col, pxToSheetColumnWidth(widthPx));
+    worksheet.setColumnWidth(
+      col,
+      pxToSheetColumnWidth(resolveContentSheetAxisPixels(widthPx, activeSheet.showGridLines))
+    );
     refreshWorkbookState(workbook);
   }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
@@ -1477,7 +1727,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     recordHistoryBeforeMutation();
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
-    worksheet.setRowHeight(row, pxToSheetRowHeight(heightPx));
+    worksheet.setRowHeight(
+      row,
+      pxToSheetRowHeight(resolveContentSheetAxisPixels(heightPx, activeSheet.showGridLines))
+    );
     refreshWorkbookState(workbook);
   }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
@@ -1488,7 +1741,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
     const currentImage = getImageById(id);
-    if (!currentImage || currentImage.workbookSheetIndex !== activeSheet.workbookSheetIndex) {
+    if (!currentImage || currentImage.editable === false || currentImage.workbookSheetIndex !== activeSheet.workbookSheetIndex) {
       return;
     }
 
@@ -1518,7 +1771,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const moveImageBy = React.useCallback((id: string, deltaX: number, deltaY: number) => {
     const currentImage = getImageById(id);
-    if (!currentImage) {
+    if (!currentImage || currentImage.editable === false) {
       return;
     }
 
@@ -1589,7 +1842,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     deltaY: number
   ) => {
     const currentImage = getImageById(id);
-    if (!currentImage) {
+    if (!currentImage || currentImage.editable === false) {
       return;
     }
 
