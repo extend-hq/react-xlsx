@@ -8,6 +8,8 @@ import {
   XlsxViewer,
   XlsxViewerProvider
 } from "react-xlsx";
+
+const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
 import {
   ChevronLeft,
   ChevronRight,
@@ -431,10 +433,10 @@ export function App() {
 
   const controller = useXlsxViewerController(
     source?.type === "file"
-      ? { file: source.file, fileName: source.fileName, readOnly: isReadOnly }
+      ? { file: source.file, fileName: source.fileName, readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
       : source?.type === "url"
-        ? { src: source.src, fileName: source.fileName, readOnly: isReadOnly }
-        : { readOnly: isReadOnly }
+        ? { src: source.src, fileName: source.fileName, readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
+        : { readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
   );
 
   const loadWorkbookFile = React.useCallback(async (nextFile: File) => {
