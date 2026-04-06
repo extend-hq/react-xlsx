@@ -1827,7 +1827,7 @@ function anchorFromNodeOrFallback(
   };
 }
 
-function mapParagraphAlign(value: string | null | undefined): XlsxShape["paragraphs"][number]["align"] {
+function mapParagraphAlign(value: string | null | undefined): XlsxShape["paragraphs"][number]["align"] | undefined {
   switch (value) {
     case "ctr":
       return "center";
@@ -1835,8 +1835,10 @@ function mapParagraphAlign(value: string | null | undefined): XlsxShape["paragra
       return "justify";
     case "r":
       return "right";
-    default:
+    case "l":
       return "left";
+    default:
+      return undefined;
   }
 }
 
@@ -2123,6 +2125,7 @@ function parseTextBox(shapeNode: Element): XlsxShape["textBox"] | undefined {
   const bottomInset = emuToPixels(Number(bodyProps?.getAttribute("bIns") ?? 45720));
 
   return {
+    horizontalAlign: bodyProps?.getAttribute("anchorCtr") === "1" ? "center" : "left",
     insetPx: {
       bottom: bottomInset,
       left: leftInset,
