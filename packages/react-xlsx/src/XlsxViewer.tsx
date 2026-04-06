@@ -1,7 +1,7 @@
 import * as React from "react";
 import type { Worksheet } from "@dukelib/sheets-wasm";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { resolveWorkbookColor } from "./colors";
+import { resolveWorkbookColor, resolveWorkbookFillColor } from "./colors";
 import { useXlsxViewerController } from "./controller";
 import {
   emuToPixels,
@@ -20,6 +20,7 @@ import type {
   XlsxImageSelectionRenderProps,
   XlsxShape,
   XlsxSheetData,
+  XlsxThemePalette,
   XlsxTable,
   XlsxTableColumn,
   XlsxTableHeaderMenuRenderProps,
@@ -272,6 +273,18 @@ function sumPrefixRange(prefixSums: number[], startIndex: number, endIndex: numb
   }
 
   return (prefixSums[endIndex + 1] ?? 0) - (prefixSums[startIndex] ?? 0);
+}
+
+function buildStickyOffsets(actualIndices: number[], sizesByActualIndex: number[], leadingOffset: number) {
+  const offsets = new Map<number, number>();
+  let nextOffset = leadingOffset;
+
+  for (const actualIndex of actualIndices) {
+    offsets.set(actualIndex, nextOffset);
+    nextOffset += sizesByActualIndex[actualIndex] ?? 0;
+  }
+
+  return offsets;
 }
 
 function findIndexForOffsetPrefix(prefixSums: number[], offset: number) {
@@ -980,6 +993,70 @@ function invertHexLightness(color: string): string | null {
   return rgbToHex(nextRed, nextGreen, nextBlue);
 }
 
+function escapeCssFontFamily(name: string) {
+  return /[\s"'(),]/.test(name) ? `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : name;
+}
+
+function resolveSpreadsheetThemeFont(
+  font: Record<string, unknown> | undefined,
+  themePalette?: XlsxThemePalette
+) {
+  const scheme = typeof font?.scheme === "string" ? font.scheme : null;
+  if (scheme === "major") {
+    return themePalette?.majorLatinFont;
+  }
+  if (scheme === "minor") {
+    return themePalette?.minorLatinFont;
+  }
+  return undefined;
+}
+
+function buildSpreadsheetFontFamily(
+  font: Record<string, unknown> | undefined,
+  themePalette?: XlsxThemePalette
+) {
+  const candidates = [
+    typeof font?.name === "string" ? font.name.trim() : "",
+    resolveSpreadsheetThemeFont(font, themePalette)?.trim() ?? ""
+  ].filter((value, index, array) => value.length > 0 && array.indexOf(value) === index);
+
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  const primaryFont = candidates[0]?.toLowerCase();
+  if (primaryFont === "calibri") {
+    return [
+      "Calibri",
+      "Carlito",
+      "\"Aptos\"",
+      "\"Segoe UI\"",
+      "Tahoma",
+      "Arial",
+      "sans-serif"
+    ].join(", ");
+  }
+
+  return [
+    ...candidates.map(escapeCssFontFamily),
+    "\"Segoe UI\"",
+    "Tahoma",
+    "Arial",
+    "sans-serif"
+  ].join(", ");
+}
+
+function resolveSpreadsheetLineHeight(fontSizePt?: number) {
+  const sizePt = typeof fontSizePt === "number" && Number.isFinite(fontSizePt) ? fontSizePt : 11;
+  if (sizePt <= 11) {
+    return 1.2;
+  }
+  if (sizePt <= 14) {
+    return 1.25;
+  }
+  return 1.3;
+}
+
 function buildCellStyle(
   style: Record<string, unknown> | null | undefined,
   palette: ViewerPalette,
@@ -995,7 +1072,9 @@ function buildCellStyle(
     borderBottom: showGridLines ? `1px solid ${SHEET_GRIDLINE}` : "none",
     borderRight: showGridLines ? `1px solid ${SHEET_GRIDLINE}` : "none",
     color: resolveReadableTextColor(null, baseSurface, palette),
+    fontFamily: buildSpreadsheetFontFamily({ scheme: "minor" }, themePalette) ?? "\"Segoe UI\", Tahoma, Arial, sans-serif",
     fontSize: "12px",
+    lineHeight: String(resolveSpreadsheetLineHeight(11)),
     overflow: "hidden",
     padding: DEFAULT_CELL_PADDING,
     textOverflow: "clip",
@@ -1011,12 +1090,7 @@ function buildCellStyle(
   let resolvedFillColor: string | null = null;
   let hasExplicitFill = false;
   if (fill) {
-    const fillColor =
-      fill.fillType === "solid"
-        ? resolveWorkbookColor(fill.color as Record<string, unknown> | undefined, themePalette)
-        : fill.fillType === "pattern"
-          ? resolveWorkbookColor(fill.foreground as Record<string, unknown> | undefined, themePalette)
-          : null;
+    const fillColor = resolveWorkbookFillColor(fill, themePalette);
 
     if (fillColor) {
       hasExplicitFill = true;
@@ -1027,6 +1101,7 @@ function buildCellStyle(
 
   const font = style.font as Record<string, unknown> | undefined;
   let resolvedFontColor: string | null = null;
+  let resolvedFontSizePt = 11;
   if (font) {
     if (font.bold) {
       css.fontWeight = "bold";
@@ -1046,12 +1121,19 @@ function buildCellStyle(
       css.color = fontColor;
     }
     if (typeof font.size === "number" && font.size !== 11) {
+      resolvedFontSizePt = font.size;
       css.fontSize = `${font.size}pt`;
+    } else if (typeof font.size === "number") {
+      resolvedFontSizePt = font.size;
     }
-    if (typeof font.name === "string" && font.name.trim().length > 0) {
-      css.fontFamily = font.name;
+
+    const fontFamily = buildSpreadsheetFontFamily(font, themePalette);
+    if (fontFamily) {
+      css.fontFamily = fontFamily;
     }
   }
+
+  css.lineHeight = String(resolveSpreadsheetLineHeight(resolvedFontSizePt));
 
   if (!hasExplicitFill) {
     css.color = resolveReadableTextColor(resolvedFontColor, baseSurface, palette);
@@ -1192,6 +1274,22 @@ function getCellDisplayValue(worksheet: Worksheet, row: number, col: number, act
   }
 
   return cellValue.toString();
+}
+
+function getCellNumericValue(worksheet: Worksheet, row: number, col: number) {
+  const cellValue = worksheet.getCalculatedValueAt(row, col);
+  if (cellValue.is_number) {
+    return cellValue.asNumber() ?? null;
+  }
+  if (cellValue.is_boolean) {
+    return cellValue.asBoolean() ? 1 : 0;
+  }
+  if (cellValue.is_empty || cellValue.is_error) {
+    return null;
+  }
+
+  const parsedValue = Number(cellValue.asText() ?? cellValue.toString());
+  return Number.isFinite(parsedValue) ? parsedValue : null;
 }
 
 function asNonNegativeInteger(value: unknown) {
@@ -1390,7 +1488,15 @@ function resolveTableCellStyle(
   applyElement("lastColumn", Boolean(table.styleInfo?.showLastColumn) && col === table.end.col);
 
   const headerRowCount = Math.max(table.headerRowCount, 1);
-  applyElement("headerRow", row >= table.start.row && row < table.start.row + headerRowCount);
+  const isHeaderRow = row >= table.start.row && row < table.start.row + headerRowCount;
+  applyElement("headerRow", isHeaderRow);
+
+  if (isHeaderRow && table.headerRowCellStyle) {
+    const namedHeaderStyle = activeSheet.namedCellStyleByName[table.headerRowCellStyle];
+    if (namedHeaderStyle) {
+      resolved = mergeResolvedCellStyle(resolved, namedHeaderStyle);
+    }
+  }
 
   if (table.totalsRowShown) {
     const totalsRowCount = Math.max(table.totalsRowCount, 1);
@@ -1759,17 +1865,313 @@ function resolveSelectionColors({
 
 type CellRenderData = {
   colSpan?: number;
+  conditionalDataBar?: {
+    borderColor?: string;
+    color: string;
+    widthPercent: number;
+  } | null;
+  conditionalIcon?: {
+    backgroundColor?: string;
+    borderColor?: string;
+    color?: string;
+    glyph?: string;
+  } | null;
   hyperlink?: {
     location?: string;
     target?: string;
     tooltip?: string;
   } | null;
   isMergedSecondary: boolean;
+  isTableHeader?: boolean;
   rowSpan?: number;
   spillWidth?: number;
   style: React.CSSProperties;
+  validation?: {
+    message?: string;
+    showDropdown: boolean;
+    validationType: string;
+  } | null;
   value: string;
 };
+
+function buildConditionalFormatRuleKey(rule: XlsxSheetData["conditionalFormatRules"][number]) {
+  return `${rule.kind}:${rule.priority}:${rule.ranges
+    .map((range) => `${range.start.row}:${range.start.col}-${range.end.row}:${range.end.col}`)
+    .join("|")}`;
+}
+
+function resolveConditionalRuleThreshold(
+  threshold: XlsxSheetData["conditionalFormatRules"][number]["cfvos"][number] | undefined,
+  numericValues: number[]
+) {
+  if (!threshold) {
+    return null;
+  }
+
+  const fallbackValue = typeof threshold.value === "number" ? threshold.value : null;
+  if (threshold.type === "num" || threshold.type === "formula") {
+    return fallbackValue;
+  }
+
+  if (numericValues.length === 0) {
+    return fallbackValue;
+  }
+
+  const minValue = Math.min(...numericValues);
+  const maxValue = Math.max(...numericValues);
+  if (threshold.type === "min") {
+    return minValue;
+  }
+  if (threshold.type === "max") {
+    return maxValue;
+  }
+
+  if ((threshold.type === "percent" || threshold.type === "percentile") && fallbackValue !== null) {
+    return minValue + (maxValue - minValue) * (fallbackValue / 100);
+  }
+
+  return fallbackValue;
+}
+
+function buildConditionalIcon(iconSet: string, iconId: number): NonNullable<CellRenderData["conditionalIcon"]> | null {
+  switch (iconSet) {
+    case "NoIcons":
+      return null;
+    case "4TrafficLights": {
+      const definitions = [
+        { backgroundColor: "#111827", borderColor: "#6b7280" },
+        { backgroundColor: "#22c55e", borderColor: "#166534" },
+        { backgroundColor: "#ef4444", borderColor: "#991b1b" },
+        { backgroundColor: "#facc15", borderColor: "#a16207" }
+      ];
+      return definitions[iconId] ?? definitions[definitions.length - 1] ?? null;
+    }
+    case "3TrafficLights1":
+    case "3TrafficLights2": {
+      const definitions = [
+        { backgroundColor: "#22c55e", borderColor: iconSet === "3TrafficLights2" ? "#111827" : "#166534" },
+        { backgroundColor: "#facc15", borderColor: iconSet === "3TrafficLights2" ? "#111827" : "#a16207" },
+        { backgroundColor: "#ef4444", borderColor: iconSet === "3TrafficLights2" ? "#111827" : "#991b1b" }
+      ];
+      return definitions[iconId] ?? definitions[definitions.length - 1] ?? null;
+    }
+    case "4RedToBlack": {
+      const definitions = [
+        { backgroundColor: "#ef4444", borderColor: "#991b1b" },
+        { backgroundColor: "#fca5a5", borderColor: "#b91c1c" },
+        { backgroundColor: "#9ca3af", borderColor: "#4b5563" },
+        { backgroundColor: "#111827", borderColor: "#6b7280" }
+      ];
+      return definitions[iconId] ?? definitions[definitions.length - 1] ?? null;
+    }
+    case "3Symbols":
+      return [
+        { backgroundColor: "#22c55e", color: "#ffffff", glyph: "✓" },
+        { backgroundColor: "#facc15", color: "#111827", glyph: "!" },
+        { backgroundColor: "#ef4444", color: "#ffffff", glyph: "×" }
+      ][iconId] ?? null;
+    case "3Symbols2":
+      return [
+        { color: "#16a34a", glyph: "✓" },
+        { color: "#ca8a04", glyph: "!" },
+        { color: "#dc2626", glyph: "×" }
+      ][iconId] ?? null;
+    case "3Signs":
+      return [
+        { backgroundColor: "#22c55e", borderColor: "#166534" },
+        { backgroundColor: "#facc15", borderColor: "#a16207", glyph: "▲", color: "#111827" },
+        { backgroundColor: "#ef4444", borderColor: "#991b1b", glyph: "◆", color: "#ffffff" }
+      ][iconId] ?? null;
+    default:
+      if (iconSet.includes("Arrows")) {
+        const arrowGlyphs = ["↑", "↗", "→", "↘", "↓"];
+        const arrowColors = iconSet.includes("Gray")
+          ? ["#9ca3af", "#9ca3af", "#9ca3af", "#9ca3af", "#9ca3af"]
+          : ["#16a34a", "#ca8a04", "#ca8a04", "#ca8a04", "#dc2626"];
+        return {
+          color: arrowColors[Math.min(iconId, arrowColors.length - 1)],
+          glyph: arrowGlyphs[Math.min(iconId, arrowGlyphs.length - 1)] ?? "•"
+        };
+      }
+
+      return {
+        backgroundColor: "#111827",
+        borderColor: "#6b7280"
+      };
+  }
+}
+
+function renderConditionalIcon(icon: NonNullable<CellRenderData["conditionalIcon"]>) {
+  if (icon.glyph) {
+    return (
+      <span
+        style={{
+          alignItems: "center",
+          color: icon.color ?? "#111827",
+          display: "inline-flex",
+          fontSize: 13,
+          fontWeight: 700,
+          height: 14,
+          justifyContent: "center",
+          lineHeight: 1,
+          width: 14
+        }}
+      >
+        {icon.glyph}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      style={{
+        backgroundColor: icon.backgroundColor ?? "#111827",
+        border: icon.borderColor ? `1px solid ${icon.borderColor}` : "none",
+        borderRadius: "999px",
+        display: "inline-block",
+        height: 12,
+        width: 12
+      }}
+    />
+  );
+}
+
+function resolveConditionalDataBarForCell(
+  row: number,
+  col: number,
+  worksheet: Worksheet,
+  sheet: XlsxSheetData | null | undefined,
+  metricsCache: Map<string, number[]>
+): CellRenderData["conditionalDataBar"] {
+  const rules = sheet?.conditionalFormatRules ?? [];
+  const matchingRule = rules.find(
+    (rule): rule is Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "dataBar" }> =>
+      rule.kind === "dataBar" && rule.ranges.some((range) => isCellInRange({ row, col }, range))
+  );
+  if (!matchingRule) {
+    return null;
+  }
+
+  const numericValue = getCellNumericValue(worksheet, row, col);
+  if (numericValue === null) {
+    return null;
+  }
+
+  const cacheKey = buildConditionalFormatRuleKey(matchingRule);
+  let ruleValues = metricsCache.get(cacheKey);
+  if (!ruleValues) {
+    ruleValues = matchingRule.ranges.flatMap((range) => {
+      const values: number[] = [];
+      for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
+        for (let targetCol = range.start.col; targetCol <= range.end.col; targetCol += 1) {
+          const value = getCellNumericValue(worksheet, targetRow, targetCol);
+          if (value !== null) {
+            values.push(value);
+          }
+        }
+      }
+      return values;
+    });
+    metricsCache.set(cacheKey, ruleValues);
+  }
+
+  const minValue = resolveConditionalRuleThreshold(matchingRule.cfvos[0], ruleValues);
+  const maxValue = resolveConditionalRuleThreshold(matchingRule.cfvos[matchingRule.cfvos.length - 1], ruleValues);
+  if (minValue === null || maxValue === null) {
+    return null;
+  }
+
+  const minLength = Number.isFinite(matchingRule.minLength ?? Number.NaN) ? (matchingRule.minLength ?? 0) : 0;
+  const maxLength = Number.isFinite(matchingRule.maxLength ?? Number.NaN) ? (matchingRule.maxLength ?? 100) : 100;
+  const span = maxValue - minValue;
+  const ratio = span === 0 ? (numericValue >= maxValue ? 1 : 0) : (numericValue - minValue) / span;
+  const widthPercent = minLength + Math.max(0, Math.min(1, ratio)) * (maxLength - minLength);
+  const color = resolveWorkbookColor(matchingRule.color, sheet?.themePalette);
+  if (!color || widthPercent <= 0) {
+    return null;
+  }
+
+  return {
+    borderColor: resolveWorkbookColor(matchingRule.borderColor, sheet?.themePalette) ?? undefined,
+    color,
+    widthPercent
+  };
+}
+
+function resolveConditionalIconForCell(
+  row: number,
+  col: number,
+  worksheet: Worksheet,
+  sheet: XlsxSheetData | null | undefined,
+  metricsCache: Map<string, number[]>
+): CellRenderData["conditionalIcon"] {
+  const rules = sheet?.conditionalFormatRules ?? [];
+  const matchingRule = rules.find(
+    (rule): rule is Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "iconSet" }> =>
+      rule.kind === "iconSet" && rule.ranges.some((range) => isCellInRange({ row, col }, range))
+  );
+  if (!matchingRule) {
+    return null;
+  }
+
+  const numericValue = getCellNumericValue(worksheet, row, col);
+  if (numericValue === null) {
+    return null;
+  }
+
+  const cacheKey = buildConditionalFormatRuleKey(matchingRule);
+  let ruleValues = metricsCache.get(cacheKey);
+  if (!ruleValues) {
+    ruleValues = matchingRule.ranges.flatMap((range) => {
+      const values: number[] = [];
+      for (let targetRow = range.start.row; targetRow <= range.end.row; targetRow += 1) {
+        for (let targetCol = range.start.col; targetCol <= range.end.col; targetCol += 1) {
+          const value = getCellNumericValue(worksheet, targetRow, targetCol);
+          if (value !== null) {
+            values.push(value);
+          }
+        }
+      }
+      return values;
+    });
+    metricsCache.set(cacheKey, ruleValues);
+  }
+
+  const thresholds = matchingRule.cfvos.map((threshold) => resolveConditionalRuleThreshold(threshold, ruleValues));
+  let selectedIndex = 0;
+  thresholds.forEach((threshold, index) => {
+    if (threshold !== null && numericValue >= threshold) {
+      selectedIndex = index;
+    }
+  });
+
+  const iconIndex = matchingRule.reverse
+    ? Math.max(0, matchingRule.icons.length - 1 - selectedIndex)
+    : selectedIndex;
+  const icon = matchingRule.icons[Math.min(iconIndex, matchingRule.icons.length - 1)];
+  return icon ? buildConditionalIcon(icon.iconSet, icon.iconId) : null;
+}
+
+function resolveCellDataValidation(
+  row: number,
+  col: number,
+  sheet: XlsxSheetData | null | undefined
+): CellRenderData["validation"] {
+  const validation = sheet?.dataValidations.find((entry) => entry.ranges.some((range) => isCellInRange({ row, col }, range)));
+  if (!validation) {
+    return null;
+  }
+
+  const messageParts = [validation.inputMessage, validation.errorMessage].filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0
+  );
+
+  return {
+    message: messageParts.join("\n"),
+    showDropdown: validation.showDropdown !== false,
+    validationType: validation.validationType
+  };
+}
 
 function resolveCellContentJustify(verticalAlign: React.CSSProperties["verticalAlign"]) {
   if (verticalAlign === "middle") {
@@ -1816,6 +2218,8 @@ type GridRowProps = {
   renderCellAdornment?: (cell: XlsxCellAddress) => React.ReactNode;
   rowHeight: number;
   rowSelected: boolean;
+  stickyLeftByCol: Map<number, number>;
+  stickyTop?: number;
   trailingSpacerWidth: number;
   visibleCols: RenderedColumn[];
 };
@@ -1840,6 +2244,8 @@ function GridRow({
   renderCellAdornment,
   rowHeight,
   rowSelected,
+  stickyLeftByCol,
+  stickyTop,
   trailingSpacerWidth,
   visibleCols
 }: GridRowProps) {
@@ -1863,10 +2269,11 @@ function GridRow({
           minWidth: ROW_HEADER_WIDTH,
           padding: "2px 4px",
           position: "sticky",
+          top: stickyTop,
           textAlign: "center",
           userSelect: "none",
           width: ROW_HEADER_WIDTH,
-          zIndex: 35
+          zIndex: stickyTop !== undefined ? 45 : 35
         }}
       >
         <div style={{ position: "relative" }}>
@@ -1907,6 +2314,16 @@ function GridRow({
         const isActive = isSameCell(activeCell, cell);
         const isEditing = isSameCell(editingCell, cell);
         const isSpilling = Boolean(cellData.spillWidth && cellData.spillWidth > 0);
+        const adornment = renderCellAdornment ? renderCellAdornment(cell) : null;
+        const stickyLeft = stickyLeftByCol.get(actualCol);
+        const showValidationDropdown = Boolean(
+          isActive &&
+          !isEditing &&
+          cellData.validation?.validationType === "list" &&
+          cellData.validation.showDropdown
+        );
+        const validationRight = adornment ? 24 : 4;
+        const conditionalIconRight = validationRight + (showValidationDropdown ? 16 : 0);
         const cellStyle: React.CSSProperties = {
           ...cellData.style,
           boxSizing: "border-box",
@@ -1921,6 +2338,23 @@ function GridRow({
         if (isActive || isSpilling) {
           cellStyle.position = "relative";
           cellStyle.zIndex = isActive ? 3 : 2;
+        }
+        if (cellData.conditionalDataBar || cellData.conditionalIcon) {
+          cellStyle.position = "relative";
+        }
+        if (cellData.isTableHeader) {
+          cellStyle.position = "relative";
+          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), 4);
+        }
+        if (stickyTop !== undefined) {
+          cellStyle.position = "sticky";
+          cellStyle.top = stickyTop;
+          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), 12);
+        }
+        if (stickyLeft !== undefined) {
+          cellStyle.left = stickyLeft;
+          cellStyle.position = "sticky";
+          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), stickyTop !== undefined ? 14 : 10);
         }
         if (isSpilling) {
           cellStyle.overflow = "visible";
@@ -1948,6 +2382,21 @@ function GridRow({
           width: "100%",
           wordBreak: "inherit"
         };
+        const trailingInset = (adornment ? 20 : 0) + (cellData.conditionalIcon ? 18 : 0) + (showValidationDropdown ? 18 : 0);
+        if (cellData.conditionalDataBar) {
+          cellContentStyle.position = "relative";
+          cellContentStyle.zIndex = 1;
+        }
+        if (trailingInset > 0) {
+          cellContentStyle.paddingRight = trailingInset + 4;
+        }
+        if (cellData.conditionalIcon || showValidationDropdown) {
+          cellContentStyle.position = "relative";
+          cellContentStyle.zIndex = 1;
+        }
+        const title = [cellData.hyperlink?.tooltip, cellData.validation?.message, cellData.value]
+          .filter((value, index, values): value is string => typeof value === "string" && value.length > 0 && values.indexOf(value) === index)
+          .join("\n");
 
         return (
           <td
@@ -1965,9 +2414,77 @@ function GridRow({
             onClick={() => onCellClick(cell, cellData)}
             onPointerDown={(event) => onCellPointerDown(event, cell, isActive)}
             style={cellStyle}
-            title={cellData.hyperlink?.tooltip ?? cellData.value}
+            title={title}
           >
-            {renderCellAdornment ? renderCellAdornment(cell) : null}
+            {cellData.conditionalDataBar ? (
+              <div
+                aria-hidden="true"
+                style={{
+                  alignItems: "center",
+                  bottom: 4,
+                  display: "flex",
+                  left: 4,
+                  pointerEvents: "none",
+                  position: "absolute",
+                  right: 4,
+                  top: 4,
+                  zIndex: 0
+                }}
+              >
+                <div
+                  style={{
+                    backgroundColor: cellData.conditionalDataBar.color,
+                    border: cellData.conditionalDataBar.borderColor
+                      ? `1px solid ${cellData.conditionalDataBar.borderColor}`
+                      : "none",
+                    borderRadius: 3,
+                    height: "68%",
+                    opacity: 0.8,
+                    width: `${cellData.conditionalDataBar.widthPercent}%`
+                  }}
+                />
+              </div>
+            ) : null}
+            {adornment}
+            {cellData.conditionalIcon ? (
+              <div
+                aria-hidden="true"
+                style={{
+                  alignItems: "center",
+                  display: "inline-flex",
+                  justifyContent: "center",
+                  pointerEvents: "none",
+                  position: "absolute",
+                  right: conditionalIconRight,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  zIndex: 2
+                }}
+              >
+                {renderConditionalIcon(cellData.conditionalIcon)}
+              </div>
+            ) : null}
+            {showValidationDropdown ? (
+              <div
+                aria-hidden="true"
+                style={{
+                  alignItems: "center",
+                  color: palette.mutedText,
+                  display: "inline-flex",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  justifyContent: "center",
+                  pointerEvents: "none",
+                  position: "absolute",
+                  right: validationRight,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  zIndex: 2
+                }}
+              >
+                ▾
+              </div>
+            ) : null}
             {isEditing ? (
               <input
                 autoFocus
@@ -2042,6 +2559,8 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
     prev.readOnly !== next.readOnly ||
     prev.visibleCols !== next.visibleCols ||
     prev.leadingSpacerWidth !== next.leadingSpacerWidth ||
+    prev.stickyLeftByCol !== next.stickyLeftByCol ||
+    prev.stickyTop !== next.stickyTop ||
     prev.trailingSpacerWidth !== next.trailingSpacerWidth ||
     prev.getCellData !== next.getCellData ||
     prev.onCellClick !== next.onCellClick ||
@@ -2157,6 +2676,7 @@ function XlsxGrid({
   const firstVisibleRowRef = React.useRef<number | undefined>(undefined);
   const lastVisibleRowRef = React.useRef<number | undefined>(undefined);
   const cellRenderCacheRef = React.useRef(new Map<string, CellRenderData>());
+  const conditionalFormatMetricsCacheRef = React.useRef(new Map<string, number[]>());
   const resizeStateRef = React.useRef<
     | {
         actualIndex: number;
@@ -2259,6 +2779,22 @@ function XlsxGrid({
     }
     return cols;
   }, [displayColLimit, revision, worksheet]);
+  const frozenRows = React.useMemo(() => {
+    const freezeRow = activeSheet?.freezePanes?.row ?? 0;
+    if (freezeRow <= 0) {
+      return [];
+    }
+
+    return visibleRows.filter((row) => row < freezeRow);
+  }, [activeSheet?.freezePanes?.row, visibleRows]);
+  const frozenCols = React.useMemo(() => {
+    const freezeCol = activeSheet?.freezePanes?.col ?? 0;
+    if (freezeCol <= 0) {
+      return [];
+    }
+
+    return visibleCols.filter((col) => col < freezeCol);
+  }, [activeSheet?.freezePanes?.col, visibleCols]);
   const actualColWidths = React.useMemo(
     () =>
       Array.from({ length: displayColLimit }, (_, col) => {
@@ -2323,6 +2859,14 @@ function XlsxGrid({
   const colPrefixSums = React.useMemo(() => buildPrefixSums(effectiveColWidths), [effectiveColWidths]);
   const actualRowPrefixSums = React.useMemo(() => buildPrefixSums(actualRowHeights), [actualRowHeights]);
   const actualColPrefixSums = React.useMemo(() => buildPrefixSums(actualColWidths), [actualColWidths]);
+  const stickyTopByRow = React.useMemo(
+    () => buildStickyOffsets(frozenRows, actualRowHeights, HEADER_HEIGHT),
+    [actualRowHeights, frozenRows]
+  );
+  const stickyLeftByCol = React.useMemo(
+    () => buildStickyOffsets(frozenCols, actualColWidths, ROW_HEADER_WIDTH),
+    [actualColWidths, frozenCols]
+  );
   const rowPrefixSumsRef = React.useRef<number[]>(rowPrefixSums);
   const colPrefixSumsRef = React.useRef<number[]>(colPrefixSums);
   const firstVisibleRow = visibleRows[0];
@@ -2331,8 +2875,8 @@ function XlsxGrid({
   const lastVisibleCol = visibleCols[visibleCols.length - 1];
   const displayedSelection = fillPreviewRange ?? selectionPreviewRange ?? normalizedSelection;
   const hasFloatingDrawings = showImages && (images.length > 0 || shapes.length > 0);
-  const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges && !hasFloatingDrawings;
-  const shouldVirtualizeCols = !activeSheet?.hasHorizontalMerges;
+  const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges && !hasFloatingDrawings && frozenRows.length === 0;
+  const shouldVirtualizeCols = !activeSheet?.hasHorizontalMerges && frozenCols.length === 0;
 
   const rowVirtualizer = useVirtualizer({
     count: visibleRows.length,
@@ -2833,6 +3377,7 @@ function XlsxGrid({
         ) ?? resolveInheritedCellStyle(activeSheet, row, col);
     const table = getTableAtCell(effectiveTables, row, col);
     const tableStyle = resolveTableCellStyle(table, row, col, activeSheet);
+    const headerRowCount = table ? Math.max(table.headerRowCount, 1) : 0;
     const rawHyperlink = batchCoversRow
       ? batchedCell?.hyperlink
       : (worksheet.getHyperlinkAt(row, col) as
@@ -2841,12 +3386,28 @@ function XlsxGrid({
           | undefined);
     const nextData: CellRenderData = {
       colSpan: merge?.colSpan,
+      conditionalDataBar: resolveConditionalDataBarForCell(
+        row,
+        col,
+        worksheet,
+        activeSheet,
+        conditionalFormatMetricsCacheRef.current
+      ),
+      conditionalIcon: resolveConditionalIconForCell(
+        row,
+        col,
+        worksheet,
+        activeSheet,
+        conditionalFormatMetricsCacheRef.current
+      ),
       hyperlink: rawHyperlink ?? null,
       isMergedSecondary: false,
+      isTableHeader: Boolean(table && row >= table.start.row && row < table.start.row + headerRowCount),
       rowSpan: merge?.rowSpan,
       style: buildCellStyle(mergeResolvedCellStyle(rawStyle, tableStyle), palette, activeSheet?.themePalette, {
         showGridLines: activeSheet?.showGridLines
       }),
+      validation: resolveCellDataValidation(row, col, activeSheet),
       value: batchCoversRow ? batchedCell?.value ?? "" : getCellDisplayValue(worksheet, row, col, activeSheet)
     };
 
@@ -2886,6 +3447,10 @@ function XlsxGrid({
     cellRenderCacheRef.current.set(cacheKey, nextData);
     return nextData;
   }, [activeSheet, colIndexByActual, effectiveColWidths, effectiveTables, palette, viewportRowBatch, visibleCols, worksheet]);
+
+  React.useEffect(() => {
+    conditionalFormatMetricsCacheRef.current.clear();
+  }, [activeSheet?.conditionalFormatRules, activeSheet?.workbookSheetIndex, revision]);
 
   const selectionOverlay = React.useMemo(() => {
     if (!displayedSelection) {
@@ -4359,12 +4924,14 @@ function XlsxGrid({
                     }}
                     style={{
                       ...headerCellStyle,
+                      left: stickyLeftByCol.get(column.actualCol),
                       backgroundColor:
                         displayedSelection &&
                         column.actualCol >= displayedSelection.start.col &&
                         column.actualCol <= displayedSelection.end.col
                           ? selectionHeaderSurface
-                          : headerCellStyle.backgroundColor
+                          : headerCellStyle.backgroundColor,
+                      zIndex: stickyLeftByCol.has(column.actualCol) ? 55 : headerCellStyle.zIndex
                     }}
                   >
                     <div style={{ position: "relative" }}>
@@ -4432,6 +4999,8 @@ function XlsxGrid({
                         actualRow >= displayedSelection.start.row &&
                         actualRow <= displayedSelection.end.row
                     )}
+                    stickyLeftByCol={stickyLeftByCol}
+                    stickyTop={stickyTopByRow.get(actualRow)}
                     trailingSpacerWidth={trailingColumnSpacerWidth}
                     visibleCols={renderedCols}
                   />

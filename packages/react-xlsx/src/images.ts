@@ -1,5 +1,11 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import type {
+  XlsxConditionalDataBarRule,
+  XlsxConditionalFormatIcon,
+  XlsxConditionalFormatRule,
+  XlsxConditionalFormatValueObject,
+  XlsxConditionalIconSetRule,
+  XlsxCellRange,
   XlsxImage,
   XlsxImageRect,
   XlsxImageResizeHandlePosition,
@@ -70,6 +76,7 @@ type WorkbookSheetState = {
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
   colStyleIds: Record<number, number>;
+  conditionalFormatRules: XlsxConditionalFormatRule[];
   defaultColWidthPx: number;
   defaultRowHeightPx: number;
   hasHorizontalMerges: boolean;
@@ -134,15 +141,24 @@ export type WorkbookImageSheetOrigin = {
   workbookSheetIndex: number;
 };
 
+export type WorkbookTableMetadata = {
+  displayName?: string;
+  headerRowCellStyle?: string;
+  name?: string;
+  reference?: string;
+};
+
 export type WorkbookImageAssets = {
   archive: ArchiveEntries;
   imageOriginsById: Map<string, WorkbookImageOrigin>;
   imagesByWorkbookSheetIndex: XlsxImage[][];
+  namedCellStyleByName: Record<string, XlsxResolvedCellStyle>;
   objectUrls: string[];
   shapesByWorkbookSheetIndex: XlsxShape[][];
   sheetStatesByWorkbookSheetIndex: Array<WorkbookSheetState | null>;
   sheetOrigins: Array<WorkbookImageSheetOrigin | null>;
   styleById: Record<number, XlsxResolvedCellStyle>;
+  tableMetadataByWorkbookSheetIndex: WorkbookTableMetadata[][];
   tableStyleByName: Record<string, XlsxTableStyleDefinition>;
   themePalette: XlsxThemePalette;
 };
@@ -158,7 +174,11 @@ function buildThemePalette(theme: ThemeState): XlsxThemePalette {
     }
   });
 
-  return { colorsByIndex };
+  return {
+    colorsByIndex,
+    majorLatinFont: theme.majorLatinFont ?? undefined,
+    minorLatinFont: theme.minorLatinFont ?? undefined
+  };
 }
 
 function cloneBytes(bytes: Uint8Array) {
@@ -544,6 +564,10 @@ function parseSpreadsheetFont(node: Element | null): XlsxResolvedCellStyle["font
   const font: Record<string, unknown> = {};
   const size = getFirstChild(node, "sz")?.getAttribute("val");
   const name = getFirstChild(node, "name")?.getAttribute("val");
+  const family = getFirstChild(node, "family")?.getAttribute("val");
+  const scheme = getFirstChild(node, "scheme")?.getAttribute("val");
+  const charset = getFirstChild(node, "charset")?.getAttribute("val");
+  const verticalAlign = getFirstChild(node, "vertAlign")?.getAttribute("val");
   const color = parseSpreadsheetColor(getFirstChild(node, "color"));
   if (hasEnabledSpreadsheetFlag(getFirstChild(node, "b"))) {
     font.bold = true;
@@ -562,6 +586,30 @@ function parseSpreadsheetFont(node: Element | null): XlsxResolvedCellStyle["font
   }
   if (name) {
     font.name = name;
+  }
+  if (family !== null && family !== undefined) {
+    font.family = Number(family);
+  }
+  if (scheme) {
+    font.scheme = scheme;
+  }
+  if (charset !== null && charset !== undefined) {
+    font.charset = Number(charset);
+  }
+  if (verticalAlign) {
+    font.verticalAlign = verticalAlign;
+  }
+  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "shadow"))) {
+    font.shadow = true;
+  }
+  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "outline"))) {
+    font.outline = true;
+  }
+  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "condense"))) {
+    font.condense = true;
+  }
+  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "extend"))) {
+    font.extend = true;
   }
   if (color) {
     font.color = color;
@@ -583,9 +631,10 @@ function parseSpreadsheetFill(node: Element | null): XlsxResolvedCellStyle["fill
   const patternType = patternFill.getAttribute("patternType") ?? "none";
   const foreground = parseSpreadsheetColor(getFirstChild(patternFill, "fgColor"));
   const background = parseSpreadsheetColor(getFirstChild(patternFill, "bgColor"));
-  if (patternType === "solid" && foreground) {
+  const solidColor = foreground ?? background;
+  if (patternType === "solid" && solidColor) {
     return {
-      color: foreground,
+      color: solidColor,
       fillType: "solid"
     };
   }
@@ -687,10 +736,39 @@ function parseDifferentialStyle(node: Element | null): XlsxResolvedCellStyle {
   return style;
 }
 
+function parseResolvedXfStyle(
+  xfNode: Element,
+  fonts: Array<XlsxResolvedCellStyle["font"]>,
+  fills: Array<XlsxResolvedCellStyle["fill"]>,
+  borders: Array<XlsxResolvedCellStyle["border"]>
+) {
+  const style: XlsxResolvedCellStyle = {};
+  const fontId = Number(xfNode.getAttribute("fontId") ?? Number.NaN);
+  const fillId = Number(xfNode.getAttribute("fillId") ?? Number.NaN);
+  const borderId = Number(xfNode.getAttribute("borderId") ?? Number.NaN);
+  const alignment = parseSpreadsheetAlignment(getFirstChild(xfNode, "alignment"));
+
+  if (Number.isFinite(fontId) && fonts[fontId]) {
+    style.font = fonts[fontId];
+  }
+  if (Number.isFinite(fillId) && fills[fillId]) {
+    style.fill = fills[fillId];
+  }
+  if (Number.isFinite(borderId) && borders[borderId]) {
+    style.border = borders[borderId];
+  }
+  if (alignment) {
+    style.alignment = alignment;
+  }
+
+  return style;
+}
+
 function parseWorkbookStyles(archive: ArchiveEntries) {
   const xml = readArchiveText(archive, "xl/styles.xml");
   if (!xml) {
     return {
+      namedCellStyleByName: {},
       styleById: {},
       tableStyleByName: {}
     };
@@ -699,6 +777,7 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   const document = parseXml(xml);
   if (!document) {
     return {
+      namedCellStyleByName: {},
       styleById: {},
       tableStyleByName: {}
     };
@@ -707,11 +786,14 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   const fontsNode = getFirstDescendant(document, "fonts");
   const fillsNode = getFirstDescendant(document, "fills");
   const bordersNode = getFirstDescendant(document, "borders");
+  const cellStyleXfsNode = getFirstDescendant(document, "cellStyleXfs");
+  const cellStylesNode = getFirstDescendant(document, "cellStyles");
   const cellXfsNode = getFirstDescendant(document, "cellXfs");
   const dxfsNode = getFirstDescendant(document, "dxfs");
   const tableStylesNode = getFirstDescendant(document, "tableStyles");
   if (!cellXfsNode) {
     return {
+      namedCellStyleByName: {},
       styleById: {},
       tableStyleByName: {}
     };
@@ -721,30 +803,28 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   const fills = getChildElements(fillsNode ?? document.documentElement, "fill").map((node) => parseSpreadsheetFill(node));
   const borders = getChildElements(bordersNode ?? document.documentElement, "border").map((node) => parseSpreadsheetBorder(node));
   const differentialStyles = getChildElements(dxfsNode ?? document.documentElement, "dxf").map((node) => parseDifferentialStyle(node));
+  const cellStyleXfs = getChildElements(cellStyleXfsNode ?? document.documentElement, "xf").map(
+    (node) => parseResolvedXfStyle(node, fonts, fills, borders)
+  );
+  const namedCellStyleByName: Record<string, XlsxResolvedCellStyle> = {};
   const styleById: Record<number, XlsxResolvedCellStyle> = {};
   const tableStyleByName: Record<string, XlsxTableStyleDefinition> = {};
 
   getChildElements(cellXfsNode, "xf").forEach((xfNode, index) => {
-    const style: XlsxResolvedCellStyle = {};
-    const fontId = Number(xfNode.getAttribute("fontId") ?? Number.NaN);
-    const fillId = Number(xfNode.getAttribute("fillId") ?? Number.NaN);
-    const borderId = Number(xfNode.getAttribute("borderId") ?? Number.NaN);
-    const alignment = parseSpreadsheetAlignment(getFirstChild(xfNode, "alignment"));
+    styleById[index] = parseResolvedXfStyle(xfNode, fonts, fills, borders);
+  });
 
-    if (Number.isFinite(fontId) && fonts[fontId]) {
-      style.font = fonts[fontId];
-    }
-    if (Number.isFinite(fillId) && fills[fillId]) {
-      style.fill = fills[fillId];
-    }
-    if (Number.isFinite(borderId) && borders[borderId]) {
-      style.border = borders[borderId];
-    }
-    if (alignment) {
-      style.alignment = alignment;
+  getChildElements(cellStylesNode ?? document.documentElement, "cellStyle").forEach((cellStyleNode) => {
+    const name = cellStyleNode.getAttribute("name");
+    const xfId = Number(cellStyleNode.getAttribute("xfId") ?? Number.NaN);
+    if (!name || !Number.isFinite(xfId)) {
+      return;
     }
 
-    styleById[index] = style;
+    const resolvedStyle = cellStyleXfs[xfId];
+    if (resolvedStyle) {
+      namedCellStyleByName[name] = resolvedStyle;
+    }
   });
 
   getChildElements(tableStylesNode ?? document.documentElement, "tableStyle").forEach((tableStyleNode) => {
@@ -770,9 +850,342 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   });
 
   return {
+    namedCellStyleByName,
     styleById,
     tableStyleByName
   };
+}
+
+function parseWorkbookTableMetadata(
+  archive: ArchiveEntries,
+  workbookSheets: WorkbookSheetInfo[]
+) {
+  return workbookSheets.map((sheet) => {
+    const sheetRelationships = parseRelationships(archive, relsPathForDocument(sheet.path), sheet.path);
+    const sheetXml = readArchiveText(archive, sheet.path);
+    if (!sheetXml) {
+      return [];
+    }
+
+    const sheetDocument = parseXml(sheetXml);
+    if (!sheetDocument) {
+      return [];
+    }
+
+    return getLocalElements(sheetDocument, "tablePart").flatMap((tablePartNode) => {
+      const relationshipId = getRelationshipId(tablePartNode);
+      if (!relationshipId) {
+        return [];
+      }
+
+      const relationship = sheetRelationships.get(relationshipId);
+      if (!relationship) {
+        return [];
+      }
+
+      const tableXml = readArchiveText(archive, relationship.target);
+      if (!tableXml) {
+        return [];
+      }
+
+      const tableDocument = parseXml(tableXml);
+      const tableNode = tableDocument?.documentElement;
+      if (!tableNode || tableNode.localName !== "table") {
+        return [];
+      }
+
+      return [{
+        displayName: tableNode.getAttribute("displayName") ?? undefined,
+        headerRowCellStyle: tableNode.getAttribute("headerRowCellStyle") ?? undefined,
+        name: tableNode.getAttribute("name") ?? undefined,
+        reference: tableNode.getAttribute("ref") ?? undefined
+      } satisfies WorkbookTableMetadata];
+    });
+  });
+}
+
+function parseSqrefRanges(sqref: string | null | undefined): XlsxCellRange[] {
+  if (!sqref) {
+    return [];
+  }
+
+  return sqref
+    .trim()
+    .split(/\s+/)
+    .flatMap((reference) => {
+      const range = parseA1RangeReference(reference);
+      return range ? [range] : [];
+    });
+}
+
+function parseConditionalFormatValueObject(node: Element | null): XlsxConditionalFormatValueObject | null {
+  if (!node) {
+    return null;
+  }
+
+  const type = node.getAttribute("type");
+  if (!type) {
+    return null;
+  }
+
+  const rawValue = node.getAttribute("val") ?? getFirstChild(node, "f")?.textContent ?? undefined;
+  const numericValue = rawValue !== undefined ? Number(rawValue) : Number.NaN;
+  return {
+    type,
+    value: Number.isFinite(numericValue) ? numericValue : undefined
+  };
+}
+
+function parseSpreadsheetBooleanAttribute(node: Element | null, name: string) {
+  if (!node) {
+    return undefined;
+  }
+
+  const value = node.getAttribute(name);
+  if (value === null) {
+    return undefined;
+  }
+
+  return value !== "0" && value !== "false";
+}
+
+function parseStandardConditionalFormatRule(
+  cfRuleNode: Element,
+  ranges: XlsxCellRange[]
+): (XlsxConditionalFormatRule & { id?: string }) | null {
+  const type = cfRuleNode.getAttribute("type");
+  const rawPriority = Number(cfRuleNode.getAttribute("priority") ?? Number.NaN);
+  const priority = Number.isFinite(rawPriority) ? rawPriority : Number.MAX_SAFE_INTEGER;
+
+  if (type === "dataBar") {
+    const dataBarNode = getFirstChild(cfRuleNode, "dataBar");
+    if (!dataBarNode) {
+      return null;
+    }
+
+    const cfvos = getChildElements(dataBarNode, "cfvo")
+      .map((node) => parseConditionalFormatValueObject(node))
+      .filter((value): value is XlsxConditionalFormatValueObject => Boolean(value));
+    if (cfvos.length === 0) {
+      return null;
+    }
+
+    const extId = getFirstDescendant(cfRuleNode, "id")?.textContent?.trim() || undefined;
+    return {
+      cfvos,
+      color: parseSpreadsheetColor(getFirstChild(dataBarNode, "color")),
+      kind: "dataBar",
+      priority,
+      ranges,
+      id: extId
+    };
+  }
+
+  if (type === "iconSet") {
+    const iconSetNode = getFirstChild(cfRuleNode, "iconSet");
+    if (!iconSetNode) {
+      return null;
+    }
+
+    const iconSetName = iconSetNode.getAttribute("iconSet");
+    const cfvos = getChildElements(iconSetNode, "cfvo")
+      .map((node) => parseConditionalFormatValueObject(node))
+      .filter((value): value is XlsxConditionalFormatValueObject => Boolean(value));
+    if (!iconSetName || cfvos.length === 0) {
+      return null;
+    }
+
+    return {
+      cfvos,
+      icons: cfvos.map((_, index) => ({
+        iconId: index,
+        iconSet: iconSetName
+      })),
+      kind: "iconSet",
+      priority,
+      ranges,
+      reverse: parseSpreadsheetBooleanAttribute(iconSetNode, "reverse"),
+      showValue: parseSpreadsheetBooleanAttribute(iconSetNode, "showValue")
+    };
+  }
+
+  return null;
+}
+
+function parseExtendedConditionalFormatRule(
+  cfRuleNode: Element,
+  ranges: XlsxCellRange[]
+): (XlsxConditionalFormatRule & { id?: string }) | null {
+  const type = cfRuleNode.getAttribute("type");
+  const ruleId = cfRuleNode.getAttribute("id") ?? undefined;
+  const rawPriority = Number(cfRuleNode.getAttribute("priority") ?? Number.NaN);
+  const priority = Number.isFinite(rawPriority) ? rawPriority : Number.MAX_SAFE_INTEGER;
+
+  if (type === "dataBar") {
+    const dataBarNode = getFirstChild(cfRuleNode, "dataBar");
+    if (!dataBarNode) {
+      return null;
+    }
+
+    const cfvos = getChildElements(dataBarNode, "cfvo")
+      .map((node) => parseConditionalFormatValueObject(node))
+      .filter((value): value is XlsxConditionalFormatValueObject => Boolean(value));
+    if (cfvos.length === 0) {
+      return null;
+    }
+
+    return {
+      borderColor: parseSpreadsheetColor(getFirstChild(dataBarNode, "borderColor")),
+      cfvos,
+      color: parseSpreadsheetColor(getFirstChild(dataBarNode, "fillColor")),
+      gradient: parseSpreadsheetBooleanAttribute(dataBarNode, "gradient"),
+      kind: "dataBar",
+      maxLength: Number(dataBarNode.getAttribute("maxLength") ?? Number.NaN),
+      minLength: Number(dataBarNode.getAttribute("minLength") ?? Number.NaN),
+      priority,
+      ranges,
+      showValue: parseSpreadsheetBooleanAttribute(dataBarNode, "showValue"),
+      id: ruleId
+    };
+  }
+
+  if (type === "iconSet") {
+    const iconSetNode = getFirstChild(cfRuleNode, "iconSet");
+    if (!iconSetNode) {
+      return null;
+    }
+
+    const cfvos = getChildElements(iconSetNode, "cfvo")
+      .map((node) => parseConditionalFormatValueObject(node))
+      .filter((value): value is XlsxConditionalFormatValueObject => Boolean(value));
+    const icons = getChildElements(iconSetNode, "cfIcon")
+      .map((iconNode) => {
+        const iconSet = iconNode.getAttribute("iconSet");
+        const rawIconId = Number(iconNode.getAttribute("iconId") ?? Number.NaN);
+        if (!iconSet || !Number.isFinite(rawIconId)) {
+          return null;
+        }
+
+        return {
+          iconId: rawIconId,
+          iconSet
+        } satisfies XlsxConditionalFormatIcon;
+      })
+      .filter((icon): icon is XlsxConditionalFormatIcon => Boolean(icon));
+
+    if (cfvos.length === 0 || icons.length === 0) {
+      return null;
+    }
+
+    return {
+      cfvos,
+      icons,
+      kind: "iconSet",
+      priority,
+      ranges,
+      reverse: parseSpreadsheetBooleanAttribute(iconSetNode, "reverse"),
+      showValue: parseSpreadsheetBooleanAttribute(iconSetNode, "showValue"),
+      id: ruleId
+    };
+  }
+
+  return null;
+}
+
+function mergeConditionalFormatRule(
+  baseRule: XlsxConditionalFormatRule & { id?: string },
+  extendedRule: XlsxConditionalFormatRule & { id?: string }
+) {
+  if (baseRule.kind !== extendedRule.kind) {
+    return baseRule;
+  }
+
+  if (baseRule.kind === "dataBar" && extendedRule.kind === "dataBar") {
+    const merged: XlsxConditionalDataBarRule & { id?: string } = {
+      ...baseRule,
+      ...extendedRule,
+      cfvos: extendedRule.cfvos.length > 0 ? extendedRule.cfvos : baseRule.cfvos,
+      color: extendedRule.color ?? baseRule.color,
+      priority: Number.isFinite(extendedRule.priority) ? extendedRule.priority : baseRule.priority,
+      ranges: extendedRule.ranges.length > 0 ? extendedRule.ranges : baseRule.ranges
+    };
+    return merged;
+  }
+
+  if (baseRule.kind === "iconSet" && extendedRule.kind === "iconSet") {
+    const merged: XlsxConditionalIconSetRule & { id?: string } = {
+      ...baseRule,
+      ...extendedRule,
+      cfvos: extendedRule.cfvos.length > 0 ? extendedRule.cfvos : baseRule.cfvos,
+      icons: extendedRule.icons.length > 0 ? extendedRule.icons : baseRule.icons,
+      priority: Number.isFinite(extendedRule.priority) ? extendedRule.priority : baseRule.priority,
+      ranges: extendedRule.ranges.length > 0 ? extendedRule.ranges : baseRule.ranges
+    };
+    return merged;
+  }
+
+  return baseRule;
+}
+
+function parseConditionalFormatRules(document: Document) {
+  const standardRules: Array<XlsxConditionalFormatRule & { id?: string }> = [];
+  const extendedRules: Array<XlsxConditionalFormatRule & { id?: string }> = [];
+
+  getLocalElements(document, "conditionalFormatting").forEach((conditionalFormattingNode) => {
+    const isExtended = conditionalFormattingNode.namespaceURI !== SPREADSHEET_NS;
+    const ranges = isExtended
+      ? parseSqrefRanges(getFirstChild(conditionalFormattingNode, "sqref")?.textContent ?? "")
+      : parseSqrefRanges(conditionalFormattingNode.getAttribute("sqref"));
+
+    getChildElements(conditionalFormattingNode, "cfRule").forEach((cfRuleNode) => {
+      const parsedRule = isExtended
+        ? parseExtendedConditionalFormatRule(cfRuleNode, ranges)
+        : parseStandardConditionalFormatRule(cfRuleNode, ranges);
+      if (parsedRule) {
+        if (isExtended) {
+          extendedRules.push(parsedRule);
+        } else {
+          standardRules.push(parsedRule);
+        }
+      }
+    });
+  });
+
+  const mergedRules: XlsxConditionalFormatRule[] = [];
+  const usedExtendedRuleIds = new Set<string>();
+  const extendedRulesById = new Map(
+    extendedRules
+      .filter((rule) => typeof rule.id === "string" && rule.id.length > 0)
+      .map((rule) => [rule.id as string, rule])
+  );
+
+  standardRules.forEach((rule) => {
+    const matchingExtendedRule = rule.id ? extendedRulesById.get(rule.id) : undefined;
+    if (matchingExtendedRule) {
+      usedExtendedRuleIds.add(rule.id as string);
+      mergedRules.push(mergeConditionalFormatRule(rule, matchingExtendedRule));
+      return;
+    }
+
+    mergedRules.push(rule);
+  });
+
+  extendedRules.forEach((rule) => {
+    if (rule.id && usedExtendedRuleIds.has(rule.id)) {
+      return;
+    }
+
+    mergedRules.push(rule);
+  });
+
+  return mergedRules
+    .map((rule) => {
+      const nextRule = { ...rule } as XlsxConditionalFormatRule & { id?: string };
+      delete nextRule.id;
+      return nextRule;
+    })
+    .filter((rule) => rule.ranges.length > 0)
+    .sort((left, right) => left.priority - right.priority);
 }
 
 function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetState | null {
@@ -787,6 +1200,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
   }
 
   const cachedFormulaValues: Record<string, string> = {};
+  const conditionalFormatRules = parseConditionalFormatRules(document);
   const sheetFormatNode = getLocalElements(document, "sheetFormatPr")[0] ?? null;
   const sheetViewNode = getLocalElements(document, "sheetView")[0] ?? null;
   const rowHeightOverridesPx: Record<number, number> = {};
@@ -867,6 +1281,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     cachedFormulaValues,
     colWidthOverridesPx,
     colStyleIds,
+    conditionalFormatRules,
     defaultColWidthPx: sheetColumnWidthToPixels(defaultColWidth),
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
     hasHorizontalMerges,
@@ -1285,6 +1700,8 @@ function parseGroupTransform(
   const xfrmNode = getFirstDescendant(getFirstChild(groupNode, "grpSpPr") ?? groupNode, "xfrm");
   const anchorRect = anchorToAbsoluteRect(fallbackAnchor, sheetState);
   const rect = parseTransformRect(xfrmNode) ?? anchorRect;
+  const rootRectMatchesAnchorOrigin = Math.abs(rect.x - anchorRect.x) <= EMU_PER_PIXEL
+    && Math.abs(rect.y - anchorRect.y) <= EMU_PER_PIXEL;
   const chOffNode = getFirstChild(xfrmNode ?? groupNode, "chOff");
   const chExtNode = getFirstChild(xfrmNode ?? groupNode, "chExt");
   const rootScaleX = rect.cx !== 0 ? anchorRect.cx / rect.cx : 1;
@@ -1295,7 +1712,11 @@ function parseGroupTransform(
     || rootScaleY < 0.85
     || rootScaleY > 1.15
   );
-  const absoluteRect = parentGroup ? applyGroupTransform(rect, parentGroup) : anchorRect;
+  const absoluteRect = parentGroup
+    ? applyGroupTransform(rect, parentGroup)
+    : rootRectMatchesAnchorOrigin
+      ? rect
+      : anchorRect;
   const childRectX = parentGroup
     ? Number(chOffNode?.getAttribute("x") ?? 0)
     : useRectFrameForRoot
@@ -1948,7 +2369,8 @@ export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets
   const workbookSheets = parseWorkbookSheets(archive);
   const theme = parseWorkbookTheme(archive);
   const themePalette = buildThemePalette(theme);
-  const { styleById, tableStyleByName } = parseWorkbookStyles(archive);
+  const { namedCellStyleByName, styleById, tableStyleByName } = parseWorkbookStyles(archive);
+  const tableMetadataByWorkbookSheetIndex = parseWorkbookTableMetadata(archive, workbookSheets);
   const objectUrls: string[] = [];
   const imagesByWorkbookSheetIndex: XlsxImage[][] = [];
   const shapesByWorkbookSheetIndex: XlsxShape[][] = [];
@@ -2006,11 +2428,13 @@ export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets
     archive,
     imageOriginsById,
     imagesByWorkbookSheetIndex,
+    namedCellStyleByName,
     objectUrls,
     shapesByWorkbookSheetIndex,
     sheetOrigins,
     sheetStatesByWorkbookSheetIndex,
     styleById,
+    tableMetadataByWorkbookSheetIndex,
     tableStyleByName,
     themePalette
   };

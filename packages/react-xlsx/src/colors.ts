@@ -148,3 +148,32 @@ export function resolveWorkbookColor(
 
   return Number.isFinite(tint) ? applyExcelTint(themeColor, tint) : themeColor;
 }
+
+export function resolveWorkbookFillColor(
+  fill: Record<string, unknown> | undefined,
+  themePalette?: XlsxThemePalette | null
+): string | null {
+  if (!fill) {
+    return null;
+  }
+
+  if (fill.fillType === "solid") {
+    return resolveWorkbookColor(
+      (fill.color as Record<string, unknown> | undefined)
+      ?? (fill.foreground as Record<string, unknown> | undefined)
+      ?? (fill.background as Record<string, unknown> | undefined),
+      themePalette
+    );
+  }
+
+  if (fill.fillType === "pattern") {
+    return resolveWorkbookColor(
+      (fill.foreground as Record<string, unknown> | undefined)
+      ?? (fill.color as Record<string, unknown> | undefined)
+      ?? (fill.background as Record<string, unknown> | undefined),
+      themePalette
+    );
+  }
+
+  return null;
+}

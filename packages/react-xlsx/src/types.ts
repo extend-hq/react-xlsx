@@ -3,6 +3,8 @@ import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
 
 export interface XlsxThemePalette {
   colorsByIndex: Record<number, string>;
+  majorLatinFont?: string;
+  minorLatinFont?: string;
 }
 
 export interface XlsxResolvedCellStyle {
@@ -17,13 +19,69 @@ export interface XlsxTableStyleDefinition {
   [elementType: string]: XlsxResolvedCellStyle;
 }
 
+export interface XlsxConditionalFormatValueObject {
+  type: string;
+  value?: number;
+}
+
+export interface XlsxConditionalDataBarRule {
+  color?: Record<string, unknown>;
+  borderColor?: Record<string, unknown>;
+  cfvos: XlsxConditionalFormatValueObject[];
+  gradient?: boolean;
+  kind: "dataBar";
+  maxLength?: number;
+  minLength?: number;
+  priority: number;
+  ranges: XlsxCellRange[];
+  showValue?: boolean;
+}
+
+export interface XlsxConditionalFormatIcon {
+  iconId: number;
+  iconSet: string;
+}
+
+export interface XlsxConditionalIconSetRule {
+  cfvos: XlsxConditionalFormatValueObject[];
+  icons: XlsxConditionalFormatIcon[];
+  kind: "iconSet";
+  priority: number;
+  ranges: XlsxCellRange[];
+  reverse?: boolean;
+  showValue?: boolean;
+}
+
+export type XlsxConditionalFormatRule = XlsxConditionalDataBarRule | XlsxConditionalIconSetRule;
+
+export interface XlsxDataValidation {
+  allowBlank?: boolean;
+  errorMessage?: string;
+  errorStyle?: string;
+  inputMessage?: string;
+  listSource?: string;
+  ranges: XlsxCellRange[];
+  showDropdown?: boolean;
+  showErrorAlert?: boolean;
+  showInputMessage?: boolean;
+  validationType: string;
+}
+
+export interface XlsxFreezePanes {
+  col: number;
+  row: number;
+}
+
 export interface XlsxSheetData {
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
   colStyleIds: Record<number, number>;
+  conditionalFormatRules: XlsxConditionalFormatRule[];
+  dataValidations: XlsxDataValidation[];
   name: string;
   defaultColWidthPx: number;
   defaultRowHeightPx: number;
+  freezePanes: XlsxFreezePanes | null;
   hasHorizontalMerges: boolean;
   hasVerticalMerges: boolean;
   maxUsedCol: number;
@@ -32,6 +90,7 @@ export interface XlsxSheetData {
   colCount: number;
   rowHeightOverridesPx: Record<number, number>;
   rowStyleIds: Record<number, number>;
+  namedCellStyleByName: Record<string, XlsxResolvedCellStyle>;
   styleById: Record<number, XlsxResolvedCellStyle>;
   tableStyleByName: Record<string, XlsxTableStyleDefinition>;
   visibleRows: number[];
@@ -41,6 +100,7 @@ export interface XlsxSheetData {
   showGridLines: boolean;
   themePalette: XlsxThemePalette;
   workbookSheetIndex: number;
+  zoomScale?: number;
 }
 
 export interface XlsxCellAddress {
@@ -78,6 +138,7 @@ export interface XlsxTable {
   displayName: string;
   end: XlsxCellAddress;
   headerRowCount: number;
+  headerRowCellStyle?: string;
   name: string;
   reference: string;
   start: XlsxCellAddress;

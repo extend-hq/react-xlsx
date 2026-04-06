@@ -1,7 +1,7 @@
 import * as React from "react";
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import { resolveWorkbookColor } from "./colors";
+import { resolveWorkbookColor, resolveWorkbookFillColor } from "./colors";
 import {
   mergeWorkbookImageAssets,
   parseWorkbookImageAssets,
@@ -15,7 +15,8 @@ import {
   revokeWorkbookImageAssets,
   updateWorkbookImageAnchor,
   type WorkbookImageAssets,
-  type WorkbookImageSheetOrigin
+  type WorkbookImageSheetOrigin,
+  type WorkbookTableMetadata
 } from "./images";
 import { getSheetsWasmModule } from "./wasm";
 import type {
@@ -23,6 +24,9 @@ import type {
   XlsxCellAddress,
   XlsxCellRange,
   XlsxClipboardData,
+  XlsxConditionalFormatRule,
+  XlsxDataValidation,
+  XlsxFreezePanes,
   XlsxImage,
   XlsxImageRect,
   XlsxImageResizeHandlePosition,
@@ -167,6 +171,7 @@ function buildSheetList(
     cachedFormulaValues?: Record<string, string>;
     colWidthOverridesPx?: Record<number, number>;
     colStyleIds?: Record<number, number>;
+    conditionalFormatRules?: XlsxConditionalFormatRule[];
     defaultColWidthPx?: number;
     defaultRowHeightPx?: number;
     hasHorizontalMerges?: boolean;
@@ -177,6 +182,7 @@ function buildSheetList(
   } | null>,
   themePalette?: XlsxThemePalette | null,
   styleById?: Record<number, XlsxResolvedCellStyle> | null,
+  namedCellStyleByName?: Record<string, XlsxResolvedCellStyle> | null,
   tableStyleByName?: Record<string, XlsxTableStyleDefinition> | null
 ): XlsxSheetData[] {
   const sheets: XlsxSheetData[] = [];
@@ -212,13 +218,17 @@ function buildSheetList(
         cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
         colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
         colStyleIds: sheetState?.colStyleIds ?? {},
+        conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
+        dataValidations: parseWorksheetDataValidations(worksheet),
         defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
         defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+        freezePanes: parseWorksheetFreezePanes(worksheet),
         hasHorizontalMerges: sheetState?.hasHorizontalMerges ?? false,
         hasVerticalMerges: sheetState?.hasVerticalMerges ?? false,
         maxUsedCol: -1,
         maxUsedRow: -1,
         name: worksheet.name,
+        namedCellStyleByName: namedCellStyleByName ?? {},
         rowCount: 0,
         colCount: 0,
         rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
@@ -231,7 +241,8 @@ function buildSheetList(
         rowHeights: [],
         showGridLines: sheetState?.showGridLines ?? true,
         themePalette: themePalette ?? { colorsByIndex: {} },
-        workbookSheetIndex: index
+        workbookSheetIndex: index,
+        zoomScale: typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined
       });
       continue;
     }
@@ -296,13 +307,17 @@ function buildSheetList(
       cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
       colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
       colStyleIds: sheetState?.colStyleIds ?? {},
+      conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
+      dataValidations: parseWorksheetDataValidations(worksheet),
       defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
       defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+      freezePanes: parseWorksheetFreezePanes(worksheet),
       hasHorizontalMerges: sheetState?.hasHorizontalMerges ?? false,
       hasVerticalMerges: sheetState?.hasVerticalMerges ?? false,
       maxUsedCol: maxCol,
       maxUsedRow: maxRow,
       name: worksheet.name,
+      namedCellStyleByName: namedCellStyleByName ?? {},
       rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
       rowStyleIds: sheetState?.rowStyleIds ?? {},
       showGridLines: sheetState?.showGridLines ?? true,
@@ -310,6 +325,7 @@ function buildSheetList(
       tableStyleByName: tableStyleByName ?? {},
       themePalette: themePalette ?? { colorsByIndex: {} },
       workbookSheetIndex: index,
+      zoomScale: typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined,
       get rowCount() {
         return getVisibleRows().length;
       },
@@ -399,6 +415,59 @@ function parseA1RangeReference(reference: string): XlsxCellRange | null {
   return normalizeRange({ start, end });
 }
 
+function parseWorksheetFreezePanes(worksheet: ReturnType<Workbook["getSheet"]>): XlsxFreezePanes | null {
+  const rawFreezePanes = worksheet.freezePanes as Record<string, unknown> | null | undefined;
+  const row = typeof rawFreezePanes?.row === "number" && rawFreezePanes.row >= 0 ? rawFreezePanes.row : null;
+  const col = typeof rawFreezePanes?.col === "number" && rawFreezePanes.col >= 0 ? rawFreezePanes.col : null;
+  if (row === null && col === null) {
+    return null;
+  }
+
+  return {
+    col: col ?? 0,
+    row: row ?? 0
+  };
+}
+
+function parseWorksheetDataValidations(worksheet: ReturnType<Workbook["getSheet"]>): XlsxDataValidation[] {
+  const rawDataValidations = Array.isArray(worksheet.dataValidations) ? worksheet.dataValidations : [];
+
+  return rawDataValidations.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const validation = entry as Record<string, unknown>;
+    const ranges = Array.isArray(validation.ranges)
+      ? validation.ranges.flatMap((range) => {
+          if (typeof range !== "string") {
+            return [];
+          }
+
+          const parsedRange = parseA1RangeReference(range);
+          return parsedRange ? [parsedRange] : [];
+        })
+      : [];
+    const validationType = typeof validation.validationType === "string" ? validation.validationType : null;
+    if (!validationType || ranges.length === 0) {
+      return [];
+    }
+
+    return [{
+      allowBlank: typeof validation.allowBlank === "boolean" ? validation.allowBlank : undefined,
+      errorMessage: typeof validation.errorMessage === "string" ? validation.errorMessage : undefined,
+      errorStyle: typeof validation.errorStyle === "string" ? validation.errorStyle : undefined,
+      inputMessage: typeof validation.inputMessage === "string" ? validation.inputMessage : undefined,
+      listSource: typeof validation.listSource === "string" ? validation.listSource : undefined,
+      ranges,
+      showDropdown: typeof validation.showDropdown === "boolean" ? validation.showDropdown : undefined,
+      showErrorAlert: typeof validation.showErrorAlert === "boolean" ? validation.showErrorAlert : undefined,
+      showInputMessage: typeof validation.showInputMessage === "boolean" ? validation.showInputMessage : undefined,
+      validationType
+    } satisfies XlsxDataValidation];
+  });
+}
+
 function normalizeRange(range: XlsxCellRange): XlsxCellRange {
   return {
     start: {
@@ -429,7 +498,10 @@ function rangeContainsCell(range: XlsxCellRange, cell: XlsxCellAddress): boolean
   );
 }
 
-function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null): XlsxTable[] {
+function mapWorksheetTables(
+  worksheet: ReturnType<Workbook["getSheet"]> | null,
+  metadataForSheet?: WorkbookTableMetadata[] | null
+): XlsxTable[] {
   const rawTables = (worksheet?.tables ?? []) as Array<Record<string, unknown>>;
   return rawTables.flatMap((table, index) => {
     const reference = typeof table.reference === "string" ? table.reference : "";
@@ -439,21 +511,30 @@ function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null):
     }
 
     const rawColumns = Array.isArray(table.columns) ? table.columns : [];
+    const rawName = typeof table.name === "string" ? table.name : `Table${index + 1}`;
+    const rawDisplayName =
+      typeof table.displayName === "string"
+        ? table.displayName
+        : typeof table.name === "string"
+          ? table.name
+          : `Table ${index + 1}`;
+    const metadata = metadataForSheet?.find((entry) =>
+      (entry.name && entry.name === rawName)
+      || (entry.displayName && entry.displayName === rawDisplayName)
+      || (entry.reference && entry.reference === reference)
+    );
+
     return [{
       columns: rawColumns.map((column, columnIndex) => ({
         id: typeof (column as { id?: unknown }).id === "number" ? ((column as { id?: number }).id ?? columnIndex + 1) : columnIndex + 1,
         index: columnIndex,
         name: typeof (column as { name?: unknown }).name === "string" ? ((column as { name?: string }).name ?? `Column ${columnIndex + 1}`) : `Column ${columnIndex + 1}`
       })),
-      displayName:
-        typeof table.displayName === "string"
-          ? table.displayName
-          : typeof table.name === "string"
-            ? table.name
-            : `Table ${index + 1}`,
+      displayName: rawDisplayName,
       end: parsedRange.end,
       headerRowCount: typeof table.headerRowCount === "number" ? table.headerRowCount : 1,
-      name: typeof table.name === "string" ? table.name : `Table${index + 1}`,
+      headerRowCellStyle: metadata?.headerRowCellStyle,
+      name: rawName,
       reference,
       start: parsedRange.start,
       styleInfo: table.styleInfo as XlsxTable["styleInfo"] | undefined,
@@ -786,7 +867,32 @@ function collectWorksheetApiImages(workbook: Workbook) {
   return imagesByWorkbookSheetIndex;
 }
 
+function isZipWorkbook(bytes: Uint8Array) {
+  return bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+}
+
+function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
+  return {
+    archive: {},
+    imageOriginsById: new Map(),
+    imagesByWorkbookSheetIndex: collectWorksheetApiImages(workbook),
+    namedCellStyleByName: {},
+    objectUrls: [],
+    shapesByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => [] as XlsxShape[]),
+    sheetOrigins: Array.from({ length: workbook.sheetCount }, () => null as WorkbookImageSheetOrigin | null),
+    sheetStatesByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => null),
+    styleById: {},
+    tableMetadataByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => [] as WorkbookTableMetadata[]),
+    tableStyleByName: {},
+    themePalette: { colorsByIndex: {} }
+  };
+}
+
 function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook) {
+  if (!isZipWorkbook(bytes)) {
+    return createBasicWorkbookAssets(workbook);
+  }
+
   const parsedAssets = parseWorkbookImageAssets(bytes);
   const apiImagesByWorkbookSheetIndex = collectWorksheetApiImages(workbook);
   let didApplyFallback = false;
@@ -915,6 +1021,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex,
         imageAssetsRef.current?.themePalette,
         imageAssetsRef.current?.styleById,
+        imageAssetsRef.current?.namedCellStyleByName,
         imageAssetsRef.current?.tableStyleByName
       )
     );
@@ -1000,6 +1107,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             nextImageAssets.sheetStatesByWorkbookSheetIndex,
             nextImageAssets.themePalette,
             nextImageAssets.styleById,
+            nextImageAssets.namedCellStyleByName,
             nextImageAssets.tableStyleByName
           )
         );
@@ -1066,6 +1174,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             nextImageAssets.sheetStatesByWorkbookSheetIndex,
             nextImageAssets.themePalette,
             nextImageAssets.styleById,
+            nextImageAssets.namedCellStyleByName,
             nextImageAssets.tableStyleByName
           )
         );
@@ -1102,7 +1211,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     return workbook.getSheet(activeSheet.workbookSheetIndex);
   }, [activeSheet, workbook]);
 
-  const tables = React.useMemo(() => mapWorksheetTables(getActiveWorksheet()), [getActiveWorksheet, revision]);
+  const activeTableMetadata = imageAssetsRef.current?.tableMetadataByWorkbookSheetIndex[activeSheet?.workbookSheetIndex ?? -1] ?? null;
+  const tables = React.useMemo(
+    () => mapWorksheetTables(getActiveWorksheet(), activeTableMetadata),
+    [activeTableMetadata, getActiveWorksheet, revision]
+  );
 
   const visibleSheetIndexByWorkbookSheetIndex = React.useMemo(
     () => new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index])),
@@ -1277,12 +1390,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         const fill = rawStyle?.fill as Record<string, unknown> | undefined;
         if (fill) {
-          const fillColor =
-            fill.fillType === "solid"
-              ? resolveWorkbookColor(fill.color as Record<string, unknown> | undefined, activeSheet?.themePalette)
-              : fill.fillType === "pattern"
-                ? resolveWorkbookColor(fill.foreground as Record<string, unknown> | undefined, activeSheet?.themePalette)
-                : null;
+          const fillColor = resolveWorkbookFillColor(fill, activeSheet?.themePalette);
 
           if (fillColor && fillColor.toLowerCase() !== "#ffffff") {
             cellStyles.push(`background-color:${fillColor}`);
@@ -1420,6 +1528,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       nextImageAssets.sheetStatesByWorkbookSheetIndex,
       nextImageAssets.themePalette,
       nextImageAssets.styleById,
+      nextImageAssets.namedCellStyleByName,
       nextImageAssets.tableStyleByName
     );
     const nextSheetIndex = Math.max(0, Math.min(entry.activeSheetIndex, Math.max(0, nextSheets.length - 1)));
@@ -2121,6 +2230,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex,
       imageAssetsRef.current?.themePalette,
       imageAssetsRef.current?.styleById,
+      imageAssetsRef.current?.namedCellStyleByName,
       imageAssetsRef.current?.tableStyleByName
     );
     setSheets(nextSheets);
@@ -2149,6 +2259,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex,
       imageAssetsRef.current?.themePalette,
       imageAssetsRef.current?.styleById,
+      imageAssetsRef.current?.namedCellStyleByName,
       imageAssetsRef.current?.tableStyleByName
     );
     setSheets(nextSheets);
