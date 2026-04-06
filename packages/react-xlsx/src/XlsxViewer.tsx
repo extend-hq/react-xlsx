@@ -42,6 +42,12 @@ const MIN_OPEN_GRID_ROWS = 200;
 const MIN_OPEN_GRID_COLS = 50;
 const OPEN_GRID_ROW_PADDING = 120;
 const OPEN_GRID_COL_PADDING = 24;
+const INITIAL_WORKER_GRID_ROWS = 600;
+const INITIAL_WORKER_GRID_COLS = 120;
+const WORKER_GRID_GROW_ROWS = 2000;
+const WORKER_GRID_GROW_COLS = 120;
+const WORKER_GRID_GROW_THRESHOLD_ROWS = 160;
+const WORKER_GRID_GROW_THRESHOLD_COLS = 24;
 const OPEN_GRID_ROW_GROWTH = 200;
 const OPEN_GRID_COL_GROWTH = 24;
 const OPEN_GRID_VERTICAL_EDGE_PX = 600;
@@ -317,6 +323,49 @@ function resolveOpenGridExtent(maxUsedIndex: number, minimum: number, padding: n
   return Math.max(maxUsedIndex + 1 + padding, minimum);
 }
 
+function buildVisibleAxisIndices(
+  precomputed: number[],
+  displayLimit: number,
+  maxUsedIndex: number,
+  hiddenIndices?: Set<number>
+) {
+  if (displayLimit <= 0) {
+    return [];
+  }
+
+  if (precomputed.length === 0) {
+    const visible: number[] = [];
+    const usedLimit = Math.min(displayLimit, Math.max(0, maxUsedIndex + 1));
+    for (let index = 0; index < usedLimit; index += 1) {
+      if (!hiddenIndices?.has(index)) {
+        visible.push(index);
+      }
+    }
+    for (let index = usedLimit; index < displayLimit; index += 1) {
+      visible.push(index);
+    }
+    return visible;
+  }
+
+  const visible = precomputed.filter((value) => value < displayLimit);
+  const appendStart = Math.max(0, maxUsedIndex + 1);
+  for (let index = appendStart; index < displayLimit; index += 1) {
+    visible.push(index);
+  }
+  return visible;
+}
+
+function resolveInitialDisplayExtent(
+  maxUsedIndex: number,
+  minimum: number,
+  padding: number,
+  isWorkerBacked: boolean,
+  initialCap: number
+) {
+  const fullExtent = resolveOpenGridExtent(maxUsedIndex, minimum, padding);
+  return isWorkerBacked ? Math.min(fullExtent, Math.max(minimum, initialCap)) : fullExtent;
+}
+
 function sumBeforeActualIndex(actualIndices: number[], sizes: number[], actualIndex: number) {
   let total = 0;
   for (let index = 0; index < actualIndices.length; index += 1) {
@@ -453,6 +502,28 @@ function resolveImageAnchorExtents(image: XlsxImage) {
   };
 }
 
+function resolveAnchoredBounds(anchor: XlsxImage["anchor"] | XlsxShape["anchor"]) {
+  if (anchor.kind === "absolute") {
+    return null;
+  }
+
+  if (anchor.kind === "one-cell") {
+    return {
+      maxCol: anchor.from.col,
+      maxRow: anchor.from.row,
+      minCol: anchor.from.col,
+      minRow: anchor.from.row
+    };
+  }
+
+  return {
+    maxCol: Math.max(anchor.from.col, anchor.to.col),
+    maxRow: Math.max(anchor.from.row, anchor.to.row),
+    minCol: Math.min(anchor.from.col, anchor.to.col),
+    minRow: Math.min(anchor.from.row, anchor.to.row)
+  };
+}
+
 function resolveShapeAnchorExtents(shape: XlsxShape) {
   if (shape.anchor.kind === "absolute") {
     return { maxCol: 0, maxRow: 0 };
@@ -469,6 +540,48 @@ function resolveShapeAnchorExtents(shape: XlsxShape) {
     maxCol: Math.max(shape.anchor.from.col, shape.anchor.to.col),
     maxRow: Math.max(shape.anchor.from.row, shape.anchor.to.row)
   };
+}
+
+type FrozenDrawingPane = "corner" | "left" | "scroll" | "top";
+
+function resolveFrozenDrawingPane(
+  rect: XlsxImageRect,
+  frozenRows: number[],
+  frozenCols: number[],
+  actualRowHeights: number[],
+  actualColWidths: number[],
+  freezePanes: XlsxSheetData["freezePanes"] | null,
+  stickyTopByRow: Map<number, number>,
+  stickyLeftByCol: Map<number, number>
+): FrozenDrawingPane {
+  const frozenPaneBottom =
+    freezePanes?.row && freezePanes.row > 0 && frozenRows.length > 0
+      ? frozenRows.reduce(
+          (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? HEADER_HEIGHT) + (actualRowHeights[row] ?? DEFAULT_ROW_HEIGHT)),
+          HEADER_HEIGHT
+        )
+      : null;
+  const frozenPaneRight =
+    freezePanes?.col && freezePanes.col > 0 && frozenCols.length > 0
+      ? frozenCols.reduce(
+          (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? ROW_HEADER_WIDTH) + (actualColWidths[col] ?? DEFAULT_COL_WIDTH)),
+          ROW_HEADER_WIDTH
+        )
+      : null;
+
+  const freezeTop = frozenPaneBottom !== null && rect.top + rect.height <= frozenPaneBottom + 0.5;
+  const freezeLeft = frozenPaneRight !== null && rect.left + rect.width <= frozenPaneRight + 0.5;
+
+  if (freezeTop && freezeLeft) {
+    return "corner";
+  }
+  if (freezeTop) {
+    return "top";
+  }
+  if (freezeLeft) {
+    return "left";
+  }
+  return "scroll";
 }
 
 function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect): React.CSSProperties {
@@ -1057,6 +1170,17 @@ function resolveSpreadsheetLineHeight(fontSizePt?: number) {
   return 1.3;
 }
 
+function buildGridlineShadow(color: string, options?: { bottom?: boolean; right?: boolean }) {
+  const parts: string[] = [];
+  if (options?.right !== false) {
+    parts.push(`inset -1px 0 0 ${color}`);
+  }
+  if (options?.bottom !== false) {
+    parts.push(`inset 0 -1px 0 ${color}`);
+  }
+  return parts.join(", ");
+}
+
 function buildCellStyle(
   style: Record<string, unknown> | null | undefined,
   palette: ViewerPalette,
@@ -1067,10 +1191,12 @@ function buildCellStyle(
   const baseSurface = paletteIsDark(palette)
     ? resolveDarkModeSurface(themePalette, palette)
     : themePalette?.colorsByIndex[0] ?? SHEET_SURFACE;
+  const gridlineShadow = showGridLines ? buildGridlineShadow(palette.border) : undefined;
   const css: React.CSSProperties = {
     backgroundColor: baseSurface,
-    borderBottom: showGridLines ? `1px solid ${SHEET_GRIDLINE}` : "none",
-    borderRight: showGridLines ? `1px solid ${SHEET_GRIDLINE}` : "none",
+    borderBottom: "none",
+    borderRight: "none",
+    boxShadow: gridlineShadow,
     color: resolveReadableTextColor(null, baseSurface, palette),
     fontFamily: buildSpreadsheetFontFamily({ scheme: "minor" }, themePalette) ?? "\"Segoe UI\", Tahoma, Arial, sans-serif",
     fontSize: "12px",
@@ -1163,6 +1289,14 @@ function buildCellStyle(
 
   const border = style.border as Record<string, Record<string, unknown>> | undefined;
   if (border) {
+    const hasRightBorder = Boolean(border.right?.style && border.right.style !== "none");
+    const hasBottomBorder = Boolean(border.bottom?.style && border.bottom.style !== "none");
+    if (showGridLines && (hasRightBorder || hasBottomBorder)) {
+      css.boxShadow = buildGridlineShadow(palette.border, {
+        bottom: !hasBottomBorder,
+        right: !hasRightBorder
+      }) || undefined;
+    }
     if (border.top?.style && border.top.style !== "none") {
       css.borderTop = mapBorder(border.top as { style: string; color?: Record<string, unknown> }, themePalette);
     }
@@ -1351,6 +1485,47 @@ function normalizeBatchedCellValue(
   }
 
   return value;
+}
+
+function buildWorksheetBatchWindow(
+  rows: unknown[] | null,
+  activeSheet: XlsxSheetData | null,
+  startRow: number,
+  endRow: number
+): WorksheetBatchWindow {
+  const cells = new Map<string, BatchedCellData>();
+
+  if (Array.isArray(rows)) {
+    for (const rowEntry of rows as WorksheetBatchRowEntry[]) {
+      const row = asNonNegativeInteger(rowEntry.index);
+      if (row === null || !Array.isArray(rowEntry.cells)) {
+        continue;
+      }
+
+      for (const cellEntry of rowEntry.cells as WorksheetBatchCellEntry[]) {
+        const col = asNonNegativeInteger(cellEntry.col);
+        if (col === null) {
+          continue;
+        }
+
+        const formula = typeof cellEntry.formula === "string" ? cellEntry.formula : null;
+        cells.set(`${row}:${col}`, {
+          formula,
+          hyperlink: normalizeBatchedHyperlink(cellEntry.hyperlink),
+          isMergedSecondary: cellEntry.isMergedSecondary === true,
+          mergeSpan: normalizeBatchedMergeSpan(cellEntry.mergeSpan),
+          style: asRecord(cellEntry.style),
+          value: normalizeBatchedCellValue(cellEntry.value, formula, row, col, activeSheet)
+        });
+      }
+    }
+  }
+
+  return {
+    cells,
+    endRow,
+    startRow
+  };
 }
 
 function getTableAtCell(tables: XlsxTable[], row: number, col: number) {
@@ -2625,12 +2800,14 @@ function XlsxGrid({
     error,
     fillSelection,
     getActiveWorksheet,
+    getRowsBatchAsync,
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
     images,
     shapes,
     isLoadDeferred,
     isLoading,
+    isWorkerBacked,
     copySelectionToClipboard,
     pasteFromClipboard,
     pasteStructuredClipboardData,
@@ -2753,29 +2930,41 @@ function XlsxGrid({
   const normalizedSelection = React.useMemo(() => (selection ? normalizeRange(selection) : null), [selection]);
   const effectiveTables = tables;
   const [displayRowLimit, setDisplayRowLimit] = React.useState(() =>
-    resolveOpenGridExtent(activeSheet?.maxUsedRow ?? -1, MIN_OPEN_GRID_ROWS, OPEN_GRID_ROW_PADDING)
+    resolveInitialDisplayExtent(
+      activeSheet?.maxUsedRow ?? -1,
+      MIN_OPEN_GRID_ROWS,
+      OPEN_GRID_ROW_PADDING,
+      Boolean(isWorkerBacked),
+      INITIAL_WORKER_GRID_ROWS
+    )
   );
   const [displayColLimit, setDisplayColLimit] = React.useState(() =>
-    resolveOpenGridExtent(activeSheet?.maxUsedCol ?? -1, MIN_OPEN_GRID_COLS, OPEN_GRID_COL_PADDING)
+    resolveInitialDisplayExtent(
+      activeSheet?.maxUsedCol ?? -1,
+      MIN_OPEN_GRID_COLS,
+      OPEN_GRID_COL_PADDING,
+      Boolean(isWorkerBacked),
+      INITIAL_WORKER_GRID_COLS
+    )
   );
+  const hiddenRowSet = React.useMemo(() => new Set(activeSheet?.hiddenRows ?? []), [activeSheet?.hiddenRows]);
+  const hiddenColSet = React.useMemo(() => new Set(activeSheet?.hiddenCols ?? []), [activeSheet?.hiddenCols]);
   const visibleRows = React.useMemo(() => {
-    const rows: number[] = [];
-    for (let row = 0; row < displayRowLimit; row += 1) {
-      if (!worksheet || !worksheet.isRowHidden(row)) {
-        rows.push(row);
-      }
-    }
-    return rows;
-  }, [displayRowLimit, revision, worksheet]);
+    return buildVisibleAxisIndices(
+      activeSheet?.visibleRows ?? [],
+      displayRowLimit,
+      activeSheet?.maxUsedRow ?? -1,
+      hiddenRowSet
+    );
+  }, [activeSheet?.maxUsedRow, activeSheet?.visibleRows, displayRowLimit, hiddenRowSet]);
   const visibleCols = React.useMemo(() => {
-    const cols: number[] = [];
-    for (let col = 0; col < displayColLimit; col += 1) {
-      if (!worksheet || !worksheet.isColumnHidden(col)) {
-        cols.push(col);
-      }
-    }
-    return cols;
-  }, [displayColLimit, revision, worksheet]);
+    return buildVisibleAxisIndices(
+      activeSheet?.visibleCols ?? [],
+      displayColLimit,
+      activeSheet?.maxUsedCol ?? -1,
+      hiddenColSet
+    );
+  }, [activeSheet?.maxUsedCol, activeSheet?.visibleCols, displayColLimit, hiddenColSet]);
   const frozenRows = React.useMemo(() => {
     const freezeRow = activeSheet?.freezePanes?.row ?? 0;
     if (freezeRow <= 0) {
@@ -2793,50 +2982,140 @@ function XlsxGrid({
     return visibleCols.filter((col) => col < freezeCol);
   }, [activeSheet?.freezePanes?.col, visibleCols]);
   const actualColWidths = React.useMemo(
-    () =>
-      Array.from({ length: displayColLimit }, (_, col) => {
-        if (worksheet?.isColumnHidden(col)) {
-          return 0;
-        }
+    () => {
+      const widths = new Array(displayColLimit).fill(0);
+      const showGridLines = activeSheet?.showGridLines ?? true;
+      const fallbackWidth = Math.max(
+        resolveRenderedSheetAxisPixels(activeSheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH, showGridLines),
+        DEFAULT_COL_WIDTH / 2
+      );
 
-        const width = worksheet?.getColumnWidth(col);
-        const showGridLines = activeSheet?.showGridLines ?? true;
-        if (width !== undefined && width !== null) {
-          return Math.max(
-            resolveRenderedSheetAxisPixels(resolveSheetColumnWidthPixels(width), showGridLines),
+      if (worksheet) {
+        for (let col = 0; col < displayColLimit; col += 1) {
+          if (worksheet.isColumnHidden(col)) {
+            continue;
+          }
+
+          const width = worksheet.getColumnWidth(col);
+          if (width !== undefined && width !== null) {
+            widths[col] = Math.max(
+              resolveRenderedSheetAxisPixels(resolveSheetColumnWidthPixels(width), showGridLines),
+              DEFAULT_COL_WIDTH / 2
+            );
+            continue;
+          }
+
+          widths[col] = Math.max(
+            resolveRenderedSheetAxisPixels(
+              activeSheet?.colWidthOverridesPx[col] ?? activeSheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
+              showGridLines
+            ),
             DEFAULT_COL_WIDTH / 2
           );
         }
 
-        return resolveRenderedSheetAxisPixels(
-          activeSheet?.colWidthOverridesPx[col] ?? activeSheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
-          showGridLines
-        );
-      }),
-    [activeSheet?.colWidthOverridesPx, activeSheet?.defaultColWidthPx, activeSheet?.showGridLines, displayColLimit, worksheet, revision]
-  );
-  const actualRowHeights = React.useMemo(
-    () =>
-      Array.from({ length: displayRowLimit }, (_, row) => {
-        if (worksheet?.isRowHidden(row)) {
-          return 0;
+        return widths;
+      }
+
+      const precomputedCols = activeSheet?.visibleCols ?? [];
+      const precomputedWidths = activeSheet?.colWidths ?? [];
+      for (let index = 0; index < precomputedCols.length; index += 1) {
+        const col = precomputedCols[index];
+        if (col === undefined || col >= displayColLimit) {
+          continue;
         }
 
-        const height = worksheet?.getRowHeight(row);
-        const showGridLines = activeSheet?.showGridLines ?? true;
-        if (height !== undefined && height !== null) {
-          return Math.max(
-            resolveRenderedSheetAxisPixels(resolveSheetRowHeightPixels(height), showGridLines),
+        widths[col] = Math.max(
+          resolveRenderedSheetAxisPixels(precomputedWidths[index] ?? activeSheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH, showGridLines),
+          DEFAULT_COL_WIDTH / 2
+        );
+      }
+
+      for (let col = Math.max(0, (activeSheet?.maxUsedCol ?? -1) + 1); col < displayColLimit; col += 1) {
+        widths[col] = fallbackWidth;
+      }
+
+      return widths;
+    },
+    [
+      activeSheet?.colWidthOverridesPx,
+      activeSheet?.colWidths,
+      activeSheet?.defaultColWidthPx,
+      activeSheet?.maxUsedCol,
+      activeSheet?.showGridLines,
+      activeSheet?.visibleCols,
+      displayColLimit,
+      worksheet,
+      revision
+    ]
+  );
+  const actualRowHeights = React.useMemo(
+    () => {
+      const heights = new Array(displayRowLimit).fill(0);
+      const showGridLines = activeSheet?.showGridLines ?? true;
+      const fallbackHeight = Math.max(
+        resolveRenderedSheetAxisPixels(activeSheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT, showGridLines),
+        DEFAULT_ROW_HEIGHT / 1.5
+      );
+
+      if (worksheet) {
+        for (let row = 0; row < displayRowLimit; row += 1) {
+          if (worksheet.isRowHidden(row)) {
+            continue;
+          }
+
+          const height = worksheet.getRowHeight(row);
+          if (height !== undefined && height !== null) {
+            heights[row] = Math.max(
+              resolveRenderedSheetAxisPixels(resolveSheetRowHeightPixels(height), showGridLines),
+              DEFAULT_ROW_HEIGHT / 1.5
+            );
+            continue;
+          }
+
+          heights[row] = Math.max(
+            resolveRenderedSheetAxisPixels(
+              activeSheet?.rowHeightOverridesPx[row] ?? activeSheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+              showGridLines
+            ),
             DEFAULT_ROW_HEIGHT / 1.5
           );
         }
 
-        return resolveRenderedSheetAxisPixels(
-          activeSheet?.rowHeightOverridesPx[row] ?? activeSheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
-          showGridLines
+        return heights;
+      }
+
+      const precomputedRows = activeSheet?.visibleRows ?? [];
+      const precomputedHeights = activeSheet?.rowHeights ?? [];
+      for (let index = 0; index < precomputedRows.length; index += 1) {
+        const row = precomputedRows[index];
+        if (row === undefined || row >= displayRowLimit) {
+          continue;
+        }
+
+        heights[row] = Math.max(
+          resolveRenderedSheetAxisPixels(precomputedHeights[index] ?? activeSheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT, showGridLines),
+          DEFAULT_ROW_HEIGHT / 1.5
         );
-      }),
-    [activeSheet?.defaultRowHeightPx, activeSheet?.rowHeightOverridesPx, activeSheet?.showGridLines, displayRowLimit, worksheet, revision]
+      }
+
+      for (let row = Math.max(0, (activeSheet?.maxUsedRow ?? -1) + 1); row < displayRowLimit; row += 1) {
+        heights[row] = fallbackHeight;
+      }
+
+      return heights;
+    },
+    [
+      activeSheet?.defaultRowHeightPx,
+      activeSheet?.maxUsedRow,
+      activeSheet?.rowHeightOverridesPx,
+      activeSheet?.rowHeights,
+      activeSheet?.showGridLines,
+      activeSheet?.visibleRows,
+      displayRowLimit,
+      worksheet,
+      revision
+    ]
   );
   const effectiveColWidths = React.useMemo(
     () => visibleCols.map((col) => actualColWidths[col] ?? DEFAULT_COL_WIDTH),
@@ -2890,6 +3169,49 @@ function XlsxGrid({
     horizontal: true,
     overscan: 6
   });
+  const currentRowVirtualItems = rowVirtualizer.getVirtualItems();
+  const currentColVirtualItems = colVirtualizer.getVirtualItems();
+  const maxRowDisplayLimit = React.useMemo(
+    () => resolveOpenGridExtent(activeSheet?.maxUsedRow ?? -1, MIN_OPEN_GRID_ROWS, OPEN_GRID_ROW_PADDING),
+    [activeSheet?.maxUsedRow]
+  );
+  const maxColDisplayLimit = React.useMemo(
+    () => resolveOpenGridExtent(activeSheet?.maxUsedCol ?? -1, MIN_OPEN_GRID_COLS, OPEN_GRID_COL_PADDING),
+    [activeSheet?.maxUsedCol]
+  );
+
+  React.useEffect(() => {
+    if (!isWorkerBacked) {
+      return;
+    }
+
+    const lastVirtualRowIndex = currentRowVirtualItems[currentRowVirtualItems.length - 1]?.index ?? -1;
+    const lastVirtualColIndex = currentColVirtualItems[currentColVirtualItems.length - 1]?.index ?? -1;
+
+    if (
+      lastVirtualRowIndex >= visibleRows.length - WORKER_GRID_GROW_THRESHOLD_ROWS
+      && displayRowLimit < maxRowDisplayLimit
+    ) {
+      setDisplayRowLimit((current) => Math.min(maxRowDisplayLimit, current + WORKER_GRID_GROW_ROWS));
+    }
+
+    if (
+      lastVirtualColIndex >= visibleCols.length - WORKER_GRID_GROW_THRESHOLD_COLS
+      && displayColLimit < maxColDisplayLimit
+    ) {
+      setDisplayColLimit((current) => Math.min(maxColDisplayLimit, current + WORKER_GRID_GROW_COLS));
+    }
+  }, [
+    currentColVirtualItems,
+    currentRowVirtualItems,
+    displayColLimit,
+    displayRowLimit,
+    isWorkerBacked,
+    maxColDisplayLimit,
+    maxRowDisplayLimit,
+    visibleCols.length,
+    visibleRows.length
+  ]);
 
   React.useEffect(() => {
     activeCellRef.current = activeCell;
@@ -2932,9 +3254,25 @@ function XlsxGrid({
   }, [colPrefixSums, effectiveColWidths, effectiveRowHeights, rowPrefixSums, visibleCols, visibleRows]);
 
   React.useEffect(() => {
-    setDisplayRowLimit(resolveOpenGridExtent(activeSheet?.maxUsedRow ?? -1, MIN_OPEN_GRID_ROWS, OPEN_GRID_ROW_PADDING));
-    setDisplayColLimit(resolveOpenGridExtent(activeSheet?.maxUsedCol ?? -1, MIN_OPEN_GRID_COLS, OPEN_GRID_COL_PADDING));
-  }, [activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, activeSheetIndex]);
+    setDisplayRowLimit(
+      resolveInitialDisplayExtent(
+        activeSheet?.maxUsedRow ?? -1,
+        MIN_OPEN_GRID_ROWS,
+        OPEN_GRID_ROW_PADDING,
+        Boolean(isWorkerBacked),
+        INITIAL_WORKER_GRID_ROWS
+      )
+    );
+    setDisplayColLimit(
+      resolveInitialDisplayExtent(
+        activeSheet?.maxUsedCol ?? -1,
+        MIN_OPEN_GRID_COLS,
+        OPEN_GRID_COL_PADDING,
+        Boolean(isWorkerBacked),
+        INITIAL_WORKER_GRID_COLS
+      )
+    );
+  }, [activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, activeSheetIndex, isWorkerBacked]);
 
   React.useEffect(() => {
     const selectionEnd = normalizedSelection?.end;
@@ -2959,14 +3297,26 @@ function XlsxGrid({
       { maxCol: -1, maxRow: -1 }
     );
     const nextRowLimit = Math.max(
-      resolveOpenGridExtent(activeSheet?.maxUsedRow ?? -1, MIN_OPEN_GRID_ROWS, OPEN_GRID_ROW_PADDING),
+      resolveInitialDisplayExtent(
+        activeSheet?.maxUsedRow ?? -1,
+        MIN_OPEN_GRID_ROWS,
+        OPEN_GRID_ROW_PADDING,
+        false,
+        INITIAL_WORKER_GRID_ROWS
+      ),
       (activeCell?.row ?? -1) + OPEN_GRID_ROW_PADDING + 1,
       (selectionEnd?.row ?? -1) + OPEN_GRID_ROW_PADDING + 1,
       imageExtents.maxRow + OPEN_GRID_ROW_PADDING + 1,
       shapeExtents.maxRow + OPEN_GRID_ROW_PADDING + 1
     );
     const nextColLimit = Math.max(
-      resolveOpenGridExtent(activeSheet?.maxUsedCol ?? -1, MIN_OPEN_GRID_COLS, OPEN_GRID_COL_PADDING),
+      resolveInitialDisplayExtent(
+        activeSheet?.maxUsedCol ?? -1,
+        MIN_OPEN_GRID_COLS,
+        OPEN_GRID_COL_PADDING,
+        false,
+        INITIAL_WORKER_GRID_COLS
+      ),
       (activeCell?.col ?? -1) + OPEN_GRID_COL_PADDING + 1,
       (selectionEnd?.col ?? -1) + OPEN_GRID_COL_PADDING + 1,
       imageExtents.maxCol + OPEN_GRID_COL_PADDING + 1,
@@ -2976,10 +3326,6 @@ function XlsxGrid({
     setDisplayRowLimit((current) => (current < nextRowLimit ? nextRowLimit : current));
     setDisplayColLimit((current) => (current < nextColLimit ? nextColLimit : current));
   }, [activeCell, activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, images, normalizedSelection, shapes]);
-
-  React.useEffect(() => {
-    cellRenderCacheRef.current.clear();
-  }, [activeSheetIndex, displayColLimit, displayRowLimit, palette, revision, worksheet]);
 
   React.useEffect(() => {
     if (shouldVirtualizeRows) {
@@ -2994,7 +3340,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     setOpenTableMenu(null);
-  }, [activeSheetIndex]);
+  }, [activeSheet, activeSheetIndex]);
 
   React.useEffect(() => {
     if (!pendingNavigation || pendingNavigation.sheetIndex !== activeSheetIndex) {
@@ -3014,36 +3360,23 @@ function XlsxGrid({
     }
   }, [activeSheetIndex, colVirtualizer, revision, rowVirtualizer, shouldVirtualizeCols, shouldVirtualizeRows, visibleCols.length, visibleRows.length]);
 
-  React.useEffect(() => {
-    const scroller = scrollRef.current;
-    if (!scroller) {
-      return;
-    }
-    const currentScroller = scroller;
-
-    function handleScroll() {
-      cachedScrollerRectRef.current = null;
-
-      if (
-        currentScroller.scrollHeight - (currentScroller.scrollTop + currentScroller.clientHeight) <
-        OPEN_GRID_VERTICAL_EDGE_PX
-      ) {
-        setDisplayRowLimit((current) => current + OPEN_GRID_ROW_GROWTH);
-      }
-
-      if (
-        currentScroller.scrollWidth - (currentScroller.scrollLeft + currentScroller.clientWidth) <
-        OPEN_GRID_HORIZONTAL_EDGE_PX
-      ) {
-        setDisplayColLimit((current) => current + OPEN_GRID_COL_GROWTH);
-      }
+  const handleScrollerScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const currentScroller = event.currentTarget;
+    cachedScrollerRectRef.current = null;
+    if (
+      currentScroller.scrollHeight - (currentScroller.scrollTop + currentScroller.clientHeight) <
+      OPEN_GRID_VERTICAL_EDGE_PX
+    ) {
+      setDisplayRowLimit((current) => current + OPEN_GRID_ROW_GROWTH);
     }
 
-    currentScroller.addEventListener("scroll", handleScroll, { passive: true });
-    return () => {
-      currentScroller.removeEventListener("scroll", handleScroll);
-    };
-  }, [activeSheetIndex]);
+    if (
+      currentScroller.scrollWidth - (currentScroller.scrollLeft + currentScroller.clientWidth) <
+      OPEN_GRID_HORIZONTAL_EDGE_PX
+    ) {
+      setDisplayColLimit((current) => current + OPEN_GRID_COL_GROWTH);
+    }
+  }, []);
 
   React.useEffect(() => {
     if (!openTableMenu) {
@@ -3249,8 +3582,28 @@ function XlsxGrid({
     focusGrid();
   }, [focusGrid]);
 
-  const viewportRowBatch = React.useMemo<WorksheetBatchWindow | null>(() => {
-    if (!shouldVirtualizeRows || !worksheet) {
+  const [, startBatchTransition] = React.useTransition();
+  const [asyncViewportRowBatch, setAsyncViewportRowBatch] = React.useState<WorksheetBatchWindow | null>(null);
+  const viewportRequest = React.useMemo(() => {
+    const firstVirtualRowIndex = currentRowVirtualItems[0]?.index;
+    const lastVirtualRowIndex = currentRowVirtualItems[currentRowVirtualItems.length - 1]?.index;
+    const firstVisibleRow = firstVirtualRowIndex === undefined ? undefined : visibleRows[firstVirtualRowIndex];
+    const lastVisibleRow = lastVirtualRowIndex === undefined ? undefined : visibleRows[lastVirtualRowIndex];
+    if (firstVisibleRow === undefined || lastVisibleRow === undefined || lastVisibleRow < firstVisibleRow) {
+      return null;
+    }
+
+    const overscan = 48;
+    const startRow = Math.max(0, firstVisibleRow - overscan);
+    const endRow = lastVisibleRow + overscan;
+    return {
+      endRow,
+      startRow
+    };
+  }, [currentRowVirtualItems, visibleRows]);
+
+  const syncViewportRowBatch = React.useMemo<WorksheetBatchWindow | null>(() => {
+    if (!shouldVirtualizeRows || !worksheet || getRowsBatchAsync || !viewportRequest) {
       return null;
     }
 
@@ -3259,63 +3612,79 @@ function XlsxGrid({
       return null;
     }
 
-    const virtualItems = rowVirtualizer.getVirtualItems();
-    const firstVirtualRowIndex = virtualItems[0]?.index;
-    const lastVirtualRowIndex = virtualItems[virtualItems.length - 1]?.index;
-    const startRow =
-      firstVirtualRowIndex === undefined ? undefined : visibleRows[firstVirtualRowIndex];
-    const endRow =
-      lastVirtualRowIndex === undefined ? undefined : visibleRows[lastVirtualRowIndex];
-
-    if (startRow === undefined || endRow === undefined || endRow < startRow) {
-      return null;
-    }
-
     try {
-      const rows = worksheetWithRowsBatch.getRowsBatch(startRow, endRow - startRow + 1, {
+      const rows = worksheetWithRowsBatch.getRowsBatch(viewportRequest.startRow, viewportRequest.endRow - viewportRequest.startRow + 1, {
         includeFormulas: true,
         includeHyperlinks: true,
         includeMergeInfo: true,
         includeStyles: true,
         useFormattedValues: true
       });
-      const cells = new Map<string, BatchedCellData>();
-
-      if (Array.isArray(rows)) {
-        for (const rowEntry of rows as WorksheetBatchRowEntry[]) {
-          const row = asNonNegativeInteger(rowEntry.index);
-          if (row === null || !Array.isArray(rowEntry.cells)) {
-            continue;
-          }
-
-          for (const cellEntry of rowEntry.cells as WorksheetBatchCellEntry[]) {
-            const col = asNonNegativeInteger(cellEntry.col);
-            if (col === null) {
-              continue;
-            }
-
-            const formula = typeof cellEntry.formula === "string" ? cellEntry.formula : null;
-            cells.set(`${row}:${col}`, {
-              formula,
-              hyperlink: normalizeBatchedHyperlink(cellEntry.hyperlink),
-              isMergedSecondary: cellEntry.isMergedSecondary === true,
-              mergeSpan: normalizeBatchedMergeSpan(cellEntry.mergeSpan),
-              style: asRecord(cellEntry.style),
-              value: normalizeBatchedCellValue(cellEntry.value, formula, row, col, activeSheet)
-            });
-          }
-        }
-      }
-
-      return {
-        cells,
-        endRow,
-        startRow
-      };
+      return buildWorksheetBatchWindow(rows as unknown[] | null, activeSheet ?? null, viewportRequest.startRow, viewportRequest.endRow);
     } catch {
       return null;
     }
-  }, [activeSheet, revision, rowVirtualizer, shouldVirtualizeRows, visibleRows, worksheet]);
+  }, [activeSheet, getRowsBatchAsync, shouldVirtualizeRows, viewportRequest, worksheet]);
+
+  React.useEffect(() => {
+    if (!shouldVirtualizeRows || !getRowsBatchAsync || !activeSheet || !viewportRequest) {
+      setAsyncViewportRowBatch(null);
+      return;
+    }
+
+    if (
+      asyncViewportRowBatch
+      && viewportRequest.startRow >= asyncViewportRowBatch.startRow
+      && viewportRequest.endRow <= asyncViewportRowBatch.endRow
+    ) {
+      return;
+    }
+
+    let isCurrent = true;
+    void getRowsBatchAsync(
+      activeSheet.workbookSheetIndex,
+      viewportRequest.startRow,
+      viewportRequest.endRow - viewportRequest.startRow + 1
+    )
+      .then((rows) => {
+        if (!isCurrent) {
+          return;
+        }
+
+        const nextBatch = buildWorksheetBatchWindow(
+          rows,
+          activeSheet,
+          viewportRequest.startRow,
+          viewportRequest.endRow
+        );
+        startBatchTransition(() => {
+          setAsyncViewportRowBatch(nextBatch);
+        });
+      })
+      .catch(() => {
+        if (!isCurrent) {
+          return;
+        }
+
+        startBatchTransition(() => {
+          setAsyncViewportRowBatch(null);
+        });
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [activeSheet, asyncViewportRowBatch, getRowsBatchAsync, shouldVirtualizeRows, startBatchTransition, viewportRequest]);
+
+  const viewportRowBatch = getRowsBatchAsync ? asyncViewportRowBatch : syncViewportRowBatch;
+
+  React.useEffect(() => {
+    cellRenderCacheRef.current.clear();
+  }, [activeSheetIndex, displayColLimit, displayRowLimit, palette, revision, viewportRowBatch, worksheet]);
+
+  React.useEffect(() => {
+    setAsyncViewportRowBatch(null);
+  }, [activeSheetIndex, revision]);
 
   const getCellData = React.useCallback((row: number, col: number): CellRenderData => {
     const cacheKey = `${row}:${col}`;
@@ -3324,13 +3693,17 @@ function XlsxGrid({
       return cached;
     }
 
-    if (!worksheet) {
+    const batchCoversRow = viewportRowBatch ? row >= viewportRowBatch.startRow && row <= viewportRowBatch.endRow : false;
+    const batchedCell = batchCoversRow ? viewportRowBatch?.cells.get(cacheKey) : undefined;
+
+    if (!worksheet && !batchedCell) {
       const emptyData: CellRenderData = {
         isMergedSecondary: false,
         style: {
           backgroundColor: resolveSheetSurface(activeSheet, palette),
-          borderBottom: activeSheet?.showGridLines ? `1px solid ${SHEET_GRIDLINE}` : "none",
-          borderRight: activeSheet?.showGridLines ? `1px solid ${SHEET_GRIDLINE}` : "none",
+          borderBottom: "none",
+          borderRight: "none",
+          boxShadow: activeSheet?.showGridLines ? buildGridlineShadow(palette.border) : undefined,
           padding: DEFAULT_CELL_PADDING,
           verticalAlign: "bottom",
           whiteSpace: "nowrap"
@@ -3340,9 +3713,6 @@ function XlsxGrid({
       cellRenderCacheRef.current.set(cacheKey, emptyData);
       return emptyData;
     }
-
-    const batchCoversRow = viewportRowBatch ? row >= viewportRowBatch.startRow && row <= viewportRowBatch.endRow : false;
-    const batchedCell = batchCoversRow ? viewportRowBatch?.cells.get(cacheKey) : undefined;
 
     if (batchedCell?.isMergedSecondary) {
       const mergedSecondaryData: CellRenderData = {
@@ -3354,7 +3724,7 @@ function XlsxGrid({
       return mergedSecondaryData;
     }
 
-    if (!batchedCell && !batchCoversRow && worksheet.isMergedSecondary(row, col)) {
+    if (!batchedCell && !batchCoversRow && worksheet?.isMergedSecondary(row, col)) {
       const mergedSecondaryData: CellRenderData = {
         isMergedSecondary: true,
         style: {},
@@ -3366,37 +3736,41 @@ function XlsxGrid({
 
     const merge = batchCoversRow
       ? batchedCell?.mergeSpan
-      : (worksheet.getMergeSpan(row, col) as { colSpan?: number; rowSpan?: number } | null | undefined);
+      : (worksheet?.getMergeSpan(row, col) as { colSpan?: number; rowSpan?: number } | null | undefined);
     const rawStyle = batchCoversRow
       ? batchedCell?.style ?? resolveInheritedCellStyle(activeSheet, row, col)
       : (
-          worksheet.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined
+          worksheet?.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined
         ) ?? resolveInheritedCellStyle(activeSheet, row, col);
     const table = getTableAtCell(effectiveTables, row, col);
     const tableStyle = resolveTableCellStyle(table, row, col, activeSheet);
     const headerRowCount = table ? Math.max(table.headerRowCount, 1) : 0;
     const rawHyperlink = batchCoversRow
       ? batchedCell?.hyperlink
-      : (worksheet.getHyperlinkAt(row, col) as
+      : (worksheet?.getHyperlinkAt(row, col) as
           | { location?: string; target?: string; tooltip?: string }
           | null
           | undefined);
     const nextData: CellRenderData = {
       colSpan: merge?.colSpan,
-      conditionalDataBar: resolveConditionalDataBarForCell(
-        row,
-        col,
-        worksheet,
-        activeSheet,
-        conditionalFormatMetricsCacheRef.current
-      ),
-      conditionalIcon: resolveConditionalIconForCell(
-        row,
-        col,
-        worksheet,
-        activeSheet,
-        conditionalFormatMetricsCacheRef.current
-      ),
+      conditionalDataBar: worksheet
+        ? resolveConditionalDataBarForCell(
+            row,
+            col,
+            worksheet,
+            activeSheet,
+            conditionalFormatMetricsCacheRef.current
+          )
+        : null,
+      conditionalIcon: worksheet
+        ? resolveConditionalIconForCell(
+            row,
+            col,
+            worksheet,
+            activeSheet,
+            conditionalFormatMetricsCacheRef.current
+          )
+        : null,
       hyperlink: rawHyperlink ?? null,
       isMergedSecondary: false,
       isTableHeader: Boolean(table && row >= table.start.row && row < table.start.row + headerRowCount),
@@ -3405,7 +3779,7 @@ function XlsxGrid({
         showGridLines: activeSheet?.showGridLines
       }),
       validation: resolveCellDataValidation(row, col, activeSheet),
-      value: batchCoversRow ? batchedCell?.value ?? "" : getCellDisplayValue(worksheet, row, col, activeSheet)
+      value: batchCoversRow || !worksheet ? batchedCell?.value ?? "" : getCellDisplayValue(worksheet, row, col, activeSheet)
     };
 
     if (canCellTextOverflow(nextData)) {
@@ -4221,6 +4595,303 @@ function XlsxGrid({
     height: "100%",
     zIndex: 5
   };
+  function resolveDrawingPane(rect: XlsxImageRect) {
+    return resolveFrozenDrawingPane(
+      rect,
+      frozenRows,
+      frozenCols,
+      actualRowHeights,
+      actualColWidths,
+      activeSheet?.freezePanes ?? null,
+      stickyTopByRow,
+      stickyLeftByCol
+    );
+  }
+
+  function renderShapeDrawing(shape: XlsxShape, rect: XlsxImageRect, pane: FrozenDrawingPane) {
+    const drawingPane = resolveDrawingPane(rect);
+    if (drawingPane !== pane) {
+      return null;
+    }
+
+    const isFrozenDrawing = pane !== "scroll";
+    const inset = shape.textBox?.insetPx;
+    const groupScaleX = shape.scaleX ?? 1;
+    const groupScaleY = shape.scaleY ?? 1;
+    const strokeScale = Math.max(groupScaleX, groupScaleY);
+    const textScale = strokeScale;
+    const textWidth = groupScaleX !== 0 ? rect.width / groupScaleX : rect.width;
+    const textHeight = groupScaleY !== 0 ? rect.height / groupScaleY : rect.height;
+    const vectorShape = resolveShapeVector(shape);
+    const strokeColor = shape.stroke?.none ? "transparent" : (shape.stroke?.color ?? "transparent");
+    const scaledStrokeWidth = (shape.stroke?.widthPx ?? (shape.geometry === "line" ? 2 : 1)) * strokeScale;
+    const headMarkerId = `${shape.id}-${pane}-head-marker`;
+    const tailMarkerId = `${shape.id}-${pane}-tail-marker`;
+    const headMarker = vectorShape
+      ? resolveShapeLineEndMarker(
+          shape.stroke?.headEndType,
+          headMarkerId,
+          strokeColor,
+          scaledStrokeWidth,
+          rect,
+          vectorShape.viewBox
+        )
+      : null;
+    const tailMarker = vectorShape
+      ? resolveShapeLineEndMarker(
+          shape.stroke?.tailEndType,
+          tailMarkerId,
+          strokeColor,
+          scaledStrokeWidth,
+          rect,
+          vectorShape.viewBox
+        )
+      : null;
+    const style = {
+      ...buildShapeContainerStyle(shape, rect),
+      ...(vectorShape ? {
+        backgroundColor: "transparent",
+        border: "none"
+      } : null)
+    };
+
+    return (
+      <div
+        key={`${pane}-${shape.id}`}
+        onClick={() => handleShapeClick(shape)}
+        style={{
+          ...style,
+          cursor: shape.hyperlink ? "pointer" : "default",
+          left: style.left,
+          pointerEvents: shape.hyperlink ? "auto" : "none",
+          top: style.top,
+          zIndex: isFrozenDrawing ? shape.zIndex + 20 : style.zIndex
+        }}
+        title={shape.description}
+      >
+        {vectorShape ? (
+          <svg
+            aria-hidden="true"
+            preserveAspectRatio="none"
+            style={{
+              height: "100%",
+              inset: 0,
+              position: "absolute",
+              width: "100%"
+            }}
+            viewBox={`0 0 ${vectorShape.viewBox.width} ${vectorShape.viewBox.height}`}
+          >
+            {headMarker || tailMarker ? <defs>{headMarker}{tailMarker}</defs> : null}
+            <path
+              d={vectorShape.path}
+              fill={shape.fill?.none ? "transparent" : (shape.fill?.color ?? "transparent")}
+              fillOpacity={shape.fill?.opacity ?? 1}
+              markerEnd={tailMarker ? `url(#${tailMarkerId})` : undefined}
+              markerStart={headMarker ? `url(#${headMarkerId})` : undefined}
+              stroke={strokeColor}
+              strokeOpacity={shape.stroke?.opacity ?? 1}
+              strokeWidth={scaledStrokeWidth}
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+        ) : null}
+        <div
+          style={{
+            color: "#000000",
+            display: "flex",
+            flex: 1,
+            flexDirection: "column",
+            gap: 2,
+            height: textHeight,
+            justifyContent:
+              shape.textBox?.verticalAlign === "middle"
+                ? "center"
+                : shape.textBox?.verticalAlign === "bottom"
+                  ? "flex-end"
+                  : "flex-start",
+            paddingBottom: inset?.bottom ?? 4,
+            paddingLeft: inset?.left ?? 6,
+            paddingRight: inset?.right ?? 6,
+            paddingTop: inset?.top ?? 4,
+            pointerEvents: "none",
+            position: "relative",
+            transform:
+              groupScaleX !== 1 || groupScaleY !== 1
+                ? `scale(${groupScaleX}, ${groupScaleY})`
+                : undefined,
+            transformOrigin: "top left",
+            width: textWidth,
+            zIndex: 1
+          }}
+        >
+          {shape.paragraphs.map((paragraph, index) => renderShapeParagraph(paragraph, index, textScale))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderImageDrawing(
+    image: XlsxImage,
+    rect: XlsxImageRect,
+    pane: FrozenDrawingPane
+  ) {
+    const drawingPane = resolveDrawingPane(rect);
+    if (drawingPane !== pane) {
+      return null;
+    }
+
+    const isFrozenDrawing = pane !== "scroll";
+    const canEditImage = !readOnly && image.editable !== false;
+    const style: React.CSSProperties = {
+      height: rect.height,
+      left: rect.left,
+      overflow: "hidden",
+      pointerEvents: "none",
+      position: "absolute",
+      top: rect.top,
+      width: rect.width,
+      zIndex: isFrozenDrawing ? image.zIndex + 20 : image.zIndex
+    };
+    const defaultNode = (
+      <img
+        alt={image.description ?? image.name ?? ""}
+        draggable={false}
+        src={image.src}
+        style={{
+          display: "block",
+          height: "100%",
+          pointerEvents: "none",
+          userSelect: "none",
+          width: "100%"
+        }}
+      />
+    );
+    const selectionNode = selectedImageId === image.id ? (
+      <div
+        style={{
+          ...style,
+          overflow: "visible",
+          pointerEvents: "none",
+          zIndex: isFrozenDrawing ? image.zIndex + 22 : image.zIndex + 2
+        }}
+      >
+        {renderImageSelection
+          ? renderImageSelection({
+              defaultNode: (
+                <div
+                  style={{
+                    border: `1.5px solid ${selectionStroke}`,
+                    boxShadow: `0 0 0 1px ${palette.surface}`,
+                    boxSizing: "border-box",
+                    inset: 0,
+                    pointerEvents: "none",
+                    position: "absolute"
+                  }}
+                >
+                  {canEditImage
+                    ? IMAGE_HANDLE_POSITIONS.map((position) => (
+                        <div
+                          key={position}
+                          onPointerDown={(event) => startImageResize(event, image, rect, position)}
+                          style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                        />
+                      ))
+                    : null}
+                </div>
+              ),
+              getHandleProps: (position) => ({
+                onPointerDown: (event) => {
+                  if (canEditImage) {
+                    startImageResize(event, image, rect, position);
+                  }
+                },
+                style: canEditImage
+                  ? resolveImageHandleStyle(position, selectionStroke, palette.surface)
+                  : { ...resolveImageHandleStyle(position, selectionStroke, palette.surface), display: "none" }
+              }),
+              image,
+              rect
+            })
+          : (
+              <div
+                style={{
+                  border: `1.5px solid ${selectionStroke}`,
+                  boxShadow: `0 0 0 1px ${palette.surface}`,
+                  boxSizing: "border-box",
+                  inset: 0,
+                  pointerEvents: "none",
+                  position: "absolute"
+                }}
+              >
+                {canEditImage
+                  ? IMAGE_HANDLE_POSITIONS.map((position) => (
+                      <div
+                        key={position}
+                        onPointerDown={(event) => startImageResize(event, image, rect, position)}
+                        style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                      />
+                    ))
+                  : null}
+              </div>
+            )}
+      </div>
+    ) : null;
+
+    return (
+      <React.Fragment key={`${pane}-${image.id}`}>
+        {renderImage
+          ? <div style={style}>{renderImage({ defaultNode, image, rect, style })}</div>
+          : <div style={style}>{defaultNode}</div>}
+        <div
+          onClick={() => handleImageClick(image)}
+          onPointerDown={(event) => startImageMove(event, image, rect)}
+          style={{
+            ...style,
+            background: "transparent",
+            cursor: canEditImage ? "move" : image.hyperlink ? "pointer" : "default",
+            pointerEvents: "auto",
+            zIndex: isFrozenDrawing ? image.zIndex + 21 : image.zIndex + 1
+          }}
+        />
+        {selectionNode}
+      </React.Fragment>
+    );
+  }
+
+  const scrollOverlayStyle: React.CSSProperties = {
+    inset: 0,
+    pointerEvents: "none",
+    position: "absolute",
+    zIndex: 20
+  };
+  const topOverlayStyle: React.CSSProperties = {
+    height: 0,
+    overflow: "visible",
+    pointerEvents: "none",
+    position: "sticky",
+    top: 0,
+    width: 0,
+    zIndex: 20
+  };
+  const leftOverlayStyle: React.CSSProperties = {
+    height: 0,
+    left: 0,
+    overflow: "visible",
+    pointerEvents: "none",
+    position: "sticky",
+    width: 0,
+    zIndex: 20
+  };
+  const cornerOverlayStyle: React.CSSProperties = {
+    height: 0,
+    left: 0,
+    overflow: "visible",
+    pointerEvents: "none",
+    position: "sticky",
+    top: 0,
+    width: 0,
+    zIndex: 20
+  };
 
   function startColumnResize(pointerId: number, actualCol: number, widthPx: number, startX: number) {
     if (readOnly) {
@@ -4442,6 +5113,7 @@ function XlsxGrid({
       <div
         key={activeSheetIndex}
         ref={scrollRef}
+        onScroll={handleScrollerScroll}
         onCopy={(event) => {
           if (editingCell) {
             return;
@@ -4612,243 +5284,24 @@ function XlsxGrid({
           }}
         >
           {showImages ? (
-            <div
-              style={{
-                inset: 0,
-                pointerEvents: "none",
-                position: "absolute",
-                zIndex: 20
-              }}
-            >
-              {shapeRects.map(({ shape, rect }) => {
-                const inset = shape.textBox?.insetPx;
-                const groupScaleX = shape.scaleX ?? 1;
-                const groupScaleY = shape.scaleY ?? 1;
-                const strokeScale = Math.max(groupScaleX, groupScaleY);
-                const textScale = strokeScale;
-                const textWidth = groupScaleX !== 0 ? rect.width / groupScaleX : rect.width;
-                const textHeight = groupScaleY !== 0 ? rect.height / groupScaleY : rect.height;
-                const vectorShape = resolveShapeVector(shape);
-                const strokeColor = shape.stroke?.none ? "transparent" : (shape.stroke?.color ?? "transparent");
-                const scaledStrokeWidth = (shape.stroke?.widthPx ?? (shape.geometry === "line" ? 2 : 1)) * strokeScale;
-                const headMarkerId = `${shape.id}-head-marker`;
-                const tailMarkerId = `${shape.id}-tail-marker`;
-                const headMarker = vectorShape
-                  ? resolveShapeLineEndMarker(
-                      shape.stroke?.headEndType,
-                      headMarkerId,
-                      strokeColor,
-                      scaledStrokeWidth,
-                      rect,
-                      vectorShape.viewBox
-                    )
-                  : null;
-                const tailMarker = vectorShape
-                  ? resolveShapeLineEndMarker(
-                      shape.stroke?.tailEndType,
-                      tailMarkerId,
-                      strokeColor,
-                      scaledStrokeWidth,
-                      rect,
-                      vectorShape.viewBox
-                    )
-                  : null;
-                const style = {
-                  ...buildShapeContainerStyle(shape, rect),
-                  ...(vectorShape ? {
-                    backgroundColor: "transparent",
-                    border: "none"
-                  } : null)
-                };
-                return (
-                  <div
-                    key={shape.id}
-                    onClick={() => handleShapeClick(shape)}
-                    style={{
-                      ...style,
-                      cursor: shape.hyperlink ? "pointer" : "default",
-                      pointerEvents: shape.hyperlink ? "auto" : "none"
-                    }}
-                    title={shape.description}
-                  >
-                    {vectorShape ? (
-                      <svg
-                        aria-hidden="true"
-                        preserveAspectRatio="none"
-                        style={{
-                          height: "100%",
-                          inset: 0,
-                          position: "absolute",
-                          width: "100%"
-                        }}
-                        viewBox={`0 0 ${vectorShape.viewBox.width} ${vectorShape.viewBox.height}`}
-                      >
-                        {headMarker || tailMarker ? <defs>{headMarker}{tailMarker}</defs> : null}
-                        <path
-                          d={vectorShape.path}
-                          fill={shape.fill?.none ? "transparent" : (shape.fill?.color ?? "transparent")}
-                          fillOpacity={shape.fill?.opacity ?? 1}
-                          markerEnd={tailMarker ? `url(#${tailMarkerId})` : undefined}
-                          markerStart={headMarker ? `url(#${headMarkerId})` : undefined}
-                          stroke={strokeColor}
-                          strokeOpacity={shape.stroke?.opacity ?? 1}
-                          strokeWidth={scaledStrokeWidth}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      </svg>
-                    ) : null}
-                    <div
-                      style={{
-                        color: "#000000",
-                        display: "flex",
-                        flex: 1,
-                        flexDirection: "column",
-                        gap: 2,
-                        height: textHeight,
-                        justifyContent:
-                          shape.textBox?.verticalAlign === "middle"
-                            ? "center"
-                            : shape.textBox?.verticalAlign === "bottom"
-                              ? "flex-end"
-                              : "flex-start",
-                        paddingBottom: inset?.bottom ?? 4,
-                        paddingLeft: inset?.left ?? 6,
-                        paddingRight: inset?.right ?? 6,
-                        paddingTop: inset?.top ?? 4,
-                        pointerEvents: "none",
-                        position: "relative",
-                        transform:
-                          groupScaleX !== 1 || groupScaleY !== 1
-                            ? `scale(${groupScaleX}, ${groupScaleY})`
-                            : undefined,
-                        transformOrigin: "top left",
-                        zIndex: 1,
-                        width: textWidth
-                      }}
-                    >
-                      {shape.paragraphs.map((paragraph, index) => renderShapeParagraph(paragraph, index, textScale))}
-                    </div>
-                  </div>
-                );
-              })}
-              {imageRects.map(({ image, rect }) => {
-                const canEditImage = !readOnly && image.editable !== false;
-                const style: React.CSSProperties = {
-                  height: rect.height,
-                  left: rect.left,
-                  overflow: "hidden",
-                  pointerEvents: "none",
-                  position: "absolute",
-                  top: rect.top,
-                  width: rect.width,
-                  zIndex: image.zIndex
-                };
-                const defaultNode = (
-                  <img
-                    alt={image.description ?? image.name ?? ""}
-                    draggable={false}
-                    src={image.src}
-                    style={{
-                      display: "block",
-                      height: "100%",
-                      pointerEvents: "none",
-                      userSelect: "none",
-                      width: "100%"
-                    }}
-                  />
-                );
-                const selectionNode = selectedImageId === image.id ? (
-                  <div
-                    style={{
-                      ...style,
-                      overflow: "visible",
-                      pointerEvents: "none",
-                      zIndex: image.zIndex + 2
-                    }}
-                  >
-                    {renderImageSelection
-                      ? renderImageSelection({
-                          defaultNode: (
-                            <div
-                              style={{
-                                border: `1.5px solid ${selectionStroke}`,
-                                boxShadow: `0 0 0 1px ${palette.surface}`,
-                                boxSizing: "border-box",
-                                inset: 0,
-                                pointerEvents: "none",
-                                position: "absolute"
-                              }}
-                            >
-                              {canEditImage
-                                ? IMAGE_HANDLE_POSITIONS.map((position) => (
-                                    <div
-                                      key={position}
-                                      onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                                      style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
-                                    />
-                                  ))
-                                : null}
-                            </div>
-                          ),
-                          getHandleProps: (position) => ({
-                            onPointerDown: (event) => {
-                              if (canEditImage) {
-                                startImageResize(event, image, rect, position);
-                              }
-                            },
-                            style: canEditImage
-                              ? resolveImageHandleStyle(position, selectionStroke, palette.surface)
-                              : { ...resolveImageHandleStyle(position, selectionStroke, palette.surface), display: "none" }
-                          }),
-                          image,
-                          rect
-                        })
-                      : (
-                          <div
-                            style={{
-                              border: `1.5px solid ${selectionStroke}`,
-                              boxShadow: `0 0 0 1px ${palette.surface}`,
-                              boxSizing: "border-box",
-                              inset: 0,
-                              pointerEvents: "none",
-                              position: "absolute"
-                            }}
-                          >
-                            {canEditImage
-                              ? IMAGE_HANDLE_POSITIONS.map((position) => (
-                                  <div
-                                    key={position}
-                                    onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                                    style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
-                                  />
-                                ))
-                              : null}
-                          </div>
-                        )}
-                  </div>
-                ) : null;
-
-                return (
-                  <React.Fragment key={image.id}>
-                    {renderImage
-                      ? <div style={style}>{renderImage({ defaultNode, image, rect, style })}</div>
-                      : <div style={style}>{defaultNode}</div>}
-                    <div
-                      onClick={() => handleImageClick(image)}
-                      onPointerDown={(event) => startImageMove(event, image, rect)}
-                      style={{
-                        ...style,
-                        background: "transparent",
-                        cursor: canEditImage ? "move" : image.hyperlink ? "pointer" : "default",
-                        pointerEvents: "auto",
-                        zIndex: image.zIndex + 1
-                      }}
-                    />
-                    {selectionNode}
-                  </React.Fragment>
-                );
-              })}
-            </div>
+            <>
+              <div style={topOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "top"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "top"))}
+              </div>
+              <div style={leftOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "left"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "left"))}
+              </div>
+              <div style={cornerOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "corner"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "corner"))}
+              </div>
+              <div style={scrollOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "scroll"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "scroll"))}
+              </div>
+            </>
           ) : null}
           <table
             ref={tableRef}

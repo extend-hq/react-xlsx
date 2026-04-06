@@ -76,6 +76,8 @@ export interface XlsxSheetData {
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
   colStyleIds: Record<number, number>;
+  hiddenCols?: number[];
+  hiddenRows?: number[];
   conditionalFormatRules: XlsxConditionalFormatRule[];
   dataValidations: XlsxDataValidation[];
   name: string;
@@ -302,7 +304,9 @@ export interface UseXlsxViewerControllerOptions {
   file?: ArrayBuffer;
   fileName?: string;
   readOnly?: boolean;
+  readOnlyAboveBytes?: number;
   src?: string;
+  useWorker?: boolean;
 }
 
 export interface XlsxViewerController {
@@ -335,8 +339,13 @@ export interface XlsxViewerController {
   getClipboardData: () => XlsxClipboardData | null;
   getCellDisplayValue: (cell?: XlsxCellAddress | null) => string;
   getCellFormula: (cell?: XlsxCellAddress | null) => string;
+  getCellSnapshotAsync?: (workbookSheetIndex: number, row: number, col: number) => Promise<{
+    displayValue: string;
+    formula: string;
+  }>;
   isLoadDeferred: boolean;
   isLoading: boolean;
+  isWorkerBacked?: boolean;
   images: XlsxImage[];
   shapes: XlsxShape[];
   mergeSelection: () => void;
@@ -376,6 +385,7 @@ export interface XlsxViewerController {
   sortTable: (tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => void;
   selectImage: (id: string | null) => void;
   setImageRect: (id: string, rect: XlsxImageRect) => void;
+  getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<unknown[] | null>;
   tables: XlsxTable[];
   undo: () => void;
   unmergeSelection: () => void;
