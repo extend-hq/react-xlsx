@@ -81,9 +81,15 @@ type WorkbookSheetState = {
   defaultRowHeightPx: number;
   hasHorizontalMerges: boolean;
   hasVerticalMerges: boolean;
+  hiddenCols: number[];
+  hiddenRows: number[];
   rowHeightOverridesPx: Record<number, number>;
   rowStyleIds: Record<number, number>;
   showGridLines: boolean;
+};
+
+type ParseWorkbookStructureOptions = {
+  includeCachedFormulaValues?: boolean;
 };
 
 type ThemeState = {
@@ -162,6 +168,16 @@ export type WorkbookImageAssets = {
   tableStyleByName: Record<string, XlsxTableStyleDefinition>;
   themePalette: XlsxThemePalette;
 };
+
+export type WorkbookStructureAssets = Pick<
+  WorkbookImageAssets,
+  | "namedCellStyleByName"
+  | "sheetStatesByWorkbookSheetIndex"
+  | "styleById"
+  | "tableMetadataByWorkbookSheetIndex"
+  | "tableStyleByName"
+  | "themePalette"
+>;
 
 function buildThemePalette(theme: ThemeState): XlsxThemePalette {
   const themeOrder = ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
@@ -1198,7 +1214,11 @@ function parseConditionalFormatRules(document: Document) {
     .sort((left, right) => left.priority - right.priority);
 }
 
-function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetState | null {
+function parseSheetState(
+  archive: ArchiveEntries,
+  path: string,
+  options?: ParseWorkbookStructureOptions
+): WorkbookSheetState | null {
   const xml = readArchiveText(archive, path);
   if (!xml) {
     return null;
@@ -1209,6 +1229,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     return null;
   }
 
+  const includeCachedFormulaValues = options?.includeCachedFormulaValues ?? true;
   const cachedFormulaValues: Record<string, string> = {};
   const conditionalFormatRules = parseConditionalFormatRules(document);
   const sheetFormatNode = getLocalElements(document, "sheetFormatPr")[0] ?? null;
@@ -1217,6 +1238,8 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
   const colWidthOverridesPx: Record<number, number> = {};
   const rowStyleIds: Record<number, number> = {};
   const colStyleIds: Record<number, number> = {};
+  const hiddenRows = new Set<number>();
+  const hiddenCols = new Set<number>();
   let hasHorizontalMerges = false;
   let hasVerticalMerges = false;
 
@@ -1231,21 +1254,27 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     const rowIndex = Number(rowNode.getAttribute("r") ?? 0) - 1;
     const height = Number(rowNode.getAttribute("ht") ?? Number.NaN);
     const styleId = Number(rowNode.getAttribute("s") ?? Number.NaN);
+    const isHidden = (rowNode.getAttribute("hidden") ?? "0") === "1";
     if (rowIndex >= 0 && Number.isFinite(height)) {
       rowHeightOverridesPx[rowIndex] = Math.max(MIN_ROW_HEIGHT_PX, Math.round(height * 1.33));
     }
     if (rowIndex >= 0 && Number.isFinite(styleId)) {
       rowStyleIds[rowIndex] = styleId;
     }
+    if (rowIndex >= 0 && isHidden) {
+      hiddenRows.add(rowIndex);
+    }
 
-    getChildElements(rowNode, "c").forEach((cellNode) => {
-      const formulaNode = getFirstChild(cellNode, "f");
-      const valueNode = getFirstChild(cellNode, "v");
-      const cellRef = cellNode.getAttribute("r");
-      if (formulaNode && valueNode && cellRef) {
-        cachedFormulaValues[cellRef] = valueNode.textContent ?? "";
-      }
-    });
+    if (includeCachedFormulaValues) {
+      getChildElements(rowNode, "c").forEach((cellNode) => {
+        const formulaNode = getFirstChild(cellNode, "f");
+        const valueNode = getFirstChild(cellNode, "v");
+        const cellRef = cellNode.getAttribute("r");
+        if (formulaNode && valueNode && cellRef) {
+          cachedFormulaValues[cellRef] = valueNode.textContent ?? "";
+        }
+      });
+    }
   });
 
   getLocalElements(document, "col").forEach((colNode) => {
@@ -1253,6 +1282,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     const max = Number(colNode.getAttribute("max") ?? 0) - 1;
     const width = Number(colNode.getAttribute("width") ?? Number.NaN);
     const styleId = Number(colNode.getAttribute("style") ?? Number.NaN);
+    const isHidden = (colNode.getAttribute("hidden") ?? "0") === "1";
     if (!Number.isFinite(width)) {
       if (!Number.isFinite(styleId)) {
         return;
@@ -1267,6 +1297,9 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
         }
         if (Number.isFinite(styleId)) {
           colStyleIds[col] = styleId;
+        }
+        if (isHidden) {
+          hiddenCols.add(col);
         }
       }
     }
@@ -1296,6 +1329,8 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
     hasHorizontalMerges,
     hasVerticalMerges,
+    hiddenCols: [...hiddenCols].sort((left, right) => left - right),
+    hiddenRows: [...hiddenRows].sort((left, right) => left - right),
     rowHeightOverridesPx,
     rowStyleIds,
     showGridLines: (sheetViewNode?.getAttribute("showGridLines") ?? "1") !== "0"
@@ -2373,18 +2408,73 @@ export function revokeWorkbookImageAssets(assets: WorkbookImageAssets | null) {
   }
 }
 
-export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets {
-  const archive = unzipSync(bytes);
+function parseWorkbookStructureAssetsFromArchive(
+  archive: ArchiveEntries,
+  options?: ParseWorkbookStructureOptions
+): WorkbookStructureAssets & {
+  contentTypes: ContentTypesState;
+  theme: ThemeState;
+  workbookSheets: WorkbookSheetInfo[];
+} {
   const contentTypes = parseContentTypes(archive);
   const workbookSheets = parseWorkbookSheets(archive);
   const theme = parseWorkbookTheme(archive);
   const themePalette = buildThemePalette(theme);
   const { namedCellStyleByName, styleById, tableStyleByName } = parseWorkbookStyles(archive);
   const tableMetadataByWorkbookSheetIndex = parseWorkbookTableMetadata(archive, workbookSheets);
+  return {
+    contentTypes,
+    namedCellStyleByName,
+    sheetStatesByWorkbookSheetIndex: workbookSheets.map((sheet) => parseSheetState(archive, sheet.path, options)),
+    styleById,
+    tableMetadataByWorkbookSheetIndex,
+    tableStyleByName,
+    theme,
+    themePalette,
+    workbookSheets
+  };
+}
+
+export function parseWorkbookStructureAssets(
+  bytes: Uint8Array,
+  options?: ParseWorkbookStructureOptions
+): WorkbookStructureAssets {
+  const archive = unzipSync(bytes);
+  const {
+    namedCellStyleByName,
+    sheetStatesByWorkbookSheetIndex,
+    styleById,
+    tableMetadataByWorkbookSheetIndex,
+    tableStyleByName,
+    themePalette
+  } = parseWorkbookStructureAssetsFromArchive(archive, options);
+
+  return {
+    namedCellStyleByName,
+    sheetStatesByWorkbookSheetIndex,
+    styleById,
+    tableMetadataByWorkbookSheetIndex,
+    tableStyleByName,
+    themePalette
+  };
+}
+
+export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets {
+  const archive = unzipSync(bytes);
+  const {
+    contentTypes,
+    namedCellStyleByName,
+    sheetStatesByWorkbookSheetIndex,
+    styleById,
+    tableMetadataByWorkbookSheetIndex,
+    tableStyleByName,
+    theme,
+    themePalette,
+    workbookSheets
+  } = parseWorkbookStructureAssetsFromArchive(archive);
   const objectUrls: string[] = [];
   const imagesByWorkbookSheetIndex: XlsxImage[][] = [];
   const shapesByWorkbookSheetIndex: XlsxShape[][] = [];
-  const sheetStatesByWorkbookSheetIndex: Array<WorkbookSheetState | null> = [];
   const sheetOrigins: Array<WorkbookImageSheetOrigin | null> = [];
   const imageOriginsById = new Map<string, WorkbookImageOrigin>();
 
@@ -2393,7 +2483,6 @@ export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets
     const attachments: XlsxImageAttachment[] = [];
     const imageList: XlsxImage[] = [];
     const shapeList: XlsxShape[] = [];
-    sheetStatesByWorkbookSheetIndex[workbookSheetIndex] = parseSheetState(archive, sheet.path);
     let zIndexBase = 1;
 
     for (const relationship of sheetRelationships.values()) {
