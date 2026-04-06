@@ -5,6 +5,9 @@ import react from "@vitejs/plugin-react";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
+  worker: {
+    format: "es",
+  },
   plugins: [react(), tsconfigPaths(), tailwindcss()],
   resolve: {
     alias: {
