@@ -629,11 +629,620 @@ function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect): React.
   };
 }
 
+function clampPercent(value: number, fallback: number) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
+function resolveShapeAdjustment(shape: XlsxShape, name: string, fallback: number) {
+  const rawValue = shape.geometryAdjustments?.[name];
+  if (typeof rawValue !== "number") {
+    return fallback;
+  }
+  return clampPercent(rawValue / 1000, fallback);
+}
+
+function buildClosedPath(points: Array<[number, number]>) {
+  if (points.length === 0) {
+    return "";
+  }
+
+  return points
+    .map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`)
+    .join(" ") + " Z";
+}
+
+function pointOnCircle(radius: number, angleDeg: number, center = 50): [number, number] {
+  const radians = angleDeg * (Math.PI / 180);
+  return [
+    center + Math.cos(radians) * radius,
+    center + Math.sin(radians) * radius
+  ];
+}
+
+function buildRegularPolygonPath(sides: number, rotationDeg = -90, radius = 50) {
+  return buildClosedPath(
+    Array.from({ length: sides }, (_, index) => pointOnCircle(radius, rotationDeg + (360 / sides) * index))
+  );
+}
+
+function buildStarPath(points: number, innerRadius: number, rotationDeg = -90, outerRadius = 50) {
+  return buildClosedPath(
+    Array.from({ length: points * 2 }, (_, index) => {
+      const radius = index % 2 === 0 ? outerRadius : innerRadius;
+      return pointOnCircle(radius, rotationDeg + (360 / (points * 2)) * index);
+    })
+  );
+}
+
+function buildRoundRectPath(radius: number) {
+  const cornerRadius = Math.max(0, Math.min(50, radius));
+  const edge = 100 - cornerRadius;
+  return [
+    `M ${cornerRadius} 0`,
+    `L ${edge} 0`,
+    `Q 100 0 100 ${cornerRadius}`,
+    `L 100 ${edge}`,
+    `Q 100 100 ${edge} 100`,
+    `L ${cornerRadius} 100`,
+    `Q 0 100 0 ${edge}`,
+    `L 0 ${cornerRadius}`,
+    `Q 0 0 ${cornerRadius} 0`,
+    "Z"
+  ].join(" ");
+}
+
+function buildEllipsePath() {
+  return "M 50 0 A 50 50 0 1 1 49.999 0 Z";
+}
+
+function buildPiePath(startAngleDeg: number, endAngleDeg: number) {
+  const [startX, startY] = pointOnCircle(50, startAngleDeg);
+  const [endX, endY] = pointOnCircle(50, endAngleDeg);
+  const sweep = endAngleDeg >= startAngleDeg ? endAngleDeg - startAngleDeg : 360 - (startAngleDeg - endAngleDeg);
+  const largeArcFlag = sweep > 180 ? 1 : 0;
+  return [
+    "M 50 50",
+    `L ${startX} ${startY}`,
+    `A 50 50 0 ${largeArcFlag} 1 ${endX} ${endY}`,
+    "Z"
+  ].join(" ");
+}
+
+function buildChordPath(startAngleDeg: number, endAngleDeg: number) {
+  const [startX, startY] = pointOnCircle(50, startAngleDeg);
+  const [endX, endY] = pointOnCircle(50, endAngleDeg);
+  const sweep = endAngleDeg >= startAngleDeg ? endAngleDeg - startAngleDeg : 360 - (startAngleDeg - endAngleDeg);
+  const largeArcFlag = sweep > 180 ? 1 : 0;
+  return [
+    `M ${startX} ${startY}`,
+    `A 50 50 0 ${largeArcFlag} 1 ${endX} ${endY}`,
+    "Z"
+  ].join(" ");
+}
+
+function buildPlusPath(thickness: number) {
+  const arm = Math.max(10, Math.min(40, thickness));
+  const inner = 50 - arm / 2;
+  const outer = 50 + arm / 2;
+  return buildClosedPath([
+    [inner, 0],
+    [outer, 0],
+    [outer, inner],
+    [100, inner],
+    [100, outer],
+    [outer, outer],
+    [outer, 100],
+    [inner, 100],
+    [inner, outer],
+    [0, outer],
+    [0, inner],
+    [inner, inner]
+  ]);
+}
+
+function buildPentagonArrowPath() {
+  return buildClosedPath([
+    [0, 20],
+    [70, 20],
+    [70, 0],
+    [100, 50],
+    [70, 100],
+    [70, 80],
+    [0, 80]
+  ]);
+}
+
+function buildChevronArrowPath() {
+  return buildClosedPath([
+    [0, 20],
+    [54, 20],
+    [54, 0],
+    [100, 50],
+    [54, 100],
+    [54, 80],
+    [0, 80],
+    [32, 50]
+  ]);
+}
+
+function buildNotchedRightArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 36);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 20);
+  const notchDepth = Math.min(24, headLength * 0.7);
+  const bodyTop = 50 - shaftHalf;
+  const bodyBottom = 50 + shaftHalf;
+  const headStart = 100 - headLength;
+  return buildClosedPath([
+    [0, bodyTop],
+    [headStart, bodyTop],
+    [headStart, 0],
+    [100, 50],
+    [headStart, 100],
+    [headStart, bodyBottom],
+    [notchDepth, bodyBottom],
+    [0, 50],
+    [notchDepth, bodyTop]
+  ]);
+}
+
+function buildStripedRightArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 34);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 20);
+  const stripeWidth = 12;
+  const bodyTop = 50 - shaftHalf;
+  const bodyBottom = 50 + shaftHalf;
+  const headStart = 100 - headLength;
+  return [
+    `M 0 ${bodyTop} L ${stripeWidth} ${bodyTop} L ${stripeWidth} ${bodyBottom} L 0 ${bodyBottom} Z`,
+    buildClosedPath([
+      [stripeWidth * 1.6, bodyTop],
+      [headStart, bodyTop],
+      [headStart, 0],
+      [100, 50],
+      [headStart, 100],
+      [headStart, bodyBottom],
+      [stripeWidth * 1.6, bodyBottom]
+    ])
+  ].join(" ");
+}
+
+function buildLeftUpArrowPath(shape: XlsxShape) {
+  const stemWidth = resolveShapeAdjustment(shape, "adj1", 28);
+  const headLength = resolveShapeAdjustment(shape, "adj2", 34);
+  return buildClosedPath([
+    [100, 100 - stemWidth],
+    [stemWidth, 100 - stemWidth],
+    [stemWidth, 100],
+    [0, 50],
+    [stemWidth, 0],
+    [stemWidth, headLength],
+    [100, headLength]
+  ]);
+}
+
+function buildBentUpArrowPath(shape: XlsxShape) {
+  const stemWidth = resolveShapeAdjustment(shape, "adj1", 26);
+  const headLength = resolveShapeAdjustment(shape, "adj2", 28);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj3", 12);
+  const verticalCenter = 50;
+  const bodyTop = verticalCenter - shaftHalf;
+  const bodyBottom = verticalCenter + shaftHalf;
+  return buildClosedPath([
+    [0, bodyTop],
+    [100 - stemWidth, bodyTop],
+    [100 - stemWidth, headLength],
+    [100 - stemWidth * 0.5, headLength],
+    [100, 0],
+    [100 - stemWidth * 1.5, headLength],
+    [100 - stemWidth, headLength],
+    [100 - stemWidth, 100],
+    [100 - stemWidth * 2, 100],
+    [100 - stemWidth * 2, bodyBottom],
+    [0, bodyBottom]
+  ]);
+}
+
+function buildUturnArrowPath(shape: XlsxShape) {
+  const stemWidth = resolveShapeAdjustment(shape, "adj1", 22);
+  const headLength = resolveShapeAdjustment(shape, "adj2", 28);
+  return buildClosedPath([
+    [100, 100],
+    [100, 55],
+    [45, 55],
+    [45, 100],
+    [0, 50],
+    [45, 0],
+    [45, 45],
+    [100 - stemWidth, 45],
+    [100 - stemWidth, 100]
+  ]);
+}
+
+function buildLeftRightUpArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 22);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 16);
+  const bodyTop = 50 - shaftHalf;
+  const bodyBottom = 50 + shaftHalf;
+  const bodyLeft = 50 - shaftHalf;
+  const bodyRight = 50 + shaftHalf;
+  return buildClosedPath([
+    [headLength, bodyTop],
+    [bodyLeft, bodyTop],
+    [bodyLeft, headLength],
+    [0, headLength],
+    [50, 0],
+    [100, headLength],
+    [bodyRight, headLength],
+    [bodyRight, bodyTop],
+    [100 - headLength, bodyTop],
+    [100 - headLength, 0],
+    [100, 50],
+    [100 - headLength, 100],
+    [100 - headLength, bodyBottom],
+    [headLength, bodyBottom],
+    [headLength, 100],
+    [0, 50],
+    [headLength, 0]
+  ]);
+}
+
+function buildQuadArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 22);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 14);
+  const bodyLeft = 50 - shaftHalf;
+  const bodyRight = 50 + shaftHalf;
+  const bodyTop = 50 - shaftHalf;
+  const bodyBottom = 50 + shaftHalf;
+  return buildClosedPath([
+    [bodyLeft, headLength],
+    [headLength, headLength],
+    [headLength, bodyTop],
+    [0, 50],
+    [headLength, 100 - bodyTop],
+    [headLength, bodyBottom],
+    [bodyLeft, bodyBottom],
+    [bodyLeft, 100 - headLength],
+    [bodyTop, 100 - headLength],
+    [50, 100],
+    [100 - bodyTop, 100 - headLength],
+    [bodyRight, 100 - headLength],
+    [bodyRight, bodyBottom],
+    [100 - headLength, bodyBottom],
+    [100 - headLength, 100 - bodyTop],
+    [100, 50],
+    [100 - headLength, bodyTop],
+    [100 - headLength, headLength],
+    [bodyRight, headLength],
+    [bodyRight, bodyTop],
+    [100 - bodyTop, headLength],
+    [50, 0],
+    [bodyTop, headLength],
+    [bodyLeft, headLength]
+  ]);
+}
+
+function buildHeartPath() {
+  return [
+    "M 50 92",
+    "C 18 72 0 52 0 28",
+    "C 0 10 14 0 28 0",
+    "C 38 0 46 6 50 16",
+    "C 54 6 62 0 72 0",
+    "C 86 0 100 10 100 28",
+    "C 100 52 82 72 50 92",
+    "Z"
+  ].join(" ");
+}
+
+function buildLightningBoltPath() {
+  return buildClosedPath([
+    [42, 0],
+    [10, 58],
+    [38, 58],
+    [24, 100],
+    [90, 36],
+    [58, 36],
+    [72, 0]
+  ]);
+}
+
+function buildTeardropPath() {
+  return [
+    "M 50 0",
+    "C 20 24 0 44 0 68",
+    "C 0 86 14 100 32 100",
+    "C 60 100 82 78 82 50",
+    "C 82 26 68 10 50 0",
+    "Z"
+  ].join(" ");
+}
+
+function buildCloudPath() {
+  return [
+    "M 22 70",
+    "C 8 70 0 62 0 50",
+    "C 0 40 6 32 18 30",
+    "C 20 16 30 8 44 8",
+    "C 54 8 62 12 68 20",
+    "C 72 14 80 12 88 14",
+    "C 98 18 100 26 100 34",
+    "C 100 44 94 50 88 52",
+    "C 92 66 82 76 68 76",
+    "C 62 84 52 88 42 88",
+    "C 32 88 24 82 22 70",
+    "Z"
+  ].join(" ");
+}
+
+function buildRightArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 38);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 20);
+  const bodyTop = 50 - shaftHalf;
+  const bodyBottom = 50 + shaftHalf;
+  const headStart = 100 - headLength;
+  return buildClosedPath([
+    [0, bodyTop],
+    [headStart, bodyTop],
+    [headStart, 0],
+    [100, 50],
+    [headStart, 100],
+    [headStart, bodyBottom],
+    [0, bodyBottom]
+  ]);
+}
+
+function buildLeftArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 38);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 20);
+  const bodyTop = 50 - shaftHalf;
+  const bodyBottom = 50 + shaftHalf;
+  const headEnd = headLength;
+  return buildClosedPath([
+    [100, bodyTop],
+    [headEnd, bodyTop],
+    [headEnd, 0],
+    [0, 50],
+    [headEnd, 100],
+    [headEnd, bodyBottom],
+    [100, bodyBottom]
+  ]);
+}
+
+function buildUpArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 38);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 20);
+  const bodyLeft = 50 - shaftHalf;
+  const bodyRight = 50 + shaftHalf;
+  const headEnd = headLength;
+  return buildClosedPath([
+    [bodyLeft, 100],
+    [bodyLeft, headEnd],
+    [0, headEnd],
+    [50, 0],
+    [100, headEnd],
+    [bodyRight, headEnd],
+    [bodyRight, 100]
+  ]);
+}
+
+function buildDownArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 38);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 20);
+  const bodyLeft = 50 - shaftHalf;
+  const bodyRight = 50 + shaftHalf;
+  const headStart = 100 - headLength;
+  return buildClosedPath([
+    [bodyLeft, 0],
+    [bodyLeft, headStart],
+    [0, headStart],
+    [50, 100],
+    [100, headStart],
+    [bodyRight, headStart],
+    [bodyRight, 0]
+  ]);
+}
+
+function buildLeftRightArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 24);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 18);
+  const bodyTop = 50 - shaftHalf;
+  const bodyBottom = 50 + shaftHalf;
+  return buildClosedPath([
+    [headLength, bodyTop],
+    [100 - headLength, bodyTop],
+    [100 - headLength, 0],
+    [100, 50],
+    [100 - headLength, 100],
+    [100 - headLength, bodyBottom],
+    [headLength, bodyBottom],
+    [headLength, 100],
+    [0, 50],
+    [headLength, 0]
+  ]);
+}
+
+function buildUpDownArrowPath(shape: XlsxShape) {
+  const headLength = resolveShapeAdjustment(shape, "adj2", 24);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj1", 18);
+  const bodyLeft = 50 - shaftHalf;
+  const bodyRight = 50 + shaftHalf;
+  return buildClosedPath([
+    [bodyLeft, headLength],
+    [bodyLeft, 100 - headLength],
+    [0, 100 - headLength],
+    [50, 100],
+    [100, 100 - headLength],
+    [bodyRight, 100 - headLength],
+    [bodyRight, headLength],
+    [100, headLength],
+    [50, 0],
+    [0, headLength]
+  ]);
+}
+
+function buildBentArrowPath(shape: XlsxShape) {
+  const stemWidth = resolveShapeAdjustment(shape, "adj1", 25);
+  const headLength = resolveShapeAdjustment(shape, "adj2", 27);
+  const shaftHalf = resolveShapeAdjustment(shape, "adj3", 12.5);
+  const bendY = resolveShapeAdjustment(shape, "adj4", 43.75);
+  const bodyTop = bendY - shaftHalf;
+  const bodyBottom = bendY + shaftHalf;
+  const headStart = 100 - headLength;
+  return buildClosedPath([
+    [0, bodyTop],
+    [headStart, bodyTop],
+    [headStart, 0],
+    [100, bendY],
+    [headStart, 100],
+    [headStart, bodyBottom],
+    [stemWidth, bodyBottom],
+    [stemWidth, 100],
+    [0, 100]
+  ]);
+}
+
 function buildPresetShapePath(shape: XlsxShape) {
   switch (shape.geometry) {
+    case "arc":
+      return {
+        path: "M 8 74 C 18 24 82 24 92 74",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "bentArrow":
+      return {
+        path: buildBentArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "bentUpArrow":
+      return {
+        path: buildBentUpArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "blockArc":
+      return {
+        path: "M 12 78 A 38 38 0 1 1 78 12 L 62 28 A 16 16 0 1 0 28 62 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "can":
+      return {
+        path: "M 18 14 C 18 6 82 6 82 14 L 82 86 C 82 94 18 94 18 86 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "chevron":
+      return {
+        path: "M 0 0 L 62 0 L 100 50 L 62 100 L 0 100 L 38 50 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "chevronArrow":
+      return {
+        path: buildChevronArrowPath(),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "chord":
+      return {
+        path: buildChordPath(-30, 210),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "cloud":
+    case "cloudCallout":
+      return {
+        path: buildCloudPath(),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "diamond":
+    case "flowChartDecision":
+      return {
+        path: "M 50 0 L 100 50 L 50 100 L 0 50 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "downArrow":
+      return {
+        path: buildDownArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
     case "line":
       return {
         path: "M 0 0 L 100 100",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "ellipse":
+    case "flowChartTerminator":
+      return {
+        path: buildEllipsePath(),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartAlternateProcess":
+    case "flowChartDelay":
+    case "roundRect":
+      return {
+        path: buildRoundRectPath(resolveShapeAdjustment(shape, "adj", 18)),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartCollate":
+      return {
+        path: "M 0 0 L 100 0 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartData":
+    case "flowChartInputOutput":
+      return {
+        path: "M 24 0 L 100 0 L 76 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartDocument":
+      return {
+        path: "M 0 0 L 100 0 L 100 82 C 78 70 60 94 40 82 C 24 72 12 88 0 82 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartMagneticDisk":
+      return {
+        path: "M 18 14 C 18 6 82 6 82 14 L 82 86 C 82 94 18 94 18 86 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartManualInput":
+      return {
+        path: "M 16 0 L 100 0 L 84 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartPreparation":
+    case "hexagon":
+      return {
+        path: "M 25 0 L 75 0 L 100 50 L 75 100 L 25 100 L 0 50 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "flowChartProcess":
+    case "rect":
+      return {
+        path: "M 0 0 L 100 0 L 100 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "heart":
+      return {
+        path: buildHeartPath(),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "heptagon":
+      return {
+        path: buildRegularPolygonPath(7),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "homePlate":
+    case "flowChartOffpageConnector":
+      return {
+        path: "M 0 0 L 70 0 L 100 50 L 70 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "leftArrow":
+      return {
+        path: buildLeftArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "leftBracket":
+      return {
+        path: "M 72 0 L 28 0 L 28 100 L 72 100",
         viewBox: { width: 100, height: 100 }
       };
     case "leftBrace":
@@ -641,9 +1250,108 @@ function buildPresetShapePath(shape: XlsxShape) {
         path: "M 82 0 C 46 0 52 24 52 38 C 52 46 46 50 24 50 C 46 50 52 54 52 62 C 52 76 46 100 82 100",
         viewBox: { width: 100, height: 100 }
       };
-    case "arc":
+    case "leftRightArrowCallout":
       return {
-        path: "M 8 74 C 18 24 82 24 92 74",
+        path: buildLeftRightArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "leftRightArrow":
+      return {
+        path: buildLeftRightArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "leftRightUpArrow":
+      return {
+        path: buildLeftRightUpArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "leftUpArrow":
+      return {
+        path: buildLeftUpArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "lightningBolt":
+      return {
+        path: buildLightningBoltPath(),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "mathPlus":
+    case "plus":
+      return {
+        path: buildPlusPath(resolveShapeAdjustment(shape, "adj", 26)),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "cross":
+      return {
+        path: buildPlusPath(resolveShapeAdjustment(shape, "adj", 22)),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "mathMinus":
+    case "minus":
+      return {
+        path: "M 0 40 L 100 40 L 100 60 L 0 60 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "mathMultiply":
+    case "multiply":
+      return {
+        path: "M 18 0 L 50 32 L 82 0 L 100 18 L 68 50 L 100 82 L 82 100 L 50 68 L 18 100 L 0 82 L 32 50 L 0 18 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "mathDivide":
+      return {
+        path: "M 0 42 L 100 42 L 100 58 L 0 58 Z M 50 12 A 8 8 0 1 1 49.999 12 Z M 50 88 A 8 8 0 1 1 49.999 88 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "moon":
+      return {
+        path: "M 70 6 C 42 10 22 34 22 62 C 22 80 32 94 48 100 C 20 98 0 76 0 48 C 0 20 20 0 48 0 C 56 0 64 2 70 6 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "notchedRightArrow":
+      return {
+        path: buildNotchedRightArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "octagon":
+      return {
+        path: "M 30 0 L 70 0 L 100 30 L 100 70 L 70 100 L 30 100 L 0 70 L 0 30 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "parallelogram":
+      return {
+        path: "M 24 0 L 100 0 L 76 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "pentagon":
+      return {
+        path: "M 50 0 L 100 38 L 81 100 L 19 100 L 0 38 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "pie":
+    case "pieWedge":
+      return {
+        path: buildPiePath(-35, 225),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "pentagonArrow":
+      return {
+        path: buildPentagonArrowPath(),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "plaque":
+      return {
+        path: "M 12 0 L 88 0 L 100 12 L 100 88 L 88 100 L 12 100 L 0 88 L 0 12 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "quadArrow":
+      return {
+        path: buildQuadArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "rightArrow":
+      return {
+        path: buildRightArrowPath(shape),
         viewBox: { width: 100, height: 100 }
       };
     case "rightArrowCallout":
@@ -651,14 +1359,149 @@ function buildPresetShapePath(shape: XlsxShape) {
         path: "M 0 18 L 62 18 L 62 0 L 100 50 L 62 100 L 62 82 L 0 82 L 0 18 Z",
         viewBox: { width: 100, height: 100 }
       };
+    case "rightBracket":
+      return {
+        path: "M 28 0 L 72 0 L 72 100 L 28 100",
+        viewBox: { width: 100, height: 100 }
+      };
     case "downArrowCallout":
       return {
         path: "M 18 0 L 82 0 L 82 58 L 100 58 L 50 100 L 0 58 L 18 58 L 18 0 Z",
         viewBox: { width: 100, height: 100 }
       };
+    case "rightBrace":
+      return {
+        path: "M 18 0 C 54 0 48 24 48 38 C 48 46 54 50 76 50 C 54 50 48 54 48 62 C 48 76 54 100 18 100",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "round1Rect":
+      return {
+        path: "M 18 0 L 100 0 L 100 100 L 18 100 Q 0 100 0 82 L 0 18 Q 0 0 18 0 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "round2DiagRect":
+      return {
+        path: "M 18 0 L 100 0 L 100 82 Q 100 100 82 100 L 0 100 L 0 18 Q 0 0 18 0 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "round2SameRect":
+      return {
+        path: "M 18 0 L 82 0 Q 100 0 100 18 L 100 82 Q 100 100 82 100 L 0 100 L 0 0 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "decagon":
+      return {
+        path: buildRegularPolygonPath(10),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "dodecagon":
+      return {
+        path: buildRegularPolygonPath(12),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "rtTriangle":
+      return {
+        path: "M 0 0 L 100 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star4":
+      return {
+        path: buildStarPath(4, 20),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star5":
+      return {
+        path: buildStarPath(5, 21),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star6":
+      return {
+        path: buildStarPath(6, 23),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star7":
+      return {
+        path: buildStarPath(7, 24),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star8":
+      return {
+        path: buildStarPath(8, 25),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star10":
+      return {
+        path: buildStarPath(10, 26),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star12":
+      return {
+        path: buildStarPath(12, 26),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star16":
+      return {
+        path: buildStarPath(16, 27),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star24":
+      return {
+        path: buildStarPath(24, 28),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "star32":
+      return {
+        path: buildStarPath(32, 29),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "stripedRightArrow":
+      return {
+        path: buildStripedRightArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "sun":
+      return {
+        path: buildStarPath(12, 36),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "teardrop":
+      return {
+        path: buildTeardropPath(),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "triangle":
+      return {
+        path: "M 50 0 L 100 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "trapezoid":
+      return {
+        path: "M 20 0 L 80 0 L 100 100 L 0 100 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "upArrow":
+      return {
+        path: buildUpArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
     case "upArrowCallout":
       return {
         path: "M 50 0 L 100 42 L 82 42 L 82 100 L 18 100 L 18 42 L 0 42 L 50 0 Z",
+        viewBox: { width: 100, height: 100 }
+      };
+    case "upDownArrow":
+      return {
+        path: buildUpDownArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "upDownArrowCallout":
+      return {
+        path: buildUpDownArrowPath(shape),
+        viewBox: { width: 100, height: 100 }
+      };
+    case "uturnArrow":
+      return {
+        path: buildUturnArrowPath(shape),
         viewBox: { width: 100, height: 100 }
       };
     default:

@@ -252,6 +252,7 @@ export interface XlsxShape {
   flipH?: boolean;
   flipV?: boolean;
   geometry: string;
+  geometryAdjustments?: Record<string, number>;
   hyperlink?: string;
   id: string;
   name?: string;

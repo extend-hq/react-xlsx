@@ -2006,6 +2006,30 @@ function parseCustomGeometryPath(shapeNode: Element): ShapeVectorPath | undefine
   };
 }
 
+function parseShapeGeometryAdjustments(shapeNode: Element) {
+  const presetGeometry = getFirstDescendant(shapeNode, "prstGeom");
+  if (!presetGeometry) {
+    return undefined;
+  }
+
+  const adjustments: Record<string, number> = {};
+  getChildElements(getFirstChild(presetGeometry, "avLst"), "gd").forEach((adjustmentNode) => {
+    const name = adjustmentNode.getAttribute("name");
+    const formula = adjustmentNode.getAttribute("fmla") ?? "";
+    const match = formula.match(/^val\s+(-?\d+(?:\.\d+)?)$/);
+    if (!name || !match) {
+      return;
+    }
+
+    const value = Number.parseFloat(match[1] ?? "");
+    if (Number.isFinite(value)) {
+      adjustments[name] = value;
+    }
+  });
+
+  return Object.keys(adjustments).length > 0 ? adjustments : undefined;
+}
+
 function parseShapeParagraphs(
   shapeNode: Element,
   styleNode: Element | null,
@@ -2183,6 +2207,7 @@ function parseShapeNode(
   const geometry = getFirstDescendant(shapeNode, "prstGeom")?.getAttribute("prst")
     ?? (getFirstDescendant(shapeNode, "custGeom") ? "custom" : "rect");
   const customPath = geometry === "custom" ? parseCustomGeometryPath(shapeNode) : undefined;
+  const geometryAdjustments = parseShapeGeometryAdjustments(shapeNode);
   return {
     anchor: transform.anchor,
     description: nonVisualProps?.getAttribute("descr") ?? undefined,
@@ -2190,6 +2215,7 @@ function parseShapeNode(
     flipH: transform.flipH,
     flipV: transform.flipV,
     geometry,
+    geometryAdjustments,
     hyperlink: getHyperlinkTarget(nonVisualProps ?? shapeNode, drawingRelationships),
     id: shapeId,
     name: nonVisualProps?.getAttribute("name") ?? undefined,
