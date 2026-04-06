@@ -565,8 +565,8 @@ export function App() {
                   emptyState={<ViewerEmptyState />}
                   height="100%"
                   loadingState={
-                    <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-                      {isReadingFile ? "Reading workbook..." : "Loading workbook..."}
+                    <div className="text-muted-foreground flex h-full w-full items-center justify-center text-sm">
+                      Loading...
                     </div>
                   }
                   readOnly={isReadOnly}
