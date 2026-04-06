@@ -23,6 +23,30 @@ const MIN_ROW_HEIGHT_PX = 16;
 const DEFAULT_COL_WIDTH_EMU = 64 * EMU_PER_PIXEL;
 const DEFAULT_ROW_HEIGHT_EMU = 20 * EMU_PER_PIXEL;
 
+function resolveDeviceGridlineThicknessPx() {
+  if (typeof window === "undefined") {
+    return 1;
+  }
+
+  const devicePixelRatio = window.devicePixelRatio;
+  if (!Number.isFinite(devicePixelRatio) || devicePixelRatio <= 0) {
+    return 1;
+  }
+
+  return 1 / devicePixelRatio;
+}
+
+function sheetColumnWidthToPixels(width: number) {
+  if (!Number.isFinite(width) || width <= 0) {
+    return MIN_COL_WIDTH_PX;
+  }
+
+  const pixels = width < 1
+    ? Math.floor(width * 12 + 0.5)
+    : Math.floor(((256 * width + Math.floor(128 / 7)) / 256) * 7);
+  return Math.max(MIN_COL_WIDTH_PX, pixels);
+}
+
 type ArchiveEntries = Record<string, Uint8Array>;
 
 type ContentTypesState = {
@@ -88,6 +112,8 @@ type GroupTransform = {
   chY: number;
   cx: number;
   cy: number;
+  scaleX: number;
+  scaleY: number;
   x: number;
   y: number;
 };
@@ -812,7 +838,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     for (let col = min; col <= max; col += 1) {
       if (col >= 0) {
         if (Number.isFinite(width)) {
-          const widthPx = Math.max(MIN_COL_WIDTH_PX, Math.round(width * 7 + 5));
+          const widthPx = sheetColumnWidthToPixels(width);
           colWidthOverridesPx[col] = widthPx;
         }
         if (Number.isFinite(styleId)) {
@@ -841,7 +867,7 @@ function parseSheetState(archive: ArchiveEntries, path: string): WorkbookSheetSt
     cachedFormulaValues,
     colWidthOverridesPx,
     colStyleIds,
-    defaultColWidthPx: Math.max(MIN_COL_WIDTH_PX, Math.round(defaultColWidth * 7 + 5)),
+    defaultColWidthPx: sheetColumnWidthToPixels(defaultColWidth),
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
     hasHorizontalMerges,
     hasVerticalMerges,
@@ -1148,6 +1174,63 @@ function anchorToRect(anchor: XlsxImage["anchor"]): DrawingRectEmu {
   };
 }
 
+function resolveSheetColumnWidthPx(sheetState: WorkbookSheetState | null, col: number) {
+  if (col < 0) {
+    return 0;
+  }
+  return sheetState?.colWidthOverridesPx[col] ?? sheetState?.defaultColWidthPx ?? emuToPixels(DEFAULT_COL_WIDTH_EMU);
+}
+
+function resolveSheetRowHeightPx(sheetState: WorkbookSheetState | null, row: number) {
+  if (row < 0) {
+    return 0;
+  }
+  return sheetState?.rowHeightOverridesPx[row] ?? sheetState?.defaultRowHeightPx ?? emuToPixels(DEFAULT_ROW_HEIGHT_EMU);
+}
+
+function sumSheetColumnWidthsEmu(sheetState: WorkbookSheetState | null, beforeCol: number) {
+  let total = 0;
+  for (let col = 0; col < beforeCol; col += 1) {
+    total += pixelsToEmu(resolveSheetColumnWidthPx(sheetState, col));
+  }
+  return total;
+}
+
+function sumSheetRowHeightsEmu(sheetState: WorkbookSheetState | null, beforeRow: number) {
+  let total = 0;
+  for (let row = 0; row < beforeRow; row += 1) {
+    total += pixelsToEmu(resolveSheetRowHeightPx(sheetState, row));
+  }
+  return total;
+}
+
+function anchorToAbsoluteRect(anchor: XlsxImage["anchor"], sheetState: WorkbookSheetState | null): DrawingRectEmu {
+  if (anchor.kind === "absolute") {
+    return anchorToRect(anchor);
+  }
+
+  if (anchor.kind === "one-cell") {
+    return {
+      cx: anchor.sizeEmu.cx,
+      cy: anchor.sizeEmu.cy,
+      x: sumSheetColumnWidthsEmu(sheetState, anchor.from.col) + anchor.from.colOffsetEmu,
+      y: sumSheetRowHeightsEmu(sheetState, anchor.from.row) + anchor.from.rowOffsetEmu
+    };
+  }
+
+  const left = sumSheetColumnWidthsEmu(sheetState, anchor.from.col) + anchor.from.colOffsetEmu;
+  const top = sumSheetRowHeightsEmu(sheetState, anchor.from.row) + anchor.from.rowOffsetEmu;
+  const right = sumSheetColumnWidthsEmu(sheetState, anchor.to.col) + anchor.to.colOffsetEmu;
+  const bottom = sumSheetRowHeightsEmu(sheetState, anchor.to.row) + anchor.to.rowOffsetEmu;
+
+  return {
+    cx: Math.max(0, right - left),
+    cy: Math.max(0, bottom - top),
+    x: left,
+    y: top
+  };
+}
+
 function rectToAbsoluteAnchor(rect: DrawingRectEmu): XlsxImage["anchor"] {
   return {
     kind: "absolute",
@@ -1185,33 +1268,66 @@ function parseTransformRect(xfrmNode: Element | null) {
 }
 
 function applyGroupTransform(rect: DrawingRectEmu, group: GroupTransform): DrawingRectEmu {
-  const scaleX = group.chCx !== 0 ? group.cx / group.chCx : 1;
-  const scaleY = group.chCy !== 0 ? group.cy / group.chCy : 1;
   return {
-    cx: rect.cx * scaleX,
-    cy: rect.cy * scaleY,
-    x: group.x + (rect.x - group.chX) * scaleX,
-    y: group.y + (rect.y - group.chY) * scaleY
+    cx: rect.cx * group.scaleX,
+    cy: rect.cy * group.scaleY,
+    x: group.x + (rect.x - group.chX) * group.scaleX,
+    y: group.y + (rect.y - group.chY) * group.scaleY
   };
 }
 
-function parseGroupTransform(groupNode: Element, parentGroup: GroupTransform | null, fallbackAnchor: XlsxImage["anchor"]) {
+function parseGroupTransform(
+  groupNode: Element,
+  parentGroup: GroupTransform | null,
+  fallbackAnchor: XlsxImage["anchor"],
+  sheetState: WorkbookSheetState | null
+) {
   const xfrmNode = getFirstDescendant(getFirstChild(groupNode, "grpSpPr") ?? groupNode, "xfrm");
-  const rect = parseTransformRect(xfrmNode) ?? anchorToRect(fallbackAnchor);
+  const anchorRect = anchorToAbsoluteRect(fallbackAnchor, sheetState);
+  const rect = parseTransformRect(xfrmNode) ?? anchorRect;
   const chOffNode = getFirstChild(xfrmNode ?? groupNode, "chOff");
   const chExtNode = getFirstChild(xfrmNode ?? groupNode, "chExt");
-  const localGroup: GroupTransform = {
-    chCx: Number(chExtNode?.getAttribute("cx") ?? rect.cx),
-    chCy: Number(chExtNode?.getAttribute("cy") ?? rect.cy),
-    chX: Number(chOffNode?.getAttribute("x") ?? 0),
-    chY: Number(chOffNode?.getAttribute("y") ?? 0),
-    cx: rect.cx,
-    cy: rect.cy,
-    x: rect.x,
-    y: rect.y
+  const rootScaleX = rect.cx !== 0 ? anchorRect.cx / rect.cx : 1;
+  const rootScaleY = rect.cy !== 0 ? anchorRect.cy / rect.cy : 1;
+  const useRectFrameForRoot = !parentGroup && (
+    rootScaleX < 0.85
+    || rootScaleX > 1.15
+    || rootScaleY < 0.85
+    || rootScaleY > 1.15
+  );
+  const absoluteRect = parentGroup ? applyGroupTransform(rect, parentGroup) : anchorRect;
+  const childRectX = parentGroup
+    ? Number(chOffNode?.getAttribute("x") ?? 0)
+    : useRectFrameForRoot
+      ? rect.x
+      : Number(chOffNode?.getAttribute("x") ?? 0);
+  const childRectY = parentGroup
+    ? Number(chOffNode?.getAttribute("y") ?? 0)
+    : useRectFrameForRoot
+      ? rect.y
+      : Number(chOffNode?.getAttribute("y") ?? 0);
+  const childRectCx = parentGroup
+    ? Number(chExtNode?.getAttribute("cx") ?? rect.cx)
+    : useRectFrameForRoot
+      ? rect.cx
+      : Number(chExtNode?.getAttribute("cx") ?? rect.cx);
+  const childRectCy = parentGroup
+    ? Number(chExtNode?.getAttribute("cy") ?? rect.cy)
+    : useRectFrameForRoot
+      ? rect.cy
+      : Number(chExtNode?.getAttribute("cy") ?? rect.cy);
+  return {
+    chCx: childRectCx,
+    chCy: childRectCy,
+    chX: childRectX,
+    chY: childRectY,
+    cx: absoluteRect.cx,
+    cy: absoluteRect.cy,
+    scaleX: childRectCx !== 0 ? absoluteRect.cx / childRectCx : (parentGroup?.scaleX ?? 1),
+    scaleY: childRectCy !== 0 ? absoluteRect.cy / childRectCy : (parentGroup?.scaleY ?? 1),
+    x: absoluteRect.x,
+    y: absoluteRect.y
   };
-
-  return parentGroup ? { ...applyGroupTransform(rect, parentGroup), chCx: localGroup.chCx, chCy: localGroup.chCy, chX: localGroup.chX, chY: localGroup.chY } : localGroup;
 }
 
 function anchorFromNodeOrFallback(
@@ -1223,11 +1339,15 @@ function anchorFromNodeOrFallback(
   const rect = parseTransformRect(xfrmNode);
   if (rect) {
     const absoluteRect = parentGroup ? applyGroupTransform(rect, parentGroup) : rect;
+    const scaleX = parentGroup?.scaleX ?? 1;
+    const scaleY = parentGroup?.scaleY ?? 1;
     return {
       anchor: rectToAbsoluteAnchor(absoluteRect),
       flipH: rect.flipH,
       flipV: rect.flipV,
-      rotationDeg: rect.rot
+      rotationDeg: rect.rot,
+      scaleX,
+      scaleY
     };
   }
 
@@ -1235,7 +1355,9 @@ function anchorFromNodeOrFallback(
     anchor: fallbackAnchor,
     flipH: false,
     flipV: false,
-    rotationDeg: 0
+    rotationDeg: 0,
+    scaleX: parentGroup?.scaleX ?? 1,
+    scaleY: parentGroup?.scaleY ?? 1
   };
 }
 
@@ -1309,8 +1431,10 @@ function parseShapeStroke(node: Element, styleNode: Element | null, theme: Theme
   return {
     color: color?.color,
     dash: getFirstChild(lineNode ?? node, "prstDash")?.getAttribute("val") ?? undefined,
+    headEndType: getFirstChild(lineNode ?? node, "headEnd")?.getAttribute("type") ?? undefined,
     none: false,
     opacity: color?.opacity,
+    tailEndType: getFirstChild(lineNode ?? node, "tailEnd")?.getAttribute("type") ?? undefined,
     widthPx: widthEmu > 0 ? emuToPixels(widthEmu) : undefined
   };
 }
@@ -1368,19 +1492,22 @@ function parseCustomGeometryPath(shapeNode: Element): ShapeVectorPath | undefine
   }
 
   const commands: string[] = [];
+  let lastPoint: { x: number; y: number } | null = null;
   for (const child of Array.from(pathNode.childNodes).filter(isElementNode)) {
     if (child.localName === "moveTo") {
       const point = parsePointNode(getFirstChild(child, "pt"));
       if (point) {
         commands.push(`M ${point.x} ${point.y}`);
+        lastPoint = point;
       }
       continue;
     }
 
     if (child.localName === "lnTo") {
       const point = parsePointNode(getFirstChild(child, "pt"));
-      if (point) {
+      if (point && (!lastPoint || point.x !== lastPoint.x || point.y !== lastPoint.y)) {
         commands.push(`L ${point.x} ${point.y}`);
+        lastPoint = point;
       }
       continue;
     }
@@ -1389,12 +1516,14 @@ function parseCustomGeometryPath(shapeNode: Element): ShapeVectorPath | undefine
       const points = getChildElements(child, "pt").map(parsePointNode).filter((point): point is { x: number; y: number } => point !== null);
       if (points.length === 3) {
         commands.push(`C ${points[0].x} ${points[0].y} ${points[1].x} ${points[1].y} ${points[2].x} ${points[2].y}`);
+        lastPoint = points[2];
       }
       continue;
     }
 
     if (child.localName === "close") {
       commands.push("Z");
+      lastPoint = null;
     }
   }
 
@@ -1554,10 +1683,10 @@ function parsePictureNode(
   }
 
   const nonVisualProps = getFirstDescendant(pictureNode, "cNvPr");
-  const transform = parentGroup ? anchorFromNodeOrFallback(pictureNode, fallbackAnchor, parentGroup) : null;
+  const transform = anchorFromNodeOrFallback(pictureNode, fallbackAnchor, parentGroup);
   return {
     image: {
-      anchor: transform?.anchor ?? fallbackAnchor,
+      anchor: transform.anchor,
       description: nonVisualProps?.getAttribute("descr") ?? undefined,
       hyperlink: getHyperlinkTarget(nonVisualProps ?? pictureNode, drawingRelationships),
       id: imageId,
@@ -1600,6 +1729,8 @@ function parseShapeNode(
     name: nonVisualProps?.getAttribute("name") ?? undefined,
     paragraphs: parseShapeParagraphs(shapeNode, styleNode, theme),
     rotationDeg: transform.rotationDeg,
+    scaleX: transform.scaleX,
+    scaleY: transform.scaleY,
     sheetIndex: workbookSheetIndex,
     svgPath: customPath?.path,
     svgViewBox: customPath?.viewBox,
@@ -1622,6 +1753,7 @@ function parseAnchorContents(
   ids: { image: number; shape: number; z: number },
   imageOriginsById: Map<string, WorkbookImageOrigin>,
   anchorIndex: number,
+  sheetState: WorkbookSheetState | null,
   parentGroup: GroupTransform | null = null
 ) {
   const images: XlsxImage[] = [];
@@ -1687,7 +1819,12 @@ function parseAnchorContents(
       return;
     }
 
-    const nextGroup = parseGroupTransform(child, parentGroup, fallbackAnchor);
+    const nextGroup = parseGroupTransform(
+      child,
+      parentGroup,
+      fallbackAnchor,
+      sheetState
+    );
     const groupFallbackAnchor = rectToAbsoluteAnchor({
       cx: nextGroup.cx,
       cy: nextGroup.cy,
@@ -1706,6 +1843,7 @@ function parseAnchorContents(
       ids,
       imageOriginsById,
       anchorIndex,
+      sheetState,
       nextGroup
     );
     parsedGroup.images.forEach((image) => images.push(image));
@@ -1728,6 +1866,7 @@ function parseDrawingObjects(
   workbookSheetIndex: number,
   zIndexBase: number,
   theme: ThemeState,
+  sheetState: WorkbookSheetState | null,
   imageOriginsById: Map<string, WorkbookImageOrigin>
 ) {
   const drawingXml = readArchiveText(archive, drawingPath);
@@ -1776,7 +1915,8 @@ function parseDrawingObjects(
       theme,
       ids,
       imageOriginsById,
-      anchorIndex
+      anchorIndex,
+      sheetState
     );
     parsed.images.forEach((image) => images.push(image));
     parsed.shapes.forEach((shape) => shapes.push(shape));
@@ -1839,6 +1979,7 @@ export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets
         workbookSheetIndex,
         zIndexBase,
         theme,
+        sheetStatesByWorkbookSheetIndex[workbookSheetIndex] ?? null,
         imageOriginsById
       );
       imageList.push(...drawingImages.images);
@@ -2188,6 +2329,26 @@ export function emuToPixels(value: number) {
 
 export function pixelsToEmu(value: number) {
   return value * EMU_PER_PIXEL;
+}
+
+export function pxToSheetColumnWidth(widthPx: number) {
+  return (Math.max(widthPx, MIN_COL_WIDTH_PX) - 5) / 7;
+}
+
+export function resolveSheetColumnWidthPixels(width: number) {
+  return sheetColumnWidthToPixels(width);
+}
+
+export function resolveSheetRowHeightPixels(height: number) {
+  return Math.max(Math.round(height * 1.33), MIN_ROW_HEIGHT_PX);
+}
+
+export function resolveRenderedSheetAxisPixels(sizePx: number, showGridLines = true) {
+  return Math.max(0, sizePx) + (showGridLines ? resolveDeviceGridlineThicknessPx() : 0);
+}
+
+export function resolveContentSheetAxisPixels(sizePx: number, showGridLines = true) {
+  return Math.max(0, sizePx - (showGridLines ? resolveDeviceGridlineThicknessPx() : 0));
 }
 
 function markerFromOffset(offsetPx: number, getSizePx: (index: number) => number) {

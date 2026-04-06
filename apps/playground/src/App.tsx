@@ -24,16 +24,8 @@ import {
   Upload
 } from "lucide-react";
 import { Button } from "./components/ui/button";
-import { ButtonGroup, ButtonGroupText } from "./components/ui/button-group";
+import { ButtonGroup } from "./components/ui/button-group";
 import { Input } from "./components/ui/input";
-import {
-  Menubar,
-  MenubarContent,
-  MenubarItem,
-  MenubarMenu,
-  MenubarSeparator,
-  MenubarTrigger
-} from "./components/ui/menubar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
 
@@ -81,11 +73,19 @@ function RibbonGroup({
   label: string;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-lg border bg-background/70 px-3 py-3 shadow-sm">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">{children}</div>
-      <div className="text-muted-foreground text-[10px] font-medium uppercase tracking-[0.18em]">{label}</div>
+    <div className="flex flex-col items-stretch">
+      <div className="flex items-center gap-1 px-2 py-1">
+        {children}
+      </div>
+      <div className="text-muted-foreground border-t px-2 py-0.5 text-center text-[10px] font-medium">
+        {label}
+      </div>
     </div>
   );
+}
+
+function RibbonSeparator() {
+  return <div className="bg-border mx-1 h-[52px] w-px shrink-0 self-center" />;
 }
 
 function ViewerEmptyState() {
@@ -134,7 +134,7 @@ function WorkbookToolbar({
     setActiveSheetIndex,
     sheets,
   } = useXlsxViewer();
-  const { activeCell, activeCellAddress, selectedRangeAddress, selection } = useXlsxViewerSelection();
+  const { activeCell, activeCellAddress, selection } = useXlsxViewerSelection();
   const {
     addSheet,
     canRedo,
@@ -145,9 +145,7 @@ function WorkbookToolbar({
     readOnly: viewerReadOnly,
     redo,
     selectedFormula,
-    selectedValue,
     setCellFormula,
-    setCellValue,
     undo,
     unmergeSelection,
   } = useXlsxViewerEditing();
@@ -156,14 +154,10 @@ function WorkbookToolbar({
   const hasActiveCell = Boolean(activeCellAddress);
   const isReadOnly = readOnly || viewerReadOnly;
   const [formulaDraft, setFormulaDraft] = React.useState("");
-  const [valueDraft, setValueDraft] = React.useState("");
   const [namedRangeDraft, setNamedRangeDraft] = React.useState("");
-  const [focusedField, setFocusedField] = React.useState<"formula" | "value" | null>(null);
+  const [focusedField, setFocusedField] = React.useState<"formula" | null>(null);
   const formulaEditCellRef = React.useRef<typeof activeCell>(null);
-  const valueEditCellRef = React.useRef<typeof activeCell>(null);
   const formulaInitialValueRef = React.useRef("");
-  const valueInitialValueRef = React.useRef("");
-  const selectionLabel = selectedRangeAddress ?? activeCellAddress ?? "No selection";
 
   React.useEffect(() => {
     if (focusedField === "formula") {
@@ -171,13 +165,6 @@ function WorkbookToolbar({
     }
     setFormulaDraft(selectedFormula);
   }, [selectedFormula, activeCellAddress, focusedField]);
-
-  React.useEffect(() => {
-    if (focusedField === "value") {
-      return;
-    }
-    setValueDraft(selectedValue);
-  }, [selectedValue, activeCellAddress, focusedField]);
 
   const commitFormula = React.useCallback((targetCell?: typeof activeCell | null, nextFormula?: string) => {
     const resolvedCell = targetCell ?? formulaEditCellRef.current;
@@ -193,20 +180,6 @@ function WorkbookToolbar({
     setCellFormula(resolvedCell, resolvedFormula);
   }, [formulaDraft, setCellFormula]);
 
-  const commitValue = React.useCallback((targetCell?: typeof activeCell | null, nextValue?: string) => {
-    const resolvedCell = targetCell ?? valueEditCellRef.current;
-    const resolvedValue = nextValue ?? valueDraft;
-    if (!resolvedCell) {
-      return;
-    }
-
-    if (resolvedValue === valueInitialValueRef.current) {
-      return;
-    }
-
-    setCellValue(resolvedCell, resolvedValue);
-  }, [setCellValue, valueDraft]);
-
   const handleDefineNamedRange = React.useCallback(() => {
     const nextName = namedRangeDraft.trim();
     if (!nextName || !selection) {
@@ -218,231 +191,42 @@ function WorkbookToolbar({
   }, [defineNamedRange, namedRangeDraft, selection]);
 
   return (
-    <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-      <div className="flex h-12 items-center gap-3 border-b px-4">
+    <div className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      {/* Title bar */}
+      <div className="flex min-h-10 items-center justify-between gap-3 border-b px-4 py-1.5">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex size-7 items-center justify-center rounded-md bg-emerald-600 text-white shadow-sm">
-            <FileSpreadsheet className="size-4" />
+          <div className="flex size-6 items-center justify-center rounded-md bg-emerald-600 text-white shadow-sm">
+            <FileSpreadsheet className="size-3.5" />
           </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium">{displayFileName}</div>
-            {activeSheet ? (
+          <div className="truncate text-sm font-medium">{displayFileName}</div>
+          {activeSheet ? (
+            <>
+              <div className="bg-border h-3 w-px shrink-0" />
               <div className="text-muted-foreground truncate text-[11px]">{activeSheet.name}</div>
-            ) : null}
+            </>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+            <span className="text-muted-foreground text-[11px] font-medium">Read only</span>
+            <Switch
+              aria-label="Toggle read only mode"
+              checked={isReadOnly}
+              onCheckedChange={setReadOnly}
+              size="sm"
+            />
           </div>
+          <ThemeToggle />
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-4 border-b px-4 py-2">
-        <Menubar className="h-8">
-          <MenubarMenu>
-            <MenubarTrigger>File</MenubarTrigger>
-            <MenubarContent>
-              <MenubarItem onClick={onOpenFile}>
-                <Upload />
-                Open Workbook
-              </MenubarItem>
-              <MenubarItem disabled={!canDownload} onClick={download}>
-                <Download />
-                Download Source
-              </MenubarItem>
-              <MenubarItem disabled={!canExport} onClick={exportXlsx}>
-                <Download />
-                Export XLSX
-              </MenubarItem>
-              <MenubarItem disabled={!canExport} onClick={exportCsv}>
-                <Download />
-                Export CSV
-              </MenubarItem>
-              <MenubarSeparator />
-              <MenubarItem disabled={!hasWorkbook} onClick={onClear}>
-                Clear Workbook
-              </MenubarItem>
-            </MenubarContent>
-          </MenubarMenu>
-          <MenubarMenu>
-            <MenubarTrigger>Workbook</MenubarTrigger>
-            <MenubarContent>
-              <MenubarItem disabled={!canExport} onClick={recalculate}>
-                <RefreshCcw />
-                Recalculate Formulas
-              </MenubarItem>
-              <MenubarItem disabled={!hasWorkbook || isReadOnly} onClick={() => addSheet()}>
-                <Plus />
-                New Sheet
-              </MenubarItem>
-              <MenubarItem disabled={sheets.length <= 1 || isReadOnly} onClick={removeActiveSheet}>
-                <Trash2 />
-                Delete Sheet
-              </MenubarItem>
-              <MenubarItem disabled={!activeSheet || activeSheetIndex <= 0} onClick={() => setActiveSheetIndex(activeSheetIndex - 1)}>
-                <ChevronLeft />
-                Previous Sheet
-              </MenubarItem>
-              <MenubarItem
-                disabled={!activeSheet || activeSheetIndex >= sheets.length - 1}
-                onClick={() => setActiveSheetIndex(activeSheetIndex + 1)}
-              >
-                <ChevronRight />
-                Next Sheet
-              </MenubarItem>
-            </MenubarContent>
-          </MenubarMenu>
-          <MenubarMenu>
-            <MenubarTrigger>Edit</MenubarTrigger>
-            <MenubarContent>
-              <MenubarItem disabled={!hasSelection || isReadOnly} onClick={mergeSelection}>
-                Merge Selection
-              </MenubarItem>
-              <MenubarItem disabled={!hasSelection || isReadOnly} onClick={unmergeSelection}>
-                Unmerge Selection
-              </MenubarItem>
-              <MenubarSeparator />
-              <MenubarItem disabled={!canUndo} onClick={undo}>
-                <Undo2 />
-                Undo
-              </MenubarItem>
-              <MenubarItem disabled={!canRedo} onClick={redo}>
-                <Redo2 />
-                Redo
-              </MenubarItem>
-              <MenubarSeparator />
-              <MenubarItem disabled={!hasActiveCell || isReadOnly} onClick={() => commitValue()}>
-                Apply Cell Value
-              </MenubarItem>
-              <MenubarItem disabled={!hasActiveCell || isReadOnly} onClick={() => commitFormula()}>
-                Apply Formula
-              </MenubarItem>
-            </MenubarContent>
-          </MenubarMenu>
-        </Menubar>
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground text-xs font-medium">Read only</span>
-          <Switch
-            aria-label="Toggle read only mode"
-            checked={isReadOnly}
-            onCheckedChange={setReadOnly}
-            size="sm"
-          />
-        </div>
-      </div>
-
-      <div className="grid gap-3 px-4 py-3 xl:grid-cols-[minmax(340px,1.2fr)_minmax(320px,1fr)_minmax(360px,1.2fr)_auto]">
-        <RibbonGroup label="Workbook">
+      {/* Ribbon */}
+      <div className="flex items-stretch border-b bg-muted/30 px-2">
+        <RibbonGroup label="File">
           <Button onClick={onOpenFile} size="sm">
             <Upload />
             Open
           </Button>
-          <Input
-            className="min-w-[240px] xl:min-w-[300px]"
-            onChange={(event) => setRemoteUrl(event.target.value)}
-            placeholder="https://example.com/report.xlsx"
-            value={remoteUrl}
-          />
-          <Button onClick={onLoadUrl} size="sm" variant="outline">
-            <Link2 />
-            Load URL
-          </Button>
-          <ThemeToggle />
-        </RibbonGroup>
-
-        <RibbonGroup label="Selection">
-          <ButtonGroup>
-            <Button disabled={!canUndo} onClick={undo} size="sm" variant="outline">
-              <Undo2 />
-              Undo
-            </Button>
-            <Button disabled={!canRedo} onClick={redo} size="sm" variant="outline">
-              <Redo2 />
-              Redo
-            </Button>
-          </ButtonGroup>
-          <ButtonGroup>
-            <Button disabled={!hasWorkbook || isReadOnly} onClick={() => addSheet()} size="sm" variant="outline">
-              <Plus />
-              Sheet
-            </Button>
-            <Button disabled={sheets.length <= 1 || isReadOnly} onClick={removeActiveSheet} size="sm" variant="outline">
-              <Trash2 />
-              Delete
-            </Button>
-          </ButtonGroup>
-          <Button disabled={!hasSelection || isReadOnly} onClick={mergeSelection} size="sm" variant="outline">
-            Merge
-          </Button>
-          <Button disabled={!hasSelection || isReadOnly} onClick={unmergeSelection} size="sm" variant="outline">
-            Unmerge
-          </Button>
-          <ButtonGroupText>{selectionLabel}</ButtonGroupText>
-          <Input
-            className="min-w-[140px]"
-            onChange={(event) => setNamedRangeDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                handleDefineNamedRange();
-              }
-            }}
-            placeholder="Named range"
-            value={namedRangeDraft}
-          />
-          <Button disabled={!hasSelection || !namedRangeDraft.trim() || isReadOnly} onClick={handleDefineNamedRange} size="sm" variant="outline">
-            Save Name
-          </Button>
-        </RibbonGroup>
-
-        <RibbonGroup label="Edit">
-          <div className="grid min-w-0 flex-1 gap-2 md:grid-cols-[90px_minmax(180px,1fr)]">
-            <Input className="font-mono text-xs" readOnly value={activeCellAddress ?? ""} />
-            <Input
-              disabled={!hasActiveCell || isReadOnly}
-              onBlur={() => {
-                commitFormula();
-                setFocusedField(null);
-              }}
-              onChange={(event) => setFormulaDraft(event.target.value)}
-              onFocus={() => {
-                formulaEditCellRef.current = activeCell;
-                formulaInitialValueRef.current = formulaDraft;
-                setFocusedField("formula");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commitFormula();
-                  setFocusedField(null);
-                }
-              }}
-              placeholder="Formula"
-              value={formulaDraft}
-            />
-            <Input className="font-mono text-xs" readOnly value={selectedRangeAddress ?? activeCellAddress ?? ""} />
-            <Input
-              disabled={!hasActiveCell || isReadOnly}
-              onBlur={() => {
-                commitValue();
-                setFocusedField(null);
-              }}
-              onChange={(event) => setValueDraft(event.target.value)}
-              onFocus={() => {
-                valueEditCellRef.current = activeCell;
-                valueInitialValueRef.current = valueDraft;
-                setFocusedField("value");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commitValue();
-                  setFocusedField(null);
-                }
-              }}
-              placeholder="Value"
-              value={valueDraft}
-            />
-          </div>
-        </RibbonGroup>
-
-        <RibbonGroup label="Workbook">
           <Button disabled={!canDownload} onClick={download} size="sm" variant="outline">
             <Download />
             Source
@@ -455,9 +239,61 @@ function WorkbookToolbar({
             <Download />
             CSV
           </Button>
-          <Button disabled={!canExport} onClick={recalculate} size="sm" variant="outline">
-            <RefreshCcw />
-            Recalc
+        </RibbonGroup>
+
+        <RibbonSeparator />
+
+        <RibbonGroup label="URL">
+          <Input
+            className="min-w-[200px]"
+            onChange={(event) => setRemoteUrl(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onLoadUrl();
+              }
+            }}
+            placeholder="https://example.com/report.xlsx"
+            value={remoteUrl}
+          />
+          <Button onClick={onLoadUrl} size="sm" variant="outline">
+            <Link2 />
+            Load
+          </Button>
+        </RibbonGroup>
+
+        <RibbonSeparator />
+
+        <RibbonGroup label="Clipboard">
+          <ButtonGroup>
+            <Button disabled={!canUndo} onClick={undo} size="sm" variant="outline">
+              <Undo2 />
+            </Button>
+            <Button disabled={!canRedo} onClick={redo} size="sm" variant="outline">
+              <Redo2 />
+            </Button>
+          </ButtonGroup>
+        </RibbonGroup>
+
+        <RibbonSeparator />
+
+        <RibbonGroup label="Cells">
+          <Button disabled={!hasSelection || isReadOnly} onClick={mergeSelection} size="sm" variant="outline">
+            Merge
+          </Button>
+          <Button disabled={!hasSelection || isReadOnly} onClick={unmergeSelection} size="sm" variant="outline">
+            Unmerge
+          </Button>
+        </RibbonGroup>
+
+        <RibbonSeparator />
+
+        <RibbonGroup label="Sheets">
+          <Button disabled={!hasWorkbook || isReadOnly} onClick={() => addSheet()} size="sm" variant="outline">
+            <Plus />
+          </Button>
+          <Button disabled={sheets.length <= 1 || isReadOnly} onClick={removeActiveSheet} size="sm" variant="outline">
+            <Trash2 />
           </Button>
           <ButtonGroup>
             <Button disabled={!activeSheet || activeSheetIndex <= 0} onClick={() => setActiveSheetIndex(activeSheetIndex - 1)} size="sm" variant="outline">
@@ -472,7 +308,7 @@ function WorkbookToolbar({
             onValueChange={(value) => setActiveSheetIndex(Number(value))}
             value={String(activeSheetIndex)}
           >
-            <SelectTrigger className="min-w-[180px]" size="sm">
+            <SelectTrigger className="min-w-[140px]" size="sm">
               <SelectValue placeholder="Select sheet" />
             </SelectTrigger>
             <SelectContent align="start">
@@ -483,8 +319,75 @@ function WorkbookToolbar({
               ))}
             </SelectContent>
           </Select>
-          <ButtonGroupText>{activeSheet?.name ?? "No sheet"}</ButtonGroupText>
         </RibbonGroup>
+
+        <RibbonSeparator />
+
+        <RibbonGroup label="Names">
+          <Input
+            className="min-w-[120px]"
+            onChange={(event) => setNamedRangeDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleDefineNamedRange();
+              }
+            }}
+            placeholder="Named range"
+            value={namedRangeDraft}
+          />
+          <Button disabled={!hasSelection || !namedRangeDraft.trim() || isReadOnly} onClick={handleDefineNamedRange} size="sm" variant="outline">
+            Define
+          </Button>
+        </RibbonGroup>
+
+        <RibbonSeparator />
+
+        <RibbonGroup label="Tools">
+          <Button disabled={!canExport} onClick={recalculate} size="sm" variant="outline">
+            <RefreshCcw />
+            Recalc
+          </Button>
+          <Button disabled={!hasWorkbook} onClick={onClear} size="sm" variant="outline">
+            <Trash2 />
+            Clear
+          </Button>
+        </RibbonGroup>
+      </div>
+
+      {/* Formula bar */}
+      <div className="flex items-center gap-px border-b bg-background px-2 py-1">
+        <Input
+          className="w-[90px] shrink-0 border-r font-mono text-xs"
+          readOnly
+          value={activeCellAddress ?? ""}
+        />
+        <div className="text-muted-foreground flex h-7 w-8 shrink-0 items-center justify-center border-r text-[11px] font-semibold italic">
+          fx
+        </div>
+        <Input
+          className="flex-1 border-0 shadow-none focus-visible:ring-0"
+          disabled={!hasActiveCell || isReadOnly}
+          onBlur={() => {
+            commitFormula();
+            setFocusedField(null);
+          }}
+          onChange={(event) => setFormulaDraft(event.target.value)}
+          onFocus={() => {
+            formulaEditCellRef.current = activeCell;
+            formulaInitialValueRef.current = formulaDraft;
+            setFocusedField("formula");
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitFormula();
+              setFocusedField(null);
+            }
+          }}
+          placeholder="Enter a formula or value"
+          value={formulaDraft}
+        />
       </div>
     </div>
   );
@@ -635,7 +538,7 @@ export function App() {
         type="file"
       />
 
-      <div className="mx-auto flex h-full min-h-0 max-w-[1800px] flex-col overflow-hidden px-4 py-4 md:px-6">
+      <div className="mx-auto flex h-full min-h-0 max-w-[1800px] flex-col overflow-hidden px-3 py-3 md:px-5 md:py-4">
         <div
           className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border bg-background shadow-sm"
           onDragEnter={handleDragEnter}
@@ -653,8 +556,8 @@ export function App() {
               setReadOnly={setIsReadOnly}
               setRemoteUrl={setRemoteUrl}
             />
-            <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/20 p-3">
-              <div className="min-h-0 min-w-0 flex h-full w-full overflow-hidden rounded-lg border bg-muted/40 p-4">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/20 p-2">
+              <div className="min-h-0 min-w-0 flex h-full w-full overflow-hidden rounded-lg border bg-muted/40 p-2.5">
                 <XlsxViewer
                   className="h-full min-h-0 min-w-0 flex-1"
                   emptyState={<ViewerEmptyState />}
