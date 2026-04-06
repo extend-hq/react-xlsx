@@ -1397,10 +1397,7 @@ function mergeResolvedCellStyle(
   const baseFill = base?.fill as Record<string, unknown> | undefined;
   const overlayFill = overlay?.fill as Record<string, unknown> | undefined;
   if (baseFill || overlayFill) {
-    nextStyle.fill = {
-      ...(baseFill ?? {}),
-      ...(overlayFill ?? {})
-    };
+    nextStyle.fill = overlayFill ?? baseFill;
   }
 
   const baseFont = base?.font as Record<string, unknown> | undefined;

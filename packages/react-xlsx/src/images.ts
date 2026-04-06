@@ -638,6 +638,16 @@ function parseSpreadsheetFill(node: Element | null): XlsxResolvedCellStyle["fill
       fillType: "solid"
     };
   }
+  // Differential table styles sometimes omit patternType and only set bgColor.
+  // Preserve those fills so header/table overrides are not dropped during import.
+  if ((patternType === "none" || patternType === "gray125") && (foreground || background)) {
+    return {
+      background,
+      fillType: "pattern",
+      foreground,
+      patternType
+    };
+  }
   if (patternType !== "none" && patternType !== "gray125" && (foreground || background)) {
     return {
       background,
