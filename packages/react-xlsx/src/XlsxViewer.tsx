@@ -543,28 +543,39 @@ function resolveShapeAnchorExtents(shape: XlsxShape) {
 }
 
 function resolveFrozenDrawingOffsets(
-  anchor: XlsxImage["anchor"] | XlsxShape["anchor"],
+  rect: XlsxImageRect,
+  frozenRows: number[],
+  frozenCols: number[],
+  actualRowHeights: number[],
+  actualColWidths: number[],
   freezePanes: XlsxSheetData["freezePanes"] | null,
   stickyTopByRow: Map<number, number>,
   stickyLeftByCol: Map<number, number>,
   scrollTop: number,
   scrollLeft: number
 ) {
-  const bounds = resolveAnchoredBounds(anchor);
-  if (!bounds) {
-    return {
-      left: undefined,
-      top: undefined
-    };
-  }
+  const frozenPaneBottom =
+    freezePanes?.row && freezePanes.row > 0 && frozenRows.length > 0
+      ? frozenRows.reduce(
+          (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? HEADER_HEIGHT) + (actualRowHeights[row] ?? DEFAULT_ROW_HEIGHT)),
+          HEADER_HEIGHT
+        )
+      : null;
+  const frozenPaneRight =
+    freezePanes?.col && freezePanes.col > 0 && frozenCols.length > 0
+      ? frozenCols.reduce(
+          (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? ROW_HEADER_WIDTH) + (actualColWidths[col] ?? DEFAULT_COL_WIDTH)),
+          ROW_HEADER_WIDTH
+        )
+      : null;
 
   const top =
-    freezePanes?.row && freezePanes.row > 0 && bounds.maxRow < freezePanes.row
-      ? (stickyTopByRow.get(bounds.minRow) ?? 0) + scrollTop
+    frozenPaneBottom !== null && rect.top + rect.height <= frozenPaneBottom + 0.5
+      ? rect.top + scrollTop
       : undefined;
   const left =
-    freezePanes?.col && freezePanes.col > 0 && bounds.maxCol < freezePanes.col
-      ? (stickyLeftByCol.get(bounds.minCol) ?? 0) + scrollLeft
+    frozenPaneRight !== null && rect.left + rect.width <= frozenPaneRight + 0.5
+      ? rect.left + scrollLeft
       : undefined;
 
   return {
@@ -3331,7 +3342,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     setOpenTableMenu(null);
-  }, [activeSheetIndex]);
+  }, [activeSheet, activeSheetIndex]);
 
   React.useEffect(() => {
     if (!pendingNavigation || pendingNavigation.sheetIndex !== activeSheetIndex) {
@@ -5008,7 +5019,11 @@ function XlsxGrid({
             >
               {shapeRects.map(({ shape, rect }) => {
                 const frozenOffsets = resolveFrozenDrawingOffsets(
-                  shape.anchor,
+                  rect,
+                  frozenRows,
+                  frozenCols,
+                  actualRowHeights,
+                  actualColWidths,
                   activeSheet?.freezePanes ?? null,
                   stickyTopByRow,
                   stickyLeftByCol,
@@ -5132,7 +5147,11 @@ function XlsxGrid({
               {imageRects.map(({ image, rect }) => {
                 const canEditImage = !readOnly && image.editable !== false;
                 const frozenOffsets = resolveFrozenDrawingOffsets(
-                  image.anchor,
+                  rect,
+                  frozenRows,
+                  frozenCols,
+                  actualRowHeights,
+                  actualColWidths,
                   activeSheet?.freezePanes ?? null,
                   stickyTopByRow,
                   stickyLeftByCol,
