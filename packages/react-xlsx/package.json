@@ -24,7 +24,7 @@
     "react-dom": ">=18"
   },
   "dependencies": {
-    "@dukelib/sheets-wasm": "0.1.10",
+    "@dukelib/sheets-wasm": "0.1.13",
     "@tanstack/react-virtual": "^3.13.12",
     "fflate": "^0.8.2"
   },

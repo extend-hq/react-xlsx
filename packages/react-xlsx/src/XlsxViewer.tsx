@@ -1555,6 +1555,7 @@ function resolveShapeLineEndMarker(
 function renderShapeParagraph(
   paragraph: XlsxShape["paragraphs"][number],
   index: number,
+  fallbackAlign: React.CSSProperties["textAlign"] = "left",
   textScale = 1
 ) {
   return (
@@ -1562,7 +1563,7 @@ function renderShapeParagraph(
       key={index}
       style={{
         margin: 0,
-        textAlign: paragraph.align ?? "left",
+        textAlign: paragraph.align ?? fallbackAlign,
         whiteSpace: "pre-wrap"
       }}
     >
@@ -3364,16 +3365,18 @@ function GridRow({
         if (stickyTop !== undefined) {
           cellStyle.position = "sticky";
           cellStyle.top = stickyTop;
-          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), 12);
+          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), 28);
         }
         if (stickyLeft !== undefined) {
           cellStyle.left = stickyLeft;
           cellStyle.position = "sticky";
-          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), stickyTop !== undefined ? 14 : 10);
+          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), stickyTop !== undefined ? 30 : 24);
         }
         if (isSpilling) {
           cellStyle.overflow = "visible";
           cellStyle.textOverflow = "clip";
+          cellStyle.position = cellStyle.position ?? "relative";
+          cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), stickyTop !== undefined ? 32 : 6);
         }
         if (isEditing) {
           cellStyle.padding = 0;
@@ -5567,7 +5570,12 @@ function XlsxGrid({
             zIndex: 1
           }}
         >
-          {shape.paragraphs.map((paragraph, index) => renderShapeParagraph(paragraph, index, textScale))}
+          {shape.paragraphs.map((paragraph, index) => renderShapeParagraph(
+            paragraph,
+            index,
+            shape.textBox?.horizontalAlign ?? "left",
+            textScale
+          ))}
         </div>
       </div>
     );

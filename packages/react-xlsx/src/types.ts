@@ -236,6 +236,7 @@ export interface XlsxShapeParagraph {
 }
 
 export interface XlsxShapeTextBox {
+  horizontalAlign?: "center" | "left";
   insetPx?: {
     bottom: number;
     left: number;
