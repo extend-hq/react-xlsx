@@ -542,7 +542,9 @@ function resolveShapeAnchorExtents(shape: XlsxShape) {
   };
 }
 
-function resolveFrozenDrawingOffsets(
+type FrozenDrawingPane = "corner" | "left" | "scroll" | "top";
+
+function resolveFrozenDrawingPane(
   rect: XlsxImageRect,
   frozenRows: number[],
   frozenCols: number[],
@@ -550,10 +552,8 @@ function resolveFrozenDrawingOffsets(
   actualColWidths: number[],
   freezePanes: XlsxSheetData["freezePanes"] | null,
   stickyTopByRow: Map<number, number>,
-  stickyLeftByCol: Map<number, number>,
-  scrollTop: number,
-  scrollLeft: number
-) {
+  stickyLeftByCol: Map<number, number>
+): FrozenDrawingPane {
   const frozenPaneBottom =
     freezePanes?.row && freezePanes.row > 0 && frozenRows.length > 0
       ? frozenRows.reduce(
@@ -569,19 +569,19 @@ function resolveFrozenDrawingOffsets(
         )
       : null;
 
-  const top =
-    frozenPaneBottom !== null && rect.top + rect.height <= frozenPaneBottom + 0.5
-      ? rect.top + scrollTop
-      : undefined;
-  const left =
-    frozenPaneRight !== null && rect.left + rect.width <= frozenPaneRight + 0.5
-      ? rect.left + scrollLeft
-      : undefined;
+  const freezeTop = frozenPaneBottom !== null && rect.top + rect.height <= frozenPaneBottom + 0.5;
+  const freezeLeft = frozenPaneRight !== null && rect.left + rect.width <= frozenPaneRight + 0.5;
 
-  return {
-    left,
-    top
-  };
+  if (freezeTop && freezeLeft) {
+    return "corner";
+  }
+  if (freezeTop) {
+    return "top";
+  }
+  if (freezeLeft) {
+    return "left";
+  }
+  return "scroll";
 }
 
 function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect): React.CSSProperties {
@@ -2840,7 +2840,6 @@ function XlsxGrid({
   const rowElementRefs = React.useRef(new Map<number, HTMLTableRowElement>());
   const columnPreviewRef = React.useRef<{ actualIndex: number; size: number } | null>(null);
   const rowPreviewRef = React.useRef<{ actualIndex: number; size: number } | null>(null);
-  const [scrollPosition, setScrollPosition] = React.useState({ left: 0, top: 0 });
   const activeCellRef = React.useRef<XlsxCellAddress | null>(activeCell);
   const selectionRef = React.useRef<XlsxCellRange | null>(null);
   const editingCellRef = React.useRef<XlsxCellAddress | null>(null);
@@ -3337,7 +3336,6 @@ function XlsxGrid({
     if (scrollRef.current) {
       scrollRef.current.scrollLeft = 0;
     }
-    setScrollPosition({ left: 0, top: 0 });
   }, [activeSheetIndex, rowVirtualizer, shouldVirtualizeRows]);
 
   React.useEffect(() => {
@@ -3362,44 +3360,23 @@ function XlsxGrid({
     }
   }, [activeSheetIndex, colVirtualizer, revision, rowVirtualizer, shouldVirtualizeCols, shouldVirtualizeRows, visibleCols.length, visibleRows.length]);
 
-  React.useEffect(() => {
-    const scroller = scrollRef.current;
-    if (!scroller) {
-      return;
-    }
-    const currentScroller = scroller;
-
-    function handleScroll() {
-      cachedScrollerRectRef.current = null;
-      setScrollPosition((current) =>
-        current.top === currentScroller.scrollTop && current.left === currentScroller.scrollLeft
-          ? current
-          : {
-              left: currentScroller.scrollLeft,
-              top: currentScroller.scrollTop
-            }
-      );
-
-      if (
-        currentScroller.scrollHeight - (currentScroller.scrollTop + currentScroller.clientHeight) <
-        OPEN_GRID_VERTICAL_EDGE_PX
-      ) {
-        setDisplayRowLimit((current) => current + OPEN_GRID_ROW_GROWTH);
-      }
-
-      if (
-        currentScroller.scrollWidth - (currentScroller.scrollLeft + currentScroller.clientWidth) <
-        OPEN_GRID_HORIZONTAL_EDGE_PX
-      ) {
-        setDisplayColLimit((current) => current + OPEN_GRID_COL_GROWTH);
-      }
+  const handleScrollerScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const currentScroller = event.currentTarget;
+    cachedScrollerRectRef.current = null;
+    if (
+      currentScroller.scrollHeight - (currentScroller.scrollTop + currentScroller.clientHeight) <
+      OPEN_GRID_VERTICAL_EDGE_PX
+    ) {
+      setDisplayRowLimit((current) => current + OPEN_GRID_ROW_GROWTH);
     }
 
-    currentScroller.addEventListener("scroll", handleScroll, { passive: true });
-    return () => {
-      currentScroller.removeEventListener("scroll", handleScroll);
-    };
-  }, [activeSheetIndex]);
+    if (
+      currentScroller.scrollWidth - (currentScroller.scrollLeft + currentScroller.clientWidth) <
+      OPEN_GRID_HORIZONTAL_EDGE_PX
+    ) {
+      setDisplayColLimit((current) => current + OPEN_GRID_COL_GROWTH);
+    }
+  }, []);
 
   React.useEffect(() => {
     if (!openTableMenu) {
@@ -4618,6 +4595,303 @@ function XlsxGrid({
     height: "100%",
     zIndex: 5
   };
+  function resolveDrawingPane(rect: XlsxImageRect) {
+    return resolveFrozenDrawingPane(
+      rect,
+      frozenRows,
+      frozenCols,
+      actualRowHeights,
+      actualColWidths,
+      activeSheet?.freezePanes ?? null,
+      stickyTopByRow,
+      stickyLeftByCol
+    );
+  }
+
+  function renderShapeDrawing(shape: XlsxShape, rect: XlsxImageRect, pane: FrozenDrawingPane) {
+    const drawingPane = resolveDrawingPane(rect);
+    if (drawingPane !== pane) {
+      return null;
+    }
+
+    const isFrozenDrawing = pane !== "scroll";
+    const inset = shape.textBox?.insetPx;
+    const groupScaleX = shape.scaleX ?? 1;
+    const groupScaleY = shape.scaleY ?? 1;
+    const strokeScale = Math.max(groupScaleX, groupScaleY);
+    const textScale = strokeScale;
+    const textWidth = groupScaleX !== 0 ? rect.width / groupScaleX : rect.width;
+    const textHeight = groupScaleY !== 0 ? rect.height / groupScaleY : rect.height;
+    const vectorShape = resolveShapeVector(shape);
+    const strokeColor = shape.stroke?.none ? "transparent" : (shape.stroke?.color ?? "transparent");
+    const scaledStrokeWidth = (shape.stroke?.widthPx ?? (shape.geometry === "line" ? 2 : 1)) * strokeScale;
+    const headMarkerId = `${shape.id}-${pane}-head-marker`;
+    const tailMarkerId = `${shape.id}-${pane}-tail-marker`;
+    const headMarker = vectorShape
+      ? resolveShapeLineEndMarker(
+          shape.stroke?.headEndType,
+          headMarkerId,
+          strokeColor,
+          scaledStrokeWidth,
+          rect,
+          vectorShape.viewBox
+        )
+      : null;
+    const tailMarker = vectorShape
+      ? resolveShapeLineEndMarker(
+          shape.stroke?.tailEndType,
+          tailMarkerId,
+          strokeColor,
+          scaledStrokeWidth,
+          rect,
+          vectorShape.viewBox
+        )
+      : null;
+    const style = {
+      ...buildShapeContainerStyle(shape, rect),
+      ...(vectorShape ? {
+        backgroundColor: "transparent",
+        border: "none"
+      } : null)
+    };
+
+    return (
+      <div
+        key={`${pane}-${shape.id}`}
+        onClick={() => handleShapeClick(shape)}
+        style={{
+          ...style,
+          cursor: shape.hyperlink ? "pointer" : "default",
+          left: style.left,
+          pointerEvents: shape.hyperlink ? "auto" : "none",
+          top: style.top,
+          zIndex: isFrozenDrawing ? shape.zIndex + 20 : style.zIndex
+        }}
+        title={shape.description}
+      >
+        {vectorShape ? (
+          <svg
+            aria-hidden="true"
+            preserveAspectRatio="none"
+            style={{
+              height: "100%",
+              inset: 0,
+              position: "absolute",
+              width: "100%"
+            }}
+            viewBox={`0 0 ${vectorShape.viewBox.width} ${vectorShape.viewBox.height}`}
+          >
+            {headMarker || tailMarker ? <defs>{headMarker}{tailMarker}</defs> : null}
+            <path
+              d={vectorShape.path}
+              fill={shape.fill?.none ? "transparent" : (shape.fill?.color ?? "transparent")}
+              fillOpacity={shape.fill?.opacity ?? 1}
+              markerEnd={tailMarker ? `url(#${tailMarkerId})` : undefined}
+              markerStart={headMarker ? `url(#${headMarkerId})` : undefined}
+              stroke={strokeColor}
+              strokeOpacity={shape.stroke?.opacity ?? 1}
+              strokeWidth={scaledStrokeWidth}
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+        ) : null}
+        <div
+          style={{
+            color: "#000000",
+            display: "flex",
+            flex: 1,
+            flexDirection: "column",
+            gap: 2,
+            height: textHeight,
+            justifyContent:
+              shape.textBox?.verticalAlign === "middle"
+                ? "center"
+                : shape.textBox?.verticalAlign === "bottom"
+                  ? "flex-end"
+                  : "flex-start",
+            paddingBottom: inset?.bottom ?? 4,
+            paddingLeft: inset?.left ?? 6,
+            paddingRight: inset?.right ?? 6,
+            paddingTop: inset?.top ?? 4,
+            pointerEvents: "none",
+            position: "relative",
+            transform:
+              groupScaleX !== 1 || groupScaleY !== 1
+                ? `scale(${groupScaleX}, ${groupScaleY})`
+                : undefined,
+            transformOrigin: "top left",
+            width: textWidth,
+            zIndex: 1
+          }}
+        >
+          {shape.paragraphs.map((paragraph, index) => renderShapeParagraph(paragraph, index, textScale))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderImageDrawing(
+    image: XlsxImage,
+    rect: XlsxImageRect,
+    pane: FrozenDrawingPane
+  ) {
+    const drawingPane = resolveDrawingPane(rect);
+    if (drawingPane !== pane) {
+      return null;
+    }
+
+    const isFrozenDrawing = pane !== "scroll";
+    const canEditImage = !readOnly && image.editable !== false;
+    const style: React.CSSProperties = {
+      height: rect.height,
+      left: rect.left,
+      overflow: "hidden",
+      pointerEvents: "none",
+      position: "absolute",
+      top: rect.top,
+      width: rect.width,
+      zIndex: isFrozenDrawing ? image.zIndex + 20 : image.zIndex
+    };
+    const defaultNode = (
+      <img
+        alt={image.description ?? image.name ?? ""}
+        draggable={false}
+        src={image.src}
+        style={{
+          display: "block",
+          height: "100%",
+          pointerEvents: "none",
+          userSelect: "none",
+          width: "100%"
+        }}
+      />
+    );
+    const selectionNode = selectedImageId === image.id ? (
+      <div
+        style={{
+          ...style,
+          overflow: "visible",
+          pointerEvents: "none",
+          zIndex: isFrozenDrawing ? image.zIndex + 22 : image.zIndex + 2
+        }}
+      >
+        {renderImageSelection
+          ? renderImageSelection({
+              defaultNode: (
+                <div
+                  style={{
+                    border: `1.5px solid ${selectionStroke}`,
+                    boxShadow: `0 0 0 1px ${palette.surface}`,
+                    boxSizing: "border-box",
+                    inset: 0,
+                    pointerEvents: "none",
+                    position: "absolute"
+                  }}
+                >
+                  {canEditImage
+                    ? IMAGE_HANDLE_POSITIONS.map((position) => (
+                        <div
+                          key={position}
+                          onPointerDown={(event) => startImageResize(event, image, rect, position)}
+                          style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                        />
+                      ))
+                    : null}
+                </div>
+              ),
+              getHandleProps: (position) => ({
+                onPointerDown: (event) => {
+                  if (canEditImage) {
+                    startImageResize(event, image, rect, position);
+                  }
+                },
+                style: canEditImage
+                  ? resolveImageHandleStyle(position, selectionStroke, palette.surface)
+                  : { ...resolveImageHandleStyle(position, selectionStroke, palette.surface), display: "none" }
+              }),
+              image,
+              rect
+            })
+          : (
+              <div
+                style={{
+                  border: `1.5px solid ${selectionStroke}`,
+                  boxShadow: `0 0 0 1px ${palette.surface}`,
+                  boxSizing: "border-box",
+                  inset: 0,
+                  pointerEvents: "none",
+                  position: "absolute"
+                }}
+              >
+                {canEditImage
+                  ? IMAGE_HANDLE_POSITIONS.map((position) => (
+                      <div
+                        key={position}
+                        onPointerDown={(event) => startImageResize(event, image, rect, position)}
+                        style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                      />
+                    ))
+                  : null}
+              </div>
+            )}
+      </div>
+    ) : null;
+
+    return (
+      <React.Fragment key={`${pane}-${image.id}`}>
+        {renderImage
+          ? <div style={style}>{renderImage({ defaultNode, image, rect, style })}</div>
+          : <div style={style}>{defaultNode}</div>}
+        <div
+          onClick={() => handleImageClick(image)}
+          onPointerDown={(event) => startImageMove(event, image, rect)}
+          style={{
+            ...style,
+            background: "transparent",
+            cursor: canEditImage ? "move" : image.hyperlink ? "pointer" : "default",
+            pointerEvents: "auto",
+            zIndex: isFrozenDrawing ? image.zIndex + 21 : image.zIndex + 1
+          }}
+        />
+        {selectionNode}
+      </React.Fragment>
+    );
+  }
+
+  const scrollOverlayStyle: React.CSSProperties = {
+    inset: 0,
+    pointerEvents: "none",
+    position: "absolute",
+    zIndex: 20
+  };
+  const topOverlayStyle: React.CSSProperties = {
+    height: 0,
+    overflow: "visible",
+    pointerEvents: "none",
+    position: "sticky",
+    top: 0,
+    width: 0,
+    zIndex: 20
+  };
+  const leftOverlayStyle: React.CSSProperties = {
+    height: 0,
+    left: 0,
+    overflow: "visible",
+    pointerEvents: "none",
+    position: "sticky",
+    width: 0,
+    zIndex: 20
+  };
+  const cornerOverlayStyle: React.CSSProperties = {
+    height: 0,
+    left: 0,
+    overflow: "visible",
+    pointerEvents: "none",
+    position: "sticky",
+    top: 0,
+    width: 0,
+    zIndex: 20
+  };
 
   function startColumnResize(pointerId: number, actualCol: number, widthPx: number, startX: number) {
     if (readOnly) {
@@ -4839,6 +5113,7 @@ function XlsxGrid({
       <div
         key={activeSheetIndex}
         ref={scrollRef}
+        onScroll={handleScrollerScroll}
         onCopy={(event) => {
           if (editingCell) {
             return;
@@ -5009,272 +5284,24 @@ function XlsxGrid({
           }}
         >
           {showImages ? (
-            <div
-              style={{
-                inset: 0,
-                pointerEvents: "none",
-                position: "absolute",
-                zIndex: 20
-              }}
-            >
-              {shapeRects.map(({ shape, rect }) => {
-                const frozenOffsets = resolveFrozenDrawingOffsets(
-                  rect,
-                  frozenRows,
-                  frozenCols,
-                  actualRowHeights,
-                  actualColWidths,
-                  activeSheet?.freezePanes ?? null,
-                  stickyTopByRow,
-                  stickyLeftByCol,
-                  scrollPosition.top,
-                  scrollPosition.left
-                );
-                const isFrozenDrawing = frozenOffsets.left !== undefined || frozenOffsets.top !== undefined;
-                const inset = shape.textBox?.insetPx;
-                const groupScaleX = shape.scaleX ?? 1;
-                const groupScaleY = shape.scaleY ?? 1;
-                const strokeScale = Math.max(groupScaleX, groupScaleY);
-                const textScale = strokeScale;
-                const textWidth = groupScaleX !== 0 ? rect.width / groupScaleX : rect.width;
-                const textHeight = groupScaleY !== 0 ? rect.height / groupScaleY : rect.height;
-                const vectorShape = resolveShapeVector(shape);
-                const strokeColor = shape.stroke?.none ? "transparent" : (shape.stroke?.color ?? "transparent");
-                const scaledStrokeWidth = (shape.stroke?.widthPx ?? (shape.geometry === "line" ? 2 : 1)) * strokeScale;
-                const headMarkerId = `${shape.id}-head-marker`;
-                const tailMarkerId = `${shape.id}-tail-marker`;
-                const headMarker = vectorShape
-                  ? resolveShapeLineEndMarker(
-                      shape.stroke?.headEndType,
-                      headMarkerId,
-                      strokeColor,
-                      scaledStrokeWidth,
-                      rect,
-                      vectorShape.viewBox
-                    )
-                  : null;
-                const tailMarker = vectorShape
-                  ? resolveShapeLineEndMarker(
-                      shape.stroke?.tailEndType,
-                      tailMarkerId,
-                      strokeColor,
-                      scaledStrokeWidth,
-                      rect,
-                      vectorShape.viewBox
-                    )
-                  : null;
-                const style = {
-                  ...buildShapeContainerStyle(shape, rect),
-                  ...(vectorShape ? {
-                    backgroundColor: "transparent",
-                    border: "none"
-                  } : null)
-                };
-                return (
-                  <div
-                    key={shape.id}
-                    onClick={() => handleShapeClick(shape)}
-                    style={{
-                      ...style,
-                      left: frozenOffsets.left ?? style.left,
-                      top: frozenOffsets.top ?? style.top,
-                      cursor: shape.hyperlink ? "pointer" : "default",
-                      pointerEvents: shape.hyperlink ? "auto" : "none",
-                      zIndex: isFrozenDrawing ? shape.zIndex + 20 : style.zIndex
-                    }}
-                    title={shape.description}
-                  >
-                    {vectorShape ? (
-                      <svg
-                        aria-hidden="true"
-                        preserveAspectRatio="none"
-                        style={{
-                          height: "100%",
-                          inset: 0,
-                          position: "absolute",
-                          width: "100%"
-                        }}
-                        viewBox={`0 0 ${vectorShape.viewBox.width} ${vectorShape.viewBox.height}`}
-                      >
-                        {headMarker || tailMarker ? <defs>{headMarker}{tailMarker}</defs> : null}
-                        <path
-                          d={vectorShape.path}
-                          fill={shape.fill?.none ? "transparent" : (shape.fill?.color ?? "transparent")}
-                          fillOpacity={shape.fill?.opacity ?? 1}
-                          markerEnd={tailMarker ? `url(#${tailMarkerId})` : undefined}
-                          markerStart={headMarker ? `url(#${headMarkerId})` : undefined}
-                          stroke={strokeColor}
-                          strokeOpacity={shape.stroke?.opacity ?? 1}
-                          strokeWidth={scaledStrokeWidth}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      </svg>
-                    ) : null}
-                    <div
-                      style={{
-                        color: "#000000",
-                        display: "flex",
-                        flex: 1,
-                        flexDirection: "column",
-                        gap: 2,
-                        height: textHeight,
-                        justifyContent:
-                          shape.textBox?.verticalAlign === "middle"
-                            ? "center"
-                            : shape.textBox?.verticalAlign === "bottom"
-                              ? "flex-end"
-                              : "flex-start",
-                        paddingBottom: inset?.bottom ?? 4,
-                        paddingLeft: inset?.left ?? 6,
-                        paddingRight: inset?.right ?? 6,
-                        paddingTop: inset?.top ?? 4,
-                        pointerEvents: "none",
-                        position: "relative",
-                        transform:
-                          groupScaleX !== 1 || groupScaleY !== 1
-                            ? `scale(${groupScaleX}, ${groupScaleY})`
-                            : undefined,
-                        transformOrigin: "top left",
-                        zIndex: 1,
-                        width: textWidth
-                      }}
-                    >
-                      {shape.paragraphs.map((paragraph, index) => renderShapeParagraph(paragraph, index, textScale))}
-                    </div>
-                  </div>
-                );
-              })}
-              {imageRects.map(({ image, rect }) => {
-                const canEditImage = !readOnly && image.editable !== false;
-                const frozenOffsets = resolveFrozenDrawingOffsets(
-                  rect,
-                  frozenRows,
-                  frozenCols,
-                  actualRowHeights,
-                  actualColWidths,
-                  activeSheet?.freezePanes ?? null,
-                  stickyTopByRow,
-                  stickyLeftByCol,
-                  scrollPosition.top,
-                  scrollPosition.left
-                );
-                const isFrozenDrawing = frozenOffsets.left !== undefined || frozenOffsets.top !== undefined;
-                const style: React.CSSProperties = {
-                  height: rect.height,
-                  left: frozenOffsets.left ?? rect.left,
-                  overflow: "hidden",
-                  pointerEvents: "none",
-                  position: "absolute",
-                  top: frozenOffsets.top ?? rect.top,
-                  width: rect.width,
-                  zIndex: isFrozenDrawing ? image.zIndex + 20 : image.zIndex
-                };
-                const defaultNode = (
-                  <img
-                    alt={image.description ?? image.name ?? ""}
-                    draggable={false}
-                    src={image.src}
-                    style={{
-                      display: "block",
-                      height: "100%",
-                      pointerEvents: "none",
-                      userSelect: "none",
-                      width: "100%"
-                    }}
-                  />
-                );
-                const selectionNode = selectedImageId === image.id ? (
-                  <div
-                    style={{
-                      ...style,
-                      overflow: "visible",
-                      pointerEvents: "none",
-                      zIndex: isFrozenDrawing ? image.zIndex + 22 : image.zIndex + 2
-                    }}
-                  >
-                    {renderImageSelection
-                      ? renderImageSelection({
-                          defaultNode: (
-                            <div
-                              style={{
-                                border: `1.5px solid ${selectionStroke}`,
-                                boxShadow: `0 0 0 1px ${palette.surface}`,
-                                boxSizing: "border-box",
-                                inset: 0,
-                                pointerEvents: "none",
-                                position: "absolute"
-                              }}
-                            >
-                              {canEditImage
-                                ? IMAGE_HANDLE_POSITIONS.map((position) => (
-                                    <div
-                                      key={position}
-                                      onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                                      style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
-                                    />
-                                  ))
-                                : null}
-                            </div>
-                          ),
-                          getHandleProps: (position) => ({
-                            onPointerDown: (event) => {
-                              if (canEditImage) {
-                                startImageResize(event, image, rect, position);
-                              }
-                            },
-                            style: canEditImage
-                              ? resolveImageHandleStyle(position, selectionStroke, palette.surface)
-                              : { ...resolveImageHandleStyle(position, selectionStroke, palette.surface), display: "none" }
-                          }),
-                          image,
-                          rect
-                        })
-                      : (
-                          <div
-                            style={{
-                              border: `1.5px solid ${selectionStroke}`,
-                              boxShadow: `0 0 0 1px ${palette.surface}`,
-                              boxSizing: "border-box",
-                              inset: 0,
-                              pointerEvents: "none",
-                              position: "absolute"
-                            }}
-                          >
-                            {canEditImage
-                              ? IMAGE_HANDLE_POSITIONS.map((position) => (
-                                  <div
-                                    key={position}
-                                    onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                                    style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
-                                  />
-                                ))
-                              : null}
-                          </div>
-                        )}
-                  </div>
-                ) : null;
-
-                return (
-                  <React.Fragment key={image.id}>
-                    {renderImage
-                      ? <div style={style}>{renderImage({ defaultNode, image, rect, style })}</div>
-                      : <div style={style}>{defaultNode}</div>}
-                    <div
-                      onClick={() => handleImageClick(image)}
-                      onPointerDown={(event) => startImageMove(event, image, rect)}
-                      style={{
-                        ...style,
-                        background: "transparent",
-                        cursor: canEditImage ? "move" : image.hyperlink ? "pointer" : "default",
-                        pointerEvents: "auto",
-                        zIndex: isFrozenDrawing ? image.zIndex + 21 : image.zIndex + 1
-                      }}
-                    />
-                    {selectionNode}
-                  </React.Fragment>
-                );
-              })}
-            </div>
+            <>
+              <div style={topOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "top"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "top"))}
+              </div>
+              <div style={leftOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "left"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "left"))}
+              </div>
+              <div style={cornerOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "corner"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "corner"))}
+              </div>
+              <div style={scrollOverlayStyle}>
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "scroll"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "scroll"))}
+              </div>
+            </>
           ) : null}
           <table
             ref={tableRef}
