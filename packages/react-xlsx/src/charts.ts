@@ -55,6 +55,7 @@ const THEME_COLOR_INDEX_BY_NAME: Record<string, number> = {
 
 export type WorkbookChartOrigin = {
   anchorIndex: number;
+  anchor: XlsxImageAnchor | null;
   chartPath: string | null;
   drawingPath: string;
   workbookSheetIndex: number;
@@ -67,8 +68,22 @@ export type WorkbookChartAssets = {
   tabs: XlsxWorkbookTab[];
 };
 
+type ChartStyleAppearance = {
+  axisLabelColor?: string;
+  axisLineColor?: string;
+  chartAreaBorderColor?: string;
+  chartAreaFillColor?: string;
+  paletteOffset?: number;
+  textColor?: string;
+  titleColor?: string;
+};
+
 function clampUnitInterval(value: number) {
   return Math.max(0, Math.min(1, value));
+}
+
+function isElementNode(node: Node | ChildNode | null | undefined): node is Element {
+  return node != null && node.nodeType === 1;
 }
 
 function normalizeHexColor(value: string) {
@@ -211,7 +226,7 @@ function resolveChartColorNode(node: Element | null, themePalette?: XlsxThemePal
 
   let lightnessModifier = 1;
   let lightnessOffset = 0;
-  for (const transformNode of Array.from(node.childNodes).filter((child): child is Element => child.nodeType === Node.ELEMENT_NODE)) {
+  for (const transformNode of Array.from(node.childNodes).filter(isElementNode)) {
     const rawValue = Number(transformNode.getAttribute("val") ?? Number.NaN);
     if (!Number.isFinite(rawValue)) {
       continue;
@@ -235,11 +250,33 @@ function resolveChartFillColor(shapeNode: Element | null, themePalette?: XlsxThe
     return null;
   }
   const solidFill = getFirstLocalChild(shapeNode, "solidFill");
-  if (!solidFill) {
+  if (solidFill) {
+    const colorNode = Array.from(solidFill.childNodes).find(isElementNode) ?? null;
+    return resolveChartColorNode(colorNode, themePalette);
+  }
+
+  const gradientFill = getFirstLocalChild(shapeNode, "gradFill");
+  const gradientStops = gradientFill
+    ? getLocalDescendants(gradientFill, "gs")
+        .map((stopNode) => ({
+          colorNode: Array.from(stopNode.childNodes).find(isElementNode) ?? null,
+          position: Number(stopNode.getAttribute("pos") ?? Number.NaN)
+        }))
+        .filter((stop) => Boolean(stop.colorNode))
+    : [];
+  if (gradientStops.length === 0) {
     return null;
   }
-  const colorNode = Array.from(solidFill.childNodes).find((child): child is Element => child.nodeType === Node.ELEMENT_NODE) ?? null;
-  return resolveChartColorNode(colorNode, themePalette);
+
+  gradientStops.sort((left, right) => {
+    const leftPos = Number.isFinite(left.position) ? left.position : 0;
+    const rightPos = Number.isFinite(right.position) ? right.position : 0;
+    return leftPos - rightPos;
+  });
+  const midpointStop = gradientStops.find((stop) => Number.isFinite(stop.position) && stop.position >= 50000)
+    ?? gradientStops[Math.floor(gradientStops.length / 2)]
+    ?? gradientStops[0];
+  return resolveChartColorNode(midpointStop.colorNode, themePalette);
 }
 
 function resolveChartLineStyle(shapeNode: Element | null, themePalette?: XlsxThemePalette | null) {
@@ -250,7 +287,7 @@ function resolveChartLineStyle(shapeNode: Element | null, themePalette?: XlsxThe
 
   const solidFill = getFirstLocalChild(lineNode, "solidFill");
   const colorNode = solidFill
-    ? Array.from(solidFill.childNodes).find((child): child is Element => child.nodeType === Node.ELEMENT_NODE) ?? null
+    ? Array.from(solidFill.childNodes).find(isElementNode) ?? null
     : null;
   const widthValue = Number(lineNode.getAttribute("w") ?? Number.NaN);
   return {
@@ -339,29 +376,96 @@ function readChartColorPalette(
   }
 
   return Array.from(colorStyleDocument.documentElement.childNodes)
-    .filter((child): child is Element => child.nodeType === Node.ELEMENT_NODE && child.localName !== "variation")
+    .filter((child): child is Element => isElementNode(child) && child.localName !== "variation")
     .map((child) => resolveChartColorNode(child, themePalette))
     .filter((color): color is string => typeof color === "string");
 }
 
-function readChartStylePaletteOffset(
+function readChartStyleAppearance(
   archive: Record<string, Uint8Array>,
-  stylePath: string | null | undefined
-) {
+  stylePath: string | null | undefined,
+  themePalette?: XlsxThemePalette | null
+): ChartStyleAppearance {
   const styleXml = readArchiveText(archive, stylePath);
   if (!styleXml) {
-    return undefined;
+    return {};
   }
 
   const styleDocument = parseXml(styleXml);
   if (!styleDocument) {
-    return undefined;
+    return {};
   }
 
   const dataPointNode = getFirstLocalDescendant(styleDocument, "dataPoint");
   const fillRefNode = dataPointNode ? getFirstLocalChild(dataPointNode, "fillRef") : null;
   const index = Number(fillRefNode?.getAttribute("idx") ?? Number.NaN);
-  return Number.isFinite(index) ? index : undefined;
+  const chartAreaNode = getFirstLocalDescendant(styleDocument, "chartArea");
+  const chartAreaShapeProperties = chartAreaNode ? getFirstLocalChild(chartAreaNode, "spPr") : null;
+  const chartAreaFontRef = chartAreaNode ? getFirstLocalChild(chartAreaNode, "fontRef") : null;
+  const chartAreaFontColor = chartAreaFontRef
+    ? resolveChartColorNode(Array.from(chartAreaFontRef.childNodes).find(isElementNode) ?? null, themePalette)
+    : null;
+  const titleNode = getFirstLocalDescendant(styleDocument, "title");
+  const titleFontRef = titleNode ? getFirstLocalChild(titleNode, "fontRef") : null;
+  const titleColor = titleFontRef
+    ? resolveChartColorNode(Array.from(titleFontRef.childNodes).find(isElementNode) ?? null, themePalette)
+    : null;
+  const axisStyleNode = getFirstLocalDescendant(styleDocument, "categoryAxis")
+    ?? getFirstLocalDescendant(styleDocument, "valueAxis");
+  const axisShapeProperties = axisStyleNode ? getFirstLocalChild(axisStyleNode, "spPr") : null;
+  const axisFontRef = axisStyleNode ? getFirstLocalChild(axisStyleNode, "fontRef") : null;
+
+  return {
+    axisLabelColor: axisFontRef
+      ? resolveChartColorNode(Array.from(axisFontRef.childNodes).find(isElementNode) ?? null, themePalette) ?? undefined
+      : undefined,
+    axisLineColor: resolveChartLineStyle(axisShapeProperties, themePalette).color ?? undefined,
+    chartAreaBorderColor: resolveChartLineStyle(chartAreaShapeProperties, themePalette).color ?? undefined,
+    chartAreaFillColor: resolveChartFillColor(chartAreaShapeProperties, themePalette) ?? undefined,
+    paletteOffset: Number.isFinite(index) ? index : undefined,
+    textColor: chartAreaFontColor ?? undefined,
+    titleColor: titleColor ?? chartAreaFontColor ?? undefined
+  };
+}
+
+function buildThemeSeriesPalette(themePalette?: XlsxThemePalette | null) {
+  const themeColors = [4, 5, 6, 7, 8, 9]
+    .map((index) => themePalette?.colorsByIndex[index] ?? null)
+    .filter((color): color is string => Boolean(color));
+  return themeColors.length > 0 ? themeColors : SERIES_COLORS;
+}
+
+function applyBuiltinChartDefaults(chart: XlsxChart, themePalette?: XlsxThemePalette | null) {
+  const surfaceColor = themePalette?.colorsByIndex[0] ?? themePalette?.colorsByIndex[2] ?? null;
+  const textColor = themePalette?.colorsByIndex[1] ?? themePalette?.colorsByIndex[3] ?? null;
+  const derivedAxisColor = textColor ? applyLightnessTransform(textColor, 0.35, 0.55) : null;
+  const derivedBorderColor = textColor
+    ? applyLightnessTransform(textColor, chart.is3d ? 0.28 : 0.22, chart.is3d ? 0.6 : 0.7)
+    : null;
+  chart.chartAreaFillColor = chart.chartAreaFillColor ?? surfaceColor ?? undefined;
+  chart.chartAreaBorderColor = chart.chartAreaBorderColor ?? derivedBorderColor ?? undefined;
+  chart.textColor = chart.textColor ?? textColor ?? undefined;
+  chart.titleColor = chart.titleColor ?? textColor ?? undefined;
+  chart.axisLabelColor = chart.axisLabelColor ?? derivedAxisColor ?? textColor ?? undefined;
+  chart.axisLineColor = chart.axisLineColor ?? derivedAxisColor ?? textColor ?? undefined;
+
+  const seriesPalette = chart.chartColorPalette && chart.chartColorPalette.length > 0
+    ? chart.chartColorPalette
+    : buildThemeSeriesPalette(themePalette);
+  if (!chart.chartColorPalette || chart.chartColorPalette.length === 0) {
+    chart.chartColorPalette = seriesPalette;
+  }
+
+  chart.series = chart.series.map((series, index) => {
+    const fallbackColor = seriesPalette[index % seriesPalette.length];
+    return {
+      ...series,
+      color: series.color ?? fallbackColor,
+      lineColor: series.lineColor ?? series.color ?? fallbackColor,
+      markerColor: series.markerColor ?? series.color ?? fallbackColor,
+      markerLineColor: series.markerLineColor ?? series.lineColor ?? series.color ?? fallbackColor
+    };
+  });
 }
 
 function parseChartPointStyles(seriesNode: Element, themePalette?: XlsxThemePalette | null): XlsxChartPointStyle[] {
@@ -376,12 +480,109 @@ function parseChartPointStyles(seriesNode: Element, themePalette?: XlsxThemePale
     const lineStyle = resolveChartLineStyle(shapeProperties, themePalette);
     pointStyles.push({
       color: resolveChartFillColor(shapeProperties, themePalette) ?? undefined,
+      explosion: readChartNumericAttribute(dataPointNode, "explosion"),
       index: indexValue,
       lineColor: lineStyle.color ?? undefined
     });
   }
 
   return pointStyles;
+}
+
+function parseInvertNegativeStyle(seriesNode: Element, themePalette?: XlsxThemePalette | null) {
+  const invertNode = getFirstLocalDescendant(seriesNode, "invertSolidFillFmt");
+  const shapeProperties = invertNode ? getFirstLocalChild(invertNode, "spPr") : null;
+  if (!shapeProperties) {
+    return {
+      color: undefined,
+      lineColor: undefined
+    };
+  }
+
+  const lineStyle = resolveChartLineStyle(shapeProperties, themePalette);
+  return {
+    color: resolveChartFillColor(shapeProperties, themePalette) ?? undefined,
+    lineColor: lineStyle.color ?? undefined
+  };
+}
+
+function parseChartCacheValues(
+  parentNode: Element | null,
+  cacheName: "numCache" | "strCache",
+  mode: "category" | "value"
+): Array<number | string | null> | null {
+  if (!parentNode) {
+    return null;
+  }
+
+  const referenceNode = getFirstLocalChild(parentNode, "numRef")
+    ?? getFirstLocalChild(parentNode, "strRef")
+    ?? parentNode;
+  const cacheNode = getFirstLocalChild(referenceNode, cacheName);
+  if (!cacheNode) {
+    return null;
+  }
+
+  const pointNodes = getLocalChildren(cacheNode, "pt")
+    .map((pointNode) => ({
+      index: readChartNumericAttribute(pointNode, "idx") ?? 0,
+      value: getFirstLocalChild(pointNode, "v")?.textContent ?? ""
+    }))
+    .sort((left, right) => left.index - right.index);
+
+  if (pointNodes.length === 0) {
+    return null;
+  }
+
+  return pointNodes.map(({ value }) => {
+    if (mode === "value") {
+      return cellValueToNumber(value);
+    }
+    return value.length > 0 ? value : null;
+  });
+}
+
+function parseChartMultiLevelCacheValues(
+  parentNode: Element | null,
+  mode: "category" | "value"
+): Array<number | string | null> | null {
+  if (!parentNode) {
+    return null;
+  }
+
+  const referenceNode = getFirstLocalChild(parentNode, "multiLvlStrRef") ?? parentNode;
+  const cacheNode = getFirstLocalChild(referenceNode, "multiLvlStrCache");
+  if (!cacheNode) {
+    return null;
+  }
+
+  const levelNodes = getLocalChildren(cacheNode, "lvl");
+  if (levelNodes.length === 0) {
+    return null;
+  }
+
+  const primaryLevelNode = levelNodes[0];
+  const pointNodes = getLocalChildren(primaryLevelNode, "pt")
+    .map((pointNode) => ({
+      index: readChartNumericAttribute(pointNode, "idx") ?? 0,
+      value: getFirstLocalChild(pointNode, "v")?.textContent ?? ""
+    }))
+    .sort((left, right) => left.index - right.index);
+
+  if (pointNodes.length === 0) {
+    return null;
+  }
+
+  return pointNodes.map(({ value }) => {
+    if (mode === "value") {
+      return cellValueToNumber(value);
+    }
+    const numeric = cellValueToNumber(value);
+    if (numeric !== null) {
+      return numeric;
+    }
+    return value.length > 0 ? value : null;
+  });
 }
 
 function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, themePalette?: XlsxThemePalette | null) {
@@ -402,9 +603,22 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
     const markerSymbolNode = markerNode ? getFirstLocalChild(markerNode, "symbol") : null;
     const markerSymbol = markerSymbolNode?.getAttribute("val") ?? undefined;
     const pointStyles = parseChartPointStyles(seriesNode, themePalette);
+    const seriesExplosion = readChartNumericAttribute(seriesNode, "explosion");
+    const invertNegativeStyle = parseInvertNegativeStyle(seriesNode, themePalette);
+    const isScatterChart = chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth" || chart.chartType === "Bubble";
+    const cachedCategories = isScatterChart
+      ? (
+          parseChartCacheValues(getFirstLocalChild(seriesNode, "xVal"), "numCache", "value")
+          ?? parseChartMultiLevelCacheValues(getFirstLocalChild(seriesNode, "xVal"), "category")
+        )
+      : parseChartCacheValues(getFirstLocalChild(seriesNode, "cat"), "strCache", "category");
+    const cachedValues = isScatterChart
+      ? parseChartCacheValues(getFirstLocalChild(seriesNode, "yVal"), "numCache", "value")
+      : parseChartCacheValues(getFirstLocalChild(seriesNode, "val"), "numCache", "value");
 
     return {
       ...series,
+      categories: cachedCategories ?? series.categories,
       color: fillColor ?? lineStyle.color ?? series.color,
       dataPointStyles: pointStyles.length > 0 ? pointStyles : series.dataPointStyles,
       lineColor: lineStyle.color ?? fillColor ?? series.lineColor ?? series.color,
@@ -415,10 +629,18 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       markerSymbol,
       shapeProperties: {
         ...series.shapeProperties,
+        xmlExplosion: seriesExplosion ?? undefined,
         xmlFillColor: fillColor ?? undefined,
         xmlLineColor: lineStyle.color ?? undefined,
-        xmlLineWidthPx: lineStyle.widthPx ?? undefined
-      }
+        xmlLineWidthPx: lineStyle.widthPx ?? undefined,
+        xmlNegativeFillColor: invertNegativeStyle.color ?? undefined,
+        xmlNegativeLineColor: invertNegativeStyle.lineColor ?? undefined
+      },
+      negativeColor: invertNegativeStyle.color ?? series.negativeColor,
+      negativeLineColor: invertNegativeStyle.lineColor ?? series.negativeLineColor,
+      values: cachedValues
+        ? cachedValues.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null))
+        : series.values
     };
   });
 }
@@ -437,6 +659,7 @@ function applyChartStyleFromXml(
   const chartDocument = parseXml(chartXml);
   const chartNode = chartDocument ? getFirstLocalDescendant(chartDocument, "chart") : null;
   const plotAreaNode = chartNode ? getFirstLocalChild(chartNode, "plotArea") : null;
+  const styleIdNode = chartDocument?.documentElement ? getFirstLocalChild(chartDocument.documentElement, "style") : null;
   const chartTypeNode = plotAreaNode
     ? getLocalChildren(plotAreaNode, "barChart")[0]
       ?? getLocalChildren(plotAreaNode, "lineChart")[0]
@@ -445,11 +668,45 @@ function applyChartStyleFromXml(
       ?? getLocalChildren(plotAreaNode, "scatterChart")[0]
       ?? getLocalChildren(plotAreaNode, "areaChart")[0]
       ?? getLocalChildren(plotAreaNode, "radarChart")[0]
+      ?? getLocalChildren(plotAreaNode, "bar3DChart")[0]
+      ?? getLocalChildren(plotAreaNode, "pie3DChart")[0]
+      ?? getLocalChildren(plotAreaNode, "ofPieChart")[0]
+      ?? getLocalChildren(plotAreaNode, "bubbleChart")[0]
+      ?? getLocalChildren(plotAreaNode, "surfaceChart")[0]
+      ?? getLocalChildren(plotAreaNode, "surface3DChart")[0]
+      ?? getLocalChildren(plotAreaNode, "stockChart")[0]
       ?? null
     : null;
 
   if (!chartNode || !chartTypeNode) {
     return;
+  }
+  const plotArea = plotAreaNode;
+  if (!plotArea) {
+    return;
+  }
+
+  switch (chartTypeNode.localName) {
+    case "pie3DChart":
+      chart.chartType = "Pie3D";
+      chart.is3d = true;
+      break;
+    case "ofPieChart":
+      chart.chartType = "BarOfPie";
+      break;
+    case "surfaceChart":
+      chart.chartType = "Surface";
+      chart.is3d = true;
+      break;
+    case "surface3DChart":
+      chart.chartType = "Surface";
+      chart.is3d = true;
+      break;
+    case "bubbleChart":
+      chart.chartType = "Bubble";
+      break;
+    default:
+      break;
   }
 
   const legendNode = getFirstLocalChild(chartNode, "legend");
@@ -461,15 +718,63 @@ function applyChartStyleFromXml(
     position: normalizeLegendPosition(legendPosition),
     raw: chart.legend?.raw
   } : chart.legend;
+  const styleId = Number(styleIdNode?.getAttribute("val") ?? Number.NaN);
+  chart.chartStyleId = Number.isFinite(styleId) ? styleId : chart.chartStyleId;
   chart.firstSliceAngle = readChartNumericAttribute(chartTypeNode, "firstSliceAng") ?? chart.firstSliceAngle;
+  chart.bubbleScale = readChartNumericAttribute(chartTypeNode, "bubbleScale") ?? chart.bubbleScale;
   chart.holeSize = readChartNumericAttribute(chartTypeNode, "holeSize") ?? chart.holeSize;
   chart.radarStyle = getFirstLocalChild(chartTypeNode, "radarStyle")?.getAttribute("val") ?? chart.radarStyle;
+  const wireframeNode = getFirstLocalChild(chartTypeNode, "wireframe");
+  chart.wireframe = wireframeNode
+    ? wireframeNode.getAttribute("val") !== "0"
+    : chart.wireframe;
+  chart.raw = {
+    ...(chart.raw ?? {}),
+    ofPieType: getFirstLocalChild(chartTypeNode, "ofPieType")?.getAttribute("val") ?? undefined,
+    secondPieSize: readChartNumericAttribute(chartTypeNode, "secondPieSize"),
+    splitPos: readChartNumericAttribute(chartTypeNode, "splitPos"),
+    splitType: getFirstLocalChild(chartTypeNode, "splitType")?.getAttribute("val") ?? undefined
+  };
+  const view3dNode = getFirstLocalDescendant(chartNode, "view3D");
+  if (view3dNode) {
+    chart.view3d = {
+      perspective: readChartNumericAttribute(view3dNode, "perspective"),
+      rAngAx: getFirstLocalChild(view3dNode, "rAngAx")?.getAttribute("val") === "1",
+      rotX: readChartNumericAttribute(view3dNode, "rotX"),
+      rotY: readChartNumericAttribute(view3dNode, "rotY")
+    };
+  }
 
   const relationships = chartPath ? readChartRelationships(archive, chartPath) : new Map<string, string>();
   chart.chartColorPalette = readChartColorPalette(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE), themePalette);
-  chart.chartColorPaletteOffset = readChartStylePaletteOffset(archive, relationships.get(CHART_STYLE_REL_TYPE)) ?? chart.chartColorPaletteOffset;
+  const styleAppearance = readChartStyleAppearance(
+    archive,
+    relationships.get(CHART_STYLE_REL_TYPE),
+    themePalette
+  );
+  chart.axisLabelColor = styleAppearance.axisLabelColor ?? chart.axisLabelColor;
+  chart.axisLineColor = styleAppearance.axisLineColor ?? chart.axisLineColor;
+  chart.chartAreaBorderColor = styleAppearance.chartAreaBorderColor ?? chart.chartAreaBorderColor;
+  chart.chartAreaFillColor = styleAppearance.chartAreaFillColor ?? chart.chartAreaFillColor;
+  chart.chartColorPaletteOffset = styleAppearance.paletteOffset ?? chart.chartColorPaletteOffset;
+  chart.textColor = styleAppearance.textColor ?? chart.textColor;
+  chart.titleColor = styleAppearance.titleColor ?? chart.titleColor;
+  const categoryAxisNode = getLocalChildren(plotArea, "catAx")[0] ?? null;
+  const valueAxisNode = getLocalChildren(plotArea, "valAx")[0] ?? null;
+  chart.categoryAxis = mergeChartAxis(chart.categoryAxis, readChartAxisFromXml(categoryAxisNode));
+  chart.valueAxis = mergeChartAxis(chart.valueAxis, readChartAxisFromXml(valueAxisNode));
+  chart.axes = chart.axes.length > 0
+    ? chart.axes.map((axis, index) => (
+      index === 0 && categoryAxisNode
+        ? { ...axis, ...readChartAxisFromXml(categoryAxisNode) }
+        : index === 1 && valueAxisNode
+          ? { ...axis, ...readChartAxisFromXml(valueAxisNode) }
+          : axis
+    ))
+    : chart.axes;
 
   applyChartSeriesStyleFromXml(chart, chartTypeNode, themePalette);
+  applyBuiltinChartDefaults(chart, themePalette);
 }
 
 function normalizeArchivePath(path: string) {
@@ -850,8 +1155,12 @@ function normalizeChartAxis(raw: unknown): XlsxChartAxis | null {
     crossBetween: typeof axis.crossBetween === "string" ? axis.crossBetween : undefined,
     delete: typeof axis.delete === "boolean" ? axis.delete : undefined,
     labelPosition: typeof axis.labelPosition === "string" ? axis.labelPosition : undefined,
+    majorUnit: typeof axis.majorUnit === "number" ? axis.majorUnit : undefined,
+    max: typeof axis.max === "number" ? axis.max : undefined,
+    min: typeof axis.min === "number" ? axis.min : undefined,
     majorGridlines: typeof axis.majorGridlines === "boolean" ? axis.majorGridlines : undefined,
     majorTickMark: typeof axis.majorTickMark === "string" ? axis.majorTickMark : undefined,
+    minorUnit: typeof axis.minorUnit === "number" ? axis.minorUnit : undefined,
     minorGridlines: typeof axis.minorGridlines === "boolean" ? axis.minorGridlines : undefined,
     minorTickMark: typeof axis.minorTickMark === "string" ? axis.minorTickMark : undefined,
     numberFormat: numberFormat ? {
@@ -863,6 +1172,53 @@ function normalizeChartAxis(raw: unknown): XlsxChartAxis | null {
     shapeProperties: axis.shapeProperties && typeof axis.shapeProperties === "object"
       ? axis.shapeProperties as Record<string, unknown>
       : undefined
+  };
+}
+
+function mergeChartAxis(target: XlsxChartAxis | null | undefined, patch: Partial<XlsxChartAxis> | null | undefined) {
+  if (!patch) {
+    return target ?? null;
+  }
+  return {
+    ...(target ?? {}),
+    ...patch
+  };
+}
+
+function readChartAxisFromXml(axisNode: Element | null): Partial<XlsxChartAxis> | null {
+  if (!axisNode) {
+    return null;
+  }
+
+  const numFmt = getFirstLocalChild(axisNode, "numFmt");
+  return {
+    crosses: getFirstLocalChild(axisNode, "crosses")?.getAttribute("val") ?? undefined,
+    crossBetween: getFirstLocalChild(axisNode, "crossBetween")?.getAttribute("val") ?? undefined,
+    delete: getFirstLocalChild(axisNode, "delete")?.getAttribute("val") === "1"
+      ? true
+      : getFirstLocalChild(axisNode, "delete")?.getAttribute("val") === "0"
+        ? false
+        : undefined,
+    labelPosition: getFirstLocalChild(axisNode, "tickLblPos")?.getAttribute("val") ?? undefined,
+    majorGridlines: Boolean(getFirstLocalChild(axisNode, "majorGridlines")),
+    majorTickMark: getFirstLocalChild(axisNode, "majorTickMark")?.getAttribute("val") ?? undefined,
+    majorUnit: readChartNumericAttribute(axisNode, "majorUnit"),
+    max: readChartNumericAttribute(axisNode, "max"),
+    min: readChartNumericAttribute(axisNode, "min"),
+    minorGridlines: Boolean(getFirstLocalChild(axisNode, "minorGridlines")),
+    minorTickMark: getFirstLocalChild(axisNode, "minorTickMark")?.getAttribute("val") ?? undefined,
+    minorUnit: readChartNumericAttribute(axisNode, "minorUnit"),
+    numberFormat: numFmt
+      ? {
+          formatCode: numFmt.getAttribute("formatCode") ?? undefined,
+          sourceLinked: numFmt.getAttribute("sourceLinked") === "1"
+            ? true
+            : numFmt.getAttribute("sourceLinked") === "0"
+              ? false
+              : undefined
+        }
+      : undefined,
+    position: getFirstLocalChild(axisNode, "axPos")?.getAttribute("val") ?? undefined
   };
 }
 
@@ -893,21 +1249,120 @@ function normalizeChartAnchor(raw: unknown): XlsxImageAnchor {
   }
 
   const anchor = raw as Record<string, unknown>;
+  const fromCol = typeof anchor.fromCol === "number" ? anchor.fromCol : 0;
+  const fromColOffsetEmu = typeof anchor.fromColOffset === "number" ? anchor.fromColOffset : 0;
+  const fromRow = typeof anchor.fromRow === "number" ? anchor.fromRow : 0;
+  const fromRowOffsetEmu = typeof anchor.fromRowOffset === "number" ? anchor.fromRowOffset : 0;
+  const rawToCol = typeof anchor.toCol === "number" ? anchor.toCol : null;
+  const rawToColOffsetEmu = typeof anchor.toColOffset === "number" ? anchor.toColOffset : 0;
+  const rawToRow = typeof anchor.toRow === "number" ? anchor.toRow : null;
+  const rawToRowOffsetEmu = typeof anchor.toRowOffset === "number" ? anchor.toRowOffset : 0;
+  const hasExplicitTo = rawToCol !== null && rawToRow !== null;
+  const collapsedWidth = hasExplicitTo && (
+    rawToCol < fromCol ||
+    (rawToCol === fromCol && rawToColOffsetEmu <= fromColOffsetEmu)
+  );
+  const collapsedHeight = hasExplicitTo && (
+    rawToRow < fromRow ||
+    (rawToRow === fromRow && rawToRowOffsetEmu <= fromRowOffsetEmu)
+  );
+  const fallbackToCol = Math.max(fromCol + 8, 8);
+  const fallbackToRow = Math.max(fromRow + 15, 15);
+
   return {
     kind: "two-cell",
     from: {
-      col: typeof anchor.fromCol === "number" ? anchor.fromCol : 0,
-      colOffsetEmu: typeof anchor.fromColOffset === "number" ? anchor.fromColOffset : 0,
-      row: typeof anchor.fromRow === "number" ? anchor.fromRow : 0,
-      rowOffsetEmu: typeof anchor.fromRowOffset === "number" ? anchor.fromRowOffset : 0
+      col: fromCol,
+      colOffsetEmu: fromColOffsetEmu,
+      row: fromRow,
+      rowOffsetEmu: fromRowOffsetEmu
     },
     to: {
-      col: typeof anchor.toCol === "number" ? anchor.toCol : 8,
-      colOffsetEmu: typeof anchor.toColOffset === "number" ? anchor.toColOffset : 0,
-      row: typeof anchor.toRow === "number" ? anchor.toRow : 15,
-      rowOffsetEmu: typeof anchor.toRowOffset === "number" ? anchor.toRowOffset : 0
+      col: !hasExplicitTo || collapsedWidth ? fallbackToCol : rawToCol,
+      colOffsetEmu: !hasExplicitTo || collapsedWidth ? 0 : rawToColOffsetEmu,
+      row: !hasExplicitTo || collapsedHeight ? fallbackToRow : rawToRow,
+      rowOffsetEmu: !hasExplicitTo || collapsedHeight ? 0 : rawToRowOffsetEmu
     }
   };
+}
+
+function parseMarkerNode(node: Element | null) {
+  if (!node) {
+    return null;
+  }
+
+  const col = Number(getFirstLocalChild(node, "col")?.textContent ?? Number.NaN);
+  const row = Number(getFirstLocalChild(node, "row")?.textContent ?? Number.NaN);
+  const colOffsetEmu = Number(getFirstLocalChild(node, "colOff")?.textContent ?? 0);
+  const rowOffsetEmu = Number(getFirstLocalChild(node, "rowOff")?.textContent ?? 0);
+
+  if (!Number.isFinite(col) || !Number.isFinite(row)) {
+    return null;
+  }
+
+  return {
+    col: Math.max(0, Math.round(col)),
+    colOffsetEmu: Number.isFinite(colOffsetEmu) ? Math.max(0, Math.round(colOffsetEmu)) : 0,
+    row: Math.max(0, Math.round(row)),
+    rowOffsetEmu: Number.isFinite(rowOffsetEmu) ? Math.max(0, Math.round(rowOffsetEmu)) : 0
+  };
+}
+
+function parseChartAnchorNode(anchorNode: Element): XlsxImageAnchor | null {
+  if (anchorNode.localName === "twoCellAnchor") {
+    const from = parseMarkerNode(getFirstLocalChild(anchorNode, "from"));
+    const to = parseMarkerNode(getFirstLocalChild(anchorNode, "to"));
+    return from && to ? { from, kind: "two-cell", to } : null;
+  }
+
+  if (anchorNode.localName === "oneCellAnchor") {
+    const from = parseMarkerNode(getFirstLocalChild(anchorNode, "from"));
+    const ext = getFirstLocalChild(anchorNode, "ext");
+    const cx = Number(ext?.getAttribute("cx") ?? Number.NaN);
+    const cy = Number(ext?.getAttribute("cy") ?? Number.NaN);
+    return from && Number.isFinite(cx) && Number.isFinite(cy)
+      ? {
+          from,
+          kind: "one-cell",
+          sizeEmu: {
+            cx: Math.max(0, Math.round(cx)),
+            cy: Math.max(0, Math.round(cy))
+          }
+        }
+      : null;
+  }
+
+  const pos = getFirstLocalChild(anchorNode, "pos");
+  const ext = getFirstLocalChild(anchorNode, "ext");
+  const x = Number(pos?.getAttribute("x") ?? Number.NaN);
+  const y = Number(pos?.getAttribute("y") ?? Number.NaN);
+  const cx = Number(ext?.getAttribute("cx") ?? Number.NaN);
+  const cy = Number(ext?.getAttribute("cy") ?? Number.NaN);
+  return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(cx) && Number.isFinite(cy)
+    ? {
+        kind: "absolute",
+        positionEmu: {
+          x: Math.round(x),
+          y: Math.round(y)
+        },
+        sizeEmu: {
+          cx: Math.max(0, Math.round(cx)),
+          cy: Math.max(0, Math.round(cy))
+        }
+      }
+    : null;
+}
+
+function isCollapsedChartAnchor(anchor: XlsxImageAnchor) {
+  if (anchor.kind !== "two-cell") {
+    return false;
+  }
+
+  const collapsedWidth = anchor.to.col < anchor.from.col
+    || (anchor.to.col === anchor.from.col && anchor.to.colOffsetEmu <= anchor.from.colOffsetEmu);
+  const collapsedHeight = anchor.to.row < anchor.from.row
+    || (anchor.to.row === anchor.from.row && anchor.to.rowOffsetEmu <= anchor.from.rowOffsetEmu);
+  return collapsedWidth || collapsedHeight;
 }
 
 function normalizeChartSeries(
@@ -920,18 +1375,27 @@ function normalizeChartSeries(
   const series = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const categoriesRef = normalizeChartReference(series.categories);
   const valuesRef = normalizeChartReference(series.values);
+  const shapeProperties = series.shapeProperties && typeof series.shapeProperties === "object"
+    ? series.shapeProperties as Record<string, unknown>
+    : undefined;
+  const rawFillColor = typeof shapeProperties?.solidFillHex === "string"
+    ? normalizeHexColor(shapeProperties.solidFillHex)
+    : null;
+  const rawLineColor = typeof shapeProperties?.lineColorHex === "string"
+    ? normalizeHexColor(shapeProperties.lineColorHex)
+    : null;
 
   return {
     categories: resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category"),
     categoriesRef,
-    color: SERIES_COLORS[index % SERIES_COLORS.length],
+    color: rawFillColor ?? undefined,
     dataPoints: Array.isArray(series.dataPoints) ? series.dataPoints : [],
     dataPointStyles: undefined,
     id: `${chartId}-series-${index}`,
     invertIfNegative: typeof series.invertIfNegative === "boolean" ? series.invertIfNegative : undefined,
-    lineColor: undefined,
-    lineWidthPx: typeof series.shapeProperties === "object" && typeof (series.shapeProperties as Record<string, unknown>).lineWidth === "number"
-      ? Math.max(1, Number((series.shapeProperties as Record<string, unknown>).lineWidth) / EMU_PER_PIXEL)
+    lineColor: rawLineColor ?? rawFillColor ?? undefined,
+    lineWidthPx: typeof shapeProperties?.lineWidth === "number"
+      ? Math.max(1, Number(shapeProperties.lineWidth) / EMU_PER_PIXEL)
       : undefined,
     marker: series.marker && typeof series.marker === "object" ? series.marker as Record<string, unknown> : undefined,
     markerColor: undefined,
@@ -943,10 +1407,10 @@ function normalizeChartSeries(
       ? String((series.marker as Record<string, unknown>).symbol)
       : undefined,
     name: resolveSeriesName(workbook, workbookSheetIndex, series.name),
+    negativeColor: undefined,
+    negativeLineColor: undefined,
     raw: series,
-    shapeProperties: series.shapeProperties && typeof series.shapeProperties === "object"
-      ? series.shapeProperties as Record<string, unknown>
-      : undefined,
+    shapeProperties,
     smooth: typeof series.smooth === "boolean" ? series.smooth : undefined,
     values: resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value").map((value) => (
       typeof value === "number" && Number.isFinite(value) ? value : null
@@ -1064,6 +1528,7 @@ function collectChartOriginsForSheet(
 
       chartOrigins.push({
         anchorIndex: chartAnchorIndex,
+        anchor: parseChartAnchorNode(anchorNode),
         chartPath: relationships.get(relationshipId) ?? null,
         drawingPath: attachment.drawingPath,
         workbookSheetIndex: origin.workbookSheetIndex
@@ -1089,6 +1554,11 @@ function applyChartOrigins(
       if (!origin) {
         return;
       }
+      if (origin.anchor && isCollapsedChartAnchor(chart.anchor)) {
+        chart.anchor = origin.anchor;
+      } else if (origin.anchor && chart.anchor.kind === "two-cell" && chart.anchor.from.col === 0 && chart.anchor.from.row === 0) {
+        chart.anchor = origin.anchor;
+      }
       chart.chartPath = origin.chartPath ?? undefined;
       chartOriginsById.set(chart.id, origin);
     });
@@ -1112,10 +1582,15 @@ export function loadWorkbookChartAssets(
         anchor: normalizeChartAnchor(chart.anchor),
         autoTitleDeleted: typeof chart.autoTitleDeleted === "boolean" ? chart.autoTitleDeleted : undefined,
         axes: Array.isArray(chart.axes) ? chart.axes.map(normalizeChartAxis).filter((value): value is XlsxChartAxis => Boolean(value)) : [],
+        axisLabelColor: undefined,
+        axisLineColor: undefined,
         categoryAxis: normalizeChartAxis(chart.categoryAxis),
+        chartAreaBorderColor: undefined,
+        chartAreaFillColor: undefined,
         chartColorPalette: undefined,
         chartColorPaletteOffset: undefined,
         chartPath: undefined,
+        chartStyleId: undefined,
         chartType: typeof chart.chartType === "string" ? chart.chartType : "ColumnClustered",
         dataLabels: normalizeChartDataLabels(chart.dataLabels),
         displayBlanksAs: typeof chart.displayBlanksAs === "string" ? chart.displayBlanksAs : undefined,
@@ -1142,10 +1617,15 @@ export function loadWorkbookChartAssets(
           : [],
         sheetIndex: visibleSheetIndex,
         showDlblsOverMax: typeof chart.showDlblsOverMax === "boolean" ? chart.showDlblsOverMax : undefined,
+        bubbleScale: typeof chart.bubbleScale === "number" ? chart.bubbleScale : undefined,
+        textColor: undefined,
         title: typeof chart.title === "string" ? chart.title : undefined,
+        titleColor: undefined,
         typeGroups: Array.isArray(chart.typeGroups) ? chart.typeGroups : [],
         valueAxis: normalizeChartAxis(chart.valueAxis),
         varyColors: typeof chart.varyColors === "boolean" ? chart.varyColors : undefined,
+        view3d: undefined,
+        wireframe: typeof chart.wireframe === "boolean" ? chart.wireframe : undefined,
         workbookSheetIndex,
         zIndex: 200 + chartIndex
       } satisfies XlsxChart;
@@ -1163,6 +1643,13 @@ export function loadWorkbookChartAssets(
     for (const charts of chartsByWorkbookSheetIndex) {
       for (const chart of charts) {
         applyChartStyleFromXml(chart, chart.chartPath, imageAssets.archive, imageAssets.themePalette);
+        applyBuiltinChartDefaults(chart, imageAssets.themePalette);
+      }
+    }
+  } else {
+    for (const charts of chartsByWorkbookSheetIndex) {
+      for (const chart of charts) {
+        applyBuiltinChartDefaults(chart, null);
       }
     }
   }

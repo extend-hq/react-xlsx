@@ -177,3 +177,48 @@ export function resolveWorkbookFillColor(
 
   return null;
 }
+
+export function resolveWorkbookFillStyle(
+  fill: Record<string, unknown> | undefined,
+  themePalette?: XlsxThemePalette | null
+) {
+  if (!fill) {
+    return {
+      backgroundColor: null,
+      backgroundImage: null
+    };
+  }
+
+  if (fill.fillType === "gradient") {
+    const rawStops = Array.isArray(fill.stops) ? fill.stops as Array<Record<string, unknown>> : [];
+    const stops = rawStops
+      .map((stop) => ({
+        color: resolveWorkbookColor(stop.color as Record<string, unknown> | undefined, themePalette),
+        position: typeof stop.position === "number" ? stop.position : Number(stop.position)
+      }))
+      .filter((stop): stop is { color: string; position: number } => Boolean(stop.color) && Number.isFinite(stop.position))
+      .sort((left, right) => left.position - right.position);
+    if (stops.length > 0) {
+      const gradientType = typeof fill.gradientType === "string" ? fill.gradientType : "linear";
+      if (gradientType === "path") {
+        const backgroundColor = stops[stops.length - 1]?.color ?? null;
+        return {
+          backgroundColor,
+          backgroundImage: `radial-gradient(circle at center, ${stops.map((stop) => `${stop.color} ${Math.max(0, Math.min(100, stop.position * 100))}%`).join(", ")})`
+        };
+      }
+
+      const degree = typeof fill.degree === "number" ? fill.degree : Number(fill.degree ?? 0);
+      const cssAngle = Number.isFinite(degree) ? 90 - degree : 90;
+      return {
+        backgroundColor: stops[stops.length - 1]?.color ?? null,
+        backgroundImage: `linear-gradient(${cssAngle}deg, ${stops.map((stop) => `${stop.color} ${Math.max(0, Math.min(100, stop.position * 100))}%`).join(", ")})`
+      };
+    }
+  }
+
+  return {
+    backgroundColor: resolveWorkbookFillColor(fill, themePalette),
+    backgroundImage: null
+  };
+}

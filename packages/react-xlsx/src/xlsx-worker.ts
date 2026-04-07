@@ -194,7 +194,7 @@ function buildSheetList(
     const resolveColumnWidthPx = (col: number) => {
       const width = worksheet.getColumnWidth(col);
       if (width !== undefined && width !== null) {
-        return resolveSheetColumnWidthPixels(width);
+        return resolveSheetColumnWidthPixels(width, sheetState?.columnWidthCharacterWidthPx);
       }
 
       return sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
@@ -213,6 +213,7 @@ function buildSheetList(
     if (!usedRange) {
       sheetsByWorkbookSheetIndex.push({
         cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
+        columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
         colCount: 0,
         colStyleIds: sheetState?.colStyleIds ?? {},
         colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
@@ -252,6 +253,7 @@ function buildSheetList(
 
     sheetsByWorkbookSheetIndex.push({
       cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
+      columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
       colCount: Math.max(0, maxCol + 1 - hiddenCols.length),
       colStyleIds: sheetState?.colStyleIds ?? {},
       colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
