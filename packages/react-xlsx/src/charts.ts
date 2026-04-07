@@ -20,6 +20,7 @@ const CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const DRAWING_SPREADSHEET_NS = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
 const PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+const CHART_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 const CHART_STYLE_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/chartStyle";
 const CHART_COLOR_STYLE_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/chartColorStyle";
 const SERIES_COLORS = [
@@ -1113,9 +1114,18 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
     const cachedBubbleSizes = chart.chartType === "Bubble"
       ? parseChartCacheValues(getFirstLocalChild(seriesNode, "bubbleSize"), "numCache", "value")
       : null;
+    const existingShapeProperties = series.shapeProperties && typeof series.shapeProperties === "object"
+      ? series.shapeProperties as Record<string, unknown>
+      : null;
+    const rawFillColor = typeof existingShapeProperties?.solidFillHex === "string"
+      ? normalizeHexColor(existingShapeProperties.solidFillHex)
+      : null;
+    const rawLineColor = typeof existingShapeProperties?.lineColorHex === "string"
+      ? normalizeHexColor(existingShapeProperties.lineColorHex)
+      : null;
     const resolvedLineColor = lineStyle.hidden
       ? undefined
-      : lineStyle.color ?? fillColor ?? series.lineColor ?? series.color;
+      : rawLineColor ?? lineStyle.color ?? rawFillColor ?? fillColor ?? series.lineColor ?? series.color;
 
     const hasCategoryReference = typeof series.categoriesRef?.formula === "string" && series.categoriesRef.formula.length > 0;
     const hasValueReference = typeof series.valuesRef?.formula === "string" && series.valuesRef.formula.length > 0;
@@ -1127,12 +1137,22 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
         ? cachedBubbleSizes.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null))
         : series.bubbleSizes,
       categories: !hasCategoryReference && cachedCategories ? cachedCategories : series.categories,
-      color: fillColor ?? lineStyle.color ?? series.color,
+      color: rawFillColor ?? rawLineColor ?? fillColor ?? lineStyle.color ?? series.color,
       dataPointStyles: pointStyles.length > 0 ? pointStyles : series.dataPointStyles,
       lineColor: resolvedLineColor,
       lineWidthPx: lineStyle.hidden ? undefined : lineStyle.widthPx ?? series.lineWidthPx,
-      markerColor: resolveChartFillColor(markerShapeProperties, themePalette) ?? fillColor ?? lineStyle.color ?? undefined,
-      markerLineColor: markerLineStyle.color ?? lineStyle.color ?? fillColor ?? undefined,
+      markerColor: rawFillColor
+        ?? rawLineColor
+        ?? resolveChartFillColor(markerShapeProperties, themePalette)
+        ?? fillColor
+        ?? lineStyle.color
+        ?? undefined,
+      markerLineColor: rawLineColor
+        ?? rawFillColor
+        ?? markerLineStyle.color
+        ?? lineStyle.color
+        ?? fillColor
+        ?? undefined,
       markerSize: markerSize ?? series.markerSize,
       markerSymbol,
       smooth: readChartBooleanAttribute(seriesNode, "smooth") ?? series.smooth,
@@ -1273,6 +1293,21 @@ function applyChartStyleFromXml(
   }
 
   switch (chartTypeNode.localName) {
+    case "barChart":
+    case "bar3DChart": {
+      const grouping = getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val");
+      const barDir = getFirstLocalChild(chartTypeNode, "barDir")?.getAttribute("val");
+      const isHorizontalBar = barDir === "bar";
+      chart.is3d = chartTypeNode.localName === "bar3DChart" ? true : chart.is3d;
+      if (grouping === "percentStacked") {
+        chart.chartType = isHorizontalBar ? "BarPercentStacked" : "ColumnPercentStacked";
+      } else if (grouping === "stacked") {
+        chart.chartType = isHorizontalBar ? "BarStacked" : "ColumnStacked";
+      } else {
+        chart.chartType = isHorizontalBar ? "BarClustered" : "ColumnClustered";
+      }
+      break;
+    }
     case "areaChart": {
       const grouping = getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val");
       if (grouping === "stacked") {
@@ -2314,18 +2349,29 @@ function collectChartOriginsForSheet(
       continue;
     }
 
-    const relationships = new Map<string, string>();
+    const relationships = new Map<string, { target: string; type: string | null }>();
     for (const node of getLocalDescendants(relsDocument, "Relationship")) {
       const id = node.getAttribute("Id");
       const target = node.getAttribute("Target");
+      const type = node.getAttribute("Type");
       if (id && target) {
-        relationships.set(id, resolveRelationshipPath(attachment.drawingRelsPath ?? attachment.drawingPath, target));
+        relationships.set(id, {
+          target: resolveRelationshipPath(attachment.drawingRelsPath ?? attachment.drawingPath, target),
+          type
+        });
       }
     }
 
-    const anchorNodes = getLocalChildren(drawingDocument.documentElement, "twoCellAnchor")
-      .concat(getLocalChildren(drawingDocument.documentElement, "oneCellAnchor"))
-      .concat(getLocalChildren(drawingDocument.documentElement, "absoluteAnchor"));
+    const anchorNodes = Array.from(drawingDocument.documentElement.childNodes).filter(
+      (node): node is Element => (
+        node.nodeType === Node.ELEMENT_NODE
+        && (
+          (node as Element).localName === "twoCellAnchor"
+          || (node as Element).localName === "oneCellAnchor"
+          || (node as Element).localName === "absoluteAnchor"
+        )
+      )
+    );
 
     let chartAnchorIndex = 0;
     for (const anchorNode of anchorNodes) {
@@ -2337,11 +2383,15 @@ function collectChartOriginsForSheet(
       if (!relationshipId) {
         continue;
       }
+      const relationship = relationships.get(relationshipId);
+      if (!relationship || relationship.type !== CHART_REL_TYPE) {
+        continue;
+      }
 
       chartOrigins.push({
         anchorIndex: chartAnchorIndex,
         anchor: parseChartAnchorNode(anchorNode),
-        chartPath: relationships.get(relationshipId) ?? null,
+        chartPath: relationship.target,
         drawingPath: attachment.drawingPath,
         workbookSheetIndex: origin.workbookSheetIndex
       });
@@ -2482,9 +2532,16 @@ export function loadWorkbookChartAssets(
 }
 
 function getChartAnchorNodes(drawingDocument: XMLDocument) {
-  return getLocalChildren(drawingDocument.documentElement, "twoCellAnchor")
-    .concat(getLocalChildren(drawingDocument.documentElement, "oneCellAnchor"))
-    .concat(getLocalChildren(drawingDocument.documentElement, "absoluteAnchor"))
+  return Array.from(drawingDocument.documentElement.childNodes).filter(
+    (node): node is Element => (
+      node.nodeType === Node.ELEMENT_NODE
+      && (
+        (node as Element).localName === "twoCellAnchor"
+        || (node as Element).localName === "oneCellAnchor"
+        || (node as Element).localName === "absoluteAnchor"
+      )
+    )
+  )
     .filter((anchorNode) => {
       const graphicFrame = getFirstLocalChild(anchorNode, "graphicFrame");
       return Boolean(graphicFrame && getFirstLocalDescendant(graphicFrame, "chart"));

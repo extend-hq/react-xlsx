@@ -382,15 +382,28 @@ function getCategoryLabels(chart: XlsxChart) {
   if (categoryCount <= 0) {
     return [];
   }
+  const fallbackToImplicitOrdinal = chart.series.some((series) => {
+    const categoriesLength = series.categories.length;
+    if (categoriesLength === 0) {
+      return false;
+    }
+    return series.categories.every((value) => normalizeCategoryLabel(value).length === 0);
+  });
   return Array.from({ length: categoryCount }, (_, categoryIndex) => {
     const primary = primaryCategories[categoryIndex];
     if (primary != null) {
-      return String(primary);
+      const normalizedPrimary = normalizeCategoryLabel(primary);
+      if (normalizedPrimary.length > 0) {
+        return normalizedPrimary;
+      }
     }
     const fallback = chart.series
       .map((series) => series.categories[categoryIndex])
-      .find((value) => value != null);
-    return fallback == null ? "" : String(fallback);
+      .find((value) => normalizeCategoryLabel(value).length > 0);
+    if (fallback != null) {
+      return normalizeCategoryLabel(fallback);
+    }
+    return fallbackToImplicitOrdinal ? String(categoryIndex + 1) : "";
   });
 }
 
@@ -556,6 +569,10 @@ function formatTickValue(value: number) {
     return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   }
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function formatPercentTickValue(value: number) {
+  return `${formatTickValue(value)}%`;
 }
 
 function truncateSvgText(value: string, maxWidth: number, fontSize = 10) {
@@ -783,7 +800,8 @@ function renderCartesianAxes(
   categoryLabels: string[],
   categoryPositions: number[],
   valueTicks: number[],
-  mapValue: (value: number) => number
+  mapValue: (value: number) => number,
+  formatValueTick: (value: number) => string = formatTickValue
 ) {
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = chart.axisLabelColor ?? chart.textColor ?? palette.text;
@@ -811,7 +829,7 @@ function renderCartesianAxes(
                 x={valuePosition}
                 y={plot.top + plot.height + 14}
               >
-                {formatTickValue(tick)}
+                {formatValueTick(tick)}
               </text>
             </g>
           );
@@ -833,7 +851,7 @@ function renderCartesianAxes(
               x={plot.left - 6}
               y={valuePosition + 3}
             >
-              {formatTickValue(tick)}
+              {formatValueTick(tick)}
             </text>
           </g>
         );
@@ -946,11 +964,12 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   if (sourceCategories.length === 0) {
     return null;
   }
-  const isHorizontal = chartType === "BarClustered" || chartType === "BarPercentStacked";
+  const isPercentStacked = chartType === "ColumnPercentStacked" || chartType === "BarPercentStacked";
+  const isHorizontal = chartType === "BarClustered" || chartType === "BarStacked" || chartType === "BarPercentStacked";
   const shouldReverseCategories = isHorizontal && chart.categoryAxis?.orientation !== "maxMin";
   const categories = shouldReverseCategories ? sourceCategories.slice().reverse() : sourceCategories;
-  const isStacked = chartType === "ColumnStacked" || chartType === "BarPercentStacked";
-  const negativeFillMode: "chartArea" | "none" | "series" = chartType === "BarPercentStacked"
+  const isStacked = chartType === "ColumnStacked" || chartType === "BarStacked" || isPercentStacked;
+  const negativeFillMode: "chartArea" | "none" | "series" = isPercentStacked
     ? "chartArea"
     : chartType === "ColumnClustered"
       ? "none"
@@ -974,7 +993,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   });
   const rawMatrix = matrix.map((row) => row.slice());
 
-  if (chartType === "BarPercentStacked") {
+  if (isPercentStacked) {
     for (let categoryIndex = 0; categoryIndex < categoryCount; categoryIndex += 1) {
       const total = matrix.reduce((sum, row) => sum + Math.max(0, row[categoryIndex] ?? 0), 0);
       for (let seriesIndex = 0; seriesIndex < seriesCount; seriesIndex += 1) {
@@ -1042,7 +1061,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     .domain([minValue, maxValue])
     .range(isHorizontal ? [plot.left, plot.left + plot.width] : [plot.top + plot.height, plot.top]);
 
-  const majorUnit = chartType === "BarPercentStacked"
+  const majorUnit = isPercentStacked
     ? chart.valueAxis?.majorUnit ?? 20
     : chart.valueAxis?.majorUnit;
   const ticks = buildNumericTickValues(minValue, maxValue, majorUnit);
@@ -1088,7 +1107,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           colors.stroke = pointStyle.lineColor;
         }
       }
-      if (isInvertedNegative && chartType === "BarPercentStacked" && chart.is3d) {
+      if (isInvertedNegative && isPercentStacked && chart.is3d) {
         colors.fill = "#ffffff";
       }
       const category = categories[categoryIndex];
@@ -1184,7 +1203,8 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     categories,
     categoryPositions,
     ticks,
-    (value) => valueScale(value)
+    (value) => valueScale(value),
+    isPercentStacked ? formatPercentTickValue : formatTickValue
   );
 
   const frameNode = chart.is3d ? (
@@ -1732,17 +1752,35 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
   const minBubbleMagnitude = Math.min(...bubbleMagnitudes);
   const maxBubbleMagnitude = Math.max(...bubbleMagnitudes);
 
-  const xScale = scaleLinear().domain([minX, maxX <= minX ? minX + 1 : maxX]).range([plot.left, plot.left + plot.width]);
-  const yScale = scaleLinear().domain([minY, maxY <= minY ? minY + 1 : maxY]).range([plot.top + plot.height, plot.top]);
   const bubbleScaleFactor = clamp((chart.bubbleScale ?? 100) / 100, 0.2, 4);
   const minRadius = 4;
   const maxRadius = Math.max(minRadius + 2, 12 * bubbleScaleFactor);
   const radiusScale = scaleLinear()
     .domain([minBubbleMagnitude, maxBubbleMagnitude <= minBubbleMagnitude ? minBubbleMagnitude + 1 : maxBubbleMagnitude])
     .range([minRadius, maxRadius]);
+  const safeMaxX = maxX <= minX ? minX + 1 : maxX;
+  const safeMaxY = maxY <= minY ? minY + 1 : maxY;
+  const xSpan = safeMaxX - minX;
+  const ySpan = safeMaxY - minY;
+  const xPad = Math.max(xSpan * 0.04, (xSpan * maxRadius) / Math.max(1, plot.width));
+  const yPad = Math.max(ySpan * 0.06, (ySpan * maxRadius) / Math.max(1, plot.height));
+  const paddedMinX = typeof chart.categoryAxis?.min === "number" && Number.isFinite(chart.categoryAxis.min)
+    ? chart.categoryAxis.min
+    : minX - xPad;
+  const paddedMaxX = typeof chart.categoryAxis?.max === "number" && Number.isFinite(chart.categoryAxis.max)
+    ? chart.categoryAxis.max
+    : safeMaxX + xPad;
+  const paddedMinY = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)
+    ? chart.valueAxis.min
+    : minY - yPad;
+  const paddedMaxY = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)
+    ? chart.valueAxis.max
+    : safeMaxY + yPad;
+  const xScale = scaleLinear().domain([paddedMinX, paddedMaxX <= paddedMinX ? paddedMinX + 1 : paddedMaxX]).range([plot.left, plot.left + plot.width]);
+  const yScale = scaleLinear().domain([paddedMinY, paddedMaxY <= paddedMinY ? paddedMinY + 1 : paddedMaxY]).range([plot.top + plot.height, plot.top]);
 
-  const xTicks = buildNumericTickValues(minX, maxX <= minX ? minX + 1 : maxX, chart.categoryAxis?.majorUnit);
-  const yTicks = buildNumericTickValues(minY, maxY <= minY ? minY + 1 : maxY, chart.valueAxis?.majorUnit);
+  const xTicks = buildNumericTickValues(paddedMinX, paddedMaxX <= paddedMinX ? paddedMinX + 1 : paddedMaxX, chart.categoryAxis?.majorUnit);
+  const yTicks = buildNumericTickValues(paddedMinY, paddedMaxY <= paddedMinY ? paddedMinY + 1 : paddedMaxY, chart.valueAxis?.majorUnit);
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = chart.axisLabelColor ?? chart.textColor ?? palette.text;
   const labelsEnabled = Boolean(
@@ -2680,7 +2718,14 @@ function renderUnsupported(chart: XlsxChart, palette: ChartRendererPalette, layo
 }
 
 function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
-  if (chartType === "ColumnClustered" || chartType === "ColumnStacked" || chartType === "BarClustered" || chartType === "BarPercentStacked") {
+  if (
+    chartType === "ColumnClustered"
+    || chartType === "ColumnStacked"
+    || chartType === "ColumnPercentStacked"
+    || chartType === "BarClustered"
+    || chartType === "BarStacked"
+    || chartType === "BarPercentStacked"
+  ) {
     return renderBarChart(chart, palette, layout, chartType);
   }
   if (

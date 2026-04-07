@@ -243,6 +243,21 @@ function normalizeRange(range: XlsxCellRange): XlsxCellRange {
   };
 }
 
+function parseCellAddressAttribute(value: string | null): XlsxCellAddress | null {
+  if (!value) {
+    return null;
+  }
+
+  const [rowValue, colValue] = value.split(":");
+  const row = Number(rowValue);
+  const col = Number(colValue);
+  if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || col < 0) {
+    return null;
+  }
+
+  return { row, col };
+}
+
 function isSameCell(left: XlsxCellAddress | null, right: XlsxCellAddress | null) {
   return Boolean(left && right && left.row === right.row && left.col === right.col);
 }
@@ -4723,6 +4738,36 @@ function XlsxGrid({
       clientY > scrollerRect.bottom
     ) {
       return null;
+    }
+
+    const elementsAtPoint = typeof document.elementsFromPoint === "function"
+      ? document.elementsFromPoint(clientX, clientY)
+      : [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => Boolean(element));
+    for (const element of elementsAtPoint) {
+      if (!(element instanceof HTMLElement)) {
+        continue;
+      }
+
+      const cell = parseCellAddressAttribute(element.closest<HTMLElement>("[data-xlsx-cell]")?.getAttribute("data-xlsx-cell") ?? null);
+      if (cell) {
+        return cell;
+      }
+
+      const colHeader = element.closest<HTMLElement>("[data-xlsx-col-header]");
+      if (colHeader && firstVisibleRowRef.current !== undefined) {
+        const actualCol = Number(colHeader.getAttribute("data-xlsx-col-header"));
+        if (Number.isInteger(actualCol) && actualCol >= 0) {
+          return { row: firstVisibleRowRef.current, col: actualCol };
+        }
+      }
+
+      const rowElement = element.closest<HTMLTableRowElement>("tr[data-xlsx-row]");
+      if (rowElement && firstVisibleColRef.current !== undefined) {
+        const actualRow = Number(rowElement.getAttribute("data-xlsx-row"));
+        if (Number.isInteger(actualRow) && actualRow >= 0) {
+          return { row: actualRow, col: firstVisibleColRef.current };
+        }
+      }
     }
 
     const localX = clientX - scrollerRect.left + scroller.scrollLeft;
