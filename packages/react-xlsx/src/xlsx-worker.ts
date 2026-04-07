@@ -32,6 +32,13 @@ type WorkerRequest =
     }
   | {
       id: number;
+      type: "parseCharts";
+      payload: {
+        buffer: ArrayBuffer;
+      };
+    }
+  | {
+      id: number;
       type: "getCellSnapshot";
       payload: {
         workbookSheetIndex: number;
@@ -53,6 +60,11 @@ type WorkerSuccessResponse = {
   id: number;
   success: true;
   result:
+    | {
+        chartsByWorkbookSheetIndex: XlsxChart[][];
+        chartsheets: XlsxChartsheet[];
+        tabs: XlsxWorkbookTab[];
+      }
     | {
         chartsByWorkbookSheetIndex: XlsxChart[][];
         chartsheets: XlsxChartsheet[];
@@ -82,6 +94,20 @@ let chartsheets: XlsxChartsheet[] = [];
 let sheets: XlsxSheetData[] = [];
 let tablesByWorkbookSheetIndex: XlsxTable[][] = [];
 let tabs: XlsxWorkbookTab[] = [];
+
+function buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook: Workbook) {
+  const mapping = new Map<number, number>();
+  let visibleIndex = 0;
+  for (let workbookSheetIndex = 0; workbookSheetIndex < nextWorkbook.sheetCount; workbookSheetIndex += 1) {
+    const worksheet = nextWorkbook.getSheet(workbookSheetIndex);
+    if (worksheet.visibility !== "visible") {
+      continue;
+    }
+    mapping.set(workbookSheetIndex, visibleIndex);
+    visibleIndex += 1;
+  }
+  return mapping;
+}
 
 function normalizeRange(range: XlsxCellRange): XlsxCellRange {
   return {
@@ -426,6 +452,28 @@ async function loadWorkbook(buffer: ArrayBuffer) {
   };
 }
 
+async function parseCharts(buffer: ArrayBuffer) {
+  const wasmModule = await getSheetsWasmModule();
+  const bytes = new Uint8Array(buffer);
+  const nextWorkbook = wasmModule.Workbook.fromBytes(bytes);
+  let totalFormulas = 0;
+  for (let index = 0; index < nextWorkbook.sheetCount; index += 1) {
+    totalFormulas += nextWorkbook.getSheet(index).formulaCount;
+  }
+  if (totalFormulas <= FORMULA_COUNT_THRESHOLD) {
+    nextWorkbook.calculate();
+  }
+
+  const visibleSheetIndexByWorkbookSheetIndex = buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook);
+  const chartStyleAssets = parseWorkbookChartStyleAssets(bytes);
+  const chartAssets = loadWorkbookChartAssets(nextWorkbook, chartStyleAssets, visibleSheetIndexByWorkbookSheetIndex);
+  return {
+    chartsByWorkbookSheetIndex: chartAssets.chartsByWorkbookSheetIndex,
+    chartsheets: chartAssets.chartsheets,
+    tabs: chartAssets.tabs
+  };
+}
+
 function respond(message: WorkerResponse) {
   self.postMessage(message);
 }
@@ -434,6 +482,9 @@ async function handleMessage(message: WorkerRequest) {
   switch (message.type) {
     case "load": {
       return loadWorkbook(message.payload.buffer);
+    }
+    case "parseCharts": {
+      return parseCharts(message.payload.buffer);
     }
     case "getCellSnapshot": {
       if (!workbook) {

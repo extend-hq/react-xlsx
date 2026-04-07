@@ -298,6 +298,7 @@ export interface XlsxChartReference {
 }
 
 export interface XlsxChartDataLabels {
+  pointLabels?: XlsxChartPointDataLabel[];
   raw?: Record<string, unknown>;
   showBubbleSize?: boolean;
   showCategoryName?: boolean;
@@ -305,6 +306,19 @@ export interface XlsxChartDataLabels {
   showPercent?: boolean;
   showSeriesName?: boolean;
   showValue?: boolean;
+}
+
+export interface XlsxChartPointDataLabel {
+  deleted?: boolean;
+  fontSizePt?: number;
+  index: number;
+  showBubbleSize?: boolean;
+  showCategoryName?: boolean;
+  showPercent?: boolean;
+  showSeriesName?: boolean;
+  showValue?: boolean;
+  x?: number;
+  y?: number;
 }
 
 export interface XlsxChartLegend {
@@ -389,6 +403,7 @@ export interface XlsxChart {
   displayBlanksAs?: string;
   editable?: boolean;
   firstSliceAngle?: number;
+  fontFamily?: string;
   gapWidth?: number;
   holeSize?: number;
   id: string;
@@ -409,6 +424,7 @@ export interface XlsxChart {
   textColor?: string;
   title?: string;
   titleColor?: string;
+  titleFontFamily?: string;
   typeGroups?: unknown[];
   valueAxis?: XlsxChartAxis | null;
   varyColors?: boolean;
@@ -472,6 +488,12 @@ export interface XlsxImageSelectionRenderProps {
   rect: XlsxImageRect;
 }
 
+export interface XlsxChartLoadingRenderProps {
+  chart: XlsxChart;
+  defaultNode: React.ReactNode;
+  rect: XlsxImageRect;
+}
+
 export interface UseXlsxViewerControllerOptions {
   deferLoadingAboveBytes?: number;
   file?: ArrayBuffer;
@@ -526,6 +548,7 @@ export interface XlsxViewerController {
   }>;
   isLoadDeferred: boolean;
   isLoading: boolean;
+  isChartsLoading: boolean;
   isWorkerBacked?: boolean;
   images: XlsxImage[];
   moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
@@ -644,6 +667,7 @@ export interface XlsxViewerImages {
   images: XlsxImage[];
   moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
   moveImageBy: (id: string, deltaX: number, deltaY: number) => void;
+  isChartsLoading: boolean;
   readOnly: boolean;
   resizeChartBy: (
     id: string,
@@ -677,6 +701,7 @@ export interface XlsxViewerCharts {
   getChartById: (id: string) => XlsxChart | null;
   getChartsheetById: (id: string) => XlsxChartsheet | null;
   getSheetCharts: (sheetIndex?: number) => XlsxChart[];
+  isChartsLoading: boolean;
   moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
   readOnly: boolean;
   resizeChartBy: (
@@ -716,6 +741,7 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   height?: React.CSSProperties["height"];
   loadingComponent?: React.ReactElement;
   loadingState?: React.ReactNode;
+  renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;
   renderImage?: (props: XlsxImageRenderProps) => React.ReactNode;
   renderImageSelection?: (props: XlsxImageSelectionRenderProps) => React.ReactNode;
   rounded?: boolean;

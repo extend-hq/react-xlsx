@@ -15,6 +15,7 @@ export type {
   XlsxChart,
   XlsxChartAxis,
   XlsxChartDataLabels,
+  XlsxChartLoadingRenderProps,
   XlsxChartReference,
   XlsxChartsheet,
   XlsxChartSeries,

@@ -58,6 +58,7 @@ type BarRect = {
   color: string;
   gradientId?: string;
   height: number;
+  invertedNegative?: boolean;
   isHorizontal: boolean;
   key: string;
   left: number;
@@ -108,6 +109,45 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+const DEFAULT_CHART_FONT_STACK = [
+  "\"Aptos\"",
+  "Calibri",
+  "Carlito",
+  "\"Segoe UI\"",
+  "Tahoma",
+  "Arial",
+  "sans-serif"
+].join(", ");
+
+function escapeCssFontFamilyToken(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (
+    trimmed.startsWith("\"")
+    || trimmed.startsWith("'")
+    || /^(serif|sans-serif|monospace|cursive|fantasy|system-ui|math|emoji|fangsong)$/i.test(trimmed)
+  ) {
+    return trimmed;
+  }
+  return /\s/.test(trimmed) ? `"${trimmed.replace(/"/g, "\\\"")}"` : trimmed;
+}
+
+function buildChartFontFamily(fontFamily: string | undefined) {
+  if (!fontFamily || fontFamily.trim().length === 0) {
+    return DEFAULT_CHART_FONT_STACK;
+  }
+  const tokens = fontFamily
+    .split(",")
+    .map(escapeCssFontFamilyToken)
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    return DEFAULT_CHART_FONT_STACK;
+  }
+  return [...tokens, "\"Segoe UI\"", "Tahoma", "Arial", "sans-serif"].join(", ");
+}
+
 function safeNumber(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -135,12 +175,12 @@ function chartSeriesStrokeColor(chart: XlsxChart, seriesIndex: number) {
   return series?.lineColor ?? series?.color ?? paletteColor ?? chart.textColor ?? "#222222";
 }
 
-function chartPointColor(chart: XlsxChart, pointIndex: number) {
-  const pointStyle = chart.series[0]?.dataPointStyles?.find((entry) => entry.index === pointIndex);
+function chartPointColor(chart: XlsxChart, pointIndex: number, seriesIndex = 0) {
+  const pointStyle = chart.series[seriesIndex]?.dataPointStyles?.find((entry) => entry.index === pointIndex);
   if (pointStyle?.color) {
     return pointStyle.color;
   }
-  const rawPoint = chart.series[0]?.dataPoints?.[pointIndex];
+  const rawPoint = chart.series[seriesIndex]?.dataPoints?.[pointIndex];
   if (rawPoint && typeof rawPoint === "object") {
     const pointRecord = rawPoint as Record<string, unknown>;
     if (typeof pointRecord.color === "string") {
@@ -170,7 +210,31 @@ function chartPointColor(chart: XlsxChart, pointIndex: number) {
     const offset = chart.chartColorPaletteOffset ?? 0;
     return palette[(pointIndex + offset) % palette.length] ?? palette[pointIndex % palette.length];
   }
-  return chartSeriesColor(chart, 0);
+  return chartSeriesColor(chart, seriesIndex);
+}
+
+function selectPrimaryPieSeriesIndex(chart: XlsxChart) {
+  let bestIndex = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  chart.series.forEach((series, index) => {
+    let positiveCount = 0;
+    let total = 0;
+    for (const rawValue of series.values) {
+      const value = safeNumber(rawValue);
+      if (value != null && value > 0) {
+        positiveCount += 1;
+        total += value;
+      }
+    }
+    const score = positiveCount * 1_000_000 + total;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
 }
 
 function chartSeriesBarColors(
@@ -300,13 +364,16 @@ function estimateReferencePointCount(formula: string | undefined) {
 
 function getCategoryLabels(chart: XlsxChart) {
   const primaryCategories = chart.series[0]?.categories ?? [];
-  const referenceCategoryCount = Math.max(
-    0,
-    ...chart.series.map((series) => Math.max(
-      estimateReferencePointCount(series.categoriesRef?.formula),
-      estimateReferencePointCount(series.valuesRef?.formula)
-    ))
-  );
+  const includeReferenceCategoryCount = chart.plotVisibleOnly !== true;
+  const referenceCategoryCount = includeReferenceCategoryCount
+    ? Math.max(
+      0,
+      ...chart.series.map((series) => Math.max(
+        estimateReferencePointCount(series.categoriesRef?.formula),
+        estimateReferencePointCount(series.valuesRef?.formula)
+      ))
+    )
+    : 0;
   const categoryCount = Math.max(
     referenceCategoryCount,
     primaryCategories.length,
@@ -370,17 +437,17 @@ function coerceLooseNumber(value: unknown): number | null {
   return null;
 }
 
-function buildPieEntries(chart: XlsxChart) {
+function buildPieEntries(chart: XlsxChart, seriesIndex = selectPrimaryPieSeriesIndex(chart)) {
   const categories = getCategoryLabels(chart);
-  const values = chart.series[0]?.values ?? [];
+  const values = chart.series[seriesIndex]?.values ?? [];
   return values
     .map((rawValue, index) => ({
-      color: chartPointColor(chart, index),
+      color: chartPointColor(chart, index, seriesIndex),
       index,
       label: normalizeCategoryLabel(categories[index]),
       value: Math.max(0, safeNumber(rawValue) ?? 0)
     }))
-    .filter((entry) => entry.value > 0 && entry.label.trim().length > 0);
+    .filter((entry) => entry.value > 0);
 }
 
 function getLegendItems(chart: XlsxChart, chartType: string): LegendItem[] {
@@ -491,6 +558,21 @@ function formatTickValue(value: number) {
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+function truncateSvgText(value: string, maxWidth: number, fontSize = 10) {
+  if (!value || maxWidth <= 0) {
+    return "";
+  }
+  const charWidth = Math.max(4.2, fontSize * 0.56);
+  const maxChars = Math.max(1, Math.floor(maxWidth / charWidth));
+  if (value.length <= maxChars) {
+    return value;
+  }
+  if (maxChars <= 1) {
+    return "…";
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
 function markerSymbolPath(symbol: string, size: number) {
   if (symbol === "none") {
     return "";
@@ -517,20 +599,124 @@ function markerSymbolPath(symbol: string, size: number) {
   return d3Symbol().type(symbolType).size(size * size * Math.PI)() ?? "";
 }
 
+const TWO_PI = Math.PI * 2;
+
+function normalizePieArc(startAngle: number, endAngle: number) {
+  let start = startAngle;
+  let end = endAngle;
+  while (end < start) {
+    end += TWO_PI;
+  }
+  return { end, start };
+}
+
+function resolvePieFrontSegments(startAngle: number, endAngle: number): Array<[number, number]> {
+  const { start, end } = normalizePieArc(startAngle, endAngle);
+  const segments: Array<[number, number]> = [];
+  const minBand = Math.floor(start / TWO_PI) - 1;
+  const maxBand = Math.ceil(end / TWO_PI) + 1;
+  for (let band = minBand; band <= maxBand; band += 1) {
+    const frontStart = 0 + band * TWO_PI;
+    const frontEnd = Math.PI + band * TWO_PI;
+    const segmentStart = Math.max(start, frontStart);
+    const segmentEnd = Math.min(end, frontEnd);
+    if (segmentEnd - segmentStart > 1e-4) {
+      segments.push([segmentStart, segmentEnd]);
+    }
+  }
+  return segments;
+}
+
+function pieEllipsePoint(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  tilt: number,
+  angle: number,
+  depth = 0
+) {
+  return {
+    x: centerX + Math.cos(angle) * radius,
+    y: centerY + Math.sin(angle) * radius * tilt + depth
+  };
+}
+
+function toSvgNumber(value: number) {
+  return Number(value.toFixed(3));
+}
+
+function buildPieOuterWallPath(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  tilt: number,
+  depth: number,
+  startAngle: number,
+  endAngle: number
+) {
+  const ry = radius * tilt;
+  return resolvePieFrontSegments(startAngle, endAngle).map(([segmentStart, segmentEnd]) => {
+    const topStart = pieEllipsePoint(centerX, centerY, radius, tilt, segmentStart, 0);
+    const topEnd = pieEllipsePoint(centerX, centerY, radius, tilt, segmentEnd, 0);
+    const bottomStart = pieEllipsePoint(centerX, centerY, radius, tilt, segmentStart, depth);
+    const bottomEnd = pieEllipsePoint(centerX, centerY, radius, tilt, segmentEnd, depth);
+    const largeArc = segmentEnd - segmentStart > Math.PI ? 1 : 0;
+    return [
+      `M ${toSvgNumber(topStart.x)} ${toSvgNumber(topStart.y)}`,
+      `A ${toSvgNumber(radius)} ${toSvgNumber(ry)} 0 ${largeArc} 1 ${toSvgNumber(topEnd.x)} ${toSvgNumber(topEnd.y)}`,
+      `L ${toSvgNumber(bottomEnd.x)} ${toSvgNumber(bottomEnd.y)}`,
+      `A ${toSvgNumber(radius)} ${toSvgNumber(ry)} 0 ${largeArc} 0 ${toSvgNumber(bottomStart.x)} ${toSvgNumber(bottomStart.y)}`,
+      "Z"
+    ].join(" ");
+  });
+}
+
+function isPieFrontFacingAngle(angle: number) {
+  const normalized = ((angle % TWO_PI) + TWO_PI) % TWO_PI;
+  return normalized > 0 && normalized < Math.PI;
+}
+
+function buildPieRadialWallPath(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  tilt: number,
+  depth: number,
+  angle: number
+) {
+  if (!isPieFrontFacingAngle(angle)) {
+    return null;
+  }
+  const topCenter = { x: centerX, y: centerY };
+  const bottomCenter = { x: centerX, y: centerY + depth };
+  const topEdge = pieEllipsePoint(centerX, centerY, radius, tilt, angle, 0);
+  const bottomEdge = pieEllipsePoint(centerX, centerY, radius, tilt, angle, depth);
+  return [
+    `M ${toSvgNumber(topCenter.x)} ${toSvgNumber(topCenter.y)}`,
+    `L ${toSvgNumber(topEdge.x)} ${toSvgNumber(topEdge.y)}`,
+    `L ${toSvgNumber(bottomEdge.x)} ${toSvgNumber(bottomEdge.y)}`,
+    `L ${toSvgNumber(bottomCenter.x)} ${toSvgNumber(bottomCenter.y)}`,
+    "Z"
+  ].join(" ");
+}
+
 function renderTitle(chart: XlsxChart, layout: ChartLayout, palette: ChartRendererPalette) {
   if (!chart.title) {
     return null;
   }
+  const fontSize = 12;
+  const text = truncateSvgText(chart.title, Math.max(40, layout.width - 12), fontSize);
   return (
     <text
       fill={chart.titleColor ?? chart.textColor ?? palette.text}
-      fontSize={12}
+      fontFamily={buildChartFontFamily(chart.titleFontFamily ?? chart.fontFamily)}
+      fontSize={fontSize}
       fontWeight={600}
       textAnchor="middle"
       x={layout.width / 2}
       y={16}
     >
-      {chart.title}
+      {text}
     </text>
   );
 }
@@ -740,11 +926,13 @@ function renderExtrudedRect(bar: BarRect) {
   const topFace = `${frontX},${frontY} ${frontX2},${frontY} ${frontX2 + sideDepthX},${frontY + depthY} ${frontX + sideDepthX},${frontY + depthY}`;
   const sideFace = `${sideAnchorX},${frontY} ${sideAnchorX},${frontY2} ${sideAnchorX + sideDepthX},${frontY2 + depthY} ${sideAnchorX + sideDepthX},${frontY + depthY}`;
   const frontFill = bar.gradientId ? `url(#${bar.gradientId})` : bar.color;
+  const sideFill = bar.invertedNegative ? bar.color : darkenColor(bar.color, 0.22);
+  const topFill = bar.invertedNegative ? lightenColor(bar.color, 0.04) : lightenColor(bar.color, 0.24);
 
   return (
     <g key={`${bar.key}-3d`}>
-      <polygon fill={darkenColor(bar.color, 0.22)} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-      <polygon fill={lightenColor(bar.color, 0.24)} points={topFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      <polygon fill={sideFill} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      <polygon fill={topFill} points={topFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
       <rect fill={frontFill} height={frontH} stroke={bar.stroke} strokeWidth={bar.strokeWidth} width={frontW} x={frontX} y={frontY} />
     </g>
   );
@@ -871,6 +1059,8 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     for (let categoryIndex = 0; categoryIndex < categoryCount; categoryIndex += 1) {
       const value = matrix[seriesIndex][categoryIndex] ?? 0;
       const rawValue = rawMatrix[seriesIndex][categoryIndex] ?? value;
+      const pointIndex = shouldReverseCategories ? (categoryCount - 1 - categoryIndex) : categoryIndex;
+      const pointStyle = chart.series[seriesIndex]?.dataPointStyles?.find((entry) => entry.index === pointIndex);
       let start = 0;
       let end = value;
       if (isStacked) {
@@ -886,6 +1076,21 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       }
 
       const colors = chartSeriesBarColors(chart, seriesIndex, rawValue, negativeFillMode);
+      const isInvertedNegative = rawValue < 0 && chart.series[seriesIndex]?.invertIfNegative === true;
+      if (!(isInvertedNegative)) {
+        if (pointStyle?.color) {
+          colors.fill = pointStyle.color;
+          if (!pointStyle.lineColor) {
+            colors.stroke = pointStyle.color;
+          }
+        }
+        if (pointStyle?.lineColor) {
+          colors.stroke = pointStyle.lineColor;
+        }
+      }
+      if (isInvertedNegative && chartType === "BarPercentStacked" && chart.is3d) {
+        colors.fill = "#ffffff";
+      }
       const category = categories[categoryIndex];
       const categoryStart = categoryScale(category) ?? 0;
       const barThickness = isStacked ? categoryScale.bandwidth() : seriesScale.bandwidth();
@@ -905,6 +1110,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           stroke: colors.stroke,
           strokeWidth: colors.strokeWidth,
           top: categoryStart + barOffset,
+          invertedNegative: isInvertedNegative,
           value: rawValue,
           width: Math.max(1, Math.abs(x2 - x1))
         });
@@ -922,6 +1128,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           stroke: colors.stroke,
           strokeWidth: colors.strokeWidth,
           top: Math.min(y1, y2),
+          invertedNegative: isInvertedNegative,
           value: rawValue,
           width: Math.max(1, barThickness)
         });
@@ -1040,21 +1247,82 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
   }
   const plot = layout.plot;
   const displayBlanksAs = chart.displayBlanksAs;
-
-  const allValues = chart.series.flatMap((series) => (
-    series.values
-      .slice(0, categories.length)
-      .map((value) => resolveRenderableSeriesValue(value, displayBlanksAs))
-      .filter((value): value is number => value != null)
+  const isAreaChart = chartType === "Area" || chartType === "AreaStacked" || chartType === "AreaPercentStacked";
+  const isStackedArea = chartType === "AreaStacked" || chartType === "AreaPercentStacked";
+  const isPercentStackedArea = chartType === "AreaPercentStacked";
+  const resolvedValuesBySeries = chart.series.map((series) => (
+    categories.map((_, categoryIndex) => resolveRenderableSeriesValue(series.values[categoryIndex], displayBlanksAs))
   ));
-  if (allValues.length === 0) {
+
+  type SeriesPoint = {
+    defined: boolean;
+    y: number | null;
+    y0: number | null;
+    y1: number | null;
+  };
+
+  const stackedPointsBySeries: SeriesPoint[][] = isStackedArea
+    ? (() => {
+        const positive = Array.from({ length: categories.length }, () => 0);
+        const negative = Array.from({ length: categories.length }, () => 0);
+        const categoryTotals = isPercentStackedArea
+          ? categories.map((_, categoryIndex) => {
+              const total = resolvedValuesBySeries.reduce((sum, seriesValues) => (
+                sum + (seriesValues[categoryIndex] ?? 0)
+              ), 0);
+              return Math.abs(total) < 1e-9 ? 1 : total;
+            })
+          : null;
+        return chart.series.map((_, seriesIndex) => (
+          categories.map((_, categoryIndex) => {
+            const rawValue = resolvedValuesBySeries[seriesIndex]?.[categoryIndex] ?? null;
+            if (rawValue == null) {
+              return { defined: false, y: null, y0: null, y1: null };
+            }
+            const value = isPercentStackedArea
+              ? (rawValue / (categoryTotals?.[categoryIndex] ?? 1)) * 100
+              : rawValue;
+            if (value >= 0) {
+              const start = positive[categoryIndex];
+              const end = start + value;
+              positive[categoryIndex] = end;
+              return { defined: true, y: end, y0: start, y1: end };
+            }
+            const start = negative[categoryIndex];
+            const end = start + value;
+            negative[categoryIndex] = end;
+            return { defined: true, y: end, y0: start, y1: end };
+          })
+        ));
+      })()
+    : chart.series.map((_, seriesIndex) => (
+        categories.map((_, categoryIndex) => {
+          const value = resolvedValuesBySeries[seriesIndex]?.[categoryIndex] ?? null;
+          return {
+            defined: value != null,
+            y: value,
+            y0: null,
+            y1: value
+          };
+        })
+      ));
+
+  const stackedExtents = stackedPointsBySeries
+    .flatMap((seriesPoints) => (
+      seriesPoints.flatMap((point) => (
+        point.defined
+          ? [point.y0, point.y1].filter((value): value is number => value != null && Number.isFinite(value))
+          : []
+      ))
+    ));
+  if (stackedExtents.length === 0) {
     return null;
   }
-  let minValue = Math.min(...allValues);
-  let maxValue = Math.max(...allValues);
+  let minValue = Math.min(...stackedExtents);
+  let maxValue = Math.max(...stackedExtents);
   const hasExplicitMin = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min);
   const hasExplicitMax = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max);
-  if (chartType === "Area") {
+  if (isAreaChart) {
     minValue = Math.min(0, minValue);
   } else if (chartType === "Line" && chart.valueAxis?.crosses === "autoZero") {
     minValue = Math.min(0, minValue);
@@ -1072,7 +1340,11 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
     .domain([minValue, maxValue])
     .range([plot.top + plot.height, plot.top]);
 
-  const ticks = buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit);
+  const ticks = buildNumericTickValues(
+    minValue,
+    maxValue,
+    isPercentStackedArea ? (chart.valueAxis?.majorUnit ?? 20) : chart.valueAxis?.majorUnit
+  );
   const categoryPositions = categories.map((category) => xScale(category) ?? plot.left);
 
   const curve: CurveFactory = curveLinear;
@@ -1091,22 +1363,41 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
         (value) => yScale(value)
       )}
       {chart.series.map((series, seriesIndex) => {
-        const points = categories.map((category, categoryIndex) => ({
-          x: xScale(category) ?? plot.left,
-          y: resolveRenderableSeriesValue(series.values[categoryIndex], displayBlanksAs)
-        }));
+        const points = categories.map((category, categoryIndex) => {
+          const point = stackedPointsBySeries[seriesIndex]?.[categoryIndex] ?? {
+            defined: false,
+            y: null,
+            y0: null,
+            y1: null
+          };
+          return {
+            defined: point.defined,
+            x: xScale(category) ?? plot.left,
+            y: point.y,
+            y0: point.y0,
+            y1: point.y1
+          };
+        });
         const linePath = d3Line<{ x: number; y: number | null }>()
           .defined((point) => point.y != null)
           .x((point) => point.x)
           .y((point) => yScale(point.y ?? 0))
           .curve(curve)(points) ?? "";
 
-        const areaPath = chartType === "Area"
-          ? d3Area<{ x: number; y: number | null }>()
-            .defined((point) => point.y != null)
+        const areaPath = isAreaChart
+          ? d3Area<{ x: number; y: number | null; y0: number | null; y1: number | null }>()
+            .defined((point) => (
+              isStackedArea
+                ? point.y0 != null && point.y1 != null
+                : point.y != null
+            ))
             .x((point) => point.x)
-            .y0(areaBaseline)
-            .y1((point) => yScale(point.y ?? 0))
+            .y0((point) => (
+              isStackedArea
+                ? yScale(point.y0 ?? 0)
+                : areaBaseline
+            ))
+            .y1((point) => yScale((isStackedArea ? point.y1 : point.y) ?? 0))
             .curve(curve)(points) ?? ""
           : "";
 
@@ -1115,7 +1406,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
           : chartSeriesColor(chart, seriesIndex);
         return (
           <g key={`line-series-${seriesIndex}`}>
-            {chartType === "Area" ? (
+            {isAreaChart ? (
               <path
                 d={areaPath}
                 fill={seriesFillColor}
@@ -1443,9 +1734,12 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
 
   const xScale = scaleLinear().domain([minX, maxX <= minX ? minX + 1 : maxX]).range([plot.left, plot.left + plot.width]);
   const yScale = scaleLinear().domain([minY, maxY <= minY ? minY + 1 : maxY]).range([plot.top + plot.height, plot.top]);
+  const bubbleScaleFactor = clamp((chart.bubbleScale ?? 100) / 100, 0.2, 4);
+  const minRadius = 4;
+  const maxRadius = Math.max(minRadius + 2, 12 * bubbleScaleFactor);
   const radiusScale = scaleLinear()
     .domain([minBubbleMagnitude, maxBubbleMagnitude <= minBubbleMagnitude ? minBubbleMagnitude + 1 : maxBubbleMagnitude])
-    .range([6, 18 + ((chart.bubbleScale ?? 100) * 0.18)]);
+    .range([minRadius, maxRadius]);
 
   const xTicks = buildNumericTickValues(minX, maxX <= minX ? minX + 1 : maxX, chart.categoryAxis?.majorUnit);
   const yTicks = buildNumericTickValues(minY, maxY <= minY ? minY + 1 : maxY, chart.valueAxis?.majorUnit);
@@ -1498,7 +1792,14 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
       <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left} y1={plot.top} y2={plot.top + plot.height} />
       {pointsBySeries.map((points, seriesIndex) => (
         <g key={`bubble-series-${seriesIndex}`}>
-          {points.map((point, pointIndex) => {
+          {[...points]
+            .sort((left, right) => {
+              if (left.bubble !== right.bubble) {
+                return right.bubble - left.bubble;
+              }
+              return left.index - right.index;
+            })
+            .map((point) => {
             const series = chart.series[seriesIndex];
             const baseColor = series?.color ?? series?.lineColor ?? chartSeriesColor(chart, seriesIndex);
             const radius = radiusScale(Math.sqrt(Math.max(0, point.bubble)));
@@ -1519,7 +1820,7 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
               pieces.push(`${Math.round((Math.abs(point.bubble) / Math.max(1, bubbleTotals[seriesIndex] ?? 1)) * 100)}%`);
             }
             return (
-              <g key={`bubble-${seriesIndex}-${pointIndex}`}>
+              <g key={`bubble-${seriesIndex}-${point.index}`}>
                 <circle
                   cx={xScale(point.x)}
                   cy={yScale(point.y)}
@@ -1708,7 +2009,9 @@ function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layou
 }
 
 function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
-  const pieData = buildPieEntries(chart);
+  const pieSeriesIndex = selectPrimaryPieSeriesIndex(chart);
+  const pieSeries = chart.series[pieSeriesIndex];
+  const pieData = buildPieEntries(chart, pieSeriesIndex);
   if (pieData.length === 0) {
     return null;
   }
@@ -1732,22 +2035,72 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
 
   const isPie3d = chartType === "Pie3D";
   const rotX = chart.view3d?.rotX ?? 20;
-  const tilt = isPie3d ? clamp(1 - (rotX / 90) * 1.1, 0.58, 0.92) : 1;
+  const perspective = chart.view3d?.perspective ?? 30;
+  const tiltFromRotX = clamp(0.14 + (rotX / 90) * 0.72, 0.12, 0.92);
+  const perspectiveCompression = clamp(1 - (perspective / 180), 0.55, 1);
+  const tilt = isPie3d ? clamp(tiltFromRotX * perspectiveCompression, 0.14, 0.78) : 1;
   const depthScale = (chart.view3d?.depthPercent ?? 100) / 100;
-  const depth = isPie3d ? Math.max(8, outerRadius * 0.2 * depthScale) : 0;
+  const depth = isPie3d ? Math.max(9, outerRadius * 0.28 * depthScale) : 0;
   const dataLabelsEnabled = Boolean(chart.dataLabels?.showCategoryName || chart.dataLabels?.showPercent || chart.dataLabels?.showValue);
   const total = pieData.reduce((sum, entry) => sum + entry.value, 0);
-  const clipId = `pie3d-front-${chart.id}`.replace(/[^A-Za-z0-9_-]/g, "-");
   const shadowId = `pie3d-shadow-${chart.id}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  const baseShadowId = `pie3d-base-shadow-${chart.id}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  const sliceSeparatorColor = chart.chartAreaFillColor ?? "#ffffff";
+  const labelBounds = {
+    bottom: layout.height - 6,
+    left: 6,
+    right: layout.width - 6,
+    top: layout.plot.top + 8
+  };
+  const pointLabelByIndex = new Map((chart.dataLabels?.pointLabels ?? []).map((label) => [label.index, label]));
+  const centerValuePointLabel = chartType === "Doughnut"
+    ? (chart.dataLabels?.pointLabels ?? []).find((label) => (
+      label.deleted !== true
+      && label.showValue === true
+      && label.showCategoryName !== true
+      && label.showPercent !== true
+      && label.showSeriesName !== true
+      && label.showBubbleSize !== true
+    )) ?? null
+    : null;
+  const centerValueEntry = centerValuePointLabel
+    ? pieData.find((entry) => entry.index === centerValuePointLabel.index) ?? null
+    : null;
+  const shouldRenderCenterValue = chartType === "Doughnut" && centerValueEntry != null;
+  const centerValueLooksPercent = centerValueEntry != null
+    && total > 0
+    && total <= 1.0000001
+    && centerValueEntry.value >= 0
+    && centerValueEntry.value <= 1.0000001;
+  const centerValueText = centerValueEntry == null
+    ? ""
+    : centerValueLooksPercent
+      ? `${Math.round(centerValueEntry.value * 100)}%`
+      : formatTickValue(centerValueEntry.value);
+  const centerValueFontSize = shouldRenderCenterValue
+    ? Math.max(
+        14,
+        Math.min(
+          Math.max(20, innerRadius * 0.72),
+          (centerValuePointLabel?.fontSizePt ?? 28) * 0.85
+        )
+      )
+    : 0;
 
   const resolveSliceExplosion = (pointIndex: number) => {
-    const pointStyle = chart.series[0]?.dataPointStyles?.find((entry) => entry.index === pointIndex);
-    const seriesExplosion = typeof chart.series[0]?.shapeProperties?.xmlExplosion === "number"
-      ? chart.series[0].shapeProperties.xmlExplosion
+    const pointStyle = pieSeries?.dataPointStyles?.find((entry) => entry.index === pointIndex);
+    const seriesExplosion = typeof pieSeries?.shapeProperties?.xmlExplosion === "number"
+      ? pieSeries.shapeProperties.xmlExplosion
       : 0;
     const rawExplosion = Math.max(0, pointStyle?.explosion ?? seriesExplosion ?? 0);
-    return outerRadius * clamp(rawExplosion / 100, 0, 0.65);
+    if (rawExplosion <= 0) {
+      return 0;
+    }
+    // OOXML explosion values are percent-like offsets of the pie radius.
+    return outerRadius * clamp(rawExplosion / 100, 0, 4);
   };
+  const hasExplodedSlices = arcs.some((arc) => resolveSliceExplosion(arc.data.index) > 0);
+  const sliceSeparatorWidth = hasExplodedSlices ? 2 : 1.2;
 
   return (
     <g>
@@ -1756,52 +2109,89 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           <filter id={shadowId} x="-40%" y="-40%" width="180%" height="200%">
             <feDropShadow dx="1.2" dy="3.6" floodColor="#000000" floodOpacity="0.28" stdDeviation="2.8" />
           </filter>
-          <clipPath id={clipId}>
-            <rect
-              height={outerRadius * 2.6 + depth}
-              width={outerRadius * 4.2}
-              x={centerX - outerRadius * 2.1}
-              y={centerY}
-            />
-          </clipPath>
+          <filter id={baseShadowId} x="-50%" y="-50%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="3.2" />
+          </filter>
         </defs>
       ) : null}
       {isPie3d ? (
-        <g clipPath={`url(#${clipId})`}>
-          {arcs.map((arc) => {
-            const midAngle = (arc.startAngle + arc.endAngle) / 2;
-            const explosion = resolveSliceExplosion(arc.data.index);
-            const explodeX = Math.cos(midAngle) * explosion;
-            const explodeY = Math.sin(midAngle) * explosion;
-            return (
-              <g key={`pie-side-${arc.data.index}`} transform={`translate(${explodeX}, ${explodeY})`}>
-                <path
-                  d={(arcPath(arc) ?? "")}
-                  fill="none"
-                  stroke={darkenColor(arc.data.color, 0.45)}
-                  strokeLinecap="butt"
-                  strokeLinejoin="round"
-                  strokeWidth={Math.max(2, depth * 0.95)}
-                  transform={`translate(${centerX}, ${centerY + depth * 0.5}) scale(1, ${tilt})`}
-                />
-              </g>
-            );
-          })}
-        </g>
+        <ellipse
+          cx={centerX}
+          cy={centerY + depth + 3}
+          fill="#000000"
+          filter={`url(#${baseShadowId})`}
+          opacity={0.14}
+          rx={outerRadius * 1.02}
+          ry={outerRadius * tilt * 0.68}
+        />
       ) : null}
       {isPie3d
         ? arcs.map((arc) => {
             const midAngle = (arc.startAngle + arc.endAngle) / 2;
             const explosion = resolveSliceExplosion(arc.data.index);
             const explodeX = Math.cos(midAngle) * explosion;
-            const explodeY = Math.sin(midAngle) * explosion;
+            const explodeY = Math.sin(midAngle) * explosion * tilt;
+            const sidePaths = buildPieOuterWallPath(
+              centerX,
+              centerY,
+              outerRadius,
+              tilt,
+              depth,
+              arc.startAngle,
+              arc.endAngle
+            );
+            if (sidePaths.length === 0) {
+              return null;
+            }
             return (
-              <g key={`pie-base-${arc.data.index}`} transform={`translate(${explodeX}, ${explodeY})`}>
-                <path
-                  d={(arcPath(arc) ?? "")}
-                  fill={darkenColor(arc.data.color, 0.3)}
-                  transform={`translate(${centerX}, ${centerY + depth}) scale(1, ${tilt})`}
-                />
+              <g key={`pie-side-${arc.data.index}`} transform={`translate(${explodeX}, ${explodeY})`}>
+                {sidePaths.map((sidePath, sideIndex) => (
+                  <path
+                    d={sidePath}
+                    fill={darkenColor(arc.data.color, 0.34)}
+                    key={`pie-side-path-${arc.data.index}-${sideIndex}`}
+                    stroke={darkenColor(arc.data.color, 0.5)}
+                    strokeWidth={0.8}
+                  />
+                ))}
+                {(() => {
+                  const startWall = buildPieRadialWallPath(
+                    centerX,
+                    centerY,
+                    outerRadius,
+                    tilt,
+                    depth,
+                    arc.startAngle
+                  );
+                  const endWall = buildPieRadialWallPath(
+                    centerX,
+                    centerY,
+                    outerRadius,
+                    tilt,
+                    depth,
+                    arc.endAngle
+                  );
+                  return (
+                    <>
+                      {startWall ? (
+                        <path
+                          d={startWall}
+                          fill={darkenColor(arc.data.color, 0.26)}
+                          stroke={darkenColor(arc.data.color, 0.44)}
+                          strokeWidth={0.8}
+                        />
+                      ) : null}
+                      {endWall ? (
+                        <path
+                          d={endWall}
+                          fill={darkenColor(arc.data.color, 0.2)}
+                          stroke={darkenColor(arc.data.color, 0.4)}
+                          strokeWidth={0.8}
+                        />
+                      ) : null}
+                    </>
+                  );
+                })()}
               </g>
             );
           })
@@ -1810,51 +2200,83 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         const explosion = resolveSliceExplosion(arc.data.index);
         const midAngle = (arc.startAngle + arc.endAngle) / 2;
         const explodeX = Math.cos(midAngle) * explosion;
-        const explodeY = Math.sin(midAngle) * explosion * tilt;
-        const labelRadius = outerRadius + 12;
+        const explodeY = Math.sin(midAngle) * explosion * (isPie3d ? tilt : 1);
+        const labelRadius = outerRadius + (chartType === "PieExploded" ? 8 : 12);
         const labelX = centerX + Math.cos(midAngle) * labelRadius + explodeX;
-        const labelY = centerY + Math.sin(midAngle) * labelRadius * tilt + explodeY;
+        const labelY = centerY + Math.sin(midAngle) * labelRadius * (isPie3d ? tilt : 1) + explodeY;
         const pieces: string[] = [];
-        if (chart.dataLabels?.showCategoryName) {
+        if (chart.dataLabels?.showCategoryName && arc.data.label.trim().length > 0) {
           pieces.push(arc.data.label);
         }
-        if (chart.dataLabels?.showValue) {
+        const pointLabel = pointLabelByIndex.get(arc.data.index);
+        const showValue = pointLabel?.showValue ?? chart.dataLabels?.showValue;
+        const showPercent = pointLabel?.showPercent ?? chart.dataLabels?.showPercent;
+        if (showValue) {
           pieces.push(formatTickValue(arc.data.value));
         }
-        if (chart.dataLabels?.showPercent) {
+        if (showPercent) {
           pieces.push(`${Math.round((arc.data.value / Math.max(1, total)) * 100)}%`);
         }
+        const labelText = pieces.join(", ");
+        const truncatedLabelText = truncateSvgText(labelText, Math.max(48, layout.width * 0.42), 10);
+        const approxLabelWidth = Math.max(12, truncatedLabelText.length * 5.6);
+        let labelAnchor: "end" | "start" = labelX >= centerX ? "start" : "end";
+        let resolvedLabelX = labelX;
+        if (labelAnchor === "start" && resolvedLabelX + approxLabelWidth > labelBounds.right) {
+          labelAnchor = "end";
+        }
+        if (labelAnchor === "end" && resolvedLabelX - approxLabelWidth < labelBounds.left) {
+          labelAnchor = "start";
+        }
+        resolvedLabelX = clamp(resolvedLabelX, labelBounds.left, labelBounds.right);
+        const resolvedLabelY = clamp(labelY, labelBounds.top, labelBounds.bottom);
         return (
-          <g key={`pie-top-${arc.data.index}`} transform={`translate(${explodeX}, ${explodeY})`}>
-            <path
-              d={(arcPath(arc) ?? "")}
-              fill={arc.data.color}
-              stroke={chart.chartAreaFillColor ?? palette.surface}
-              strokeWidth={1.2}
-              transform={`translate(${centerX}, ${centerY})${isPie3d ? ` scale(1, ${tilt})` : ""}`}
-              filter={isPie3d ? `url(#${shadowId})` : undefined}
-            />
-            {dataLabelsEnabled && pieces.length > 0 ? (
+          <React.Fragment key={`pie-top-${arc.data.index}`}>
+            <g transform={`translate(${explodeX}, ${explodeY})`}>
+              <path
+                d={(arcPath(arc) ?? "")}
+                fill={arc.data.color}
+                stroke={sliceSeparatorColor}
+                strokeWidth={sliceSeparatorWidth}
+                transform={`translate(${centerX}, ${centerY})${isPie3d ? ` scale(1, ${tilt})` : ""}`}
+                filter={isPie3d ? `url(#${shadowId})` : undefined}
+              />
+            </g>
+            {dataLabelsEnabled && truncatedLabelText.length > 0 ? (
               <text
                 fill={chart.textColor ?? palette.text}
                 fontSize={10}
-                textAnchor={labelX >= centerX ? "start" : "end"}
-                x={labelX}
-                y={labelY}
+                textAnchor={labelAnchor}
+                x={resolvedLabelX}
+                y={resolvedLabelY}
               >
-                {pieces.join(", ")}
+                {truncatedLabelText}
               </text>
             ) : null}
-          </g>
+          </React.Fragment>
         );
       })}
+      {shouldRenderCenterValue ? (
+        <text
+          fill={chart.textColor ?? chart.titleColor ?? palette.text}
+          fontSize={centerValueFontSize}
+          fontWeight={700}
+          textAnchor="middle"
+          x={centerX}
+          y={centerY + centerValueFontSize * 0.34}
+        >
+          {centerValueText}
+        </text>
+      ) : null}
     </g>
   );
 }
 
 function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const pieSeriesIndex = selectPrimaryPieSeriesIndex(chart);
+  const pieSeries = chart.series[pieSeriesIndex];
   const categories = getCategoryLabels(chart);
-  const values = chart.series[0]?.values.map((value) => Math.max(0, safeNumber(value) ?? 0)) ?? [];
+  const values = pieSeries?.values.map((value) => Math.max(0, safeNumber(value) ?? 0)) ?? [];
   if (values.length === 0) {
     return null;
   }
@@ -1875,10 +2297,10 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
   const secondaryTotal = secondaryIndices.reduce((sum, index) => sum + (values[index] ?? 0), 0);
   const primaryData = values.flatMap((value, index) => secondarySet.has(index)
     ? []
-    : [{ color: chartPointColor(chart, index), label: categories[index], value }]);
+    : [{ color: chartPointColor(chart, index, pieSeriesIndex), label: categories[index], value }]);
   if (secondaryTotal > 0) {
     primaryData.push({
-      color: lightenColor(chartPointColor(chart, secondaryIndices[0] ?? 0), 0.2),
+      color: chartPointColor(chart, secondaryIndices[0] ?? 0, pieSeriesIndex),
       label: "Other",
       value: secondaryTotal
     });
@@ -1941,7 +2363,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
         return (
           <g key={`bar-of-pie-secondary-${index}`}>
             <rect
-              fill={chartPointColor(chart, secondaryIndices[index] ?? index)}
+              fill={chartPointColor(chart, secondaryIndices[index] ?? index, pieSeriesIndex)}
               height={bandScale.bandwidth()}
               width={barWidth}
               x={barAreaLeft}
@@ -2261,7 +2683,12 @@ function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout
   if (chartType === "ColumnClustered" || chartType === "ColumnStacked" || chartType === "BarClustered" || chartType === "BarPercentStacked") {
     return renderBarChart(chart, palette, layout, chartType);
   }
-  if (chartType === "Line" || chartType === "Area") {
+  if (
+    chartType === "Line"
+    || chartType === "Area"
+    || chartType === "AreaStacked"
+    || chartType === "AreaPercentStacked"
+  ) {
     return renderLineOrAreaChart(chart, palette, layout, chartType);
   }
   if (chartType === "ScatterLines") {
@@ -2295,17 +2722,25 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, r
   const renderChartType = normalizeRenderableChartType(chart);
   const legendItems = getLegendItems(chart, renderChartType);
   const layout = buildLayout(chart, rect, legendItems);
-  const background = chart.chartAreaFillColor ?? palette.surface;
-  const borderColor = chart.chartAreaBorderColor ?? lightenColor(palette.border, 0.2);
+  const chartRaw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
+  const explicitNoFill = chartRaw?.chartAreaNoFill === true || chartRaw?.plotAreaNoFill === true;
+  const background = chart.chartAreaFillColor ?? (explicitNoFill ? "transparent" : "#ffffff");
+  const borderColor = chart.chartAreaBorderColor ?? "transparent";
+  const normalizedBackground = background.trim().toLowerCase();
+  const normalizedBorderColor = borderColor.trim().toLowerCase();
+  const hideBackgroundRect = normalizedBackground === "transparent" && normalizedBorderColor === "transparent";
+  const fontFamily = buildChartFontFamily(chart.fontFamily);
 
   return (
     <svg
       aria-label={chart.title ?? chart.name ?? "Chart"}
       role="img"
-      style={{ display: "block", height: "100%", pointerEvents: "none", width: "100%" }}
+      style={{ display: "block", fontFamily, height: "100%", pointerEvents: "none", width: "100%" }}
       viewBox={`0 0 ${layout.width} ${layout.height}`}
     >
-      <rect fill={background} height={layout.height} stroke={borderColor} strokeWidth={1} width={layout.width} x={0} y={0} />
+      {hideBackgroundRect
+        ? null
+        : <rect fill={background} height={layout.height} stroke={borderColor} strokeWidth={1} width={layout.width} x={0} y={0} />}
       {renderTitle(chart, layout, palette)}
       {renderLegend(chart, layout, palette)}
       {renderChartPlot(chart, palette, layout, renderChartType)}

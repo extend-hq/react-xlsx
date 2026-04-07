@@ -2860,6 +2860,66 @@ function renderEmpty(emptyState: XlsxViewerProps["emptyState"], palette: ViewerP
   );
 }
 
+function renderDefaultChartLoadingCard(rect: XlsxImageRect) {
+  const bars = [18, 32, 24];
+  const barWidth = Math.max(8, Math.min(12, Math.round(rect.width * 0.018)));
+  const barGap = 8;
+
+  return (
+    <div
+      style={{
+        backgroundColor: "#ffffff",
+        border: "1px solid #e5e7eb",
+        borderRadius: 10,
+        boxSizing: "border-box",
+        display: "flex",
+        height: "100%",
+        justifyContent: "center",
+        padding: 12,
+        width: "100%"
+      }}
+    >
+      <div
+        style={{
+          alignItems: "flex-end",
+          display: "flex",
+          gap: barGap,
+          justifyContent: "center"
+        }}
+      >
+        {bars.map((heightPx, index) => (
+        <div
+          key={index}
+          style={{
+            backgroundColor: "#e5e7eb",
+            borderRadius: 999,
+            height: heightPx,
+            width: barWidth
+          }}
+        />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function renderChartLoadingNode(
+  renderChartLoading: XlsxViewerProps["renderChartLoading"],
+  chart: XlsxChart,
+  rect: XlsxImageRect
+) {
+  const defaultNode = renderDefaultChartLoadingCard(rect);
+  if (!renderChartLoading) {
+    return defaultNode;
+  }
+
+  return renderChartLoading({
+    chart,
+    defaultNode,
+    rect
+  });
+}
+
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) {
     return "0 B";
@@ -2979,6 +3039,8 @@ type CellRenderData = {
     borderColor?: string;
     color?: string;
     glyph?: string;
+    rotationDeg?: number;
+    shape?: "arrow";
   } | null;
   hyperlink?: {
     location?: string;
@@ -3088,13 +3150,20 @@ function buildConditionalIcon(iconSet: string, iconId: number): NonNullable<Cell
       ][iconId] ?? null;
     default:
       if (iconSet.includes("Arrows")) {
-        const arrowGlyphs = ["↑", "↗", "→", "↘", "↓"];
         const arrowColors = iconSet.includes("Gray")
           ? ["#9ca3af", "#9ca3af", "#9ca3af", "#9ca3af", "#9ca3af"]
           : ["#16a34a", "#ca8a04", "#ca8a04", "#ca8a04", "#dc2626"];
+        const arrowRotations = iconSet.startsWith("3")
+          ? [-90, 0, 90]
+          : iconSet.startsWith("4")
+            ? [-90, -35, 35, 90]
+            : [-90, -35, 0, 35, 90];
+        const resolvedIndex = Math.min(iconId, arrowColors.length - 1, arrowRotations.length - 1);
         return {
-          color: arrowColors[Math.min(iconId, arrowColors.length - 1)],
-          glyph: arrowGlyphs[Math.min(iconId, arrowGlyphs.length - 1)] ?? "•"
+          borderColor: iconSet.includes("Gray") ? "#6b7280" : darkenColor(arrowColors[resolvedIndex] ?? "#16a34a", 0.34),
+          color: arrowColors[resolvedIndex],
+          rotationDeg: arrowRotations[resolvedIndex] ?? 0,
+          shape: "arrow"
         };
       }
 
@@ -3106,6 +3175,29 @@ function buildConditionalIcon(iconSet: string, iconId: number): NonNullable<Cell
 }
 
 function renderConditionalIcon(icon: NonNullable<CellRenderData["conditionalIcon"]>) {
+  if (icon.shape === "arrow") {
+    const fill = icon.color ?? "#111827";
+    const stroke = icon.borderColor ?? darkenColor(fill, 0.32);
+    return (
+      <svg
+        aria-hidden="true"
+        height={14}
+        style={{ display: "block" }}
+        viewBox="0 0 16 16"
+        width={14}
+      >
+        <g transform={`rotate(${icon.rotationDeg ?? 0} 8 8)`}>
+          <path
+            d="M2.5 8 L8.4 2.4 L8.4 5.2 L13.5 5.2 L13.5 10.8 L8.4 10.8 L8.4 13.6 Z"
+            fill={fill}
+            stroke={stroke}
+            strokeLinejoin="round"
+            strokeWidth={1.25}
+          />
+        </g>
+      </svg>
+    );
+  }
   if (icon.glyph) {
     return (
       <span
@@ -3781,6 +3873,7 @@ function XlsxGrid({
   errorState,
   loadingComponent,
   loadingState,
+  renderChartLoading,
   palette,
   renderImage,
   renderImageSelection,
@@ -3791,7 +3884,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "emptyState" | "errorState" | "loadingComponent" | "loadingState" | "renderImage" | "renderImageSelection" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "emptyState" | "errorState" | "loadingComponent" | "loadingState" | "renderChartLoading" | "renderImage" | "renderImageSelection" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -3820,6 +3913,7 @@ function XlsxGrid({
     shapes,
     isLoadDeferred,
     isLoading,
+    isChartsLoading,
     isWorkerBacked,
     copySelectionToClipboard,
     pasteFromClipboard,
@@ -3892,6 +3986,7 @@ function XlsxGrid({
     | {
         anchor: XlsxCellAddress;
         axis: "cell" | "column" | "row";
+        committedOnPointerDown: boolean;
         didDrag: boolean;
         previewRange: XlsxCellRange;
         pointerId: number;
@@ -3970,8 +4065,10 @@ function XlsxGrid({
     imageRects: Array<{ image: XlsxImage; rect: XlsxImageRect }>;
     palette: ViewerPalette;
     readOnly: boolean;
+    renderChartLoading: XlsxViewerProps["renderChartLoading"];
     renderImage: XlsxViewerProps["renderImage"];
     renderImageSelection: XlsxViewerProps["renderImageSelection"];
+    isChartsLoading: boolean;
     selectedChartId: string | null;
     selectedImageId: string | null;
     selectionStroke: string;
@@ -3985,7 +4082,7 @@ function XlsxGrid({
     top: 0,
     width: 0
   });
-  const [selectionPreviewRange, setSelectionPreviewRange] = React.useState<XlsxCellRange | null>(null);
+  const selectionPreviewRangeRef = React.useRef<XlsxCellRange | null>(null);
   const [imagePreviewRect, setImagePreviewRect] = React.useState<{ id: string; rect: XlsxImageRect } | null>(null);
   const imagePreviewRectRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
   const imagePreviewFrameRef = React.useRef<number | null>(null);
@@ -4241,7 +4338,7 @@ function XlsxGrid({
   const lastVisibleRow = visibleRows[visibleRows.length - 1];
   const firstVisibleCol = visibleCols[0];
   const lastVisibleCol = visibleCols[visibleCols.length - 1];
-  const displayedSelection = fillPreviewRange ?? selectionPreviewRange ?? normalizedSelection;
+  const displayedSelection = fillPreviewRange ?? normalizedSelection;
   const drawingExtents = React.useMemo(() => {
     const imageExtents = images.reduce(
       (current, image) => {
@@ -4411,7 +4508,7 @@ function XlsxGrid({
   }, []);
 
   React.useEffect(() => {
-    displayedSelectionRef.current = displayedSelection;
+    displayedSelectionRef.current = selectionPreviewRangeRef.current ?? displayedSelection;
   }, [displayedSelection]);
 
   React.useEffect(() => {
@@ -4432,7 +4529,25 @@ function XlsxGrid({
 
   React.useLayoutEffect(() => {
     syncDrawingViewport(scrollRef.current);
-  }, [activeTabIndex, displayColLimit, displayRowLimit, syncDrawingViewport]);
+  }, [activeSheet, activeTabIndex, displayColLimit, displayRowLimit, syncDrawingViewport]);
+
+  React.useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) {
+      return;
+    }
+    syncDrawingViewport(scroller);
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      syncDrawingViewport(scroller);
+    });
+    observer.observe(scroller);
+    return () => {
+      observer.disconnect();
+    };
+  }, [activeSheet, syncDrawingViewport]);
 
   React.useEffect(() => {
     setDisplayRowLimit(
@@ -4687,7 +4802,7 @@ function XlsxGrid({
     setChartPreviewRect(null);
     imagePreviewRectRef.current = null;
     setImagePreviewRect(null);
-    setSelectionPreviewRange(null);
+    selectionPreviewRangeRef.current = null;
     setInteractionMode("idle");
   }, [activeSheetIndex, revision]);
 
@@ -5402,9 +5517,14 @@ function XlsxGrid({
 
   function installSelectionDragListeners(pointerId: number) {
     selectionDragCleanupRef.current?.();
+    let pendingClientPoint: { x: number; y: number } | null = null;
+    let pointerMoveFrame: number | null = null;
 
-    const handlePointerMove = (event: PointerEvent) => {
-      if (event.pointerId !== pointerId) {
+    const flushPointerMove = () => {
+      pointerMoveFrame = null;
+      const pendingPoint = pendingClientPoint;
+      pendingClientPoint = null;
+      if (!pendingPoint) {
         return;
       }
 
@@ -5414,8 +5534,8 @@ function XlsxGrid({
       }
 
       if (!dragState.didDrag) {
-        const deltaX = Math.abs(event.clientX - dragState.startClientX);
-        const deltaY = Math.abs(event.clientY - dragState.startClientY);
+        const deltaX = Math.abs(pendingPoint.x - dragState.startClientX);
+        const deltaY = Math.abs(pendingPoint.y - dragState.startClientY);
         if (deltaX < SELECTION_DRAG_THRESHOLD_PX && deltaY < SELECTION_DRAG_THRESHOLD_PX) {
           return;
         }
@@ -5423,7 +5543,7 @@ function XlsxGrid({
         dragState.didDrag = true;
       }
 
-      const nextCell = resolvePointerCellFromClient(event.clientX, event.clientY);
+      const nextCell = resolvePointerCellFromClient(pendingPoint.x, pendingPoint.y);
       if (!nextCell) {
         return;
       }
@@ -5434,13 +5554,31 @@ function XlsxGrid({
       }
 
       dragState.previewRange = nextRange;
+      selectionPreviewRangeRef.current = nextRange;
+      displayedSelectionRef.current = nextRange;
       applyPreviewOverlay(nextRange);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) {
+        return;
+      }
+      pendingClientPoint = { x: event.clientX, y: event.clientY };
+      if (pointerMoveFrame !== null) {
+        return;
+      }
+      pointerMoveFrame = window.requestAnimationFrame(flushPointerMove);
     };
 
     const finishSelectionDrag = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) {
         return;
       }
+      if (pointerMoveFrame !== null) {
+        window.cancelAnimationFrame(pointerMoveFrame);
+        pointerMoveFrame = null;
+      }
+      pendingClientPoint = null;
 
       const nextCell = resolvePointerCellFromClient(event.clientX, event.clientY);
       const dragState = selectionDragRef.current;
@@ -5450,8 +5588,9 @@ function XlsxGrid({
       }
 
       selectionDragRef.current = null;
+      selectionPreviewRangeRef.current = null;
       cachedScrollerRectRef.current = null;
-      if (nextRange) {
+      if (nextRange && (dragState?.didDrag || !dragState?.committedOnPointerDown)) {
         selectRange(nextRange);
       }
       setInteractionMode("idle");
@@ -5465,6 +5604,11 @@ function XlsxGrid({
     window.addEventListener("pointerup", finishSelectionDrag);
     window.addEventListener("pointercancel", finishSelectionDrag);
     selectionDragCleanupRef.current = () => {
+      if (pointerMoveFrame !== null) {
+        window.cancelAnimationFrame(pointerMoveFrame);
+        pointerMoveFrame = null;
+      }
+      pendingClientPoint = null;
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", finishSelectionDrag);
       window.removeEventListener("pointercancel", finishSelectionDrag);
@@ -5473,22 +5617,42 @@ function XlsxGrid({
 
   function installFillDragListeners(pointerId: number, sourceRange: XlsxCellRange) {
     fillDragCleanupRef.current?.();
+    let pendingClientPoint: { x: number; y: number } | null = null;
+    let pointerMoveFrame: number | null = null;
+
+    const flushPointerMove = () => {
+      pointerMoveFrame = null;
+      const pendingPoint = pendingClientPoint;
+      pendingClientPoint = null;
+      if (!pendingPoint) {
+        return;
+      }
+      const nextCell = resolvePointerCellFromClient(pendingPoint.x, pendingPoint.y);
+      if (nextCell) {
+        updateFillPreview(nextCell);
+      }
+    };
 
     const handlePointerMove = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) {
         return;
       }
-
-      const nextCell = resolvePointerCellFromClient(event.clientX, event.clientY);
-      if (nextCell) {
-        updateFillPreview(nextCell);
+      pendingClientPoint = { x: event.clientX, y: event.clientY };
+      if (pointerMoveFrame !== null) {
+        return;
       }
+      pointerMoveFrame = window.requestAnimationFrame(flushPointerMove);
     };
 
     const finishFillDrag = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) {
         return;
       }
+      if (pointerMoveFrame !== null) {
+        window.cancelAnimationFrame(pointerMoveFrame);
+        pointerMoveFrame = null;
+      }
+      pendingClientPoint = null;
 
       const nextCell = resolvePointerCellFromClient(event.clientX, event.clientY);
       if (nextCell) {
@@ -5511,6 +5675,11 @@ function XlsxGrid({
     window.addEventListener("pointerup", finishFillDrag);
     window.addEventListener("pointercancel", finishFillDrag);
     fillDragCleanupRef.current = () => {
+      if (pointerMoveFrame !== null) {
+        window.cancelAnimationFrame(pointerMoveFrame);
+        pointerMoveFrame = null;
+      }
+      pendingClientPoint = null;
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", finishFillDrag);
       window.removeEventListener("pointercancel", finishFillDrag);
@@ -5518,7 +5687,8 @@ function XlsxGrid({
   }
 
   React.useLayoutEffect(() => {
-    if (!displayedSelection || !wrapperRef.current) {
+    const overlayRange = selectionPreviewRangeRef.current ?? displayedSelection;
+    if (!overlayRange || !wrapperRef.current) {
       if (selectionOverlayRef.current) {
         selectionOverlayRef.current.style.opacity = "0";
         selectionOverlayRef.current.style.visibility = "hidden";
@@ -5526,7 +5696,7 @@ function XlsxGrid({
       return;
     }
 
-    applyPreviewOverlay(displayedSelection);
+    applyPreviewOverlay(overlayRange);
   }, [applyPreviewOverlay, displayedSelection, revision]);
 
   const handleCellDoubleClick = React.useCallback((cell: XlsxCellAddress) => {
@@ -5554,10 +5724,11 @@ function XlsxGrid({
     focusGrid();
     const anchor = event.shiftKey && selectionRef.current ? selectionRef.current.start : cell;
     const initialRange = normalizeRange({ start: anchor, end: cell });
-    if (!isActive || !editingCellRef.current) {
+    const committedOnPointerDown = !isActive || !editingCellRef.current;
+    if (committedOnPointerDown) {
       selectRange(initialRange);
     }
-    startCellSelection(event.pointerId, anchor, "cell", initialRange, event.clientX, event.clientY);
+    startCellSelection(event.pointerId, anchor, "cell", committedOnPointerDown, initialRange, event.clientX, event.clientY);
   }, [focusGrid, selectRange]);
 
   const handleRowPointerDown = React.useCallback((
@@ -5580,6 +5751,7 @@ function XlsxGrid({
       event.pointerId,
       { row: anchorRow, col: firstVisibleCol },
       "row",
+      true,
       initialRange,
       event.clientX,
       event.clientY
@@ -5856,11 +6028,16 @@ function XlsxGrid({
             width: "100%"
           }}
         >
-              {charts.length > 0 ? charts.map((chart) => (
-                <div key={chart.id} style={{ minHeight: 320, position: "relative" }}>
-                  <MemoChartSvg chart={chart} palette={palette} rect={{ height: 320, left: 0, top: 0, width: 640 }} />
-                </div>
-              )) : (
+          {charts.length > 0 ? charts.map((chart) => {
+            const chartsheetRect = { height: 320, left: 0, top: 0, width: 640 };
+            return (
+              <div key={chart.id} style={{ minHeight: 320, position: "relative" }}>
+                {isChartsLoading
+                  ? renderChartLoadingNode(renderChartLoading, chart, chartsheetRect)
+                  : <MemoChartSvg chart={chart} palette={palette} rect={chartsheetRect} />}
+              </div>
+            );
+          }) : (
             <div
               style={{
                 alignItems: "center",
@@ -5956,7 +6133,8 @@ function XlsxGrid({
     if (drawingPane !== pane) {
       return null;
     }
-    if (pane === "scroll" && !rectIntersectsViewport(rect, drawingViewport)) {
+    const hasMeasuredViewport = drawingViewport.width > 0 && drawingViewport.height > 0;
+    if (pane === "scroll" && hasMeasuredViewport && !rectIntersectsViewport(rect, drawingViewport)) {
       return null;
     }
 
@@ -6090,7 +6268,8 @@ function XlsxGrid({
     if (drawingPane !== pane) {
       return null;
     }
-    if (pane === "scroll" && !rectIntersectsViewport(rect, drawingViewport)) {
+    const hasMeasuredViewport = drawingViewport.width > 0 && drawingViewport.height > 0;
+    if (pane === "scroll" && hasMeasuredViewport && !rectIntersectsViewport(rect, drawingViewport)) {
       return null;
     }
 
@@ -6221,7 +6400,8 @@ function XlsxGrid({
     if (drawingPane !== pane) {
       return null;
     }
-    if (pane === "scroll" && !rectIntersectsViewport(rect, drawingViewport)) {
+    const hasMeasuredViewport = drawingViewport.width > 0 && drawingViewport.height > 0;
+    if (pane === "scroll" && hasMeasuredViewport && !rectIntersectsViewport(rect, drawingViewport)) {
       return null;
     }
 
@@ -6271,7 +6451,11 @@ function XlsxGrid({
 
     return (
       <React.Fragment key={`${pane}-${chart.id}`}>
-        <div style={style}><MemoChartSvg chart={chart} palette={palette} rect={rect} /></div>
+        <div style={style}>
+          {isChartsLoading
+            ? renderChartLoadingNode(renderChartLoading, chart, rect)
+            : <MemoChartSvg chart={chart} palette={palette} rect={rect} />}
+        </div>
         <div
           onClick={() => handleChartClick(chart)}
           onPointerDown={(event) => startChartMove(event, chart, rect)}
@@ -6333,8 +6517,10 @@ function XlsxGrid({
     && previousPaneDrawingNodes.selectedImageId === selectedImageId
     && previousPaneDrawingNodes.readOnly === readOnly
     && previousPaneDrawingNodes.selectionStroke === selectionStroke
+    && previousPaneDrawingNodes.renderChartLoading === renderChartLoading
     && previousPaneDrawingNodes.renderImage === renderImage
     && previousPaneDrawingNodes.renderImageSelection === renderImageSelection
+    && previousPaneDrawingNodes.isChartsLoading === isChartsLoading
     && previousPaneDrawingNodes.palette === palette
     && previousPaneDrawingNodes.drawingViewport.left === drawingViewport.left
     && previousPaneDrawingNodes.drawingViewport.top === drawingViewport.top
@@ -6385,8 +6571,10 @@ function XlsxGrid({
       chartRects,
       drawingViewport,
       imageRects,
+      isChartsLoading,
       palette,
       readOnly,
+      renderChartLoading,
       renderImage,
       renderImageSelection,
       selectedChartId,
@@ -6438,6 +6626,7 @@ function XlsxGrid({
     pointerId: number,
     anchor: XlsxCellAddress,
     axis: "cell" | "column" | "row",
+    committedOnPointerDown: boolean,
     initialRange: XlsxCellRange,
     startClientX: number,
     startClientY: number
@@ -6446,12 +6635,16 @@ function XlsxGrid({
     selectionDragRef.current = {
       anchor,
       axis,
+      committedOnPointerDown,
       didDrag: false,
       pointerId,
       previewRange: normalizeRange(initialRange),
       startClientX,
       startClientY
     };
+    selectionPreviewRangeRef.current = normalizeRange(initialRange);
+    displayedSelectionRef.current = selectionPreviewRangeRef.current;
+    applyPreviewOverlay(selectionPreviewRangeRef.current);
     setInteractionMode("select");
     document.body.style.userSelect = "none";
     installSelectionDragListeners(pointerId);
@@ -6945,6 +7138,7 @@ function XlsxGrid({
                         event.pointerId,
                         { row: firstVisibleRow, col: anchorCol },
                         "column",
+                        true,
                         initialRange,
                         event.clientX,
                         event.clientY
@@ -7145,6 +7339,7 @@ function XlsxViewerInner({
   height = "100%",
   loadingComponent,
   loadingState,
+  renderChartLoading,
   renderImage,
   renderImageSelection,
   renderTableHeaderMenu,
@@ -7191,6 +7386,7 @@ function XlsxViewerInner({
             loadingComponent={loadingComponent}
             loadingState={loadingState}
             palette={palette}
+            renderChartLoading={renderChartLoading}
             renderImage={renderImage}
             renderImageSelection={renderImageSelection}
             renderTableHeaderMenu={renderTableHeaderMenu}
@@ -7370,6 +7566,7 @@ export function useXlsxViewerImages(): XlsxViewerImages {
     getImageById,
     getSheetImages,
     images,
+    isChartsLoading,
     moveChartBy,
     moveImageBy,
     readOnly,
@@ -7396,6 +7593,7 @@ export function useXlsxViewerImages(): XlsxViewerImages {
       getImageById,
       getSheetImages,
       images,
+      isChartsLoading,
       moveChartBy,
       moveImageBy,
       readOnly,
@@ -7420,6 +7618,7 @@ export function useXlsxViewerImages(): XlsxViewerImages {
       getImageById,
       getSheetImages,
       images,
+      isChartsLoading,
       moveChartBy,
       moveImageBy,
       readOnly,
@@ -7448,6 +7647,7 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
     getChartById,
     getChartsheetById,
     getSheetCharts,
+    isChartsLoading,
     moveChartBy,
     readOnly,
     resizeChartBy,
@@ -7470,6 +7670,7 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       getChartById,
       getChartsheetById,
       getSheetCharts,
+      isChartsLoading,
       moveChartBy,
       readOnly,
       resizeChartBy,
@@ -7490,6 +7691,7 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       getChartById,
       getChartsheetById,
       getSheetCharts,
+      isChartsLoading,
       moveChartBy,
       readOnly,
       resizeChartBy,
