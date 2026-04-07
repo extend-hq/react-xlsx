@@ -786,6 +786,7 @@ function applyChartStyleFromXml(
   const view3dNode = getFirstLocalDescendant(chartNode, "view3D");
   if (view3dNode) {
     chart.view3d = {
+      depthPercent: readChartNumericAttribute(view3dNode, "depthPercent"),
       perspective: readChartNumericAttribute(view3dNode, "perspective"),
       rAngAx: getFirstLocalChild(view3dNode, "rAngAx")?.getAttribute("val") === "1",
       rotX: readChartNumericAttribute(view3dNode, "rotX"),

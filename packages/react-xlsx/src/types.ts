@@ -412,6 +412,7 @@ export interface XlsxChart {
   valueAxis?: XlsxChartAxis | null;
   varyColors?: boolean;
   view3d?: {
+    depthPercent?: number;
     perspective?: number;
     rAngAx?: boolean;
     rotX?: number;
