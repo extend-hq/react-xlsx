@@ -319,6 +319,7 @@ export interface XlsxChartAxis {
   delete?: boolean;
   labelPosition?: string;
   logBase?: number;
+  orientation?: string;
   majorUnit?: number;
   max?: number;
   min?: number;

@@ -59,6 +59,8 @@ type BarRect = {
   isHorizontal: boolean;
   key: string;
   left: number;
+  stroke: string;
+  strokeWidth: number;
   value: number;
   width: number;
   top: number;
@@ -143,20 +145,42 @@ function chartPointColor(chart: XlsxChart, pointIndex: number) {
   return chartSeriesColor(chart, 0);
 }
 
-function chartSeriesBarColors(chart: XlsxChart, seriesIndex: number, value: number) {
+function chartSeriesBarColors(
+  chart: XlsxChart,
+  seriesIndex: number,
+  value: number,
+  useChartAreaFallbackForNegative: boolean
+) {
   const series = chart.series[seriesIndex];
   const defaultFill = chartSeriesColor(chart, seriesIndex);
   const defaultStroke = chartSeriesStrokeColor(chart, seriesIndex);
+  const defaultStrokeWidth = typeof series?.lineWidthPx === "number" && Number.isFinite(series.lineWidthPx)
+    ? Math.max(0.8, Math.min(4, series.lineWidthPx))
+    : 1;
   if (value < 0 && series?.invertIfNegative) {
+    const resolvedNegativeFill = series.negativeColor
+      ?? (useChartAreaFallbackForNegative ? chart.chartAreaFillColor : undefined)
+      ?? defaultFill;
     return {
-      fill: series.negativeColor ?? chart.chartAreaFillColor ?? defaultFill,
-      stroke: series.negativeLineColor ?? defaultStroke
+      fill: resolvedNegativeFill,
+      stroke: series.negativeLineColor ?? defaultStroke,
+      strokeWidth: defaultStrokeWidth
     };
   }
   return {
     fill: defaultFill,
-    stroke: defaultStroke
+    stroke: defaultStroke,
+    strokeWidth: defaultStrokeWidth
   };
+}
+
+function resolveCategoryBandPadding(gapWidth: number | undefined) {
+  const normalizedGap = typeof gapWidth === "number" && Number.isFinite(gapWidth)
+    ? clamp(gapWidth, 0, 500)
+    : 150;
+  const inner = clamp(normalizedGap / (100 + normalizedGap), 0.05, 0.88);
+  const outer = clamp(inner * 0.5, 0, 0.45);
+  return { inner, outer };
 }
 
 function normalizeLegendPosition(position: string | undefined) {
@@ -217,8 +241,68 @@ function normalizeRenderableChartType(chart: XlsxChart) {
   return chart.chartType;
 }
 
+function normalizeCategoryLabel(value: unknown) {
+  if (value == null) {
+    return "";
+  }
+  return String(value)
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+}
+
+function estimateReferencePointCount(formula: string | undefined) {
+  if (!formula) {
+    return 0;
+  }
+  const bang = formula.lastIndexOf("!");
+  const rawRange = (bang >= 0 ? formula.slice(bang + 1) : formula).replace(/\$/g, "");
+  const match = /^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$/.exec(rawRange.trim());
+  if (!match) {
+    return 0;
+  }
+  const startRow = Number(match[2]);
+  const endRow = Number(match[4]);
+  if (!Number.isFinite(startRow) || !Number.isFinite(endRow)) {
+    return 0;
+  }
+  return Math.abs(endRow - startRow) + 1;
+}
+
 function getCategoryLabels(chart: XlsxChart) {
-  return chart.series[0]?.categories?.map((value) => (value == null ? "" : String(value))) ?? [];
+  const primaryCategories = chart.series[0]?.categories ?? [];
+  const referenceCategoryCount = Math.max(
+    0,
+    ...chart.series.map((series) => Math.max(
+      estimateReferencePointCount(series.categoriesRef?.formula),
+      estimateReferencePointCount(series.valuesRef?.formula)
+    ))
+  );
+  const categoryCount = Math.max(
+    referenceCategoryCount,
+    primaryCategories.length,
+    ...chart.series.map((series) => Math.max(series.categories.length, series.values.length))
+  );
+  if (categoryCount <= 0) {
+    return [];
+  }
+  return Array.from({ length: categoryCount }, (_, categoryIndex) => {
+    const primary = primaryCategories[categoryIndex];
+    if (primary != null) {
+      return String(primary);
+    }
+    const fallback = chart.series
+      .map((series) => series.categories[categoryIndex])
+      .find((value) => value != null);
+    return fallback == null ? "" : String(fallback);
+  });
+}
+
+function resolveRenderableSeriesValue(rawValue: unknown, displayBlanksAs: string | undefined) {
+  const numeric = safeNumber(rawValue);
+  if (numeric != null) {
+    return numeric;
+  }
+  return displayBlanksAs === "zero" ? 0 : null;
 }
 
 function coerceLooseNumber(value: unknown): number | null {
@@ -263,7 +347,7 @@ function buildPieEntries(chart: XlsxChart) {
     .map((rawValue, index) => ({
       color: chartPointColor(chart, index),
       index,
-      label: categories[index] ?? "",
+      label: normalizeCategoryLabel(categories[index]),
       value: Math.max(0, safeNumber(rawValue) ?? 0)
     }))
     .filter((entry) => entry.value > 0 && entry.label.trim().length > 0);
@@ -280,7 +364,7 @@ function getLegendItems(chart: XlsxChart, chartType: string): LegendItem[] {
       return categories
         .map((label, index) => ({
           color: chartPointColor(chart, index),
-          label,
+          label: normalizeCategoryLabel(label),
           value: safeNumber(values[index]) ?? 0
         }))
         .filter((entry) => entry.value > 0 && entry.label.trim().length > 0)
@@ -359,8 +443,8 @@ function buildNumericTickValues(minValue: number, maxValue: number, majorUnit?: 
   }
   const start = Math.floor(minValue / step) * step;
   const values: number[] = [];
-  for (let current = start; current <= maxValue + step * 0.75; current += step) {
-    if (current >= minValue - step * 0.4) {
+  for (let current = start; current <= maxValue + step * 0.001; current += step) {
+    if (current >= minValue - step * 0.001 && current <= maxValue + step * 0.001) {
       values.push(Number(current.toFixed(8)));
     }
   }
@@ -375,6 +459,9 @@ function formatTickValue(value: number) {
 }
 
 function markerSymbolPath(symbol: string, size: number) {
+  if (symbol === "none") {
+    return "";
+  }
   const symbolType = (() => {
     switch (symbol) {
       case "diamond":
@@ -422,6 +509,8 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
   const textColor = chart.axisLabelColor ?? chart.textColor ?? palette.text;
   const legendPos = layout.legendPosition;
   const items = layout.legendItems;
+  const swatchSize = 8;
+  const textOffset = swatchSize + 4;
 
   if (legendPos === "left" || legendPos === "right") {
     const x = legendPos === "right"
@@ -431,11 +520,11 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
     return (
       <g>
         {items.map((item, index) => {
-          const y = startY + index * 16;
+          const y = startY + index * 18;
           return (
             <g key={`legend-${index}`} transform={`translate(${x}, ${y})`}>
-              <rect fill={item.color} height={10} rx={1.5} ry={1.5} width={10} x={0} y={-8} />
-              <text fill={textColor} fontSize={10} x={14} y={0}>
+              <rect fill={item.color} height={swatchSize} rx={1.2} ry={1.2} width={swatchSize} x={0} y={-7} />
+              <text fill={textColor} fontSize={10} x={textOffset} y={0}>
                 {item.label}
               </text>
             </g>
@@ -446,21 +535,21 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
   }
 
   const rowY = legendPos === "top" ? (layout.titleHeight + 12) : (layout.height - 8);
-  const totalWidth = items.reduce((sum, item) => sum + 16 + Math.min(90, item.label.length * 5.4), 0);
+  const totalWidth = items.reduce((sum, item) => sum + 24 + Math.min(96, item.label.length * 5.4), 0);
   let cursorX = Math.max(8, (layout.width - totalWidth) / 2);
   return (
     <g>
       {items.map((item, index) => {
-        const labelWidth = Math.min(90, item.label.length * 5.4);
+        const labelWidth = Math.min(96, item.label.length * 5.4);
         const node = (
           <g key={`legend-${index}`} transform={`translate(${cursorX}, ${rowY})`}>
-            <rect fill={item.color} height={10} rx={1.5} ry={1.5} width={10} x={0} y={-8} />
-            <text fill={textColor} fontSize={10} x={14} y={0}>
+            <rect fill={item.color} height={swatchSize} rx={1.2} ry={1.2} width={swatchSize} x={0} y={-7} />
+            <text fill={textColor} fontSize={10} x={textOffset} y={0}>
               {item.label}
             </text>
           </g>
         );
-        cursorX += 16 + labelWidth;
+        cursorX += 24 + labelWidth;
         return node;
       })}
     </g>
@@ -612,28 +701,38 @@ function renderExtrudedRect(bar: BarRect) {
   const frontX2 = frontX + frontW;
   const frontY2 = frontY + frontH;
 
-  const sideAnchorX = bar.value >= 0 ? frontX2 : frontX;
-  const sideDepthX = bar.value >= 0 ? depthX : -depthX;
+  const sideAnchorX = bar.isHorizontal
+    ? (bar.value >= 0 ? frontX2 : frontX)
+    : frontX2;
+  const sideDepthX = bar.isHorizontal
+    ? (bar.value >= 0 ? depthX : -depthX)
+    : depthX;
 
   const topFace = `${frontX},${frontY} ${frontX2},${frontY} ${frontX2 + sideDepthX},${frontY + depthY} ${frontX + sideDepthX},${frontY + depthY}`;
   const sideFace = `${sideAnchorX},${frontY} ${sideAnchorX},${frontY2} ${sideAnchorX + sideDepthX},${frontY2 + depthY} ${sideAnchorX + sideDepthX},${frontY + depthY}`;
 
   return (
     <g key={`${bar.key}-3d`}>
-      <polygon fill={darkenColor(bar.color, 0.22)} points={sideFace} />
-      <polygon fill={lightenColor(bar.color, 0.24)} points={topFace} />
-      <rect fill={bar.color} height={frontH} width={frontW} x={frontX} y={frontY} />
+      <polygon fill={darkenColor(bar.color, 0.22)} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      <polygon fill={lightenColor(bar.color, 0.24)} points={topFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      <rect fill={bar.color} height={frontH} stroke={bar.stroke} strokeWidth={bar.strokeWidth} width={frontW} x={frontX} y={frontY} />
     </g>
   );
 }
 
 function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
-  const categories = getCategoryLabels(chart);
-  if (categories.length === 0 || chart.series.length === 0) {
+  if (chart.series.length === 0) {
+    return null;
+  }
+  const sourceCategories = getCategoryLabels(chart);
+  if (sourceCategories.length === 0) {
     return null;
   }
   const isHorizontal = chartType === "BarClustered" || chartType === "BarPercentStacked";
+  const shouldReverseCategories = isHorizontal && chart.categoryAxis?.orientation !== "maxMin";
+  const categories = shouldReverseCategories ? sourceCategories.slice().reverse() : sourceCategories;
   const isStacked = chartType === "ColumnStacked" || chartType === "BarPercentStacked";
+  const useChartAreaFallbackForNegative = chartType === "BarPercentStacked";
   const categoryCount = categories.length;
   const seriesCount = chart.series.length;
   const plot = chart.is3d
@@ -644,9 +743,13 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       }
     : layout.plot;
 
-  const matrix = chart.series.map((series) => (
-    Array.from({ length: categoryCount }, (_, categoryIndex) => safeNumber(series.values[categoryIndex]) ?? 0)
-  ));
+  const matrix = chart.series.map((series) => {
+    const values = Array.from(
+      { length: categoryCount },
+      (_, categoryIndex) => safeNumber(series.values[categoryIndex]) ?? 0
+    );
+    return shouldReverseCategories ? values.reverse() : values;
+  });
   const rawMatrix = matrix.map((row) => row.slice());
 
   if (chartType === "BarPercentStacked") {
@@ -688,28 +791,24 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     maxValue = 1;
   }
 
-  if (chartType === "BarPercentStacked") {
-    minValue = 0;
-    maxValue = 100;
-  } else {
-    minValue = Math.min(0, minValue);
-    maxValue = Math.max(0, maxValue);
-    if (typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)) {
-      minValue = chart.valueAxis.min;
-    }
-    if (typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)) {
-      maxValue = chart.valueAxis.max;
-    }
+  minValue = Math.min(0, minValue);
+  maxValue = Math.max(0, maxValue);
+  if (typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)) {
+    minValue = chart.valueAxis.min;
+  }
+  if (typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)) {
+    maxValue = chart.valueAxis.max;
   }
   if (maxValue <= minValue) {
     maxValue = minValue + 1;
   }
 
+  const categoryBandPadding = resolveCategoryBandPadding(chart.gapWidth);
   const categoryScale = scaleBand<string>()
     .domain(categories)
     .range(isHorizontal ? [plot.top, plot.top + plot.height] : [plot.left, plot.left + plot.width])
-    .paddingInner(0.24)
-    .paddingOuter(0.14);
+    .paddingInner(categoryBandPadding.inner)
+    .paddingOuter(categoryBandPadding.outer);
 
   const seriesScale = scaleBand<string>()
     .domain(Array.from({ length: seriesCount }, (_, index) => String(index)))
@@ -721,7 +820,10 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     .domain([minValue, maxValue])
     .range(isHorizontal ? [plot.left, plot.left + plot.width] : [plot.top + plot.height, plot.top]);
 
-  const ticks = buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit);
+  const majorUnit = chartType === "BarPercentStacked"
+    ? chart.valueAxis?.majorUnit ?? 20
+    : chart.valueAxis?.majorUnit;
+  const ticks = buildNumericTickValues(minValue, maxValue, majorUnit);
   const categoryPositions = categories.map((category) => {
     const bandStart = categoryScale(category) ?? 0;
     return bandStart + categoryScale.bandwidth() / 2;
@@ -749,7 +851,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         }
       }
 
-      const colors = chartSeriesBarColors(chart, seriesIndex, rawValue);
+      const colors = chartSeriesBarColors(chart, seriesIndex, rawValue, useChartAreaFallbackForNegative);
       const category = categories[categoryIndex];
       const categoryStart = categoryScale(category) ?? 0;
       const barThickness = isStacked ? categoryScale.bandwidth() : seriesScale.bandwidth();
@@ -764,6 +866,8 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           isHorizontal: true,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: Math.min(x1, x2),
+          stroke: colors.stroke,
+          strokeWidth: colors.strokeWidth,
           top: categoryStart + barOffset,
           value: rawValue,
           width: Math.max(1, Math.abs(x2 - x1))
@@ -777,6 +881,8 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           isHorizontal: false,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: categoryStart + barOffset,
+          stroke: colors.stroke,
+          strokeWidth: colors.strokeWidth,
           top: Math.min(y1, y2),
           value: rawValue,
           width: Math.max(1, barThickness)
@@ -824,6 +930,8 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
               key={bar.key}
               fill={bar.color}
               height={bar.height}
+              stroke={bar.stroke}
+              strokeWidth={bar.strokeWidth}
               width={bar.width}
               x={bar.left}
               y={bar.top}
@@ -834,23 +942,36 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
 }
 
 function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
+  if (chart.series.length === 0) {
+    return null;
+  }
   const categories = getCategoryLabels(chart);
-  if (categories.length === 0 || chart.series.length === 0) {
+  if (categories.length === 0) {
     return null;
   }
   const plot = layout.plot;
+  const displayBlanksAs = chart.displayBlanksAs;
 
-  const allValues = chart.series.flatMap((series) => series.values.map((value) => safeNumber(value)).filter((value): value is number => value != null));
+  const allValues = chart.series.flatMap((series) => (
+    series.values
+      .slice(0, categories.length)
+      .map((value) => resolveRenderableSeriesValue(value, displayBlanksAs))
+      .filter((value): value is number => value != null)
+  ));
   if (allValues.length === 0) {
     return null;
   }
   let minValue = Math.min(...allValues);
   let maxValue = Math.max(...allValues);
+  const hasExplicitMin = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min);
+  const hasExplicitMax = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max);
   if (chartType === "Area") {
     minValue = Math.min(0, minValue);
+  } else if (chartType === "Line" && chart.valueAxis?.crosses === "autoZero") {
+    minValue = Math.min(0, minValue);
   }
-  minValue = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min) ? chart.valueAxis.min : minValue;
-  maxValue = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max) ? chart.valueAxis.max : maxValue;
+  minValue = hasExplicitMin ? Number(chart.valueAxis?.min) : minValue;
+  maxValue = hasExplicitMax ? Number(chart.valueAxis?.max) : maxValue;
   if (maxValue <= minValue) {
     maxValue = minValue + 1;
   }
@@ -883,7 +1004,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
       {chart.series.map((series, seriesIndex) => {
         const points = categories.map((category, categoryIndex) => ({
           x: xScale(category) ?? plot.left,
-          y: safeNumber(series.values[categoryIndex])
+          y: resolveRenderableSeriesValue(series.values[categoryIndex], displayBlanksAs)
         }));
         const linePath = d3Line<{ x: number; y: number | null }>()
           .defined((point) => point.y != null)
@@ -948,6 +1069,7 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
     const directXValues = Array.from({ length: yLength }, (_, index) => coerceLooseNumber(series.categories[index]));
 
     let resolvedXValues = directXValues;
+    let usesSyntheticIndex = false;
     if (directXValues.filter((value) => value != null).length < Math.max(2, yLength - 1)) {
       const categories = series.categories ?? [];
       const pairedXValues = Array.from({ length: yLength }, (_, index) => {
@@ -977,46 +1099,110 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
             (_, index) => numericPool[index] ?? numericPool[numericPool.length - 1] ?? null
           );
         } else {
+          usesSyntheticIndex = true;
           resolvedXValues = Array.from({ length: yLength }, (_, index) => index + 1);
         }
       }
     }
 
-    return series.values.map((value, index) => {
+    const points = series.values.map((value, index) => {
       const x = coerceLooseNumber(resolvedXValues[index]);
       const y = safeNumber(value);
       return x == null || y == null ? null : { x, y };
     }).filter((point): point is { x: number; y: number } => point != null);
+    return {
+      pointCount: yLength,
+      points,
+      usesSyntheticIndex
+    };
   });
 
-  const allX = pointsBySeries.flatMap((points) => points.map((point) => point.x));
-  const allY = pointsBySeries.flatMap((points) => points.map((point) => point.y));
+  const allX = pointsBySeries.flatMap((series) => series.points.map((point) => point.x));
+  const allY = pointsBySeries.flatMap((series) => series.points.map((point) => point.y));
   if (allX.length === 0 || allY.length === 0) {
     return null;
   }
 
-  const minX = typeof chart.categoryAxis?.min === "number" && Number.isFinite(chart.categoryAxis.min)
-    ? chart.categoryAxis.min
-    : Math.min(...allX);
-  const maxX = typeof chart.categoryAxis?.max === "number" && Number.isFinite(chart.categoryAxis.max)
-    ? chart.categoryAxis.max
-    : Math.max(...allX);
-  const minY = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)
-    ? chart.valueAxis.min
-    : Math.min(...allY);
-  const maxY = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)
-    ? chart.valueAxis.max
-    : Math.max(...allY);
+  const hasExplicitMinX = typeof chart.categoryAxis?.min === "number" && Number.isFinite(chart.categoryAxis.min);
+  const hasExplicitMaxX = typeof chart.categoryAxis?.max === "number" && Number.isFinite(chart.categoryAxis.max);
+  const hasExplicitMinY = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min);
+  const hasExplicitMaxY = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max);
+  const hasSyntheticIndexAxis = pointsBySeries.some((series) => series.usesSyntheticIndex);
+  const syntheticPointCount = Math.max(0, ...pointsBySeries.map((series) => series.pointCount));
+
+  let minX = hasExplicitMinX ? Number(chart.categoryAxis?.min) : Math.min(...allX);
+  let maxX = hasExplicitMaxX ? Number(chart.categoryAxis?.max) : Math.max(...allX);
+  let minY = hasExplicitMinY ? Number(chart.valueAxis?.min) : Math.min(...allY);
+  let maxY = hasExplicitMaxY ? Number(chart.valueAxis?.max) : Math.max(...allY);
+
+  if (!hasExplicitMinX) {
+    minX = hasSyntheticIndexAxis
+      ? 0
+      : chart.categoryAxis?.crosses === "autoZero"
+        ? Math.min(0, minX)
+        : minX;
+  }
+  if (!hasExplicitMaxX) {
+    maxX = hasSyntheticIndexAxis
+      ? Math.max(maxX, syntheticPointCount + 1)
+      : chart.categoryAxis?.crosses === "autoZero"
+        ? Math.max(0, maxX)
+        : maxX;
+  }
+  if (!hasExplicitMinY && chart.valueAxis?.crosses === "autoZero") {
+    minY = Math.min(0, minY);
+  }
+  if (!hasExplicitMaxY && chart.valueAxis?.crosses === "autoZero") {
+    maxY = Math.max(0, maxY);
+  }
+
+  if (maxX <= minX) {
+    maxX = minX + 1;
+  }
+  if (maxY <= minY) {
+    maxY = minY + 1;
+  }
+
+  const xStep = typeof chart.categoryAxis?.majorUnit === "number" && chart.categoryAxis.majorUnit > 0
+    ? chart.categoryAxis.majorUnit
+    : buildNiceStep(minX, maxX, 5);
+  const yStep = typeof chart.valueAxis?.majorUnit === "number" && chart.valueAxis.majorUnit > 0
+    ? chart.valueAxis.majorUnit
+    : buildNiceStep(minY, maxY, 5);
+
+  if (!hasExplicitMinX && !hasSyntheticIndexAxis && Number.isFinite(xStep) && xStep > 0) {
+    minX = Math.floor(minX / xStep) * xStep;
+  }
+  if (!hasExplicitMaxX && !hasSyntheticIndexAxis && Number.isFinite(xStep) && xStep > 0) {
+    maxX = Math.ceil(maxX / xStep) * xStep;
+  }
+  if (!hasExplicitMinY && Number.isFinite(yStep) && yStep > 0) {
+    minY = Math.floor(minY / yStep) * yStep;
+  }
+  if (!hasExplicitMaxY && Number.isFinite(yStep) && yStep > 0) {
+    maxY = Math.ceil(maxY / yStep) * yStep;
+  }
 
   const safeMaxX = maxX <= minX ? minX + 1 : maxX;
   const safeMaxY = maxY <= minY ? minY + 1 : maxY;
 
   const xScale = scaleLinear().domain([minX, safeMaxX]).range([plot.left, plot.left + plot.width]);
   const yScale = scaleLinear().domain([minY, safeMaxY]).range([plot.top + plot.height, plot.top]);
-  const xTicks = buildNumericTickValues(minX, safeMaxX, chart.categoryAxis?.majorUnit);
-  const yTicks = buildNumericTickValues(minY, safeMaxY, chart.valueAxis?.majorUnit);
+  const xMajorUnit = typeof chart.categoryAxis?.majorUnit === "number" && chart.categoryAxis.majorUnit > 0
+    ? chart.categoryAxis.majorUnit
+    : hasSyntheticIndexAxis
+      ? 1
+      : undefined;
+  const yMajorUnit = typeof chart.valueAxis?.majorUnit === "number" && chart.valueAxis.majorUnit > 0
+    ? chart.valueAxis.majorUnit
+    : buildNiceStep(minY, safeMaxY, 6);
+  const xTicks = buildNumericTickValues(minX, safeMaxX, xMajorUnit);
+  const yTicks = buildNumericTickValues(minY, safeMaxY, yMajorUnit);
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = chart.axisLabelColor ?? chart.textColor ?? palette.text;
+
+  const hasZeroX = minX <= 0 && safeMaxX >= 0;
+  const hasZeroY = minY <= 0 && safeMaxY >= 0;
 
   const curve = smooth ? curveCatmullRom.alpha(0.5) : curveLinear;
 
@@ -1052,36 +1238,29 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
           </text>
         </g>
       ))}
-      <line
-        stroke={axisColor}
-        strokeWidth={1.2}
-        x1={plot.left}
-        x2={plot.left + plot.width}
-        y1={yScale(0)}
-        y2={yScale(0)}
-      />
-      <line
-        stroke={axisColor}
-        strokeWidth={1.2}
-        x1={xScale(0)}
-        x2={xScale(0)}
-        y1={plot.top}
-        y2={plot.top + plot.height}
-      />
-      {pointsBySeries.map((points, seriesIndex) => (
+      {hasZeroY ? (
+        <line
+          stroke={axisColor}
+          strokeWidth={1.2}
+          x1={plot.left}
+          x2={plot.left + plot.width}
+          y1={yScale(0)}
+          y2={yScale(0)}
+        />
+      ) : null}
+      {hasZeroX ? (
+        <line
+          stroke={axisColor}
+          strokeWidth={1.2}
+          x1={xScale(0)}
+          x2={xScale(0)}
+          y1={plot.top}
+          y2={plot.top + plot.height}
+        />
+      ) : null}
+      {pointsBySeries.map((seriesPoints, seriesIndex) => (
         <g key={`scatter-series-${seriesIndex}`}>
-          {points.length > 1 ? (
-            <path
-              d={d3Line<{ x: number; y: number }>()
-                .x((point) => xScale(point.x))
-                .y((point) => yScale(point.y))
-                .curve(curve)(points) ?? ""}
-              fill="none"
-              stroke={chartSeriesStrokeColor(chart, seriesIndex)}
-              strokeWidth={Math.max(1.5, chart.series[seriesIndex]?.lineWidthPx ?? 2)}
-            />
-          ) : null}
-          {points.map((point, pointIndex) => {
+          {seriesPoints.points.map((point, pointIndex) => {
             const markerSize = Math.max(5, chart.series[seriesIndex]?.markerSize ?? 7);
             const markerPath = markerSymbolPath(
               normalizeChartMarkerSymbol(chart.series[seriesIndex]?.markerSymbol),
@@ -1200,26 +1379,47 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
 }
 
 function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  if (chart.series.length === 0) {
+    return null;
+  }
   const categories = getCategoryLabels(chart);
-  if (categories.length === 0 || chart.series.length === 0) {
+  if (categories.length === 0) {
     return null;
   }
   const plot = layout.plot;
   const centerX = plot.left + plot.width * 0.5;
   const centerY = plot.top + plot.height * 0.52;
   const radius = Math.max(22, Math.min(plot.width, plot.height) * 0.38);
-  const values = chart.series.flatMap((series) => series.values.map((value) => safeNumber(value)).filter((value): value is number => value != null));
-  const minValue = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)
-    ? chart.valueAxis.min
+  const values = chart.series.flatMap((series) => (
+    series.values
+      .slice(0, categories.length)
+      .map((value) => safeNumber(value))
+      .filter((value): value is number => value != null)
+  ));
+  const hasExplicitMin = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min);
+  const hasExplicitMax = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max);
+  let minValue = hasExplicitMin
+    ? Number(chart.valueAxis?.min)
     : Math.min(0, ...(values.length ? values : [0]));
-  const maxValue = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)
-    ? chart.valueAxis.max
+  let maxValue = hasExplicitMax
+    ? Number(chart.valueAxis?.max)
     : Math.max(1, ...(values.length ? values : [1]));
+  if (chart.valueAxis?.crosses === "autoZero") {
+    minValue = Math.min(0, minValue);
+  }
   const safeMax = maxValue <= minValue ? minValue + 1 : maxValue;
-  const ticks = buildNumericTickValues(minValue, safeMax, chart.valueAxis?.majorUnit);
+  const span = Math.max(1e-6, safeMax - minValue);
+  const candidateMajorUnit = typeof chart.valueAxis?.majorUnit === "number" && chart.valueAxis.majorUnit > 0
+    ? chart.valueAxis.majorUnit
+    : undefined;
+  const preferredMajorUnit = candidateMajorUnit && span / candidateMajorUnit >= 3
+    ? candidateMajorUnit
+    : buildNiceStep(minValue, safeMax, 6);
+  const ticks = buildNumericTickValues(minValue, safeMax, preferredMajorUnit);
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = chart.axisLabelColor ?? chart.textColor ?? palette.text;
   const filled = chart.radarStyle === "filled";
+  const showSpokes = chart.categoryAxis?.majorGridlines === true;
 
   const angleAt = (index: number) => (Math.PI * 2 * index) / categories.length - Math.PI / 2;
   const radialPoint = (index: number, valueRatio: number) => {
@@ -1258,7 +1458,9 @@ function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         const edge = radialPoint(categoryIndex, 1);
         return (
           <g key={`radar-axis-${categoryIndex}`}>
-            <line stroke={lightenColor(axisColor, 0.52)} strokeWidth={1} x1={centerX} x2={edge.x} y1={centerY} y2={edge.y} />
+            {showSpokes ? (
+              <line stroke={lightenColor(axisColor, 0.52)} strokeWidth={1} x1={centerX} x2={edge.x} y1={centerY} y2={edge.y} />
+            ) : null}
             <text
               fill={labelColor}
               fontSize={10}
@@ -1273,35 +1475,60 @@ function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layou
       })}
       {chart.series.map((series, seriesIndex) => {
         const points = categories.map((_, categoryIndex) => {
-          const value = safeNumber(series.values[categoryIndex]) ?? minValue;
-          const ratio = clamp((value - minValue) / (safeMax - minValue), 0, 1);
-          return radialPoint(categoryIndex, ratio);
+          const rawValue = safeNumber(series.values[categoryIndex]);
+          if (rawValue == null) {
+            return {
+              defined: false,
+              ...radialPoint(categoryIndex, 0)
+            };
+          }
+          const ratio = clamp((rawValue - minValue) / (safeMax - minValue), 0, 1);
+          return {
+            defined: true,
+            ...radialPoint(categoryIndex, ratio)
+          };
         });
-        const polygon = d3Line<{ x: number; y: number }>()
+        const definedPoints = points.filter((point) => point.defined);
+        if (definedPoints.length === 0) {
+          return null;
+        }
+        const hasGap = points.some((point) => !point.defined);
+        const polygon = d3Line<{ defined: boolean; x: number; y: number }>()
+          .defined((point) => point.defined)
           .x((point) => point.x)
           .y((point) => point.y)
-          .curve(curveLinearClosed)(points) ?? "";
+          .curve(hasGap ? curveLinear : curveLinearClosed)(points) ?? "";
         const color = chartSeriesColor(chart, seriesIndex);
+        const markerSymbol = normalizeChartMarkerSymbol(series.markerSymbol);
+        const markerSize = Math.max(4, series.markerSize ?? 6);
+        const markerPath = markerSymbolPath(markerSymbol, markerSize * 0.5);
+        const showMarkers = markerSymbol !== "none" && markerPath.length > 0;
         return (
           <g key={`radar-series-${seriesIndex}`}>
-            <path
-              d={polygon}
-              fill={filled ? color : "none"}
-              fillOpacity={filled ? 0.26 : 0}
-              stroke={chartSeriesStrokeColor(chart, seriesIndex)}
-              strokeWidth={1.8}
-            />
-            {points.map((point, pointIndex) => (
-              <circle
-                key={`radar-point-${seriesIndex}-${pointIndex}`}
-                cx={point.x}
-                cy={point.y}
-                fill={color}
-                r={2.6}
-                stroke={chart.chartAreaFillColor ?? palette.surface}
-                strokeWidth={1}
+            {definedPoints.length >= 2 ? (
+              <path
+                d={polygon}
+                fill={filled && !hasGap && definedPoints.length >= 3 ? color : "none"}
+                fillOpacity={filled ? 0.26 : 0}
+                stroke={chartSeriesStrokeColor(chart, seriesIndex)}
+                strokeWidth={1.8}
               />
-            ))}
+            ) : null}
+            {showMarkers
+              ? definedPoints.map((point, pointIndex) => (
+                  <g
+                    key={`radar-point-${seriesIndex}-${pointIndex}`}
+                    transform={`translate(${point.x}, ${point.y})`}
+                  >
+                    <path
+                      d={markerPath}
+                      fill={series.markerColor ?? color}
+                      stroke={series.markerLineColor ?? chart.chartAreaFillColor ?? palette.surface}
+                      strokeWidth={1}
+                    />
+                  </g>
+                ))
+              : null}
           </g>
         );
       })}

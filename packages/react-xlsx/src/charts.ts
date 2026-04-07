@@ -281,8 +281,11 @@ function resolveChartFillColor(shapeNode: Element | null, themePalette?: XlsxThe
 
 function resolveChartLineStyle(shapeNode: Element | null, themePalette?: XlsxThemePalette | null) {
   const lineNode = shapeNode?.localName === "ln" ? shapeNode : (shapeNode ? getFirstLocalChild(shapeNode, "ln") : null);
-  if (!lineNode || getFirstLocalChild(lineNode, "noFill")) {
-    return { color: null, widthPx: undefined };
+  if (!lineNode) {
+    return { color: null, hidden: false, widthPx: undefined };
+  }
+  if (getFirstLocalChild(lineNode, "noFill")) {
+    return { color: null, hidden: true, widthPx: undefined };
   }
 
   const solidFill = getFirstLocalChild(lineNode, "solidFill");
@@ -292,6 +295,7 @@ function resolveChartLineStyle(shapeNode: Element | null, themePalette?: XlsxThe
   const widthValue = Number(lineNode.getAttribute("w") ?? Number.NaN);
   return {
     color: resolveChartColorNode(colorNode, themePalette),
+    hidden: false,
     widthPx: Number.isFinite(widthValue) ? Math.max(1, widthValue / EMU_PER_PIXEL) : undefined
   };
 }
@@ -642,6 +646,9 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
     const cachedBubbleSizes = chart.chartType === "Bubble"
       ? parseChartCacheValues(getFirstLocalChild(seriesNode, "bubbleSize"), "numCache", "value")
       : null;
+    const resolvedLineColor = lineStyle.hidden
+      ? undefined
+      : lineStyle.color ?? fillColor ?? series.lineColor ?? series.color;
 
     return {
       ...series,
@@ -651,8 +658,8 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       categories: cachedCategories ?? series.categories,
       color: fillColor ?? lineStyle.color ?? series.color,
       dataPointStyles: pointStyles.length > 0 ? pointStyles : series.dataPointStyles,
-      lineColor: lineStyle.color ?? fillColor ?? series.lineColor ?? series.color,
-      lineWidthPx: lineStyle.widthPx ?? series.lineWidthPx,
+      lineColor: resolvedLineColor,
+      lineWidthPx: lineStyle.hidden ? undefined : lineStyle.widthPx ?? series.lineWidthPx,
       markerColor: resolveChartFillColor(markerShapeProperties, themePalette) ?? fillColor ?? lineStyle.color ?? undefined,
       markerLineColor: markerLineStyle.color ?? lineStyle.color ?? fillColor ?? undefined,
       markerSize: markerSize ?? series.markerSize,
@@ -661,6 +668,7 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
         ...series.shapeProperties,
         xmlExplosion: seriesExplosion ?? undefined,
         xmlFillColor: fillColor ?? undefined,
+        xmlLineHidden: lineStyle.hidden ? true : undefined,
         xmlLineColor: lineStyle.color ?? undefined,
         xmlLineWidthPx: lineStyle.widthPx ?? undefined,
         xmlNegativeFillColor: invertNegativeStyle.color ?? undefined,
@@ -748,9 +756,12 @@ function applyChartStyleFromXml(
     position: normalizeLegendPosition(legendPosition),
     raw: chart.legend?.raw
   } : chart.legend;
+  chart.displayBlanksAs = getFirstLocalChild(chartNode, "dispBlanksAs")?.getAttribute("val") ?? chart.displayBlanksAs;
   const styleId = Number(styleIdNode?.getAttribute("val") ?? Number.NaN);
   chart.chartStyleId = Number.isFinite(styleId) ? styleId : chart.chartStyleId;
   chart.firstSliceAngle = readChartNumericAttribute(chartTypeNode, "firstSliceAng") ?? chart.firstSliceAngle;
+  chart.gapWidth = readChartNumericAttribute(chartTypeNode, "gapWidth") ?? chart.gapWidth;
+  chart.overlap = readChartNumericAttribute(chartTypeNode, "overlap") ?? chart.overlap;
   chart.bubbleScale = readChartNumericAttribute(chartTypeNode, "bubbleScale") ?? chart.bubbleScale;
   const bubble3dNode = getFirstLocalChild(chartTypeNode, "bubble3D");
   chart.bubble3d = bubble3dNode
@@ -766,6 +777,7 @@ function applyChartStyleFromXml(
     ...(chart.raw ?? {}),
     bubble3d: chart.bubble3d,
     ofPieType: getFirstLocalChild(chartTypeNode, "ofPieType")?.getAttribute("val") ?? undefined,
+    shape: getFirstLocalChild(chartTypeNode, "shape")?.getAttribute("val") ?? undefined,
     secondPieSize: readChartNumericAttribute(chartTypeNode, "secondPieSize"),
     splitPos: readChartNumericAttribute(chartTypeNode, "splitPos"),
     splitType: getFirstLocalChild(chartTypeNode, "splitType")?.getAttribute("val") ?? undefined,
@@ -1205,6 +1217,7 @@ function normalizeChartAxis(raw: unknown): XlsxChartAxis | null {
     delete: typeof axis.delete === "boolean" ? axis.delete : undefined,
     labelPosition: typeof axis.labelPosition === "string" ? axis.labelPosition : undefined,
     logBase: typeof axis.logBase === "number" ? axis.logBase : undefined,
+    orientation: typeof axis.orientation === "string" ? axis.orientation : undefined,
     majorUnit: typeof axis.majorUnit === "number" ? axis.majorUnit : undefined,
     max: typeof axis.max === "number" ? axis.max : undefined,
     min: typeof axis.min === "number" ? axis.min : undefined,
@@ -1252,6 +1265,7 @@ function readChartAxisFromXml(axisNode: Element | null): Partial<XlsxChartAxis> 
         : undefined,
     labelPosition: getFirstLocalChild(axisNode, "tickLblPos")?.getAttribute("val") ?? undefined,
     logBase: readChartNumericAttribute(getFirstLocalChild(axisNode, "scaling"), "logBase"),
+    orientation: getFirstLocalChild(scalingNode ?? axisNode, "orientation")?.getAttribute("val") ?? undefined,
     majorGridlines: Boolean(getFirstLocalChild(axisNode, "majorGridlines")),
     majorTickMark: getFirstLocalChild(axisNode, "majorTickMark")?.getAttribute("val") ?? undefined,
     majorUnit: readChartNumericAttribute(axisNode, "majorUnit"),

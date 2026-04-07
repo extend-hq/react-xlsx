@@ -4238,6 +4238,43 @@ function XlsxGrid({
   const firstVisibleCol = visibleCols[0];
   const lastVisibleCol = visibleCols[visibleCols.length - 1];
   const displayedSelection = fillPreviewRange ?? selectionPreviewRange ?? normalizedSelection;
+  const drawingExtents = React.useMemo(() => {
+    const imageExtents = images.reduce(
+      (current, image) => {
+        const extents = resolveImageAnchorExtents(image);
+        return {
+          maxCol: Math.max(current.maxCol, extents.maxCol),
+          maxRow: Math.max(current.maxRow, extents.maxRow)
+        };
+      },
+      { maxCol: -1, maxRow: -1 }
+    );
+    const shapeExtents = shapes.reduce(
+      (current, shape) => {
+        const extents = resolveShapeAnchorExtents(shape);
+        return {
+          maxCol: Math.max(current.maxCol, extents.maxCol),
+          maxRow: Math.max(current.maxRow, extents.maxRow)
+        };
+      },
+      { maxCol: -1, maxRow: -1 }
+    );
+    const chartExtents = charts.reduce(
+      (current, chart) => {
+        const extents = resolveChartAnchorExtents(chart);
+        return {
+          maxCol: Math.max(current.maxCol, extents.maxCol),
+          maxRow: Math.max(current.maxRow, extents.maxRow)
+        };
+      },
+      { maxCol: -1, maxRow: -1 }
+    );
+
+    return {
+      maxCol: Math.max(imageExtents.maxCol, shapeExtents.maxCol, chartExtents.maxCol),
+      maxRow: Math.max(imageExtents.maxRow, shapeExtents.maxRow, chartExtents.maxRow)
+    };
+  }, [charts, images, shapes]);
   const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges && frozenRows.length === 0;
   const shouldVirtualizeCols = !activeSheet?.hasHorizontalMerges && frozenCols.length === 0;
 
@@ -4370,37 +4407,8 @@ function XlsxGrid({
   }, [activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, activeSheetIndex, isWorkerBacked]);
 
   React.useEffect(() => {
-    const selectionEnd = normalizedSelection?.end;
-    const imageExtents = images.reduce(
-      (current, image) => {
-        const extents = resolveImageAnchorExtents(image);
-        return {
-          maxCol: Math.max(current.maxCol, extents.maxCol),
-          maxRow: Math.max(current.maxRow, extents.maxRow)
-        };
-      },
-      { maxCol: -1, maxRow: -1 }
-    );
-    const shapeExtents = shapes.reduce(
-      (current, shape) => {
-        const extents = resolveShapeAnchorExtents(shape);
-        return {
-          maxCol: Math.max(current.maxCol, extents.maxCol),
-          maxRow: Math.max(current.maxRow, extents.maxRow)
-        };
-      },
-      { maxCol: -1, maxRow: -1 }
-    );
-    const chartExtents = charts.reduce(
-      (current, chart) => {
-        const extents = resolveChartAnchorExtents(chart);
-        return {
-          maxCol: Math.max(current.maxCol, extents.maxCol),
-          maxRow: Math.max(current.maxRow, extents.maxRow)
-        };
-      },
-      { maxCol: -1, maxRow: -1 }
-    );
+    const selectionEndRow = normalizedSelection?.end.row ?? -1;
+    const selectionEndCol = normalizedSelection?.end.col ?? -1;
     const nextRowLimit = Math.max(
       resolveInitialDisplayExtent(
         activeSheet?.maxUsedRow ?? -1,
@@ -4410,10 +4418,8 @@ function XlsxGrid({
         INITIAL_WORKER_GRID_ROWS
       ),
       (activeCell?.row ?? -1) + OPEN_GRID_ROW_PADDING + 1,
-      (selectionEnd?.row ?? -1) + OPEN_GRID_ROW_PADDING + 1,
-      imageExtents.maxRow + OPEN_GRID_ROW_PADDING + 1,
-      shapeExtents.maxRow + OPEN_GRID_ROW_PADDING + 1,
-      chartExtents.maxRow + OPEN_GRID_ROW_PADDING + 1
+      selectionEndRow + OPEN_GRID_ROW_PADDING + 1,
+      drawingExtents.maxRow + OPEN_GRID_ROW_PADDING + 1
     );
     const nextColLimit = Math.max(
       resolveInitialDisplayExtent(
@@ -4424,15 +4430,21 @@ function XlsxGrid({
         INITIAL_WORKER_GRID_COLS
       ),
       (activeCell?.col ?? -1) + OPEN_GRID_COL_PADDING + 1,
-      (selectionEnd?.col ?? -1) + OPEN_GRID_COL_PADDING + 1,
-      imageExtents.maxCol + OPEN_GRID_COL_PADDING + 1,
-      shapeExtents.maxCol + OPEN_GRID_COL_PADDING + 1,
-      chartExtents.maxCol + OPEN_GRID_COL_PADDING + 1
+      selectionEndCol + OPEN_GRID_COL_PADDING + 1,
+      drawingExtents.maxCol + OPEN_GRID_COL_PADDING + 1
     );
 
     setDisplayRowLimit((current) => (current < nextRowLimit ? nextRowLimit : current));
     setDisplayColLimit((current) => (current < nextColLimit ? nextColLimit : current));
-  }, [activeCell, activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, charts, images, normalizedSelection, shapes]);
+  }, [
+    activeCell,
+    activeSheet?.maxUsedCol,
+    activeSheet?.maxUsedRow,
+    drawingExtents.maxCol,
+    drawingExtents.maxRow,
+    normalizedSelection?.end.col,
+    normalizedSelection?.end.row
+  ]);
 
   React.useEffect(() => {
     if (shouldVirtualizeRows) {
