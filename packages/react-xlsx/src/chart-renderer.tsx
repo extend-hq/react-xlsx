@@ -616,8 +616,8 @@ function resolvePieFrontSegments(startAngle: number, endAngle: number): Array<[n
   const minBand = Math.floor(start / TWO_PI) - 1;
   const maxBand = Math.ceil(end / TWO_PI) + 1;
   for (let band = minBand; band <= maxBand; band += 1) {
-    const frontStart = 0 + band * TWO_PI;
-    const frontEnd = Math.PI + band * TWO_PI;
+    const frontStart = Math.PI / 2 + band * TWO_PI;
+    const frontEnd = Math.PI * 1.5 + band * TWO_PI;
     const segmentStart = Math.max(start, frontStart);
     const segmentEnd = Math.min(end, frontEnd);
     if (segmentEnd - segmentStart > 1e-4) {
@@ -636,8 +636,8 @@ function pieEllipsePoint(
   depth = 0
 ) {
   return {
-    x: centerX + Math.cos(angle) * radius,
-    y: centerY + Math.sin(angle) * radius * tilt + depth
+    x: centerX + Math.sin(angle) * radius,
+    y: centerY - Math.cos(angle) * radius * tilt + depth
   };
 }
 
@@ -673,7 +673,7 @@ function buildPieOuterWallPath(
 
 function isPieFrontFacingAngle(angle: number) {
   const normalized = ((angle % TWO_PI) + TWO_PI) % TWO_PI;
-  return normalized > 0 && normalized < Math.PI;
+  return normalized > Math.PI / 2 && normalized < Math.PI * 1.5;
 }
 
 function buildPieRadialWallPath(
@@ -2126,15 +2126,15 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         />
       ) : null}
       {isPie3d
-        ? arcs.map((arc) => {
-            const midAngle = (arc.startAngle + arc.endAngle) / 2;
-            const explosion = resolveSliceExplosion(arc.data.index);
-            const explodeX = Math.cos(midAngle) * explosion;
-            const explodeY = Math.sin(midAngle) * explosion * tilt;
-            const sidePaths = buildPieOuterWallPath(
-              centerX,
-              centerY,
-              outerRadius,
+          ? arcs.map((arc) => {
+              const midAngle = (arc.startAngle + arc.endAngle) / 2;
+              const explosion = resolveSliceExplosion(arc.data.index);
+              const explodeX = Math.sin(midAngle) * explosion;
+              const explodeY = -Math.cos(midAngle) * explosion * tilt;
+              const sidePaths = buildPieOuterWallPath(
+                centerX,
+                centerY,
+                outerRadius,
               tilt,
               depth,
               arc.startAngle,
@@ -2154,7 +2154,7 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
                     strokeWidth={0.8}
                   />
                 ))}
-                {(() => {
+                {explosion > 0 ? (() => {
                   const startWall = buildPieRadialWallPath(
                     centerX,
                     centerY,
@@ -2191,7 +2191,7 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
                       ) : null}
                     </>
                   );
-                })()}
+                })() : null}
               </g>
             );
           })
@@ -2199,11 +2199,11 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       {arcs.map((arc) => {
         const explosion = resolveSliceExplosion(arc.data.index);
         const midAngle = (arc.startAngle + arc.endAngle) / 2;
-        const explodeX = Math.cos(midAngle) * explosion;
-        const explodeY = Math.sin(midAngle) * explosion * (isPie3d ? tilt : 1);
+        const explodeX = Math.sin(midAngle) * explosion;
+        const explodeY = -Math.cos(midAngle) * explosion * (isPie3d ? tilt : 1);
         const labelRadius = outerRadius + (chartType === "PieExploded" ? 8 : 12);
-        const labelX = centerX + Math.cos(midAngle) * labelRadius + explodeX;
-        const labelY = centerY + Math.sin(midAngle) * labelRadius * (isPie3d ? tilt : 1) + explodeY;
+        const labelX = centerX + Math.sin(midAngle) * labelRadius + explodeX;
+        const labelY = centerY - Math.cos(midAngle) * labelRadius * (isPie3d ? tilt : 1) + explodeY;
         const pieces: string[] = [];
         if (chart.dataLabels?.showCategoryName && arc.data.label.trim().length > 0) {
           pieces.push(arc.data.label);

@@ -103,6 +103,8 @@ export interface XlsxSheetData {
   freezePanes: XlsxFreezePanes | null;
   hasHorizontalMerges: boolean;
   hasVerticalMerges: boolean;
+  maxHorizontalMergeEndCol: number;
+  maxVerticalMergeEndRow: number;
   maxUsedCol: number;
   maxUsedRow: number;
   rowCount: number;

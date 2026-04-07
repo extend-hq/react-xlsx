@@ -1117,12 +1117,16 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       ? undefined
       : lineStyle.color ?? fillColor ?? series.lineColor ?? series.color;
 
+    const hasCategoryReference = typeof series.categoriesRef?.formula === "string" && series.categoriesRef.formula.length > 0;
+    const hasValueReference = typeof series.valuesRef?.formula === "string" && series.valuesRef.formula.length > 0;
+    const hasBubbleSizeReference = typeof series.bubbleSizeRef?.formula === "string" && series.bubbleSizeRef.formula.length > 0;
+
     return {
       ...series,
-      bubbleSizes: cachedBubbleSizes
+      bubbleSizes: !hasBubbleSizeReference && cachedBubbleSizes
         ? cachedBubbleSizes.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null))
         : series.bubbleSizes,
-      categories: cachedCategories ?? series.categories,
+      categories: !hasCategoryReference && cachedCategories ? cachedCategories : series.categories,
       color: fillColor ?? lineStyle.color ?? series.color,
       dataPointStyles: pointStyles.length > 0 ? pointStyles : series.dataPointStyles,
       lineColor: resolvedLineColor,
@@ -1145,7 +1149,7 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       },
       negativeColor: invertNegativeStyle.color ?? series.negativeColor,
       negativeLineColor: invertNegativeStyle.lineColor ?? series.negativeLineColor,
-      values: cachedValues
+      values: !hasValueReference && cachedValues
         ? cachedValues.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null))
         : series.values
     };
