@@ -218,6 +218,13 @@ export type WorkbookStructureAssets = Pick<
   | "themePalette"
 >;
 
+export type WorkbookChartStyleAssets = Pick<
+  WorkbookImageAssets,
+  | "archive"
+  | "sheetOrigins"
+  | "themePalette"
+>;
+
 function buildThemePalette(theme: ThemeState): XlsxThemePalette {
   const themeOrder = ["lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
   const colorsByIndex: Record<number, string> = {};
@@ -2609,6 +2616,47 @@ export function parseWorkbookStructureAssets(
     styleById,
     tableMetadataByWorkbookSheetIndex,
     tableStyleByName,
+    themePalette
+  };
+}
+
+export function parseWorkbookChartStyleAssets(bytes: Uint8Array): WorkbookChartStyleAssets {
+  const archive = unzipSync(bytes);
+  const {
+    themePalette,
+    workbookSheets
+  } = parseWorkbookStructureAssetsFromArchive(archive);
+  const sheetOrigins: Array<WorkbookImageSheetOrigin | null> = [];
+
+  workbookSheets.forEach((sheet, workbookSheetIndex) => {
+    const sheetRelationships = parseRelationships(archive, relsPathForDocument(sheet.path), sheet.path);
+    const attachments: XlsxImageAttachment[] = [];
+
+    for (const relationship of sheetRelationships.values()) {
+      if (relationship.type !== DRAWING_REL_TYPE) {
+        continue;
+      }
+
+      const drawingPath = relationship.target;
+      const drawingRelsPath = relsPathForDocument(drawingPath);
+      attachments.push({
+        drawingPath,
+        drawingRelsPath: archive[drawingRelsPath] ? drawingRelsPath : null,
+        mediaPaths: []
+      });
+    }
+
+    sheetOrigins[workbookSheetIndex] = attachments.length > 0
+      ? {
+          attachments,
+          workbookSheetIndex
+        }
+      : null;
+  });
+
+  return {
+    archive,
+    sheetOrigins,
     themePalette
   };
 }

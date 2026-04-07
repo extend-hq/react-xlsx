@@ -1,6 +1,6 @@
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { loadWorkbookChartAssets } from "./charts";
-import { parseWorkbookStructureAssets, resolveSheetColumnWidthPixels } from "./images";
+import { parseWorkbookChartStyleAssets, parseWorkbookStructureAssets, resolveSheetColumnWidthPixels } from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { getSheetsWasmModule } from "./wasm";
 import type {
@@ -408,7 +408,12 @@ async function loadWorkbook(buffer: ArrayBuffer) {
     )
   );
   const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
-  const chartAssets = loadWorkbookChartAssets(nextWorkbook, null, visibleSheetIndexByWorkbookSheetIndex);
+  const hasCharts = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) => {
+    const worksheet = nextWorkbook.getSheet(workbookSheetIndex);
+    return Array.isArray(worksheet.charts) && worksheet.charts.length > 0;
+  }).some(Boolean);
+  const chartStyleAssets = hasCharts ? parseWorkbookChartStyleAssets(bytes) : null;
+  const chartAssets = loadWorkbookChartAssets(nextWorkbook, chartStyleAssets, visibleSheetIndexByWorkbookSheetIndex);
   chartsByWorkbookSheetIndex = chartAssets.chartsByWorkbookSheetIndex;
   chartsheets = chartAssets.chartsheets;
   tabs = chartAssets.tabs;

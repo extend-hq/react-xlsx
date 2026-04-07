@@ -3988,6 +3988,10 @@ function XlsxGrid({
   const [selectionPreviewRange, setSelectionPreviewRange] = React.useState<XlsxCellRange | null>(null);
   const [imagePreviewRect, setImagePreviewRect] = React.useState<{ id: string; rect: XlsxImageRect } | null>(null);
   const imagePreviewRectRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
+  const imagePreviewFrameRef = React.useRef<number | null>(null);
+  const pendingImagePreviewRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
+  const chartPreviewFrameRef = React.useRef<number | null>(null);
+  const pendingChartPreviewRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
   const skipNextImageClickRef = React.useRef<string | null>(null);
   const [pendingNavigation, setPendingNavigation] = React.useState<{ cell: XlsxCellAddress; sheetIndex: number } | null>(null);
   const [interactionMode, setInteractionMode] = React.useState<"idle" | "fill" | "select">("idle");
@@ -4360,6 +4364,51 @@ function XlsxGrid({
   React.useEffect(() => {
     imagePreviewRectRef.current = imagePreviewRect;
   }, [imagePreviewRect]);
+
+  React.useEffect(() => () => {
+    if (imagePreviewFrameRef.current !== null) {
+      window.cancelAnimationFrame(imagePreviewFrameRef.current);
+      imagePreviewFrameRef.current = null;
+    }
+    if (chartPreviewFrameRef.current !== null) {
+      window.cancelAnimationFrame(chartPreviewFrameRef.current);
+      chartPreviewFrameRef.current = null;
+    }
+  }, []);
+
+  const scheduleImagePreviewRect = React.useCallback((preview: { id: string; rect: XlsxImageRect }) => {
+    pendingImagePreviewRef.current = preview;
+    if (imagePreviewFrameRef.current !== null) {
+      return;
+    }
+    imagePreviewFrameRef.current = window.requestAnimationFrame(() => {
+      imagePreviewFrameRef.current = null;
+      const nextPreview = pendingImagePreviewRef.current;
+      pendingImagePreviewRef.current = null;
+      if (!nextPreview) {
+        return;
+      }
+      imagePreviewRectRef.current = nextPreview;
+      setImagePreviewRect(nextPreview);
+    });
+  }, []);
+
+  const scheduleChartPreviewRect = React.useCallback((preview: { id: string; rect: XlsxImageRect }) => {
+    pendingChartPreviewRef.current = preview;
+    if (chartPreviewFrameRef.current !== null) {
+      return;
+    }
+    chartPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      chartPreviewFrameRef.current = null;
+      const nextPreview = pendingChartPreviewRef.current;
+      pendingChartPreviewRef.current = null;
+      if (!nextPreview) {
+        return;
+      }
+      chartPreviewRectRef.current = nextPreview;
+      setChartPreviewRect(nextPreview);
+    });
+  }, []);
 
   React.useEffect(() => {
     displayedSelectionRef.current = displayedSelection;
@@ -5130,6 +5179,25 @@ function XlsxGrid({
 
   const resolveOverlayRect = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
+    const startRowIndex = rowIndexByActual.get(normalized.start.row);
+    const endRowIndex = rowIndexByActual.get(normalized.end.row);
+    const startColIndex = colIndexByActual.get(normalized.start.col);
+    const endColIndex = colIndexByActual.get(normalized.end.col);
+
+    if (
+      startRowIndex !== undefined &&
+      endRowIndex !== undefined &&
+      startColIndex !== undefined &&
+      endColIndex !== undefined
+    ) {
+      return {
+        height: sumPrefixRange(rowPrefixSums, startRowIndex, endRowIndex),
+        left: ROW_HEADER_WIDTH + sumPrefixRange(colPrefixSums, 0, startColIndex - 1),
+        top: HEADER_HEIGHT + sumPrefixRange(rowPrefixSums, 0, startRowIndex - 1),
+        width: sumPrefixRange(colPrefixSums, startColIndex, endColIndex)
+      };
+    }
+
     const wrapper = wrapperRef.current;
     if (wrapper) {
       const startCell = wrapper.querySelector<HTMLElement>(
@@ -5157,27 +5225,7 @@ function XlsxGrid({
         };
       }
     }
-
-    const startRowIndex = rowIndexByActual.get(normalized.start.row);
-    const endRowIndex = rowIndexByActual.get(normalized.end.row);
-    const startColIndex = colIndexByActual.get(normalized.start.col);
-    const endColIndex = colIndexByActual.get(normalized.end.col);
-
-    if (
-      startRowIndex === undefined ||
-      endRowIndex === undefined ||
-      startColIndex === undefined ||
-      endColIndex === undefined
-    ) {
-      return null;
-    }
-
-    return {
-      height: sumPrefixRange(rowPrefixSums, startRowIndex, endRowIndex),
-      left: ROW_HEADER_WIDTH + sumPrefixRange(colPrefixSums, 0, startColIndex - 1),
-      top: HEADER_HEIGHT + sumPrefixRange(rowPrefixSums, 0, startRowIndex - 1),
-      width: sumPrefixRange(colPrefixSums, startColIndex, endColIndex)
-    };
+    return null;
   }, [colIndexByActual, colPrefixSums, rowIndexByActual, rowPrefixSums]);
 
   const openTableMenuState = React.useMemo(() => {
@@ -6505,8 +6553,7 @@ function XlsxGrid({
           : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, IMAGE_MIN_SIZE_PX)
       );
 
-      imagePreviewRectRef.current = { id: interaction.imageId, rect: nextRect };
-      setImagePreviewRect({ id: interaction.imageId, rect: nextRect });
+      scheduleImagePreviewRect({ id: interaction.imageId, rect: nextRect });
     };
 
     const cleanup = () => {
@@ -6521,7 +6568,17 @@ function XlsxGrid({
       }
 
       const interaction = imageInteractionRef.current;
-      const preview = imagePreviewRectRef.current;
+      if (imagePreviewFrameRef.current !== null) {
+        window.cancelAnimationFrame(imagePreviewFrameRef.current);
+        imagePreviewFrameRef.current = null;
+      }
+      const pendingPreview = pendingImagePreviewRef.current;
+      pendingImagePreviewRef.current = null;
+      if (pendingPreview) {
+        imagePreviewRectRef.current = pendingPreview;
+        setImagePreviewRect(pendingPreview);
+      }
+      const preview = pendingPreview ?? imagePreviewRectRef.current;
       imageInteractionRef.current = null;
       imageInteractionCleanupRef.current = null;
       setInteractionMode("idle");
@@ -6572,8 +6629,7 @@ function XlsxGrid({
           : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, 48)
       );
 
-      chartPreviewRectRef.current = { id: interaction.chartId, rect: nextRect };
-      setChartPreviewRect({ id: interaction.chartId, rect: nextRect });
+      scheduleChartPreviewRect({ id: interaction.chartId, rect: nextRect });
     };
 
     const cleanup = () => {
@@ -6588,7 +6644,17 @@ function XlsxGrid({
       }
 
       const interaction = chartInteractionRef.current;
-      const preview = chartPreviewRectRef.current;
+      if (chartPreviewFrameRef.current !== null) {
+        window.cancelAnimationFrame(chartPreviewFrameRef.current);
+        chartPreviewFrameRef.current = null;
+      }
+      const pendingPreview = pendingChartPreviewRef.current;
+      pendingChartPreviewRef.current = null;
+      if (pendingPreview) {
+        chartPreviewRectRef.current = pendingPreview;
+        setChartPreviewRect(pendingPreview);
+      }
+      const preview = pendingPreview ?? chartPreviewRectRef.current;
       chartInteractionRef.current = null;
       chartInteractionCleanupRef.current = null;
       setInteractionMode("idle");

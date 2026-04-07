@@ -408,8 +408,11 @@ function getLegendItems(chart: XlsxChart, chartType: string): LegendItem[] {
       label: entry.label
     }));
   }
+  const isXyLegend = chartType === "ScatterLines" || chartType === "ScatterSmooth" || chartType === "Bubble";
   return chart.series.map((series, index) => ({
-    color: chartSeriesColor(chart, index),
+    color: isXyLegend
+      ? (series.lineColor ?? series.markerColor ?? series.color ?? chartSeriesColor(chart, index))
+      : chartSeriesColor(chart, index),
     label: series.name ?? `Series ${index + 1}`
   }));
 }
@@ -1305,20 +1308,6 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   const hasZeroX = minX <= 0 && safeMaxX >= 0;
   const hasZeroY = minY <= 0 && safeMaxY >= 0;
 
-  const normalizeColorToken = (value: string | undefined) => {
-    if (!value) {
-      return null;
-    }
-    const trimmed = value.trim().toLowerCase();
-    if (/^#[0-9a-f]{6}$/.test(trimmed)) {
-      return trimmed;
-    }
-    if (/^#[0-9a-f]{3}$/.test(trimmed)) {
-      return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
-    }
-    return trimmed;
-  };
-
   return (
     <g>
       {xTicks.map((tick) => (
@@ -1378,11 +1367,7 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
           normalizeChartMarkerSymbol(series.markerSymbol),
           markerSize * 0.55
         );
-        const markerFill = series.markerColor ?? series.lineColor ?? series.color ?? chartSeriesStrokeColor(chart, seriesIndex);
-        const markerStrokeRaw = series.markerLineColor ?? series.lineColor ?? markerFill;
-        const markerFillToken = normalizeColorToken(markerFill);
-        const markerStrokeToken = normalizeColorToken(markerStrokeRaw);
-        const hideMarkerStroke = markerStrokeToken === "#ffffff" || (markerFillToken != null && markerFillToken === markerStrokeToken);
+        const markerFill = series.lineColor ?? series.markerColor ?? series.color ?? chartSeriesStrokeColor(chart, seriesIndex);
         const shouldDrawLine = styleDrawsLine && series.shapeProperties?.xmlLineHidden !== true && seriesPoints.points.length > 1;
         const lineCurve = smooth || styleUsesSmoothCurve || series.smooth === true
           ? curveCatmullRom.alpha(0.5)
@@ -1418,8 +1403,8 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
                   <path
                     d={markerPath}
                     fill={markerFill}
-                    stroke={hideMarkerStroke ? markerFill : markerStrokeRaw}
-                    strokeWidth={hideMarkerStroke ? 0 : 1}
+                    stroke="none"
+                    strokeWidth={0}
                   />
                 </g>
               );
