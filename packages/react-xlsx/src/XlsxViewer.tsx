@@ -5354,6 +5354,33 @@ function XlsxGrid({
 
   const resolveOverlayRect = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
+    const wrapper = wrapperRef.current;
+    if (wrapper) {
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const startCell = wrapper.querySelector<HTMLElement>(
+        `[data-xlsx-cell="${normalized.start.row}:${normalized.start.col}"]`
+      );
+      const endCell = wrapper.querySelector<HTMLElement>(
+        `[data-xlsx-cell="${normalized.end.row}:${normalized.end.col}"]`
+      );
+
+      if (startCell && endCell) {
+        const startRect = startCell.getBoundingClientRect();
+        const endRect = endCell.getBoundingClientRect();
+        const left = Math.min(startRect.left, endRect.left) - wrapperRect.left;
+        const top = Math.min(startRect.top, endRect.top) - wrapperRect.top;
+        const right = Math.max(startRect.right, endRect.right) - wrapperRect.left;
+        const bottom = Math.max(startRect.bottom, endRect.bottom) - wrapperRect.top;
+
+        return {
+          height: Math.max(0, bottom - top),
+          left,
+          top,
+          width: Math.max(0, right - left)
+        };
+      }
+    }
+
     const startRowIndex = rowIndexByActual.get(normalized.start.row);
     const endRowIndex = rowIndexByActual.get(normalized.end.row);
     const startColIndex = colIndexByActual.get(normalized.start.col);
@@ -5373,33 +5400,6 @@ function XlsxGrid({
       };
     }
 
-    const wrapper = wrapperRef.current;
-    if (wrapper) {
-      const startCell = wrapper.querySelector<HTMLElement>(
-        `[data-xlsx-cell="${normalized.start.row}:${normalized.start.col}"]`
-      );
-      const endCell = wrapper.querySelector<HTMLElement>(
-        `[data-xlsx-cell="${normalized.end.row}:${normalized.end.col}"]`
-      );
-
-      if (startCell && endCell) {
-        const startLeft = startCell.offsetLeft;
-        const startTop = startCell.offsetTop;
-        const startRight = startLeft + startCell.offsetWidth;
-        const startBottom = startTop + startCell.offsetHeight;
-        const endLeft = endCell.offsetLeft;
-        const endTop = endCell.offsetTop;
-        const endRight = endLeft + endCell.offsetWidth;
-        const endBottom = endTop + endCell.offsetHeight;
-
-        return {
-          height: Math.max(startBottom, endBottom) - Math.min(startTop, endTop),
-          left: Math.min(startLeft, endLeft),
-          top: Math.min(startTop, endTop),
-          width: Math.max(startRight, endRight) - Math.min(startLeft, endLeft)
-        };
-      }
-    }
     return null;
   }, [colIndexByActual, colPrefixSums, rowIndexByActual, rowPrefixSums]);
 
