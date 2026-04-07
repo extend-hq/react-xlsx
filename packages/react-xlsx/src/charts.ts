@@ -336,6 +336,49 @@ function readChartNumericAttribute(parent: Element | null, localName: string) {
   return Number.isFinite(value) ? value : undefined;
 }
 
+function readChartBooleanAttribute(parent: Element | null, localName: string) {
+  const node = parent ? getFirstLocalChild(parent, localName) : null;
+  if (!node) {
+    return undefined;
+  }
+  const rawValue = node.getAttribute("val");
+  if (rawValue == null) {
+    return true;
+  }
+  if (rawValue === "1" || rawValue === "true") {
+    return true;
+  }
+  if (rawValue === "0" || rawValue === "false") {
+    return false;
+  }
+  return undefined;
+}
+
+function parseChartDataLabelsFromXml(labelsNode: Element | null): XlsxChartDataLabels | null {
+  if (!labelsNode) {
+    return null;
+  }
+
+  const labels: XlsxChartDataLabels = {
+    raw: {},
+    showBubbleSize: readChartBooleanAttribute(labelsNode, "showBubbleSize"),
+    showCategoryName: readChartBooleanAttribute(labelsNode, "showCatName"),
+    showLegendKey: readChartBooleanAttribute(labelsNode, "showLegendKey"),
+    showPercent: readChartBooleanAttribute(labelsNode, "showPercent"),
+    showSeriesName: readChartBooleanAttribute(labelsNode, "showSerName"),
+    showValue: readChartBooleanAttribute(labelsNode, "showVal")
+  };
+  const hasValue = (
+    labels.showBubbleSize !== undefined
+    || labels.showCategoryName !== undefined
+    || labels.showLegendKey !== undefined
+    || labels.showPercent !== undefined
+    || labels.showSeriesName !== undefined
+    || labels.showValue !== undefined
+  );
+  return hasValue ? labels : null;
+}
+
 function readChartRelationships(
   archive: Record<string, Uint8Array>,
   chartPath: string
@@ -664,6 +707,7 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       markerLineColor: markerLineStyle.color ?? lineStyle.color ?? fillColor ?? undefined,
       markerSize: markerSize ?? series.markerSize,
       markerSymbol,
+      smooth: readChartBooleanAttribute(seriesNode, "smooth") ?? series.smooth,
       shapeProperties: {
         ...series.shapeProperties,
         xmlExplosion: seriesExplosion ?? undefined,
@@ -769,16 +813,22 @@ function applyChartStyleFromXml(
     : chart.bubble3d;
   chart.holeSize = readChartNumericAttribute(chartTypeNode, "holeSize") ?? chart.holeSize;
   chart.radarStyle = getFirstLocalChild(chartTypeNode, "radarStyle")?.getAttribute("val") ?? chart.radarStyle;
+  chart.scatterStyle = getFirstLocalChild(chartTypeNode, "scatterStyle")?.getAttribute("val") ?? chart.scatterStyle;
   const wireframeNode = getFirstLocalChild(chartTypeNode, "wireframe");
   chart.wireframe = wireframeNode
     ? wireframeNode.getAttribute("val") !== "0"
     : chart.wireframe;
+  const chartTypeDataLabels = parseChartDataLabelsFromXml(getFirstLocalChild(chartTypeNode, "dLbls"));
+  const firstSeriesNode = getLocalChildren(chartTypeNode, "ser")[0] ?? null;
+  const seriesDataLabels = parseChartDataLabelsFromXml(getFirstLocalChild(firstSeriesNode, "dLbls"));
+  chart.dataLabels = chartTypeDataLabels ?? seriesDataLabels ?? chart.dataLabels;
   chart.raw = {
     ...(chart.raw ?? {}),
     bubble3d: chart.bubble3d,
     ofPieType: getFirstLocalChild(chartTypeNode, "ofPieType")?.getAttribute("val") ?? undefined,
     shape: getFirstLocalChild(chartTypeNode, "shape")?.getAttribute("val") ?? undefined,
     secondPieSize: readChartNumericAttribute(chartTypeNode, "secondPieSize"),
+    scatterStyle: chart.scatterStyle,
     splitPos: readChartNumericAttribute(chartTypeNode, "splitPos"),
     splitType: getFirstLocalChild(chartTypeNode, "splitType")?.getAttribute("val") ?? undefined,
     xmlChartType: chartTypeNode.localName
@@ -1683,6 +1733,7 @@ export function loadWorkbookChartAssets(
         plotVisibleOnly: typeof chart.plotVisibleOnly === "boolean" ? chart.plotVisibleOnly : undefined,
         raw: chart,
         radarStyle: typeof chart.radarStyle === "string" ? chart.radarStyle : undefined,
+        scatterStyle: typeof chart.scatterStyle === "string" ? chart.scatterStyle : undefined,
         roundedCorners: typeof chart.roundedCorners === "boolean" ? chart.roundedCorners : undefined,
         series: Array.isArray(chart.series)
           ? chart.series.map((entry, seriesIndex) => normalizeChartSeries(workbook, workbookSheetIndex, chartId, entry, seriesIndex))

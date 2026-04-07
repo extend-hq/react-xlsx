@@ -399,6 +399,7 @@ export interface XlsxChart {
   plotVisibleOnly?: boolean;
   raw?: Record<string, unknown>;
   radarStyle?: string;
+  scatterStyle?: string;
   roundedCorners?: boolean;
   series: XlsxChartSeries[];
   sheetIndex: number;

@@ -926,7 +926,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     }
   }
 
-  const renderedBars = chart.is3d && isStacked && !isHorizontal
+  const renderedBars = chart.is3d && isStacked
     ? bars.slice().sort((left, right) => {
         if (left.categoryIndex !== right.categoryIndex) {
           return left.categoryIndex - right.categoryIndex;
@@ -935,6 +935,12 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         const rightNegative = right.value < 0 ? 0 : 1;
         if (leftNegative !== rightNegative) {
           return leftNegative - rightNegative;
+        }
+        if (isHorizontal) {
+          if (left.left !== right.left) {
+            return left.left - right.left;
+          }
+          return left.seriesIndex - right.seriesIndex;
         }
         if (left.top !== right.top) {
           return right.top - left.top;
@@ -1144,6 +1150,20 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
 
 function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, smooth: boolean) {
   const plot = layout.plot;
+  const rawRecord = chart.raw && typeof chart.raw === "object"
+    ? chart.raw as Record<string, unknown>
+    : null;
+  const scatterStyle = typeof chart.scatterStyle === "string"
+    ? chart.scatterStyle
+    : rawRecord && typeof rawRecord.scatterStyle === "string"
+      ? rawRecord.scatterStyle
+      : undefined;
+  const styleDrawsLine = scatterStyle
+    ? scatterStyle === "line" || scatterStyle === "lineMarker" || scatterStyle === "smooth" || scatterStyle === "smoothMarker"
+    : true;
+  const styleUsesSmoothCurve = scatterStyle
+    ? scatterStyle === "smooth" || scatterStyle === "smoothMarker"
+    : smooth;
   const pointsBySeries = chart.series.map((series) => {
     const yLength = series.values.length;
     const directXValues = Array.from({ length: yLength }, (_, index) => coerceLooseNumber(series.categories[index]));
@@ -1193,6 +1213,7 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
     return {
       pointCount: yLength,
       points,
+      series,
       usesSyntheticIndex
     };
   });
@@ -1284,7 +1305,19 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   const hasZeroX = minX <= 0 && safeMaxX >= 0;
   const hasZeroY = minY <= 0 && safeMaxY >= 0;
 
-  const curve = smooth ? curveCatmullRom.alpha(0.5) : curveLinear;
+  const normalizeColorToken = (value: string | undefined) => {
+    if (!value) {
+      return null;
+    }
+    const trimmed = value.trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(trimmed)) {
+      return trimmed;
+    }
+    if (/^#[0-9a-f]{3}$/.test(trimmed)) {
+      return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
+    }
+    return trimmed;
+  };
 
   return (
     <g>
@@ -1338,30 +1371,62 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
           y2={plot.top + plot.height}
         />
       ) : null}
-      {pointsBySeries.map((seriesPoints, seriesIndex) => (
-        <g key={`scatter-series-${seriesIndex}`}>
-          {seriesPoints.points.map((point, pointIndex) => {
-            const markerSize = Math.max(5, chart.series[seriesIndex]?.markerSize ?? 7);
-            const markerPath = markerSymbolPath(
-              normalizeChartMarkerSymbol(chart.series[seriesIndex]?.markerSymbol),
-              markerSize * 0.55
-            );
-            return (
-              <g
-                key={`scatter-point-${seriesIndex}-${pointIndex}`}
-                transform={`translate(${xScale(point.x)}, ${yScale(point.y)})`}
-              >
-                <path
-                  d={markerPath}
-                  fill={chart.series[seriesIndex]?.markerColor ?? chartSeriesColor(chart, seriesIndex)}
-                  stroke={chart.series[seriesIndex]?.markerLineColor ?? chart.chartAreaFillColor ?? chartSeriesStrokeColor(chart, seriesIndex)}
-                  strokeWidth={1}
-                />
-              </g>
-            );
-          })}
-        </g>
-      ))}
+      {pointsBySeries.map((seriesPoints, seriesIndex) => {
+        const series = seriesPoints.series;
+        const markerSize = Math.max(5, series.markerSize ?? 7);
+        const markerPath = markerSymbolPath(
+          normalizeChartMarkerSymbol(series.markerSymbol),
+          markerSize * 0.55
+        );
+        const markerFill = series.markerColor ?? series.lineColor ?? series.color ?? chartSeriesStrokeColor(chart, seriesIndex);
+        const markerStrokeRaw = series.markerLineColor ?? series.lineColor ?? markerFill;
+        const markerFillToken = normalizeColorToken(markerFill);
+        const markerStrokeToken = normalizeColorToken(markerStrokeRaw);
+        const hideMarkerStroke = markerStrokeToken === "#ffffff" || (markerFillToken != null && markerFillToken === markerStrokeToken);
+        const shouldDrawLine = styleDrawsLine && series.shapeProperties?.xmlLineHidden !== true && seriesPoints.points.length > 1;
+        const lineCurve = smooth || styleUsesSmoothCurve || series.smooth === true
+          ? curveCatmullRom.alpha(0.5)
+          : curveLinear;
+        const linePath = shouldDrawLine
+          ? d3Line<{ x: number; y: number }>()
+              .x((point) => xScale(point.x))
+              .y((point) => yScale(point.y))
+              .curve(lineCurve)(seriesPoints.points) ?? ""
+          : "";
+
+        return (
+          <g key={`scatter-series-${seriesIndex}`}>
+            {shouldDrawLine && linePath.length > 0 ? (
+              <path
+                d={linePath}
+                fill="none"
+                stroke={series.lineColor ?? chartSeriesStrokeColor(chart, seriesIndex)}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={Math.max(1.2, series.lineWidthPx ?? 2)}
+              />
+            ) : null}
+            {seriesPoints.points.map((point, pointIndex) => {
+              if (!markerPath) {
+                return null;
+              }
+              return (
+                <g
+                  key={`scatter-point-${seriesIndex}-${pointIndex}`}
+                  transform={`translate(${xScale(point.x)}, ${yScale(point.y)})`}
+                >
+                  <path
+                    d={markerPath}
+                    fill={markerFill}
+                    stroke={hideMarkerStroke ? markerFill : markerStrokeRaw}
+                    strokeWidth={hideMarkerStroke ? 0 : 1}
+                  />
+                </g>
+              );
+            })}
+          </g>
+        );
+      })}
     </g>
   );
 }
@@ -1373,8 +1438,8 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
       const x = safeNumber(series.categories[index]);
       const y = safeNumber(value);
       const bubble = safeNumber(series.bubbleSizes?.[index]);
-      return x == null || y == null ? null : { bubble: bubble ?? 1, x, y };
-    }).filter((point): point is { bubble: number; x: number; y: number } => point != null)
+      return x == null || y == null ? null : { bubble: bubble ?? 1, index, x, y };
+    }).filter((point): point is { bubble: number; index: number; x: number; y: number } => point != null)
   ));
 
   const allX = pointsBySeries.flatMap((points) => points.map((point) => point.x));
@@ -1387,19 +1452,30 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
   const maxX = Math.max(...allX);
   const minY = Math.min(...allY);
   const maxY = Math.max(...allY);
-  const minBubble = Math.min(...allBubble);
-  const maxBubble = Math.max(...allBubble);
+  const bubbleMagnitudes = allBubble.map((value) => Math.sqrt(Math.max(0, value)));
+  const minBubbleMagnitude = Math.min(...bubbleMagnitudes);
+  const maxBubbleMagnitude = Math.max(...bubbleMagnitudes);
 
   const xScale = scaleLinear().domain([minX, maxX <= minX ? minX + 1 : maxX]).range([plot.left, plot.left + plot.width]);
   const yScale = scaleLinear().domain([minY, maxY <= minY ? minY + 1 : maxY]).range([plot.top + plot.height, plot.top]);
   const radiusScale = scaleLinear()
-    .domain([minBubble, maxBubble <= minBubble ? minBubble + 1 : maxBubble])
-    .range([6, 26 + ((chart.bubbleScale ?? 100) * 0.12)]);
+    .domain([minBubbleMagnitude, maxBubbleMagnitude <= minBubbleMagnitude ? minBubbleMagnitude + 1 : maxBubbleMagnitude])
+    .range([6, 18 + ((chart.bubbleScale ?? 100) * 0.18)]);
 
   const xTicks = buildNumericTickValues(minX, maxX <= minX ? minX + 1 : maxX, chart.categoryAxis?.majorUnit);
   const yTicks = buildNumericTickValues(minY, maxY <= minY ? minY + 1 : maxY, chart.valueAxis?.majorUnit);
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = chart.axisLabelColor ?? chart.textColor ?? palette.text;
+  const labelsEnabled = Boolean(
+    chart.dataLabels?.showCategoryName
+    || chart.dataLabels?.showSeriesName
+    || chart.dataLabels?.showValue
+    || chart.dataLabels?.showBubbleSize
+    || chart.dataLabels?.showPercent
+  );
+  const bubbleTotals = pointsBySeries.map((points) => (
+    points.reduce((sum, point) => sum + Math.abs(point.bubble), 0)
+  ));
 
   return (
     <g>
@@ -1438,18 +1514,48 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
       {pointsBySeries.map((points, seriesIndex) => (
         <g key={`bubble-series-${seriesIndex}`}>
           {points.map((point, pointIndex) => {
-            const baseColor = chartSeriesColor(chart, seriesIndex);
+            const series = chart.series[seriesIndex];
+            const baseColor = series?.color ?? series?.lineColor ?? chartSeriesColor(chart, seriesIndex);
+            const radius = radiusScale(Math.sqrt(Math.max(0, point.bubble)));
+            const pieces: string[] = [];
+            if (chart.dataLabels?.showSeriesName && series?.name) {
+              pieces.push(series.name);
+            }
+            if (chart.dataLabels?.showCategoryName) {
+              pieces.push(formatTickValue(point.x));
+            }
+            if (chart.dataLabels?.showValue) {
+              pieces.push(formatTickValue(point.y));
+            }
+            if (chart.dataLabels?.showBubbleSize) {
+              pieces.push(formatTickValue(point.bubble));
+            }
+            if (chart.dataLabels?.showPercent) {
+              pieces.push(`${Math.round((Math.abs(point.bubble) / Math.max(1, bubbleTotals[seriesIndex] ?? 1)) * 100)}%`);
+            }
             return (
-              <circle
-                key={`bubble-${seriesIndex}-${pointIndex}`}
-                cx={xScale(point.x)}
-                cy={yScale(point.y)}
-                fill={lightenColor(baseColor, 0.15)}
-                fillOpacity={0.8}
-                r={radiusScale(point.bubble)}
-                stroke={darkenColor(baseColor, 0.2)}
-                strokeWidth={1.2}
-              />
+              <g key={`bubble-${seriesIndex}-${pointIndex}`}>
+                <circle
+                  cx={xScale(point.x)}
+                  cy={yScale(point.y)}
+                  fill={baseColor}
+                  fillOpacity={0.78}
+                  r={radius}
+                  stroke={darkenColor(baseColor, 0.18)}
+                  strokeWidth={1}
+                />
+                {labelsEnabled && pieces.length > 0 ? (
+                  <text
+                    fill={chart.textColor ?? palette.text}
+                    fontSize={10}
+                    textAnchor="start"
+                    x={xScale(point.x) + radius + 4}
+                    y={yScale(point.y) + 3}
+                  >
+                    {pieces.join(", ")}
+                  </text>
+                ) : null}
+              </g>
             );
           })}
         </g>
