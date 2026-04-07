@@ -7,3 +7,10 @@ pnpm-debug.log*
 output/
 tmp/spreadsheets/generate_crazy_chart_workbook.py
 tmp/spreadsheets/render/crazy-chart-zoo/
+tmp/spreadsheets/generate_aspose_chart_zoo.java
+tmp/spreadsheets/generate_aspose_chart_zoo.class
+tmp/spreadsheets/render/crazy-chart-zoo-modern/
+tmp/spreadsheets/render/crazy-chart-zoo-subtypes/
+tmp/crazy-chart-zoo.xlsx
+hs_err_pid*.log
+.tmp-fixtures/
