@@ -25,6 +25,8 @@ export interface XlsxConditionalFormatValueObject {
 }
 
 export interface XlsxConditionalDataBarRule {
+  axisColor?: Record<string, unknown>;
+  border?: boolean;
   color?: Record<string, unknown>;
   borderColor?: Record<string, unknown>;
   cfvos: XlsxConditionalFormatValueObject[];
@@ -32,9 +34,20 @@ export interface XlsxConditionalDataBarRule {
   kind: "dataBar";
   maxLength?: number;
   minLength?: number;
+  negativeBarBorderColorSameAsPositive?: boolean;
+  negativeBorderColor?: Record<string, unknown>;
+  negativeFillColor?: Record<string, unknown>;
   priority: number;
   ranges: XlsxCellRange[];
   showValue?: boolean;
+}
+
+export interface XlsxConditionalColorScaleRule {
+  cfvos: XlsxConditionalFormatValueObject[];
+  colors: Record<string, unknown>[];
+  kind: "colorScale";
+  priority: number;
+  ranges: XlsxCellRange[];
 }
 
 export interface XlsxConditionalFormatIcon {
@@ -52,7 +65,10 @@ export interface XlsxConditionalIconSetRule {
   showValue?: boolean;
 }
 
-export type XlsxConditionalFormatRule = XlsxConditionalDataBarRule | XlsxConditionalIconSetRule;
+export type XlsxConditionalFormatRule =
+  | XlsxConditionalColorScaleRule
+  | XlsxConditionalDataBarRule
+  | XlsxConditionalIconSetRule;
 
 export interface XlsxDataValidation {
   allowBlank?: boolean;
@@ -81,6 +97,7 @@ export interface XlsxSheetData {
   conditionalFormatRules: XlsxConditionalFormatRule[];
   dataValidations: XlsxDataValidation[];
   name: string;
+  columnWidthCharacterWidthPx?: number;
   defaultColWidthPx: number;
   defaultRowHeightPx: number;
   freezePanes: XlsxFreezePanes | null;
@@ -301,8 +318,12 @@ export interface XlsxChartAxis {
   crossBetween?: string;
   delete?: boolean;
   labelPosition?: string;
+  majorUnit?: number;
+  max?: number;
+  min?: number;
   majorGridlines?: boolean;
   majorTickMark?: string;
+  minorUnit?: number;
   minorGridlines?: boolean;
   minorTickMark?: string;
   numberFormat?: {
@@ -316,6 +337,7 @@ export interface XlsxChartAxis {
 
 export interface XlsxChartPointStyle {
   color?: string;
+  explosion?: number;
   index: number;
   lineColor?: string;
 }
@@ -336,6 +358,8 @@ export interface XlsxChartSeries {
   markerSize?: number;
   markerSymbol?: string;
   name?: string;
+  negativeColor?: string;
+  negativeLineColor?: string;
   raw?: Record<string, unknown>;
   shapeProperties?: Record<string, unknown>;
   smooth?: boolean;
@@ -347,10 +371,15 @@ export interface XlsxChart {
   anchor: XlsxImageAnchor;
   autoTitleDeleted?: boolean;
   axes: XlsxChartAxis[];
+  axisLabelColor?: string;
+  axisLineColor?: string;
   categoryAxis?: XlsxChartAxis | null;
+  chartAreaBorderColor?: string;
+  chartAreaFillColor?: string;
   chartColorPalette?: string[];
   chartColorPaletteOffset?: number;
   chartPath?: string;
+  chartStyleId?: number;
   chartType: string;
   dataLabels?: XlsxChartDataLabels | null;
   displayBlanksAs?: string;
@@ -370,10 +399,20 @@ export interface XlsxChart {
   series: XlsxChartSeries[];
   sheetIndex: number;
   showDlblsOverMax?: boolean;
+  bubbleScale?: number;
+  textColor?: string;
   title?: string;
+  titleColor?: string;
   typeGroups?: unknown[];
   valueAxis?: XlsxChartAxis | null;
   varyColors?: boolean;
+  view3d?: {
+    perspective?: number;
+    rAngAx?: boolean;
+    rotX?: number;
+    rotY?: number;
+  };
+  wireframe?: boolean;
   workbookSheetIndex: number;
   zIndex: number;
 }

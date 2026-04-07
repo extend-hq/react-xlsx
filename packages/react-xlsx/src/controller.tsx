@@ -7,7 +7,7 @@ import {
   updateWorkbookChartDefinition,
   type WorkbookChartAssets
 } from "./charts";
-import { resolveWorkbookColor, resolveWorkbookFillColor } from "./colors";
+import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import {
   mergeWorkbookImageAssets,
   parseWorkbookImageAssets,
@@ -340,6 +340,7 @@ function buildSheetList(
   workbook: Workbook,
   sheetStatesByWorkbookSheetIndex?: Array<{
     cachedFormulaValues?: Record<string, string>;
+    columnWidthCharacterWidthPx?: number;
     colWidthOverridesPx?: Record<number, number>;
     colStyleIds?: Record<number, number>;
     conditionalFormatRules?: XlsxConditionalFormatRule[];
@@ -370,7 +371,7 @@ function buildSheetList(
     const resolveColumnWidthPx = (col: number) => {
       const width = worksheet.getColumnWidth(col);
       if (width !== undefined && width !== null) {
-        return resolveSheetColumnWidthPixels(width);
+        return resolveSheetColumnWidthPixels(width, sheetState?.columnWidthCharacterWidthPx);
       }
 
       return sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
@@ -389,6 +390,7 @@ function buildSheetList(
     if (!usedRange) {
       sheets.push({
         cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
+        columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
         colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
         colStyleIds: sheetState?.colStyleIds ?? {},
         conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
@@ -480,6 +482,7 @@ function buildSheetList(
 
     const sheet: XlsxSheetData = {
       cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
+      columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
       colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
       colStyleIds: sheetState?.colStyleIds ?? {},
       conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
@@ -1977,25 +1980,32 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     };
   }, [visibleSheetIndexByWorkbookSheetIndex]);
 
+  const publicChartsByWorkbookSheetIndex = React.useMemo(
+    () => chartsByWorkbookSheetIndex.map((sheetCharts) => sheetCharts.map(mapPublicChart)),
+    [chartsByWorkbookSheetIndex, mapPublicChart]
+  );
+  const publicChartById = React.useMemo(() => {
+    const lookup = new Map<string, XlsxChart>();
+    for (const sheetCharts of publicChartsByWorkbookSheetIndex) {
+      for (const chart of sheetCharts) {
+        lookup.set(chart.id, chart);
+      }
+    }
+    return lookup;
+  }, [publicChartsByWorkbookSheetIndex]);
+
   const getSheetCharts = React.useCallback((sheetIndex = activeSheetIndex) => {
     const targetSheet = sheets[sheetIndex];
     if (!targetSheet) {
       return [];
     }
 
-    return (chartsByWorkbookSheetIndex[targetSheet.workbookSheetIndex] ?? []).map(mapPublicChart);
-  }, [activeSheetIndex, chartsByWorkbookSheetIndex, mapPublicChart, sheets]);
+    return publicChartsByWorkbookSheetIndex[targetSheet.workbookSheetIndex] ?? [];
+  }, [activeSheetIndex, publicChartsByWorkbookSheetIndex, sheets]);
 
   const getChartById = React.useCallback((id: string) => {
-    for (const sheetCharts of chartsByWorkbookSheetIndex) {
-      const match = sheetCharts?.find((chart) => chart.id === id);
-      if (match) {
-        return mapPublicChart(match);
-      }
-    }
-
-    return null;
-  }, [chartsByWorkbookSheetIndex, mapPublicChart]);
+    return publicChartById.get(id) ?? null;
+  }, [publicChartById]);
 
   const getChartsheetById = React.useCallback((id: string) => (
     chartsheets.find((chartsheet) => chartsheet.id === id) ?? null
@@ -2082,7 +2092,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const width = worksheet.getColumnWidth(col);
     const showGridLines = activeSheet?.showGridLines ?? true;
     if (width !== undefined && width !== null) {
-      return resolveRenderedSheetAxisPixels(resolveSheetColumnWidthPixels(width), showGridLines);
+      return resolveRenderedSheetAxisPixels(
+        resolveSheetColumnWidthPixels(width, sheetState?.columnWidthCharacterWidthPx),
+        showGridLines
+      );
     }
 
     return resolveRenderedSheetAxisPixels(
@@ -2199,10 +2212,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         const fill = rawStyle?.fill as Record<string, unknown> | undefined;
         if (fill) {
-          const fillColor = resolveWorkbookFillColor(fill, activeSheet?.themePalette);
-
-          if (fillColor && fillColor.toLowerCase() !== "#ffffff") {
-            cellStyles.push(`background-color:${fillColor}`);
+          const fillStyle = resolveWorkbookFillStyle(fill, activeSheet?.themePalette);
+          if (fillStyle.backgroundColor && fillStyle.backgroundColor.toLowerCase() !== "#ffffff") {
+            cellStyles.push(`background-color:${fillStyle.backgroundColor}`);
+          }
+          if (fillStyle.backgroundImage) {
+            cellStyles.push(`background-image:${fillStyle.backgroundImage}`);
           }
         }
 
