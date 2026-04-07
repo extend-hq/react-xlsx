@@ -368,6 +368,8 @@ export interface XlsxChartSeries {
   color?: string;
   dataPoints: unknown[];
   dataPointStyles?: XlsxChartPointStyle[];
+  formatIdx?: number;
+  hidden?: boolean;
   id: string;
   invertIfNegative?: boolean;
   lineColor?: string;
@@ -394,6 +396,7 @@ export interface XlsxChart {
   axisLabelColor?: string;
   axisLineColor?: string;
   categoryAxis?: XlsxChartAxis | null;
+  chartExLayout?: string;
   chartAreaBorderColor?: string;
   chartAreaFillColor?: string;
   chartColorPalette?: string[];

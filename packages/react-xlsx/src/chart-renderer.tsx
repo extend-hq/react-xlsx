@@ -1,3 +1,4 @@
+import { hierarchy as d3Hierarchy, partition as d3Partition, treemap as d3Treemap, treemapSquarify } from "d3-hierarchy";
 import * as React from "react";
 import { scaleBand, scaleLinear, scalePoint } from "d3-scale";
 import {
@@ -17,6 +18,7 @@ import {
   symbolTriangle
 } from "d3-shape";
 import type { CurveFactory } from "d3-shape";
+import type { HierarchyNode, HierarchyRectangularNode } from "d3-hierarchy";
 import type { XlsxChart, XlsxImageRect } from "./types";
 
 type ChartRendererPalette = {
@@ -68,6 +70,20 @@ type BarRect = {
   value: number;
   width: number;
   top: number;
+};
+
+type ChartHierarchyDatum = {
+  children?: ChartHierarchyDatum[];
+  colorIndex?: number;
+  name: string;
+  value?: number;
+};
+
+type ChartStage = {
+  color: string;
+  isSubtotal: boolean;
+  label: string;
+  value: number;
 };
 
 function parseRgbColor(color: string) {
@@ -463,9 +479,100 @@ function buildPieEntries(chart: XlsxChart, seriesIndex = selectPrimaryPieSeriesI
     .filter((entry) => entry.value > 0);
 }
 
+function resolveChartStageSubtotal(series: XlsxChart["series"][number]) {
+  const raw = series.raw && typeof series.raw === "object"
+    ? series.raw as Record<string, unknown>
+    : null;
+  const layoutProperties = raw?.layoutProperties && typeof raw.layoutProperties === "object"
+    ? raw.layoutProperties as Record<string, unknown>
+    : null;
+  const subtotals = Array.isArray(layoutProperties?.subtotals) ? layoutProperties.subtotals : [];
+  return subtotals.length > 0 || layoutProperties?.aggregation === true;
+}
+
+function buildChartStages(chart: XlsxChart) {
+  return chart.series
+    .map((series, index): ChartStage | null => {
+      const value = series.values.reduce<number>((sum, entry) => sum + (safeNumber(entry) ?? 0), 0);
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+      const formula = typeof series.valuesRef?.formula === "string" ? series.valuesRef.formula : "";
+      const label = series.name
+        ?? (formula.length > 0 ? formula.replace(/^.*!/, "").replace(/\$/g, "") : `Series ${index + 1}`);
+      return {
+        color: chartSeriesColor(chart, typeof series.formatIdx === "number" ? series.formatIdx : index),
+        isSubtotal: resolveChartStageSubtotal(series),
+        label,
+        value
+      };
+    })
+    .filter((stage): stage is ChartStage => stage != null);
+}
+
+function buildHierarchyData(chart: XlsxChart) {
+  const root: ChartHierarchyDatum = {
+    children: [],
+    name: chart.title ?? chart.name ?? "Root"
+  };
+  const rootChildren = root.children ?? [];
+  const topLevelIndexByName = new Map<string, number>();
+  const rowCount = Math.max(0, ...chart.series.map((series) => series.values.length));
+
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const path = chart.series
+      .map((series) => normalizeCategoryLabel(series.categories[rowIndex] ?? series.values[rowIndex]))
+      .filter((value) => value.length > 0);
+    if (path.length === 0) {
+      continue;
+    }
+
+    let current = root;
+    path.forEach((part, levelIndex) => {
+      current.children = current.children ?? [];
+      let next = current.children.find((child) => child.name === part);
+      if (!next) {
+        next = { children: [], name: part };
+        if (levelIndex === 0) {
+          const topLevelIndex = topLevelIndexByName.size;
+          topLevelIndexByName.set(part, topLevelIndex);
+          next.colorIndex = topLevelIndex;
+        } else {
+          next.colorIndex = current.colorIndex;
+        }
+        current.children.push(next);
+      }
+      current = next;
+    });
+
+    current.value = (current.value ?? 0) + Math.max(0.0001, safeNumber(chart.series[chart.series.length - 1]?.values[rowIndex]) ?? 1);
+  }
+
+  return rootChildren.length > 0 ? root : null;
+}
+
+function resolveHierarchyNodeColor(chart: XlsxChart, node: HierarchyNode<ChartHierarchyDatum>) {
+  const lineage = node.ancestors().reverse();
+  const topLevel = lineage[1];
+  const baseIndex = topLevel?.data.colorIndex ?? 0;
+  const baseColor = chartSeriesColor(chart, baseIndex);
+  const depth = Math.max(0, node.depth - 1);
+  return depth === 0 ? baseColor : lightenColor(baseColor, clamp(depth * 0.16, 0, 0.5));
+}
+
 function getLegendItems(chart: XlsxChart, chartType: string): LegendItem[] {
   if (!chart.legend) {
     return [];
+  }
+  if (chartType === "Sunburst" || chartType === "Treemap") {
+    const hierarchyData = buildHierarchyData(chart);
+    if (!hierarchyData?.children) {
+      return [];
+    }
+    return hierarchyData.children.map((child, index) => ({
+      color: chartSeriesColor(chart, child.colorIndex ?? index),
+      label: child.name
+    }));
   }
   if (chartType === "Pie" || chartType === "Pie3D" || chartType === "PieExploded" || chartType === "Doughnut" || chartType === "BarOfPie") {
     if (chartType === "BarOfPie") {
@@ -488,7 +595,12 @@ function getLegendItems(chart: XlsxChart, chartType: string): LegendItem[] {
       label: entry.label
     }));
   }
-  const isXyLegend = chartType === "ScatterLines" || chartType === "ScatterSmooth" || chartType === "Bubble";
+  const isXyLegend = (
+    chartType === "Scatter"
+    || chartType === "ScatterLines"
+    || chartType === "ScatterSmooth"
+    || chartType === "Bubble"
+  );
   return chart.series.map((series, index) => ({
     color: isXyLegend
       ? (series.lineColor ?? series.markerColor ?? series.color ?? chartSeriesColor(chart, index))
@@ -1269,7 +1381,9 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
   const displayBlanksAs = chart.displayBlanksAs;
   const isAreaChart = chartType === "Area" || chartType === "AreaStacked" || chartType === "AreaPercentStacked";
   const isStackedArea = chartType === "AreaStacked" || chartType === "AreaPercentStacked";
-  const isPercentStackedArea = chartType === "AreaPercentStacked";
+  const isStackedLine = chartType === "LineStacked" || chartType === "LinePercentStacked";
+  const isStackedSeries = isStackedArea || isStackedLine;
+  const isPercentStackedSeries = chartType === "AreaPercentStacked" || chartType === "LinePercentStacked";
   const resolvedValuesBySeries = chart.series.map((series) => (
     categories.map((_, categoryIndex) => resolveRenderableSeriesValue(series.values[categoryIndex], displayBlanksAs))
   ));
@@ -1281,11 +1395,11 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
     y1: number | null;
   };
 
-  const stackedPointsBySeries: SeriesPoint[][] = isStackedArea
+  const stackedPointsBySeries: SeriesPoint[][] = isStackedSeries
     ? (() => {
         const positive = Array.from({ length: categories.length }, () => 0);
         const negative = Array.from({ length: categories.length }, () => 0);
-        const categoryTotals = isPercentStackedArea
+        const categoryTotals = isPercentStackedSeries
           ? categories.map((_, categoryIndex) => {
               const total = resolvedValuesBySeries.reduce((sum, seriesValues) => (
                 sum + (seriesValues[categoryIndex] ?? 0)
@@ -1299,7 +1413,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
             if (rawValue == null) {
               return { defined: false, y: null, y0: null, y1: null };
             }
-            const value = isPercentStackedArea
+            const value = isPercentStackedSeries
               ? (rawValue / (categoryTotals?.[categoryIndex] ?? 1)) * 100
               : rawValue;
             if (value >= 0) {
@@ -1344,8 +1458,12 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
   const hasExplicitMax = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max);
   if (isAreaChart) {
     minValue = Math.min(0, minValue);
-  } else if (chartType === "Line" && chart.valueAxis?.crosses === "autoZero") {
+  } else if ((chartType === "Line" || isStackedLine) && chart.valueAxis?.crosses === "autoZero") {
     minValue = Math.min(0, minValue);
+  }
+  if (isPercentStackedSeries) {
+    minValue = hasExplicitMin ? Number(chart.valueAxis?.min) : Math.min(0, minValue);
+    maxValue = hasExplicitMax ? Number(chart.valueAxis?.max) : Math.max(100, maxValue);
   }
   minValue = hasExplicitMin ? Number(chart.valueAxis?.min) : minValue;
   maxValue = hasExplicitMax ? Number(chart.valueAxis?.max) : maxValue;
@@ -1363,7 +1481,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
   const ticks = buildNumericTickValues(
     minValue,
     maxValue,
-    isPercentStackedArea ? (chart.valueAxis?.majorUnit ?? 20) : chart.valueAxis?.majorUnit
+    isPercentStackedSeries ? (chart.valueAxis?.majorUnit ?? 20) : chart.valueAxis?.majorUnit
   );
   const categoryPositions = categories.map((category) => xScale(category) ?? plot.left);
 
@@ -1407,17 +1525,17 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
         const areaPath = isAreaChart
           ? d3Area<{ x: number; y: number | null; y0: number | null; y1: number | null }>()
             .defined((point) => (
-              isStackedArea
+              isStackedSeries
                 ? point.y0 != null && point.y1 != null
                 : point.y != null
             ))
             .x((point) => point.x)
             .y0((point) => (
-              isStackedArea
+              isStackedSeries
                 ? yScale(point.y0 ?? 0)
                 : areaBaseline
             ))
-            .y1((point) => yScale((isStackedArea ? point.y1 : point.y) ?? 0))
+            .y1((point) => yScale((isStackedSeries ? point.y1 : point.y) ?? 0))
             .curve(curve)(points) ?? ""
           : "";
 
@@ -2692,6 +2810,315 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
   );
 }
 
+function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const stages = buildChartStages(chart);
+  if (stages.length === 0) {
+    return null;
+  }
+
+  const plot = layout.plot;
+  const labels = stages.map((stage) => stage.label);
+  const xScale = scaleBand<string>()
+    .domain(labels)
+    .range([plot.left, plot.left + plot.width])
+    .paddingInner(0.34)
+    .paddingOuter(0.18);
+
+  const bars: Array<ChartStage & { end: number; index: number; start: number }> = [];
+  let runningTotal = 0;
+  stages.forEach((stage, index) => {
+    const start = stage.isSubtotal ? 0 : runningTotal;
+    const end = stage.isSubtotal ? runningTotal : runningTotal + stage.value;
+    if (!stage.isSubtotal) {
+      runningTotal = end;
+    }
+    bars.push({ ...stage, end, index, start });
+  });
+
+  const extents = bars.flatMap((bar) => [0, bar.start, bar.end]);
+  let minValue = Math.min(...extents);
+  let maxValue = Math.max(...extents);
+  if (maxValue <= minValue) {
+    maxValue = minValue + 1;
+  }
+
+  const yScale = scaleLinear()
+    .domain([minValue, maxValue])
+    .range([plot.top + plot.height, plot.top]);
+  const ticks = buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit);
+  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const labelColor = chart.axisLabelColor ?? chart.textColor ?? palette.text;
+
+  return (
+    <g>
+      {ticks.map((tick) => (
+        <g key={`waterfall-y-${tick}`}>
+          <line
+            stroke={lightenColor(axisColor, 0.72)}
+            strokeWidth={1}
+            x1={plot.left}
+            x2={plot.left + plot.width}
+            y1={yScale(tick)}
+            y2={yScale(tick)}
+          />
+          <text fill={labelColor} fontSize={10} textAnchor="end" x={plot.left - 6} y={yScale(tick) + 3}>
+            {formatTickValue(tick)}
+          </text>
+        </g>
+      ))}
+      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left} y1={plot.top} y2={plot.top + plot.height} />
+      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left + plot.width} y1={yScale(0)} y2={yScale(0)} />
+      {bars.map((bar, index) => {
+        const bandLeft = xScale(bar.label) ?? plot.left;
+        const bandWidth = xScale.bandwidth();
+        const topValue = Math.max(bar.start, bar.end);
+        const bottomValue = Math.min(bar.start, bar.end);
+        const top = yScale(topValue);
+        const height = Math.max(1, yScale(bottomValue) - top);
+        const fill = bar.isSubtotal
+          ? darkenColor(bar.color, 0.18)
+          : bar.value >= 0
+            ? bar.color
+            : lightenColor(bar.color, 0.22);
+        const connectorStart = index > 0 ? bars[index - 1] : null;
+        const connectorY = connectorStart ? yScale(connectorStart.end) : 0;
+
+        return (
+          <g key={`waterfall-bar-${index}`}>
+            {connectorStart ? (
+              <line
+                stroke={lightenColor(axisColor, 0.35)}
+                strokeDasharray="3 3"
+                strokeWidth={1}
+                x1={(xScale(connectorStart.label) ?? plot.left) + xScale.bandwidth()}
+                x2={bandLeft}
+                y1={connectorY}
+                y2={connectorY}
+              />
+            ) : null}
+            <rect
+              fill={fill}
+              rx={2}
+              ry={2}
+              stroke={darkenColor(fill, 0.22)}
+              strokeWidth={1}
+              x={bandLeft}
+              y={top}
+              width={bandWidth}
+              height={height}
+            />
+            <text
+              fill={labelColor}
+              fontSize={10}
+              textAnchor="middle"
+              x={bandLeft + bandWidth * 0.5}
+              y={plot.top + plot.height + 14}
+            >
+              {bar.label}
+            </text>
+            <text
+              fill={labelColor}
+              fontSize={10}
+              textAnchor="middle"
+              x={bandLeft + bandWidth * 0.5}
+              y={top - 6}
+            >
+              {formatTickValue(bar.end)}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function renderFunnelChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const stages = buildChartStages(chart)
+    .map((stage) => ({ ...stage, value: Math.max(0, stage.value) }))
+    .filter((stage) => stage.value > 0);
+  if (stages.length === 0) {
+    return null;
+  }
+
+  const plot = layout.plot;
+  const maxValue = Math.max(...stages.map((stage) => stage.value));
+  const sectionHeight = plot.height / stages.length;
+  const centerX = plot.left + plot.width * 0.5;
+  const labelColor = chart.textColor ?? palette.text;
+
+  return (
+    <g>
+      {stages.map((stage, index) => {
+        const nextValue = stages[index + 1]?.value ?? 0;
+        const topWidth = (stage.value / maxValue) * plot.width;
+        const bottomWidth = (nextValue / maxValue) * plot.width;
+        const topY = plot.top + index * sectionHeight;
+        const bottomY = topY + sectionHeight - 2;
+        const fill = stage.isSubtotal ? darkenColor(stage.color, 0.14) : stage.color;
+        const path = [
+          `M ${centerX - topWidth * 0.5} ${topY}`,
+          `L ${centerX + topWidth * 0.5} ${topY}`,
+          `L ${centerX + bottomWidth * 0.5} ${bottomY}`,
+          `L ${centerX - bottomWidth * 0.5} ${bottomY}`,
+          "Z"
+        ].join(" ");
+        const labelFitsInside = topWidth > 90;
+
+        return (
+          <g key={`funnel-stage-${index}`}>
+            <path
+              d={path}
+              fill={fill}
+              stroke={darkenColor(fill, 0.2)}
+              strokeWidth={1}
+            />
+            <text
+              fill={labelColor}
+              fontSize={10}
+              textAnchor={labelFitsInside ? "middle" : "start"}
+              x={labelFitsInside ? centerX : centerX + topWidth * 0.5 + 8}
+              y={topY + sectionHeight * 0.5}
+            >
+              {`${stage.label} ${formatTickValue(stage.value)}`}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function renderSunburstChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const hierarchyData = buildHierarchyData(chart);
+  if (!hierarchyData) {
+    return null;
+  }
+
+  const root = d3Hierarchy(hierarchyData)
+    .sum((node) => node.children && node.children.length > 0 ? 0 : Math.max(0.0001, node.value ?? 0))
+    .sort((left, right) => (right.value ?? 0) - (left.value ?? 0));
+  const partitioned = d3Partition<ChartHierarchyDatum>()
+    .size([Math.PI * 2, root.height + 1])(root);
+  const plot = layout.plot;
+  const radius = Math.max(24, Math.min(plot.width, plot.height) * 0.5);
+  const holeRadius = radius * 0.16;
+  const centerX = plot.left + plot.width * 0.5;
+  const centerY = plot.top + plot.height * 0.5;
+  const ringSpan = Math.max(1, partitioned.height || 1);
+  const arcBuilder = d3Arc<HierarchyRectangularNode<ChartHierarchyDatum>>()
+    .startAngle((node) => node.x0)
+    .endAngle((node) => node.x1)
+    .padAngle(0.005)
+    .padRadius(radius)
+    .innerRadius((node) => holeRadius + ((node.y0 - 1) / ringSpan) * (radius - holeRadius))
+    .outerRadius((node) => holeRadius + ((node.y1 - 1) / ringSpan) * (radius - holeRadius) - 1);
+
+  return (
+    <g transform={`translate(${centerX}, ${centerY})`}>
+      {partitioned.descendants().filter((node) => node.depth > 0).map((node, index) => {
+        const path = arcBuilder(node);
+        if (!path) {
+          return null;
+        }
+        const labelAngle = (node.x0 + node.x1) * 0.5 - Math.PI * 0.5;
+        const labelRadius = holeRadius + (((node.y0 + node.y1) * 0.5 - 1) / ringSpan) * (radius - holeRadius);
+        const labelX = Math.cos(labelAngle) * labelRadius;
+        const labelY = Math.sin(labelAngle) * labelRadius;
+        const arcSpan = node.x1 - node.x0;
+        const canShowLabel = arcSpan * labelRadius > 26;
+        const fill = resolveHierarchyNodeColor(chart, node);
+
+        return (
+          <g key={`sunburst-node-${index}`}>
+            <path
+              d={path}
+              fill={fill}
+              stroke={palette.surface}
+              strokeWidth={1}
+            />
+            {canShowLabel ? (
+              <text
+                fill={darkenColor(fill, 0.65)}
+                fontSize={9}
+                textAnchor="middle"
+                transform={`translate(${labelX}, ${labelY}) rotate(${(labelAngle * 180) / Math.PI})`}
+              >
+                {node.data.name}
+              </text>
+            ) : null}
+          </g>
+        );
+      })}
+      <circle fill={chart.chartAreaFillColor ?? palette.surface} r={holeRadius - 2} />
+    </g>
+  );
+}
+
+function renderTreemapChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const hierarchyData = buildHierarchyData(chart);
+  if (!hierarchyData) {
+    return null;
+  }
+
+  const root = d3Hierarchy(hierarchyData)
+    .sum((node) => node.children && node.children.length > 0 ? 0 : Math.max(0.0001, node.value ?? 0))
+    .sort((left, right) => (right.value ?? 0) - (left.value ?? 0));
+  const treemapRoot = d3Treemap<ChartHierarchyDatum>()
+    .size([layout.plot.width, layout.plot.height])
+    .paddingInner(2)
+    .paddingOuter(1)
+    .round(true)
+    .tile(treemapSquarify)(root);
+
+  return (
+    <g transform={`translate(${layout.plot.left}, ${layout.plot.top})`}>
+      {treemapRoot.leaves().map((leaf, index) => {
+        const fill = resolveHierarchyNodeColor(chart, leaf);
+        const width = Math.max(0, leaf.x1 - leaf.x0);
+        const height = Math.max(0, leaf.y1 - leaf.y0);
+        const canShowLabel = width > 48 && height > 22;
+
+        return (
+          <g key={`treemap-leaf-${index}`}>
+            <rect
+              fill={fill}
+              rx={3}
+              ry={3}
+              stroke={palette.surface}
+              strokeWidth={1}
+              x={leaf.x0}
+              y={leaf.y0}
+              width={width}
+              height={height}
+            />
+            {canShowLabel ? (
+              <>
+                <text
+                  fill={darkenColor(fill, 0.68)}
+                  fontSize={10}
+                  fontWeight={600}
+                  x={leaf.x0 + 8}
+                  y={leaf.y0 + 14}
+                >
+                  {leaf.data.name}
+                </text>
+                <text
+                  fill={darkenColor(fill, 0.54)}
+                  fontSize={9}
+                  x={leaf.x0 + 8}
+                  y={leaf.y0 + 28}
+                >
+                  {formatTickValue(leaf.value ?? 0)}
+                </text>
+              </>
+            ) : null}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 function renderUnsupported(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
   return (
     <g>
@@ -2730,11 +3157,16 @@ function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout
   }
   if (
     chartType === "Line"
+    || chartType === "LineStacked"
+    || chartType === "LinePercentStacked"
     || chartType === "Area"
     || chartType === "AreaStacked"
     || chartType === "AreaPercentStacked"
   ) {
     return renderLineOrAreaChart(chart, palette, layout, chartType);
+  }
+  if (chartType === "Scatter") {
+    return renderScatterChart(chart, palette, layout, false);
   }
   if (chartType === "ScatterLines") {
     return renderScatterChart(chart, palette, layout, false);
@@ -2759,6 +3191,18 @@ function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout
   }
   if (chartType === "Stock") {
     return renderStockChart(chart, palette, layout);
+  }
+  if (chartType === "Waterfall") {
+    return renderWaterfallChart(chart, palette, layout);
+  }
+  if (chartType === "Funnel") {
+    return renderFunnelChart(chart, palette, layout);
+  }
+  if (chartType === "Sunburst") {
+    return renderSunburstChart(chart, palette, layout);
+  }
+  if (chartType === "Treemap") {
+    return renderTreemapChart(chart, palette, layout);
   }
   return renderUnsupported(chart, palette, layout, chartType);
 }
