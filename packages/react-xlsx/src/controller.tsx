@@ -42,6 +42,7 @@ import type {
   XlsxResolvedCellStyle,
   XlsxShape,
   XlsxSheetData,
+  XlsxSparkline,
   XlsxThemePalette,
   XlsxTable,
   XlsxTableStyleDefinition,
@@ -68,6 +69,11 @@ const MAX_INTERACTIVE_SHARED_STRINGS_BYTES = 50 * 1024 * 1024;
 const MAX_INTERACTIVE_TOTAL_XML_BYTES = 256 * 1024 * 1024;
 const EMU_PER_PIXEL = 9525;
 const IMAGE_BATCH_ROW_COUNT = 256;
+const DEFAULT_ZOOM_SCALE = 100;
+const MIN_ZOOM_SCALE = 10;
+const MAX_ZOOM_SCALE = 400;
+const ZOOM_STEP = 10;
+const DEFAULT_ZOOM_TAB_KEY = "__default__";
 
 type IdleRequestHandle = number;
 
@@ -127,6 +133,40 @@ type RangeEditHistoryEntry = {
   sheetIndex: number;
 };
 
+function clampZoomScale(zoomScale: number) {
+  if (!Number.isFinite(zoomScale)) {
+    return DEFAULT_ZOOM_SCALE;
+  }
+
+  return Math.min(MAX_ZOOM_SCALE, Math.max(MIN_ZOOM_SCALE, Math.round(zoomScale)));
+}
+
+function resolveDefaultZoomScale(activeTab: XlsxWorkbookTab | null, activeSheet: XlsxSheetData | null) {
+  if (activeTab?.kind !== "sheet") {
+    return DEFAULT_ZOOM_SCALE;
+  }
+
+  return clampZoomScale(activeSheet?.zoomScale ?? DEFAULT_ZOOM_SCALE);
+}
+
+function resolveNextZoomScale(currentZoomScale: number, direction: 1 | -1) {
+  if (direction > 0) {
+    return Math.min(
+      MAX_ZOOM_SCALE,
+      currentZoomScale % ZOOM_STEP === 0
+        ? currentZoomScale + ZOOM_STEP
+        : Math.ceil(currentZoomScale / ZOOM_STEP) * ZOOM_STEP
+    );
+  }
+
+  return Math.max(
+    MIN_ZOOM_SCALE,
+    currentZoomScale % ZOOM_STEP === 0
+      ? currentZoomScale - ZOOM_STEP
+      : Math.floor(currentZoomScale / ZOOM_STEP) * ZOOM_STEP
+  );
+}
+
 type WorksheetApiImageInfo = {
   altText?: unknown;
   height?: unknown;
@@ -154,6 +194,69 @@ type WorksheetDirectImageInfo = {
   name?: unknown;
   widthEmu?: unknown;
   heightEmu?: unknown;
+};
+
+type WorksheetDirectShapeParagraphRunInfo = {
+  bold?: unknown;
+  color?: unknown;
+  fontFamily?: unknown;
+  fontSizePt?: unknown;
+  italic?: unknown;
+  text?: unknown;
+  underline?: unknown;
+};
+
+type WorksheetDirectShapeParagraphInfo = {
+  align?: unknown;
+  runs?: unknown;
+};
+
+type WorksheetDirectShapeTextBoxInfo = {
+  horizontalAlign?: unknown;
+  insetPx?: {
+    bottom?: unknown;
+    left?: unknown;
+    right?: unknown;
+    top?: unknown;
+  } | null;
+  verticalAlign?: unknown;
+};
+
+type WorksheetDirectShapeInfo = {
+  anchor?: unknown;
+  description?: unknown;
+  fill?: {
+    color?: unknown;
+    none?: unknown;
+    opacity?: unknown;
+  } | null;
+  flipH?: unknown;
+  flipV?: unknown;
+  geometry?: unknown;
+  geometryAdjustments?: unknown;
+  hyperlink?: unknown;
+  id?: unknown;
+  name?: unknown;
+  paragraphs?: unknown;
+  rotationDeg?: unknown;
+  scaleX?: unknown;
+  scaleY?: unknown;
+  stroke?: {
+    color?: unknown;
+    dash?: unknown;
+    headEndType?: unknown;
+    none?: unknown;
+    opacity?: unknown;
+    tailEndType?: unknown;
+    widthPx?: unknown;
+  } | null;
+  svgPath?: unknown;
+  svgViewBox?: {
+    height?: unknown;
+    width?: unknown;
+  } | null;
+  text?: unknown;
+  textBox?: WorksheetDirectShapeTextBoxInfo | null;
 };
 
 type WorksheetApiRowCell = {
@@ -372,6 +475,7 @@ function buildSheetList(
     rowHeightOverridesPx?: Record<number, number>;
     rowStyleIds?: Record<number, number>;
     showGridLines: boolean;
+    sparklines?: XlsxSparkline[];
   } | null>,
   themePalette?: XlsxThemePalette | null,
   styleById?: Record<number, XlsxResolvedCellStyle> | null,
@@ -432,6 +536,7 @@ function buildSheetList(
         rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
         rowStyleIds: sheetState?.rowStyleIds ?? {},
         styleById: styleById ?? {},
+        sparklines: sheetState?.sparklines ?? [],
         tableStyleByName: tableStyleByName ?? {},
         visibleRows: [],
         visibleCols: [],
@@ -525,6 +630,7 @@ function buildSheetList(
       rowStyleIds: sheetState?.rowStyleIds ?? {},
       showGridLines: sheetState?.showGridLines ?? true,
       styleById: styleById ?? {},
+      sparklines: sheetState?.sparklines ?? [],
       tableStyleByName: tableStyleByName ?? {},
       themePalette: themePalette ?? { colorsByIndex: {} },
       workbookSheetIndex: index,
@@ -1088,6 +1194,138 @@ function buildWorksheetDirectImageAnchor(
   };
 }
 
+function normalizeWorksheetDirectShapeParagraphs(rawParagraphs: unknown, fallbackText: unknown): XlsxShape["paragraphs"] {
+  const normalizedParagraphs: XlsxShape["paragraphs"] = [];
+
+  if (Array.isArray(rawParagraphs)) {
+    for (const entry of rawParagraphs) {
+        const paragraph = entry && typeof entry === "object" ? entry as WorksheetDirectShapeParagraphInfo : {};
+        const runs: XlsxShape["paragraphs"][number]["runs"] = [];
+        if (Array.isArray(paragraph.runs)) {
+          for (const runEntry of paragraph.runs) {
+            const run = runEntry && typeof runEntry === "object" ? runEntry as WorksheetDirectShapeParagraphRunInfo : {};
+            const text = typeof run.text === "string" ? run.text : "";
+            if (!text) {
+              continue;
+            }
+            runs.push({
+              bold: typeof run.bold === "boolean" ? run.bold : undefined,
+              color: typeof run.color === "string" && run.color.trim() ? run.color : undefined,
+              fontFamily: typeof run.fontFamily === "string" && run.fontFamily.trim() ? run.fontFamily : undefined,
+              fontSizePt: asFiniteNumber(run.fontSizePt) ?? undefined,
+              italic: typeof run.italic === "boolean" ? run.italic : undefined,
+              text,
+              underline: typeof run.underline === "boolean" ? run.underline : undefined
+            });
+          }
+        }
+        if (runs.length === 0) {
+          continue;
+        }
+        const align = paragraph.align;
+        normalizedParagraphs.push({
+          align: align === "center" || align === "justify" || align === "left" || align === "right" ? align : undefined,
+          runs
+        });
+    }
+  }
+
+  if (normalizedParagraphs.length > 0) {
+    return normalizedParagraphs;
+  }
+
+  const text = typeof fallbackText === "string" ? fallbackText : "";
+  return text
+    ? [{ runs: [{ text }] }]
+    : [];
+}
+
+function buildWorksheetDirectApiShape(
+  workbookSheetIndex: number,
+  info: WorksheetDirectShapeInfo,
+  zIndex: number
+): XlsxShape {
+  const fill = info.fill && typeof info.fill === "object"
+    ? {
+        color: typeof info.fill.color === "string" && info.fill.color.trim() ? info.fill.color : undefined,
+        none: typeof info.fill.none === "boolean" ? info.fill.none : undefined,
+        opacity: asFiniteNumber(info.fill.opacity) ?? undefined
+      }
+    : undefined;
+  const stroke = info.stroke && typeof info.stroke === "object"
+    ? {
+        color: typeof info.stroke.color === "string" && info.stroke.color.trim() ? info.stroke.color : undefined,
+        dash: typeof info.stroke.dash === "string" && info.stroke.dash.trim() ? info.stroke.dash : undefined,
+        headEndType: typeof info.stroke.headEndType === "string" && info.stroke.headEndType.trim() ? info.stroke.headEndType : undefined,
+        none: typeof info.stroke.none === "boolean" ? info.stroke.none : undefined,
+        opacity: asFiniteNumber(info.stroke.opacity) ?? undefined,
+        tailEndType: typeof info.stroke.tailEndType === "string" && info.stroke.tailEndType.trim() ? info.stroke.tailEndType : undefined,
+        widthPx: asFiniteNumber(info.stroke.widthPx) ?? undefined
+      }
+    : undefined;
+  const rawSvgViewBox = info.svgViewBox && typeof info.svgViewBox === "object" ? info.svgViewBox : null;
+  const rawTextBox = info.textBox && typeof info.textBox === "object" ? info.textBox : null;
+  const rawInset = rawTextBox?.insetPx && typeof rawTextBox.insetPx === "object" ? rawTextBox.insetPx : null;
+
+  return {
+    anchor: buildWorksheetDirectImageAnchor(
+      info.anchor,
+      DEFAULT_COL_WIDTH * EMU_PER_PIXEL,
+      DEFAULT_ROW_HEIGHT * EMU_PER_PIXEL
+    ),
+    description: typeof info.description === "string" && info.description.trim() ? info.description : undefined,
+    fill,
+    flipH: typeof info.flipH === "boolean" ? info.flipH : undefined,
+    flipV: typeof info.flipV === "boolean" ? info.flipV : undefined,
+    geometry: typeof info.geometry === "string" && info.geometry.trim() ? info.geometry : "rect",
+    geometryAdjustments: info.geometryAdjustments && typeof info.geometryAdjustments === "object"
+      ? Object.fromEntries(
+          Object.entries(info.geometryAdjustments as Record<string, unknown>)
+            .map(([key, value]) => [key, asFiniteNumber(value)])
+            .filter((entry): entry is [string, number] => typeof entry[1] === "number")
+        )
+      : undefined,
+    hyperlink: typeof info.hyperlink === "string" && info.hyperlink.trim() ? info.hyperlink : undefined,
+    id: `shape-${workbookSheetIndex}-${String(info.id ?? zIndex)}`,
+    name: typeof info.name === "string" && info.name.trim() ? info.name : undefined,
+    paragraphs: normalizeWorksheetDirectShapeParagraphs(info.paragraphs, info.text),
+    rotationDeg: asFiniteNumber(info.rotationDeg) ?? undefined,
+    scaleX: asFiniteNumber(info.scaleX) ?? undefined,
+    scaleY: asFiniteNumber(info.scaleY) ?? undefined,
+    sheetIndex: workbookSheetIndex,
+    svgPath: typeof info.svgPath === "string" && info.svgPath.trim() ? info.svgPath : undefined,
+    svgViewBox: rawSvgViewBox
+      && asFiniteNumber(rawSvgViewBox.width) !== null
+      && asFiniteNumber(rawSvgViewBox.height) !== null
+      ? {
+          height: asFiniteNumber(rawSvgViewBox.height) ?? 0,
+          width: asFiniteNumber(rawSvgViewBox.width) ?? 0
+        }
+      : undefined,
+    stroke,
+    textBox: rawTextBox
+      ? {
+          horizontalAlign: rawTextBox.horizontalAlign === "center" || rawTextBox.horizontalAlign === "left"
+            ? rawTextBox.horizontalAlign
+            : undefined,
+          insetPx: rawInset
+            ? {
+                bottom: asFiniteNumber(rawInset.bottom) ?? 0,
+                left: asFiniteNumber(rawInset.left) ?? 0,
+                right: asFiniteNumber(rawInset.right) ?? 0,
+                top: asFiniteNumber(rawInset.top) ?? 0
+              }
+            : undefined,
+          verticalAlign: rawTextBox.verticalAlign === "bottom" || rawTextBox.verticalAlign === "middle" || rawTextBox.verticalAlign === "top"
+            ? rawTextBox.verticalAlign
+            : undefined
+        }
+      : undefined,
+    workbookSheetIndex,
+    zIndex
+  };
+}
+
 function buildWorksheetApiImage(
   workbookSheetIndex: number,
   row: number,
@@ -1246,6 +1484,17 @@ function collectWorksheetApiImages(workbook: Workbook, objectUrls: string[]) {
   return collectWorksheetBatchImages(workbook);
 }
 
+function collectWorksheetApiShapes(workbook: Workbook) {
+  return Array.from({ length: workbook.sheetCount }, (_, workbookSheetIndex) => {
+    const worksheet = workbook.getSheet(workbookSheetIndex) as ReturnType<Workbook["getSheet"]> & {
+      shapes?: unknown;
+    };
+    const rawShapes = Array.isArray(worksheet.shapes) ? worksheet.shapes as WorksheetDirectShapeInfo[] : [];
+    return rawShapes
+      .map((shape, index) => buildWorksheetDirectApiShape(workbookSheetIndex, shape, index + 1));
+  });
+}
+
 function mergeParsedAndApiImages(parsedImages: XlsxImage[], apiImages: XlsxImage[]) {
   if (parsedImages.length === 0) {
     return apiImages;
@@ -1357,7 +1606,7 @@ function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
     imagesByWorkbookSheetIndex: collectWorksheetApiImages(workbook, objectUrls),
     namedCellStyleByName: {},
     objectUrls,
-    shapesByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => [] as XlsxShape[]),
+    shapesByWorkbookSheetIndex: collectWorksheetApiShapes(workbook),
     sheetOrigins: Array.from({ length: workbook.sheetCount }, () => null as WorkbookImageSheetOrigin | null),
     sheetStatesByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => null),
     styleById: {},
@@ -1461,6 +1710,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [shapesByWorkbookSheetIndex, setShapesByWorkbookSheetIndex] = React.useState<XlsxShape[][]>([]);
   const [activeSheetIndex, setActiveSheetIndexState] = React.useState(0);
   const [activeTabIndex, setActiveTabIndexState] = React.useState(0);
+  const [zoomScaleOverridesByTabId, setZoomScaleOverridesByTabId] = React.useState<Record<string, number>>({});
   const [activeCell, setActiveCell] = React.useState<XlsxCellAddress | null>(null);
   const [selection, setSelection] = React.useState<XlsxCellRange | null>(null);
   const [selectedChartId, setSelectedChartId] = React.useState<string | null>(null);
@@ -1768,6 +2018,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       workerCellSnapshotCacheRef.current.clear();
       setWorkerCellSnapshotRevision(0);
       setSortState(null);
+      setZoomScaleOverridesByTabId({});
       setRevision(0);
       return;
     }
@@ -1795,6 +2046,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     workerCellSnapshotCacheRef.current.clear();
     setWorkerCellSnapshotRevision(0);
     setSortState(null);
+    setZoomScaleOverridesByTabId({});
     setRevision(0);
     if (!workerSupported) {
       disposeWorkerClient();
@@ -1928,6 +2180,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const activeSheet = activeTab?.kind === "sheet"
     ? sheets[activeTab.sheetIndex ?? -1] ?? null
     : null;
+  const activeZoomTabKey = activeTab?.id ?? DEFAULT_ZOOM_TAB_KEY;
+  const defaultZoomScale = React.useMemo(
+    () => resolveDefaultZoomScale(activeTab, activeSheet),
+    [activeSheet, activeTab]
+  );
+  const zoomScale = React.useMemo(
+    () => clampZoomScale(zoomScaleOverridesByTabId[activeZoomTabKey] ?? defaultZoomScale),
+    [activeZoomTabKey, defaultZoomScale, zoomScaleOverridesByTabId]
+  );
+  const canZoomIn = zoomScale < MAX_ZOOM_SCALE;
+  const canZoomOut = zoomScale > MIN_ZOOM_SCALE;
 
   React.useEffect(() => {
     setActiveCell(null);
@@ -1965,6 +2228,40 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return index;
     });
   }, [tabs]);
+
+  const setZoomScale = React.useCallback((nextZoomScale: number) => {
+    const normalizedZoomScale = clampZoomScale(nextZoomScale);
+    setZoomScaleOverridesByTabId((current) => {
+      if (current[activeZoomTabKey] === normalizedZoomScale) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [activeZoomTabKey]: normalizedZoomScale
+      };
+    });
+  }, [activeZoomTabKey]);
+
+  const resetZoom = React.useCallback(() => {
+    setZoomScaleOverridesByTabId((current) => {
+      if (current[activeZoomTabKey] === undefined) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[activeZoomTabKey];
+      return next;
+    });
+  }, [activeZoomTabKey]);
+
+  const zoomIn = React.useCallback(() => {
+    setZoomScale(resolveNextZoomScale(zoomScale, 1));
+  }, [setZoomScale, zoomScale]);
+
+  const zoomOut = React.useCallback(() => {
+    setZoomScale(resolveNextZoomScale(zoomScale, -1));
+  }, [setZoomScale, zoomScale]);
 
   React.useEffect(() => {
     setActiveTabIndexState((current) => {
@@ -3816,6 +4113,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       canExport: Boolean(workbook),
       canLoadDeferred,
       canUndo,
+      canZoomIn,
+      canZoomOut,
       charts,
       chartsheets,
       clearSelectedChart,
@@ -3824,6 +4123,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       clearSelection,
       continueDeferredLoad,
       copySelectionToClipboard,
+      defaultZoomScale,
       deferredLoadFileSize,
       defineNamedRange,
       displayFileName,
@@ -3851,6 +4151,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       isChartsLoading,
       isWorkerBacked,
       mergeSelection,
+      maxZoomScale: MAX_ZOOM_SCALE,
+      minZoomScale: MIN_ZOOM_SCALE,
       moveChartBy,
       moveImageBy,
       pasteFromClipboard,
@@ -3860,6 +4162,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       readOnly,
       recalculate,
       redo,
+      resetZoom,
       revision,
       resizeChartBy,
       resizeImageBy,
@@ -3867,6 +4170,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeRow,
       setCellFormula,
       setCellValue,
+      setZoomScale,
       setChartRect,
       setImageRect,
       selectedChart,
@@ -3895,7 +4199,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       undo,
       unmergeSelection,
       updateChart,
-      workbook
+      workbook,
+      zoomIn,
+      zoomOut,
+      zoomScale
     }),
     [
       activeCell,
@@ -3908,6 +4215,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       canLoadDeferred,
       canRedo,
       canUndo,
+      canZoomIn,
+      canZoomOut,
       charts,
       chartsheets,
       clearSelectedChart,
@@ -3915,6 +4224,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       clearSelectedImage,
       continueDeferredLoad,
       copySelectionToClipboard,
+      defaultZoomScale,
       deferredLoadFileSize,
       defineNamedRange,
       displayFileName,
@@ -3942,6 +4252,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       isChartsLoading,
       isWorkerBacked,
       mergeSelection,
+      resetZoom,
       moveChartBy,
       moveImageBy,
       pasteFromClipboard,
@@ -3958,6 +4269,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeRow,
       setCellFormula,
       setCellValue,
+      setZoomScale,
       setChartRect,
       setImageRect,
       selectedChart,
@@ -3987,7 +4299,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       undo,
       unmergeSelection,
       updateChart,
-      workbook
+      workbook,
+      zoomIn,
+      zoomOut,
+      zoomScale
     ]
   );
 }

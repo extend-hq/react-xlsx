@@ -1,5 +1,7 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { resolveWorkbookColor } from "./colors";
 import type {
+  XlsxCellAddress,
   XlsxConditionalDataBarRule,
   XlsxConditionalFormatIcon,
   XlsxConditionalFormatRule,
@@ -11,6 +13,7 @@ import type {
   XlsxImageResizeHandlePosition,
   XlsxResolvedCellStyle,
   XlsxShape,
+  XlsxSparkline,
   XlsxTableStyleDefinition,
   XlsxThemePalette
 } from "./types";
@@ -127,10 +130,12 @@ type WorkbookSheetState = {
   rowHeightOverridesPx: Record<number, number>;
   rowStyleIds: Record<number, number>;
   showGridLines: boolean;
+  sparklines: XlsxSparkline[];
 };
 
 type ParseWorkbookStructureOptions = {
   includeCachedFormulaValues?: boolean;
+  themePalette?: XlsxThemePalette | null;
 };
 
 type ThemeState = {
@@ -363,6 +368,21 @@ function parseA1RangeReference(reference: string) {
   return start && end ? { end, start } : null;
 }
 
+function stripSheetNameFromFormulaReference(reference: string) {
+  const trimmed = reference.trim();
+  const bangIndex = trimmed.lastIndexOf("!");
+  return bangIndex >= 0 ? trimmed.slice(bangIndex + 1) : trimmed;
+}
+
+function parseFormulaCellReference(reference: string) {
+  const normalized = stripSheetNameFromFormulaReference(reference).split(/\s+/)[0] ?? "";
+  return parseA1CellReference(normalized);
+}
+
+function parseFormulaRangeReference(reference: string) {
+  return parseA1RangeReference(stripSheetNameFromFormulaReference(reference));
+}
+
 function isElementNode(node: Node | null | undefined): node is Element {
   return Boolean(node && node.nodeType === 1);
 }
@@ -381,6 +401,61 @@ function getFirstChild(parent: Element, localName: string) {
 
 function getFirstDescendant(parent: Document | Element, localName: string) {
   return getLocalElements(parent, localName)[0] ?? null;
+}
+
+function readFeaturePropertyBagCheckboxComplements(archive: ArchiveEntries) {
+  const xml = readArchiveText(archive, "xl/featurePropertyBag/featurePropertyBag.xml");
+  if (!xml) {
+    return new Set<number>();
+  }
+
+  const document = parseXml(xml);
+  if (!document?.documentElement) {
+    return new Set<number>();
+  }
+
+  const bagNodes = getChildElements(document.documentElement, "bag");
+  const bagTypeById = bagNodes.map((node) => node.getAttribute("type") ?? "");
+  const checkboxComplementIndices = new Set<number>();
+
+  const xfComplementsBag = bagNodes.find((node) => node.getAttribute("type") === "XFComplements") ?? null;
+  const mappedBagIds = xfComplementsBag
+    ? getLocalElements(xfComplementsBag, "bagId")
+      .map((node) => Number(node.textContent ?? Number.NaN))
+      .filter((value) => Number.isFinite(value))
+    : [];
+
+  mappedBagIds.forEach((bagId, complementIndex) => {
+    const xfComplementBag = bagNodes[bagId];
+    if (!xfComplementBag || bagTypeById[bagId] !== "XFComplement") {
+      return;
+    }
+
+    const xfControlsBagId = getLocalElements(xfComplementBag, "bagId")
+      .map((node) => Number(node.textContent ?? Number.NaN))
+      .find((value) => Number.isFinite(value));
+    if (xfControlsBagId === undefined) {
+      return;
+    }
+
+    const xfControlsBag = bagNodes[xfControlsBagId];
+    if (!xfControlsBag || bagTypeById[xfControlsBagId] !== "XFControls") {
+      return;
+    }
+
+    const cellControlBagId = getLocalElements(xfControlsBag, "bagId")
+      .map((node) => Number(node.textContent ?? Number.NaN))
+      .find((value) => Number.isFinite(value));
+    if (cellControlBagId === undefined) {
+      return;
+    }
+
+    if (bagTypeById[cellControlBagId] === "Checkbox") {
+      checkboxComplementIndices.add(complementIndex);
+    }
+  });
+
+  return checkboxComplementIndices;
 }
 
 function getRelationshipId(element: Element) {
@@ -620,6 +695,63 @@ function hasEnabledSpreadsheetFlag(node: Element | null) {
   return value === null || (value !== "0" && value !== "false");
 }
 
+function parseSheetSparklines(
+  document: XMLDocument,
+  themePalette?: XlsxThemePalette | null
+) {
+  const sparklines: XlsxSparkline[] = [];
+
+  for (const groupNode of getLocalElements(document, "sparklineGroup")) {
+    const rawType = groupNode.getAttribute("type");
+    const sparklineType: XlsxSparkline["type"] = rawType === "column"
+      ? "column"
+      : rawType === "stacked"
+        ? "winLoss"
+        : "line";
+
+    const markersNode = getFirstChild(groupNode, "markers");
+    const negativeNode = getFirstChild(groupNode, "negative");
+    const colorSeries = resolveWorkbookColor(parseSpreadsheetColor(getFirstChild(groupNode, "colorSeries")), themePalette);
+    const colorNegative = resolveWorkbookColor(parseSpreadsheetColor(getFirstChild(groupNode, "colorNegative")), themePalette);
+    const colorMarkers = resolveWorkbookColor(parseSpreadsheetColor(getFirstChild(groupNode, "colorMarkers")), themePalette);
+    const colorFirst = resolveWorkbookColor(parseSpreadsheetColor(getFirstChild(groupNode, "colorFirst")), themePalette);
+    const colorLast = resolveWorkbookColor(parseSpreadsheetColor(getFirstChild(groupNode, "colorLast")), themePalette);
+    const colorHigh = resolveWorkbookColor(parseSpreadsheetColor(getFirstChild(groupNode, "colorHigh")), themePalette);
+    const colorLow = resolveWorkbookColor(parseSpreadsheetColor(getFirstChild(groupNode, "colorLow")), themePalette);
+    const sparklineCollectionNode = getFirstChild(groupNode, "sparklines");
+    if (!sparklineCollectionNode) {
+      continue;
+    }
+
+    for (const sparklineNode of getChildElements(sparklineCollectionNode, "sparkline")) {
+      const formula = getFirstChild(sparklineNode, "f")?.textContent ?? "";
+      const targetReference = getFirstChild(sparklineNode, "sqref")?.textContent ?? "";
+      const range = parseFormulaRangeReference(formula);
+      const target = parseFormulaCellReference(targetReference);
+      if (!range || !target) {
+        continue;
+      }
+
+      sparklines.push({
+        color: colorSeries ?? undefined,
+        firstColor: colorFirst ?? undefined,
+        highColor: colorHigh ?? undefined,
+        lastColor: colorLast ?? undefined,
+        lowColor: colorLow ?? undefined,
+        markerColor: colorMarkers ?? undefined,
+        markers: hasEnabledSpreadsheetFlag(markersNode),
+        negative: hasEnabledSpreadsheetFlag(negativeNode),
+        negativeColor: colorNegative ?? undefined,
+        range,
+        target,
+        type: sparklineType
+      });
+    }
+  }
+
+  return sparklines;
+}
+
 function parseSpreadsheetFont(node: Element | null): XlsxResolvedCellStyle["font"] {
   if (!node) {
     return undefined;
@@ -834,7 +966,8 @@ function parseResolvedXfStyle(
   xfNode: Element,
   fonts: Array<XlsxResolvedCellStyle["font"]>,
   fills: Array<XlsxResolvedCellStyle["fill"]>,
-  borders: Array<XlsxResolvedCellStyle["border"]>
+  borders: Array<XlsxResolvedCellStyle["border"]>,
+  checkboxComplementIndices?: Set<number>
 ) {
   const style: XlsxResolvedCellStyle = {};
   const fontId = Number(xfNode.getAttribute("fontId") ?? Number.NaN);
@@ -853,6 +986,11 @@ function parseResolvedXfStyle(
   }
   if (alignment) {
     style.alignment = alignment;
+  }
+  const xfComplementNode = getFirstDescendant(xfNode, "xfComplement");
+  const xfComplementIndex = Number(xfComplementNode?.getAttribute("i") ?? Number.NaN);
+  if (Number.isFinite(xfComplementIndex) && checkboxComplementIndices?.has(xfComplementIndex)) {
+    style.cellControl = { kind: "checkbox" };
   }
 
   return style;
@@ -896,19 +1034,20 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
     };
   }
 
+  const checkboxComplementIndices = readFeaturePropertyBagCheckboxComplements(archive);
   const fonts = getChildElements(fontsNode ?? document.documentElement, "font").map((node) => parseSpreadsheetFont(node));
   const fills = getChildElements(fillsNode ?? document.documentElement, "fill").map((node) => parseSpreadsheetFill(node));
   const borders = getChildElements(bordersNode ?? document.documentElement, "border").map((node) => parseSpreadsheetBorder(node));
   const differentialStyles = getChildElements(dxfsNode ?? document.documentElement, "dxf").map((node) => parseDifferentialStyle(node));
   const cellStyleXfs = getChildElements(cellStyleXfsNode ?? document.documentElement, "xf").map(
-    (node) => parseResolvedXfStyle(node, fonts, fills, borders)
+    (node) => parseResolvedXfStyle(node, fonts, fills, borders, checkboxComplementIndices)
   );
   const namedCellStyleByName: Record<string, XlsxResolvedCellStyle> = {};
   const styleById: Record<number, XlsxResolvedCellStyle> = {};
   const tableStyleByName: Record<string, XlsxTableStyleDefinition> = {};
 
   getChildElements(cellXfsNode, "xf").forEach((xfNode, index) => {
-    styleById[index] = parseResolvedXfStyle(xfNode, fonts, fills, borders);
+    styleById[index] = parseResolvedXfStyle(xfNode, fonts, fills, borders, checkboxComplementIndices);
   });
 
   getChildElements(cellStylesNode ?? document.documentElement, "cellStyle").forEach((cellStyleNode) => {
@@ -1361,6 +1500,7 @@ function parseSheetState(
   const includeCachedFormulaValues = options?.includeCachedFormulaValues ?? true;
   const cachedFormulaValues: Record<string, string> = {};
   const conditionalFormatRules = parseConditionalFormatRules(document);
+  const sparklines = parseSheetSparklines(document, options?.themePalette);
   const sheetFormatNode = getLocalElements(document, "sheetFormatPr")[0] ?? null;
   const sheetViewNode = getLocalElements(document, "sheetView")[0] ?? null;
   const rowHeightOverridesPx: Record<number, number> = {};
@@ -1473,7 +1613,8 @@ function parseSheetState(
     hiddenRows: [...hiddenRows].sort((left, right) => left - right),
     rowHeightOverridesPx,
     rowStyleIds,
-    showGridLines: (sheetViewNode?.getAttribute("showGridLines") ?? "1") !== "0"
+    showGridLines: (sheetViewNode?.getAttribute("showGridLines") ?? "1") !== "0",
+    sparklines
   };
 }
 
@@ -2594,7 +2735,11 @@ function parseWorkbookStructureAssetsFromArchive(
   return {
     contentTypes,
     namedCellStyleByName,
-    sheetStatesByWorkbookSheetIndex: workbookSheets.map((sheet) => parseSheetState(archive, sheet.path, { ...options, defaultFont })),
+    sheetStatesByWorkbookSheetIndex: workbookSheets.map((sheet) => parseSheetState(archive, sheet.path, {
+      ...options,
+      defaultFont,
+      themePalette
+    })),
     styleById,
     tableMetadataByWorkbookSheetIndex,
     tableStyleByName,

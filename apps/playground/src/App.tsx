@@ -5,6 +5,7 @@ import {
   useXlsxViewerController,
   useXlsxViewerEditing,
   useXlsxViewerSelection,
+  useXlsxViewerZoom,
   XlsxViewer,
   XlsxViewerProvider
 } from "react-xlsx";
@@ -16,6 +17,7 @@ import {
   Download,
   FileSpreadsheet,
   Link2,
+  Minus,
   Moon,
   Plus,
   Redo2,
@@ -151,10 +153,19 @@ function WorkbookToolbar({
     undo,
     unmergeSelection,
   } = useXlsxViewerEditing();
+  const { canZoomIn, canZoomOut, defaultZoomScale, resetZoom, setZoomScale, zoomIn, zoomOut, zoomScale } = useXlsxViewerZoom();
   const hasWorkbook = sheets.length > 0;
   const hasSelection = Boolean(selection);
   const hasActiveCell = Boolean(activeCellAddress);
   const isReadOnly = readOnly || viewerReadOnly;
+  const zoomChoices = React.useMemo(() => {
+    const presets = [50, 75, 100, 125, 150, 200];
+    if (presets.includes(Math.round(zoomScale))) {
+      return presets;
+    }
+
+    return [...presets, Math.round(zoomScale)].sort((left, right) => left - right);
+  }, [zoomScale]);
   const [formulaDraft, setFormulaDraft] = React.useState("");
   const [namedRangeDraft, setNamedRangeDraft] = React.useState("");
   const [focusedField, setFocusedField] = React.useState<"formula" | null>(null);
@@ -340,6 +351,43 @@ function WorkbookToolbar({
           />
           <Button disabled={!hasSelection || !namedRangeDraft.trim() || isReadOnly} onClick={handleDefineNamedRange} size="sm" variant="outline">
             Define
+          </Button>
+        </RibbonGroup>
+
+        <RibbonSeparator />
+
+        <RibbonGroup label="View">
+          <ButtonGroup>
+            <Button disabled={!hasWorkbook || !canZoomOut} onClick={zoomOut} size="sm" variant="outline">
+              <Minus />
+            </Button>
+            <Select
+              disabled={!hasWorkbook}
+              onValueChange={(value) => setZoomScale(Number(value))}
+              value={String(Math.round(zoomScale))}
+            >
+              <SelectTrigger className="min-w-[92px]" size="sm">
+                <SelectValue placeholder="Zoom" />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {zoomChoices.map((choice) => (
+                  <SelectItem key={choice} value={String(choice)}>
+                    {choice}%
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button disabled={!hasWorkbook || !canZoomIn} onClick={zoomIn} size="sm" variant="outline">
+              <Plus />
+            </Button>
+          </ButtonGroup>
+          <Button
+            disabled={!hasWorkbook || Math.round(zoomScale) === Math.round(defaultZoomScale)}
+            onClick={resetZoom}
+            size="sm"
+            variant="outline"
+          >
+            Reset
           </Button>
         </RibbonGroup>
 
