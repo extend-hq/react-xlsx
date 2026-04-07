@@ -204,6 +204,44 @@ function buildAxisStyle(color: string | undefined, border: string) {
   };
 }
 
+function buildNumericTickValues(minValue: number, maxValue: number, majorUnit?: number) {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || maxValue <= minValue) {
+    return [];
+  }
+  const step = typeof majorUnit === "number" && majorUnit > 0
+    ? majorUnit
+    : (maxValue - minValue) / 4;
+  if (!Number.isFinite(step) || step <= 0) {
+    return [];
+  }
+  const values: number[] = [];
+  for (let current = minValue; current <= maxValue + step * 0.25; current += step) {
+    values.push(Number(current.toFixed(6)));
+  }
+  if (values.length > 1) {
+    values.pop();
+  }
+  return values;
+}
+
+function buildNiceStep(minValue: number, maxValue: number, preferredTicks = 6) {
+  const span = Math.max(1e-6, maxValue - minValue);
+  const roughStep = span / Math.max(1, preferredTicks);
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / magnitude;
+  const niceNormalized = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return niceNormalized * magnitude;
+}
+
+function resolveSurfaceBaseColor(chart: XlsxChart, palette: ChartRendererPalette) {
+  return chart.chartColorPalette?.[0]
+    ?? chart.series[0]?.color
+    ?? chart.series[0]?.lineColor
+    ?? chart.axisLineColor
+    ?? chart.textColor
+    ?? palette.text;
+}
+
 function normalizeRenderableChartType(chart: XlsxChart) {
   if (chart.chartType === "ScatterSmooth") {
     return "ScatterSmooth";
@@ -223,7 +261,7 @@ function normalizeRenderableChartType(chart: XlsxChart) {
   return chart.chartType;
 }
 
-function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
+function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette, rect: XlsxImageRect) {
   const renderChartType = normalizeRenderableChartType(chart);
   const categories = chart.series[0]?.categories?.map((value) => (value == null ? "" : String(value))) ?? [];
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
@@ -261,6 +299,7 @@ function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
       const markerColor = entry.markerColor ?? chartSeriesColor(chart, seriesIndex);
       return [{
         data,
+        connectNulls: false,
         itemStyle: {
           borderColor: entry.markerLineColor ?? chart.chartAreaFillColor ?? lineColor,
           borderWidth: 1,
@@ -268,14 +307,15 @@ function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
         },
         lineStyle: {
           color: lineColor,
-          opacity: renderChartType === "ScatterSmooth" ? 1 : 0,
+          opacity: 1,
           width: entry.lineWidthPx ?? 2
         },
+        name: entry.name ?? `Series ${seriesIndex + 1}`,
         showSymbol: true,
         smooth: renderChartType === "ScatterSmooth" || entry.smooth === true,
         symbol: normalizeChartMarkerSymbol(entry.markerSymbol),
         symbolSize: Math.max(6, entry.markerSize ?? 5),
-        type: renderChartType === "ScatterSmooth" ? "line" : "scatter"
+        type: "line"
       }];
     }).flat();
 
@@ -285,25 +325,122 @@ function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
       series,
       xAxis: {
         ...buildAxisStyle(labelColor, axisColor),
+        logBase: chart.categoryAxis?.logBase,
         max: chart.categoryAxis?.max,
         min: chart.categoryAxis?.min,
+        name: chart.categoryAxis?.delete ? undefined : ((chart.categoryAxis?.raw as Record<string, unknown> | undefined)?.title as string | undefined),
         scale: true,
-        type: "value"
+        type: chart.categoryAxis?.logBase ? "log" : "value"
       },
       yAxis: {
         ...buildAxisStyle(labelColor, axisColor),
+        logBase: chart.valueAxis?.logBase,
         max: chart.valueAxis?.max,
         min: chart.valueAxis?.min,
-        type: "value"
+        type: chart.valueAxis?.logBase ? "log" : "value"
+      }
+    };
+  }
+
+  if (renderChartType === "Bubble") {
+    const allBubbleSizes = chart.series.flatMap((entry) => entry.bubbleSizes ?? []).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    const maxBubble = Math.max(1, ...allBubbleSizes);
+    const minBubble = allBubbleSizes.length > 0 ? Math.min(...allBubbleSizes) : 1;
+    return {
+      ...common,
+      grid,
+      series: chart.series.map((entry, seriesIndex) => {
+        const baseColor = chartSeriesColor(chart, seriesIndex);
+        return {
+          data: entry.values.flatMap((value, index) => {
+            const x = entry.categories[index];
+            const size = entry.bubbleSizes?.[index];
+            if (typeof value !== "number" || typeof x !== "number") {
+              return [];
+            }
+            return [[x, value, typeof size === "number" ? size : 1]];
+          }),
+          itemStyle: {
+            borderColor: darkenColor(entry.lineColor ?? baseColor, 0.18),
+            borderWidth: 1,
+            color: new echarts.graphic.RadialGradient(0.35, 0.35, 0.8, [
+              { color: lightenColor(baseColor, 0.58), offset: 0 },
+              { color: lightenColor(baseColor, 0.18), offset: 0.28 },
+              { color: baseColor, offset: 0.68 },
+              { color: darkenColor(baseColor, 0.2), offset: 1 }
+            ]),
+            opacity: 0.96,
+            shadowBlur: chart.bubble3d === false ? 8 : 14,
+            shadowColor: lightenColor(baseColor, 0.2),
+            shadowOffsetX: 2,
+            shadowOffsetY: 4
+          },
+          label: {
+            color: chart.textColor ?? palette.text,
+            formatter: chart.dataLabels?.showValue
+              ? ({ value }: { value: [number, number, number] }) => `${value[1]}`
+              : undefined,
+            position: "top",
+            show: Boolean(chart.dataLabels?.showValue)
+          },
+          name: entry.name ?? `Series ${seriesIndex + 1}`,
+          symbolSize: (value: number[]) => {
+            const bubbleValue = typeof value[2] === "number" ? value[2] : 1;
+            const normalized = maxBubble === minBubble
+              ? 1
+              : Math.sqrt(Math.max(0, bubbleValue - minBubble) / Math.max(1e-6, maxBubble - minBubble));
+            return 14 + normalized * ((chart.bubbleScale ?? 100) * 0.38);
+          },
+          type: "scatter"
+        };
+      }),
+      xAxis: {
+        ...buildAxisStyle(labelColor, axisColor),
+        logBase: chart.categoryAxis?.logBase,
+        max: chart.categoryAxis?.max,
+        min: chart.categoryAxis?.min,
+        scale: true,
+        type: chart.categoryAxis?.logBase ? "log" : "value"
+      },
+      yAxis: {
+        ...buildAxisStyle(labelColor, axisColor),
+        logBase: chart.valueAxis?.logBase,
+        max: chart.valueAxis?.max,
+        min: chart.valueAxis?.min,
+        scale: true,
+        type: chart.valueAxis?.logBase ? "log" : "value"
       }
     };
   }
 
   if (renderChartType === "Radar") {
     const allValues = chart.series.flatMap((entry) => entry.values.filter((value): value is number => typeof value === "number"));
+    const minValue = chart.valueAxis?.min ?? 0;
     const maxValue = chart.valueAxis?.max ?? Math.max(1, ...allValues);
+    const radarUnit = typeof chart.valueAxis?.majorUnit === "number" && chart.valueAxis.majorUnit > 0
+      ? chart.valueAxis.majorUnit
+      : buildNiceStep(minValue, maxValue, 6);
+    const splitNumber = Math.max(1, Math.round((maxValue - minValue) / radarUnit));
+    const centerX = normalizeLegendPosition(chart.legend?.position) === "right" ? rect.width * 0.38 : rect.width * 0.5;
+    const centerY = rect.height * 0.56;
+    const radius = Math.min(rect.width * 0.28, rect.height * 0.32);
+    const tickValues = buildNumericTickValues(minValue, maxValue, radarUnit);
     return {
       ...common,
+      graphic: tickValues.map((value) => {
+        const ratio = (value - minValue) / Math.max(1e-6, maxValue - minValue);
+        return {
+          left: centerX + 6,
+          silent: true,
+          style: {
+            fill: chart.axisLabelColor ?? palette.text,
+            font: "10px sans-serif",
+            text: String(value)
+          },
+          top: centerY - (ratio * radius) - 6,
+          type: "text"
+        };
+      }),
       legend: {
         ...buildLegend(chart),
         right: normalizeLegendPosition(chart.legend?.position) === "right" ? 10 : undefined
@@ -319,25 +456,34 @@ function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
         },
         indicator: categories.map((name) => ({
           max: maxValue,
-          min: chart.valueAxis?.min ?? 0,
+          min: minValue,
           name
         })),
+        center: [centerX, centerY],
+        radius,
         shape: "polygon",
         splitLine: {
           lineStyle: {
             color: lightenColor(axisColor, 0.74)
           }
         },
-        splitNumber: typeof chart.valueAxis?.majorUnit === "number" && chart.valueAxis.majorUnit > 0
-          ? Math.max(1, Math.round(maxValue / chart.valueAxis.majorUnit))
-          : 5,
+        splitNumber,
         splitArea: {
           show: false
         }
       },
       series: [{
         data: chart.series.map((entry, index) => ({
-          areaStyle: entry.shapeProperties?.xmlFillColor ? { color: entry.shapeProperties.xmlFillColor, opacity: 0.18 } : undefined,
+          areaStyle: entry.shapeProperties?.xmlFillColor ? {
+            color: new echarts.graphic.RadialGradient(0.45, 0.4, 0.85, [
+              { color: lightenColor(String(entry.shapeProperties.xmlFillColor), 0.28), offset: 0 },
+              { color: String(entry.shapeProperties.xmlFillColor), offset: 0.6 },
+              { color: darkenColor(String(entry.shapeProperties.xmlFillColor), 0.16), offset: 1 }
+            ]),
+            opacity: chart.radarStyle === "filled" ? 0.92 : 0.14,
+            shadowBlur: chart.radarStyle === "filled" ? 14 : 0,
+            shadowColor: lightenColor(String(entry.shapeProperties.xmlFillColor), 0.18)
+          } : undefined,
           itemStyle: {
             color: chartSeriesColor(chart, index)
           },
@@ -411,14 +557,17 @@ function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
         : colors.fill;
       return {
         itemStyle: {
+          borderRadius: chart.is3d
+            ? (isHorizontal ? [0, 6, 6, 0] : [6, 6, 0, 0])
+            : 0,
           borderColor: colors.stroke,
           borderWidth: 1,
           color: gradient,
           opacity: 1,
-          shadowBlur: chart.is3d ? 10 : 0,
+          shadowBlur: chart.is3d ? 14 : 0,
           shadowColor: chart.is3d ? "rgba(0,0,0,0.18)" : undefined,
-          shadowOffsetX: chart.is3d && isHorizontal ? 4 : 0,
-          shadowOffsetY: chart.is3d && !isHorizontal ? 4 : 0
+          shadowOffsetX: chart.is3d && isHorizontal ? 5 : 0,
+          shadowOffsetY: chart.is3d && !isHorizontal ? 5 : 0
         },
         value
       };
@@ -437,6 +586,32 @@ function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
       type: "bar"
     };
   });
+  const barCapSeries = chart.is3d
+    ? chart.series.map((entry, seriesIndex) => ({
+        data: entry.values.map((rawValue, categoryIndex) => {
+          const value = renderChartType === "BarPercentStacked"
+            ? normalizePercentData(categoryIndex)[seriesIndex] ?? 0
+            : (rawValue ?? 0);
+          return value;
+        }),
+        name: `${entry.name ?? `Series ${seriesIndex + 1}`} cap`,
+        silent: true,
+        stack: renderChartType === "ColumnStacked" || renderChartType === "BarPercentStacked" ? "stack" : undefined,
+        symbol: "diamond",
+        symbolOffset: isHorizontal ? [6, 0] : [0, -6],
+        symbolPosition: "end",
+        symbolRotate: isHorizontal ? 90 : 0,
+        symbolSize: isHorizontal ? [12, 20] : [20, 12],
+        type: "pictorialBar",
+        z: 8,
+        itemStyle: {
+          color: lightenColor(chartSeriesColor(chart, seriesIndex), 0.26),
+          borderColor: darkenColor(chartSeriesStrokeColor(chart, seriesIndex), 0.16),
+          borderWidth: 1,
+          opacity: 0.96
+        }
+      }))
+    : [];
 
   if (renderChartType === "Line") {
     return {
@@ -496,7 +671,7 @@ function buildCartesianOption(chart: XlsxChart, palette: ChartRendererPalette) {
   return {
     ...common,
     grid,
-    series: barSeries,
+    series: [...barSeries, ...barCapSeries],
     xAxis,
     yAxis
   };
@@ -556,16 +731,17 @@ function buildPieOption(chart: XlsxChart, palette: ChartRendererPalette) {
     };
   }
 
-  const layeredSeries = Array.from({ length: 10 }, (_, depthIndex) => ({
+  const layeredSeries = Array.from({ length: 18 }, (_, depthIndex) => ({
     ...topSeries,
     animation: false,
-    center: ["44%", `${54 + depthIndex * 0.7}%`],
+    center: ["44%", `${54 + depthIndex * 0.62}%`],
     data: data.map((entry) => ({
       ...entry,
       itemStyle: {
         ...(entry.itemStyle ?? {}),
         borderWidth: 0,
-        color: darkenColor(String(entry.itemStyle?.color ?? "#888888"), 0.22)
+        color: darkenColor(String(entry.itemStyle?.color ?? "#888888"), 0.28),
+        shadowBlur: 0
       }
     })),
     label: { show: false },
@@ -576,7 +752,18 @@ function buildPieOption(chart: XlsxChart, palette: ChartRendererPalette) {
 
   return {
     ...common,
-    series: [...layeredSeries, { ...topSeries, z: 20 }]
+    series: [
+      ...layeredSeries,
+      {
+        ...topSeries,
+        itemStyle: {
+          shadowBlur: 18,
+          shadowColor: "rgba(0,0,0,0.22)",
+          shadowOffsetY: 8
+        },
+        z: 30
+      }
+    ]
   };
 }
 
@@ -677,38 +864,48 @@ function buildSurfaceOption(chart: XlsxChart, palette: ChartRendererPalette) {
   const allValues = chart.series.flatMap((series) => series.values.filter((value): value is number => typeof value === "number"));
   const minValue = Math.min(...allValues);
   const maxValue = Math.max(...allValues);
-  const paletteColors = chart.chartColorPalette && chart.chartColorPalette.length > 0
-    ? chart.chartColorPalette
-    : chart.series.map((_, index) => chartSeriesColor(chart, index));
+  const surfaceBaseColor = resolveSurfaceBaseColor(chart, palette);
+  const surfaceAxisColor = lightenColor(surfaceBaseColor, 0.38);
+  const paletteColors = [
+    darkenColor(surfaceBaseColor, 0.36),
+    surfaceBaseColor,
+    lightenColor(surfaceBaseColor, 0.26),
+    lightenColor(surfaceBaseColor, 0.48)
+  ];
   const data = chart.series.flatMap((series, rowIndex) => series.values.flatMap((value, columnIndex) => (
     typeof value === "number" ? [[columnIndex, rowIndex, value]] : []
   )));
+  const topDown = chart.wireframe ? 88 : (chart.view3d?.rotX ?? 28);
+  const rotationY = chart.wireframe ? 0 : (chart.view3d?.rotY ?? 18);
   return {
     ...buildCommonOption(chart, palette),
     grid3D: {
       axisLine: {
         lineStyle: {
-          color: chart.axisLineColor ?? palette.border
+          color: chart.wireframe ? surfaceAxisColor : lightenColor(surfaceBaseColor, 0.18)
         }
       },
       axisPointer: {
         show: false
       },
-      boxDepth: 80,
-      boxHeight: 40,
+      boxDepth: 88,
+      boxHeight: chart.wireframe ? 18 : 52,
       boxWidth: 120,
       environment: chart.chartAreaFillColor ?? palette.surface,
       light: {
         ambient: {
-          intensity: 0.8
+          intensity: chart.wireframe ? 0.92 : 0.68
         },
         main: {
-          intensity: 0.9
+          color: lightenColor(surfaceBaseColor, 0.55),
+          intensity: chart.wireframe ? 0.58 : 1.05,
+          shadow: !chart.wireframe,
+          shadowQuality: "high"
         }
       },
       viewControl: {
-        alpha: chart.view3d?.rotX ?? 28,
-        beta: chart.view3d?.rotY ?? 18,
+        alpha: topDown,
+        beta: rotationY,
         panSensitivity: 0,
         projection: chart.wireframe ? "orthographic" : "perspective",
         rotateSensitivity: 0,
@@ -726,29 +923,38 @@ function buildSurfaceOption(chart: XlsxChart, palette: ChartRendererPalette) {
       show: false
     },
     xAxis3D: {
-      axisLabel: { color: chart.axisLabelColor ?? palette.text },
+      axisLabel: { color: chart.wireframe ? surfaceAxisColor : lightenColor(surfaceBaseColor, 0.42) },
+      axisLine: { lineStyle: { color: surfaceAxisColor } },
       data: categories,
       type: "category"
     },
     yAxis3D: {
-      axisLabel: { color: chart.axisLabelColor ?? palette.text },
+      axisLabel: { color: chart.wireframe ? surfaceAxisColor : lightenColor(surfaceBaseColor, 0.42) },
+      axisLine: { lineStyle: { color: surfaceAxisColor } },
       data: rowNames,
       type: "category"
     },
     zAxis3D: {
-      axisLabel: { color: chart.axisLabelColor ?? palette.text },
+      axisLabel: { color: chart.wireframe ? surfaceAxisColor : lightenColor(surfaceBaseColor, 0.42) },
+      axisLine: { lineStyle: { color: surfaceAxisColor } },
       max: chart.valueAxis?.max,
       min: chart.valueAxis?.min,
       type: "value"
     },
     series: [{
       data,
-      shading: chart.wireframe ? "color" : "lambert",
+      itemStyle: chart.wireframe ? {
+        color: "rgba(0,0,0,0)"
+      } : {
+        color: surfaceBaseColor,
+        opacity: 0.98
+      },
+      shading: chart.wireframe ? "realistic" : "lambert",
       type: "surface",
       wireframe: {
         lineStyle: {
-          color: chart.axisLineColor ?? palette.border,
-          width: chart.wireframe ? 1.2 : 0.4
+          color: chart.wireframe ? lightenColor(surfaceBaseColor, 0.34) : lightenColor(surfaceBaseColor, 0.12),
+          width: chart.wireframe ? 1.6 : 0.45
         },
         show: chart.wireframe !== false
       }
@@ -756,7 +962,7 @@ function buildSurfaceOption(chart: XlsxChart, palette: ChartRendererPalette) {
   };
 }
 
-function buildOption(chart: XlsxChart, palette: ChartRendererPalette) {
+function buildOption(chart: XlsxChart, palette: ChartRendererPalette, rect: XlsxImageRect) {
   const type = normalizeRenderableChartType(chart);
   if (type === "Pie" || type === "PieExploded" || type === "Doughnut" || type === "Pie3D") {
     return buildPieOption(chart, palette);
@@ -767,13 +973,13 @@ function buildOption(chart: XlsxChart, palette: ChartRendererPalette) {
   if (type === "Surface") {
     return buildSurfaceOption(chart, palette);
   }
-  return buildCartesianOption(chart, palette);
+  return buildCartesianOption(chart, palette, rect);
 }
 
 export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, rect }: ChartSvgProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const chartRef = React.useRef<echarts.EChartsType | null>(null);
-  const option = React.useMemo(() => buildOption(chart, palette), [chart, palette]);
+  const option = React.useMemo(() => buildOption(chart, palette, rect), [chart, palette, rect]);
   const useCanvas = chart.is3d || chart.chartType === "Surface" || chart.chartType === "Pie3D";
   const renderer = useCanvas ? "canvas" : "svg";
 

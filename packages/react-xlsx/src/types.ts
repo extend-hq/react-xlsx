@@ -318,6 +318,7 @@ export interface XlsxChartAxis {
   crossBetween?: string;
   delete?: boolean;
   labelPosition?: string;
+  logBase?: number;
   majorUnit?: number;
   max?: number;
   min?: number;
@@ -343,6 +344,8 @@ export interface XlsxChartPointStyle {
 }
 
 export interface XlsxChartSeries {
+  bubbleSizeRef?: XlsxChartReference | null;
+  bubbleSizes?: Array<number | null>;
   categories: Array<number | string | null>;
   categoriesRef?: XlsxChartReference | null;
   color?: string;
@@ -400,6 +403,7 @@ export interface XlsxChart {
   sheetIndex: number;
   showDlblsOverMax?: boolean;
   bubbleScale?: number;
+  bubble3d?: boolean;
   textColor?: string;
   title?: string;
   titleColor?: string;
