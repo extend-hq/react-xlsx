@@ -3,7 +3,7 @@ import type { Worksheet } from "@dukelib/sheets-wasm";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController } from "./controller";
-import { MemoChartSvg } from "./echarts-renderer";
+import { MemoChartSvg } from "./chart-renderer";
 import {
   emuToPixels,
   resizeImageRect,

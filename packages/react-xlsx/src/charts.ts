@@ -523,23 +523,36 @@ function parseChartCacheValues(
     return null;
   }
 
+  const pointCount = readChartNumericAttribute(cacheNode, "ptCount");
   const pointNodes = getLocalChildren(cacheNode, "pt")
-    .map((pointNode) => ({
-      index: readChartNumericAttribute(pointNode, "idx") ?? 0,
-      value: getFirstLocalChild(pointNode, "v")?.textContent ?? ""
-    }))
+    .map((pointNode) => {
+      const rawIndex = Number(pointNode.getAttribute("idx") ?? Number.NaN);
+      return {
+        index: Number.isFinite(rawIndex) ? rawIndex : 0,
+        value: getFirstLocalChild(pointNode, "v")?.textContent ?? ""
+      };
+    })
     .sort((left, right) => left.index - right.index);
 
   if (pointNodes.length === 0) {
     return null;
   }
 
-  return pointNodes.map(({ value }) => {
+  const maxIndex = pointNodes.reduce((max, point) => Math.max(max, point.index), 0);
+  const targetLength = Math.max(
+    pointNodes.length,
+    Number.isFinite(pointCount ?? Number.NaN) ? Number(pointCount) : 0,
+    maxIndex + 1
+  );
+  const values = Array.from({ length: targetLength }, () => null as number | string | null);
+  for (const point of pointNodes) {
     if (mode === "value") {
-      return cellValueToNumber(value);
+      values[point.index] = cellValueToNumber(point.value);
+    } else {
+      values[point.index] = point.value.length > 0 ? point.value : null;
     }
-    return value.length > 0 ? value : null;
-  });
+  }
+  return values;
 }
 
 function parseChartMultiLevelCacheValues(
@@ -561,28 +574,39 @@ function parseChartMultiLevelCacheValues(
     return null;
   }
 
-  const primaryLevelNode = levelNodes[0];
+  const pointCount = readChartNumericAttribute(cacheNode, "ptCount");
+  const primaryLevelNode = mode === "category"
+    ? levelNodes[levelNodes.length - 1] ?? levelNodes[0]
+    : levelNodes[0];
   const pointNodes = getLocalChildren(primaryLevelNode, "pt")
-    .map((pointNode) => ({
-      index: readChartNumericAttribute(pointNode, "idx") ?? 0,
-      value: getFirstLocalChild(pointNode, "v")?.textContent ?? ""
-    }))
+    .map((pointNode) => {
+      const rawIndex = Number(pointNode.getAttribute("idx") ?? Number.NaN);
+      return {
+        index: Number.isFinite(rawIndex) ? rawIndex : 0,
+        value: getFirstLocalChild(pointNode, "v")?.textContent ?? ""
+      };
+    })
     .sort((left, right) => left.index - right.index);
 
   if (pointNodes.length === 0) {
     return null;
   }
 
-  return pointNodes.map(({ value }) => {
+  const maxIndex = pointNodes.reduce((max, point) => Math.max(max, point.index), 0);
+  const targetLength = Math.max(
+    pointNodes.length,
+    Number.isFinite(pointCount ?? Number.NaN) ? Number(pointCount) : 0,
+    maxIndex + 1
+  );
+  const values = Array.from({ length: targetLength }, () => null as number | string | null);
+  for (const point of pointNodes) {
     if (mode === "value") {
-      return cellValueToNumber(value);
+      values[point.index] = cellValueToNumber(point.value);
+      continue;
     }
-    const numeric = cellValueToNumber(value);
-    if (numeric !== null) {
-      return numeric;
-    }
-    return value.length > 0 ? value : null;
-  });
+    values[point.index] = point.value.length > 0 ? point.value : null;
+  }
+  return values;
 }
 
 function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, themePalette?: XlsxThemePalette | null) {
@@ -771,8 +795,21 @@ function applyChartStyleFromXml(
   chart.chartColorPaletteOffset = styleAppearance.paletteOffset ?? chart.chartColorPaletteOffset;
   chart.textColor = styleAppearance.textColor ?? chart.textColor;
   chart.titleColor = styleAppearance.titleColor ?? chart.titleColor;
-  const categoryAxisNode = getLocalChildren(plotArea, "catAx")[0] ?? null;
-  const valueAxisNode = getLocalChildren(plotArea, "valAx")[0] ?? null;
+  const categoryAxisNodes = getLocalChildren(plotArea, "catAx");
+  const valueAxisNodes = getLocalChildren(plotArea, "valAx");
+  const isScatterLikeChart = chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth" || chart.chartType === "Bubble";
+  let categoryAxisNode = categoryAxisNodes[0] ?? null;
+  let valueAxisNode = valueAxisNodes[0] ?? null;
+  if (!categoryAxisNode && isScatterLikeChart && valueAxisNodes.length >= 2) {
+    categoryAxisNode = valueAxisNodes.find((axisNode) => {
+      const position = getFirstLocalChild(axisNode, "axPos")?.getAttribute("val");
+      return position === "b" || position === "t";
+    }) ?? valueAxisNodes[0];
+    valueAxisNode = valueAxisNodes.find((axisNode) => {
+      const position = getFirstLocalChild(axisNode, "axPos")?.getAttribute("val");
+      return position === "l" || position === "r";
+    }) ?? valueAxisNodes[1] ?? valueAxisNodes[0];
+  }
   chart.categoryAxis = mergeChartAxis(chart.categoryAxis, readChartAxisFromXml(categoryAxisNode));
   chart.valueAxis = mergeChartAxis(chart.valueAxis, readChartAxisFromXml(valueAxisNode));
   chart.axes = chart.axes.length > 0
@@ -1204,6 +1241,7 @@ function readChartAxisFromXml(axisNode: Element | null): Partial<XlsxChartAxis> 
   }
 
   const numFmt = getFirstLocalChild(axisNode, "numFmt");
+  const scalingNode = getFirstLocalChild(axisNode, "scaling");
   return {
     crosses: getFirstLocalChild(axisNode, "crosses")?.getAttribute("val") ?? undefined,
     crossBetween: getFirstLocalChild(axisNode, "crossBetween")?.getAttribute("val") ?? undefined,
@@ -1217,8 +1255,8 @@ function readChartAxisFromXml(axisNode: Element | null): Partial<XlsxChartAxis> 
     majorGridlines: Boolean(getFirstLocalChild(axisNode, "majorGridlines")),
     majorTickMark: getFirstLocalChild(axisNode, "majorTickMark")?.getAttribute("val") ?? undefined,
     majorUnit: readChartNumericAttribute(axisNode, "majorUnit"),
-    max: readChartNumericAttribute(axisNode, "max"),
-    min: readChartNumericAttribute(axisNode, "min"),
+    max: readChartNumericAttribute(scalingNode, "max"),
+    min: readChartNumericAttribute(scalingNode, "min"),
     minorGridlines: Boolean(getFirstLocalChild(axisNode, "minorGridlines")),
     minorTickMark: getFirstLocalChild(axisNode, "minorTickMark")?.getAttribute("val") ?? undefined,
     minorUnit: readChartNumericAttribute(axisNode, "minorUnit"),

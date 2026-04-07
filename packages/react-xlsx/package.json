@@ -28,13 +28,15 @@
     "@tanstack/react-virtual": "^3.13.12",
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
-    "echarts": "^5.6.0",
-    "echarts-gl": "^2.0.9",
     "fflate": "^0.8.2"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --external react,react-dom && tsup src/xlsx-worker.ts --format esm --sourcemap --clean false --out-dir dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/d3-scale": "^4.0.9",
+    "@types/d3-shape": "^3.1.8"
   }
 }
