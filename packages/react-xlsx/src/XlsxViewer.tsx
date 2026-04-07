@@ -3964,6 +3964,21 @@ function XlsxGrid({
   const [chartPreviewRect, setChartPreviewRect] = React.useState<{ id: string; rect: XlsxImageRect } | null>(null);
   const chartPreviewRectRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
   const skipNextChartClickRef = React.useRef<string | null>(null);
+  const paneDrawingNodesCacheRef = React.useRef<{
+    chartRects: Array<{ chart: XlsxChart; rect: XlsxImageRect }>;
+    drawingViewport: DrawingViewport;
+    imageRects: Array<{ image: XlsxImage; rect: XlsxImageRect }>;
+    palette: ViewerPalette;
+    readOnly: boolean;
+    renderImage: XlsxViewerProps["renderImage"];
+    renderImageSelection: XlsxViewerProps["renderImageSelection"];
+    selectedChartId: string | null;
+    selectedImageId: string | null;
+    selectionStroke: string;
+    shapeRects: Array<{ rect: XlsxImageRect; shape: XlsxShape }>;
+    showImages: boolean;
+    value: Record<FrozenDrawingPane, React.ReactNode>;
+  } | null>(null);
   const [drawingViewport, setDrawingViewport] = React.useState<DrawingViewport>({
     height: 0,
     left: 0,
@@ -4223,8 +4238,7 @@ function XlsxGrid({
   const firstVisibleCol = visibleCols[0];
   const lastVisibleCol = visibleCols[visibleCols.length - 1];
   const displayedSelection = fillPreviewRange ?? selectionPreviewRange ?? normalizedSelection;
-  const hasFloatingDrawings = showImages && (images.length > 0 || shapes.length > 0 || charts.length > 0);
-  const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges && !hasFloatingDrawings && frozenRows.length === 0;
+  const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges && frozenRows.length === 0;
   const shouldVirtualizeCols = !activeSheet?.hasHorizontalMerges && frozenCols.length === 0;
 
   const rowVirtualizer = useVirtualizer({
@@ -6248,43 +6262,81 @@ function XlsxGrid({
     width: 0,
     zIndex: 40
   };
-  const paneDrawingNodes = !showImages
-    ? {
-        corner: null,
-        left: null,
-        scroll: null,
-        top: null
-      } satisfies Record<FrozenDrawingPane, React.ReactNode>
-    : {
-        corner: (
-          <>
-            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "corner"))}
-            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "corner"))}
-            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "corner"))}
-          </>
-        ),
-        left: (
-          <>
-            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "left"))}
-            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "left"))}
-            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "left"))}
-          </>
-        ),
-        scroll: (
-          <>
-            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "scroll"))}
-            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "scroll"))}
-            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "scroll"))}
-          </>
-        ),
-        top: (
-          <>
-            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "top"))}
-            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "top"))}
-            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "top"))}
-          </>
-        )
-      } satisfies Record<FrozenDrawingPane, React.ReactNode>;
+  const previousPaneDrawingNodes = paneDrawingNodesCacheRef.current;
+  const canReusePaneDrawingNodes =
+    previousPaneDrawingNodes !== null
+    && previousPaneDrawingNodes.showImages === showImages
+    && previousPaneDrawingNodes.chartRects === chartRects
+    && previousPaneDrawingNodes.shapeRects === shapeRects
+    && previousPaneDrawingNodes.imageRects === imageRects
+    && previousPaneDrawingNodes.selectedChartId === selectedChartId
+    && previousPaneDrawingNodes.selectedImageId === selectedImageId
+    && previousPaneDrawingNodes.readOnly === readOnly
+    && previousPaneDrawingNodes.selectionStroke === selectionStroke
+    && previousPaneDrawingNodes.renderImage === renderImage
+    && previousPaneDrawingNodes.renderImageSelection === renderImageSelection
+    && previousPaneDrawingNodes.palette === palette
+    && previousPaneDrawingNodes.drawingViewport.left === drawingViewport.left
+    && previousPaneDrawingNodes.drawingViewport.top === drawingViewport.top
+    && previousPaneDrawingNodes.drawingViewport.width === drawingViewport.width
+    && previousPaneDrawingNodes.drawingViewport.height === drawingViewport.height;
+  const paneDrawingNodes = canReusePaneDrawingNodes
+    ? previousPaneDrawingNodes.value
+    : (!showImages
+        ? {
+            corner: null,
+            left: null,
+            scroll: null,
+            top: null
+          }
+        : {
+            corner: (
+              <>
+                {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "corner"))}
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "corner"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "corner"))}
+              </>
+            ),
+            left: (
+              <>
+                {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "left"))}
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "left"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "left"))}
+              </>
+            ),
+            scroll: (
+              <>
+                {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "scroll"))}
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "scroll"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "scroll"))}
+              </>
+            ),
+            top: (
+              <>
+                {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "top"))}
+                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "top"))}
+                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "top"))}
+              </>
+            )
+          }) satisfies Record<FrozenDrawingPane, React.ReactNode>;
+
+  if (!canReusePaneDrawingNodes) {
+    paneDrawingNodesCacheRef.current = {
+      chartRects,
+      drawingViewport,
+      imageRects,
+      palette,
+      readOnly,
+      renderImage,
+      renderImageSelection,
+      selectedChartId,
+      selectedImageId,
+      selectionStroke,
+      shapeRects,
+      showImages,
+      value: paneDrawingNodes
+    };
+  }
 
   function startColumnResize(pointerId: number, actualCol: number, widthPx: number, startX: number) {
     if (readOnly) {
