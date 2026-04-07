@@ -5,3 +5,5 @@ packages/*/dist
 pnpm-debug.log*
 .playwright-cli/
 output/
+tmp/spreadsheets/generate_crazy_chart_workbook.py
+tmp/spreadsheets/render/crazy-chart-zoo/

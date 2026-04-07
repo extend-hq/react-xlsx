@@ -1,6 +1,7 @@
 export { useXlsxViewerController } from "./controller";
 export {
   DefaultXlsxToolbar,
+  useXlsxViewerCharts,
   useXlsxViewer,
   useXlsxViewerEditing,
   useXlsxViewerImages,
@@ -11,6 +12,12 @@ export {
 } from "./XlsxViewer";
 export type {
   UseXlsxViewerControllerOptions,
+  XlsxChart,
+  XlsxChartAxis,
+  XlsxChartDataLabels,
+  XlsxChartReference,
+  XlsxChartsheet,
+  XlsxChartSeries,
   XlsxCellAddress,
   XlsxCellRange,
   XlsxImage,
@@ -32,6 +39,8 @@ export type {
   XlsxTableHeaderMenuRenderProps,
   XlsxTableSortDirection,
   XlsxTableSortState,
+  XlsxWorkbookTab,
+  XlsxViewerCharts,
   XlsxViewerController,
   XlsxViewerEditing,
   XlsxViewerImages,

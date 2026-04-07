@@ -1,4 +1,4 @@
-import type { XlsxSheetData, XlsxTable } from "./types";
+import type { XlsxChart, XlsxChartsheet, XlsxSheetData, XlsxTable, XlsxWorkbookTab } from "./types";
 
 type WorkerMessage =
   | {
@@ -32,8 +32,11 @@ type WorkerSuccessMessage =
       id: number;
       success: true;
       result: {
+        chartsByWorkbookSheetIndex: XlsxChart[][];
+        chartsheets: XlsxChartsheet[];
         sheets: XlsxSheetData[];
         tablesByWorkbookSheetIndex: XlsxTable[][];
+        tabs: XlsxWorkbookTab[];
       };
     }
   | {
@@ -88,8 +91,11 @@ export class XlsxWorkerClient {
 
   loadWorkbook(buffer: ArrayBuffer) {
     return this.request<{
+      chartsByWorkbookSheetIndex: XlsxChart[][];
+      chartsheets: XlsxChartsheet[];
       sheets: XlsxSheetData[];
       tablesByWorkbookSheetIndex: XlsxTable[][];
+      tabs: XlsxWorkbookTab[];
     }>({
       id: 0,
       payload: { buffer },
