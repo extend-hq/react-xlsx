@@ -120,6 +120,8 @@ type WorkbookSheetState = {
   defaultRowHeightPx: number;
   hasHorizontalMerges: boolean;
   hasVerticalMerges: boolean;
+  maxHorizontalMergeEndCol: number;
+  maxVerticalMergeEndRow: number;
   hiddenCols: number[];
   hiddenRows: number[];
   rowHeightOverridesPx: Record<number, number>;
@@ -1369,6 +1371,8 @@ function parseSheetState(
   const hiddenCols = new Set<number>();
   let hasHorizontalMerges = false;
   let hasVerticalMerges = false;
+  let maxHorizontalMergeEndCol = -1;
+  let maxVerticalMergeEndRow = -1;
   const columnWidthCharacterWidthPx = measureColumnCharacterWidthPx(
     options?.defaultFont?.family,
     options?.defaultFont?.sizePt
@@ -1445,9 +1449,11 @@ function parseSheetState(
 
     if (range.end.col > range.start.col) {
       hasHorizontalMerges = true;
+      maxHorizontalMergeEndCol = Math.max(maxHorizontalMergeEndCol, range.end.col);
     }
     if (range.end.row > range.start.row) {
       hasVerticalMerges = true;
+      maxVerticalMergeEndRow = Math.max(maxVerticalMergeEndRow, range.end.row);
     }
   });
 
@@ -1461,6 +1467,8 @@ function parseSheetState(
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
     hasHorizontalMerges,
     hasVerticalMerges,
+    maxHorizontalMergeEndCol,
+    maxVerticalMergeEndRow,
     hiddenCols: [...hiddenCols].sort((left, right) => left - right),
     hiddenRows: [...hiddenRows].sort((left, right) => left - right),
     rowHeightOverridesPx,

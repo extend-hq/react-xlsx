@@ -172,6 +172,10 @@ function lightenColor(color: string, ratio: number) {
   return mixRgbColor(color, "#ffffff", ratio);
 }
 
+function darkenColor(color: string, ratio: number) {
+  return mixRgbColor(color, "#000000", ratio);
+}
+
 const ViewerContext = React.createContext<XlsxViewerController | null>(null);
 
 type WorksheetWithRowsBatch = Worksheet & {
@@ -4091,7 +4095,10 @@ function XlsxGrid({
   const pendingChartPreviewRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
   const skipNextImageClickRef = React.useRef<string | null>(null);
   const [pendingNavigation, setPendingNavigation] = React.useState<{ cell: XlsxCellAddress; sheetIndex: number } | null>(null);
-  const [interactionMode, setInteractionMode] = React.useState<"idle" | "fill" | "select">("idle");
+  const interactionModeRef = React.useRef<"idle" | "fill" | "select">("idle");
+  const setInteractionMode = React.useCallback((mode: "idle" | "fill" | "select") => {
+    interactionModeRef.current = mode;
+  }, []);
   const worksheet = getActiveWorksheet();
   const normalizedSelection = React.useMemo(() => (selection ? normalizeRange(selection) : null), [selection]);
   const effectiveTables = tables;
@@ -4376,7 +4383,9 @@ function XlsxGrid({
       maxRow: Math.max(imageExtents.maxRow, shapeExtents.maxRow, chartExtents.maxRow)
     };
   }, [charts, images, shapes]);
-  const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges && frozenRows.length === 0;
+  const frozenRowCount = activeSheet?.freezePanes?.row ?? 0;
+  const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges
+    || (activeSheet.maxVerticalMergeEndRow >= 0 && activeSheet.maxVerticalMergeEndRow < frozenRowCount);
   const shouldVirtualizeCols = !activeSheet?.hasHorizontalMerges && frozenCols.length === 0;
 
   const rowVirtualizer = useVirtualizer({
@@ -4396,6 +4405,12 @@ function XlsxGrid({
   });
   const currentRowVirtualItems = rowVirtualizer.getVirtualItems();
   const currentColVirtualItems = colVirtualizer.getVirtualItems();
+  const frozenRowVirtualIndices = React.useMemo(
+    () => frozenRows
+      .map((row) => rowIndexByActual.get(row))
+      .filter((index): index is number => index !== undefined),
+    [frozenRows, rowIndexByActual]
+  );
   const maxRowDisplayLimit = React.useMemo(
     () => resolveOpenGridExtent(activeSheet?.maxUsedRow ?? -1, MIN_OPEN_GRID_ROWS, OPEN_GRID_ROW_PADDING),
     [activeSheet?.maxUsedRow]
@@ -6060,21 +6075,41 @@ function XlsxGrid({
     return <>{renderEmpty(emptyState, palette)}</>;
   }
 
-  const virtualRows = shouldVirtualizeRows
-    ? rowVirtualizer.getVirtualItems().map((virtualRow) => ({
-        end: virtualRow.end,
-        index: virtualRow.index,
-        key: visibleRows[virtualRow.index] ?? virtualRow.index,
-        size: virtualRow.size,
-        start: virtualRow.start
-      }))
-    : visibleRows.map((actualRow, index) => ({
+  const virtualRows = !shouldVirtualizeRows
+    ? visibleRows.map((actualRow, index) => ({
         end: rowPrefixSums[index + 1] ?? 0,
         index,
         key: actualRow,
         size: effectiveRowHeights[index] ?? DEFAULT_ROW_HEIGHT,
         start: rowPrefixSums[index] ?? 0
-      }));
+      }))
+    : (() => {
+        const renderedRowsByIndex = new Map<number, RenderedAxisItem>();
+        currentRowVirtualItems.forEach((virtualRow) => {
+          renderedRowsByIndex.set(virtualRow.index, {
+            end: virtualRow.end,
+            index: virtualRow.index,
+            key: visibleRows[virtualRow.index] ?? virtualRow.index,
+            size: virtualRow.size,
+            start: virtualRow.start
+          });
+        });
+
+        frozenRowVirtualIndices.forEach((index) => {
+          if (renderedRowsByIndex.has(index)) {
+            return;
+          }
+          renderedRowsByIndex.set(index, {
+            end: rowPrefixSums[index + 1] ?? 0,
+            index,
+            key: visibleRows[index] ?? index,
+            size: effectiveRowHeights[index] ?? DEFAULT_ROW_HEIGHT,
+            start: rowPrefixSums[index] ?? 0
+          });
+        });
+
+        return Array.from(renderedRowsByIndex.values()).sort((left, right) => left.index - right.index);
+      })();
   const totalHeight = shouldVirtualizeRows
     ? rowVirtualizer.getTotalSize()
     : (rowPrefixSums[rowPrefixSums.length - 1] ?? 0);
@@ -6086,6 +6121,7 @@ function XlsxGrid({
     selectionHeaderColor
   });
   const selectionBorderWidth = 1.5;
+  const rowColSpan = renderedCols.length + 1 + (leadingColumnSpacerWidth > 0 ? 1 : 0) + (trailingColumnSpacerWidth > 0 ? 1 : 0);
   const gutterSeparatorShadow = `inset -1px 0 0 ${palette.border}, inset 0 -1px 0 ${palette.border}`;
   const headerCellStyle: React.CSSProperties = {
     backgroundColor: palette.headerSurface,
@@ -6185,6 +6221,7 @@ function XlsxGrid({
         onClick={() => handleShapeClick(shape)}
         style={{
           ...style,
+          contain: "layout paint",
           cursor: shape.hyperlink ? "pointer" : "default",
           left: style.left,
           pointerEvents: shape.hyperlink ? "auto" : "none",
@@ -6276,6 +6313,7 @@ function XlsxGrid({
     const isFrozenDrawing = pane !== "scroll";
     const canEditImage = !readOnly && image.editable !== false;
     const style: React.CSSProperties = {
+      contain: "layout paint",
       height: rect.height,
       left: rect.left,
       overflow: "hidden",
@@ -6408,6 +6446,7 @@ function XlsxGrid({
     const isFrozenDrawing = pane !== "scroll";
     const canEditChart = !readOnly && chart.editable !== false;
     const style: React.CSSProperties = {
+      contain: "layout paint",
       height: rect.height,
       left: rect.left,
       overflow: "hidden",
@@ -7184,48 +7223,53 @@ function XlsxGrid({
               </tr>
             </thead>
             <tbody>
-              {(virtualRows[0]?.start ?? 0) > 0 ? (
-                <tr style={{ height: virtualRows[0].start }}>
-                  <td colSpan={renderedCols.length + 1 + (leadingColumnSpacerWidth > 0 ? 1 : 0) + (trailingColumnSpacerWidth > 0 ? 1 : 0)} />
-                </tr>
-              ) : null}
-              {virtualRows.map((virtualRow) => {
+              {virtualRows.map((virtualRow, index) => {
                 const actualRow = visibleRows[virtualRow.index];
                 if (actualRow === undefined) {
                   return null;
                 }
 
+                const previousEnd = index === 0 ? 0 : (virtualRows[index - 1]?.end ?? 0);
+                const gapHeight = Math.max(0, virtualRow.start - previousEnd);
+
                 return (
-                  <MemoGridRow
-                    activeCell={activeCell}
-                    actualRow={actualRow}
-                    editingCell={editingCell}
-                    editingValue={editingValue}
-                    getCellData={getCellData}
-                    key={virtualRow.key}
-                    leadingSpacerWidth={leadingColumnSpacerWidth}
-                    onCellClick={handleCellClick}
-                    onCellDoubleClick={handleCellDoubleClick}
-                    onCellPointerDown={handleCellPointerDown}
-                    onEditingCancel={cancelEditing}
-                    onEditingCommit={commitEditing}
-                    onEditingValueChange={setEditingValue}
-                    onRowPointerDown={handleRowPointerDown}
-                    onRowResizePointerDown={handleRowResizePointerDown}
-                    palette={palette}
-                    readOnly={readOnly}
-                    renderCellAdornment={renderCellAdornment}
-                    rowHeight={virtualRow.size}
-                    rowSelected={Boolean(
-                      displayedSelection &&
-                        actualRow >= displayedSelection.start.row &&
-                        actualRow <= displayedSelection.end.row
-                    )}
-                    stickyLeftByCol={stickyLeftByCol}
-                    stickyTop={stickyTopByRow.get(actualRow)}
-                    trailingSpacerWidth={trailingColumnSpacerWidth}
-                    visibleCols={renderedCols}
-                  />
+                  <React.Fragment key={`row-fragment-${virtualRow.key}`}>
+                    {gapHeight > 0 ? (
+                      <tr aria-hidden="true" style={{ height: gapHeight }}>
+                        <td colSpan={rowColSpan} />
+                      </tr>
+                    ) : null}
+                    <MemoGridRow
+                      activeCell={activeCell}
+                      actualRow={actualRow}
+                      editingCell={editingCell}
+                      editingValue={editingValue}
+                      getCellData={getCellData}
+                      key={virtualRow.key}
+                      leadingSpacerWidth={leadingColumnSpacerWidth}
+                      onCellClick={handleCellClick}
+                      onCellDoubleClick={handleCellDoubleClick}
+                      onCellPointerDown={handleCellPointerDown}
+                      onEditingCancel={cancelEditing}
+                      onEditingCommit={commitEditing}
+                      onEditingValueChange={setEditingValue}
+                      onRowPointerDown={handleRowPointerDown}
+                      onRowResizePointerDown={handleRowResizePointerDown}
+                      palette={palette}
+                      readOnly={readOnly}
+                      renderCellAdornment={renderCellAdornment}
+                      rowHeight={virtualRow.size}
+                      rowSelected={Boolean(
+                        displayedSelection &&
+                          actualRow >= displayedSelection.start.row &&
+                          actualRow <= displayedSelection.end.row
+                      )}
+                      stickyLeftByCol={stickyLeftByCol}
+                      stickyTop={stickyTopByRow.get(actualRow)}
+                      trailingSpacerWidth={trailingColumnSpacerWidth}
+                      visibleCols={renderedCols}
+                    />
+                  </React.Fragment>
                 );
               })}
               {virtualRows.length > 0 && totalHeight - (virtualRows[virtualRows.length - 1]?.end ?? totalHeight) > 0 ? (
@@ -7234,7 +7278,7 @@ function XlsxGrid({
                     height: totalHeight - (virtualRows[virtualRows.length - 1]?.end ?? totalHeight)
                   }}
                 >
-                  <td colSpan={renderedCols.length + 1 + (leadingColumnSpacerWidth > 0 ? 1 : 0) + (trailingColumnSpacerWidth > 0 ? 1 : 0)} />
+                  <td colSpan={rowColSpan} />
                 </tr>
               ) : null}
             </tbody>

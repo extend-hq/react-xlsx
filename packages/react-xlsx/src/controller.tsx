@@ -365,6 +365,8 @@ function buildSheetList(
     defaultRowHeightPx?: number;
     hasHorizontalMerges?: boolean;
     hasVerticalMerges?: boolean;
+    maxHorizontalMergeEndCol?: number;
+    maxVerticalMergeEndRow?: number;
     hiddenCols?: number[];
     hiddenRows?: number[];
     rowHeightOverridesPx?: Record<number, number>;
@@ -417,6 +419,8 @@ function buildSheetList(
         freezePanes: parseWorksheetFreezePanes(worksheet),
         hasHorizontalMerges: sheetState?.hasHorizontalMerges ?? false,
         hasVerticalMerges: sheetState?.hasVerticalMerges ?? false,
+        maxHorizontalMergeEndCol: sheetState?.maxHorizontalMergeEndCol ?? -1,
+        maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
         hiddenCols: sheetState?.hiddenCols ?? [],
         hiddenRows: sheetState?.hiddenRows ?? [],
         maxUsedCol: -1,
@@ -509,6 +513,8 @@ function buildSheetList(
       freezePanes: parseWorksheetFreezePanes(worksheet),
       hasHorizontalMerges: sheetState?.hasHorizontalMerges ?? false,
       hasVerticalMerges: sheetState?.hasVerticalMerges ?? false,
+      maxHorizontalMergeEndCol: sheetState?.maxHorizontalMergeEndCol ?? -1,
+      maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
       hiddenCols: sheetState?.hiddenCols ?? [],
       hiddenRows: sheetState?.hiddenRows ?? [],
       maxUsedCol: maxCol,
