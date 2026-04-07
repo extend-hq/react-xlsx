@@ -54,11 +54,14 @@ type ChartLayout = {
 };
 
 type BarRect = {
+  categoryIndex: number;
   color: string;
+  gradientId?: string;
   height: number;
   isHorizontal: boolean;
   key: string;
   left: number;
+  seriesIndex: number;
   stroke: string;
   strokeWidth: number;
   value: number;
@@ -137,6 +140,31 @@ function chartPointColor(chart: XlsxChart, pointIndex: number) {
   if (pointStyle?.color) {
     return pointStyle.color;
   }
+  const rawPoint = chart.series[0]?.dataPoints?.[pointIndex];
+  if (rawPoint && typeof rawPoint === "object") {
+    const pointRecord = rawPoint as Record<string, unknown>;
+    if (typeof pointRecord.color === "string") {
+      return pointRecord.color;
+    }
+    if (typeof pointRecord.fillColor === "string") {
+      return pointRecord.fillColor;
+    }
+    if (typeof pointRecord.solidFillHex === "string") {
+      const normalized = pointRecord.solidFillHex.replace(/^#/, "");
+      if (/^[0-9a-fA-F]{6}$/.test(normalized)) {
+        return `#${normalized.toLowerCase()}`;
+      }
+    }
+    const shapeProperties = pointRecord.shapeProperties && typeof pointRecord.shapeProperties === "object"
+      ? pointRecord.shapeProperties as Record<string, unknown>
+      : null;
+    if (shapeProperties && typeof shapeProperties.solidFillHex === "string") {
+      const normalized = shapeProperties.solidFillHex.replace(/^#/, "");
+      if (/^[0-9a-fA-F]{6}$/.test(normalized)) {
+        return `#${normalized.toLowerCase()}`;
+      }
+    }
+  }
   const palette = chart.chartColorPalette;
   if (palette && palette.length > 0) {
     const offset = chart.chartColorPaletteOffset ?? 0;
@@ -149,7 +177,7 @@ function chartSeriesBarColors(
   chart: XlsxChart,
   seriesIndex: number,
   value: number,
-  useChartAreaFallbackForNegative: boolean
+  negativeFillMode: "chartArea" | "none" | "series"
 ) {
   const series = chart.series[seriesIndex];
   const defaultFill = chartSeriesColor(chart, seriesIndex);
@@ -158,9 +186,11 @@ function chartSeriesBarColors(
     ? Math.max(0.8, Math.min(4, series.lineWidthPx))
     : 1;
   if (value < 0 && series?.invertIfNegative) {
-    const resolvedNegativeFill = series.negativeColor
-      ?? (useChartAreaFallbackForNegative ? chart.chartAreaFillColor : undefined)
-      ?? defaultFill;
+    const resolvedNegativeFill = negativeFillMode === "none"
+      ? "none"
+      : series.negativeColor
+        ?? (negativeFillMode === "chartArea" ? chart.chartAreaFillColor : undefined)
+        ?? defaultFill;
     return {
       fill: resolvedNegativeFill,
       stroke: series.negativeLineColor ?? defaultStroke,
@@ -701,21 +731,18 @@ function renderExtrudedRect(bar: BarRect) {
   const frontX2 = frontX + frontW;
   const frontY2 = frontY + frontH;
 
-  const sideAnchorX = bar.isHorizontal
-    ? (bar.value >= 0 ? frontX2 : frontX)
-    : frontX2;
-  const sideDepthX = bar.isHorizontal
-    ? (bar.value >= 0 ? depthX : -depthX)
-    : depthX;
+  const sideAnchorX = frontX2;
+  const sideDepthX = depthX;
 
   const topFace = `${frontX},${frontY} ${frontX2},${frontY} ${frontX2 + sideDepthX},${frontY + depthY} ${frontX + sideDepthX},${frontY + depthY}`;
   const sideFace = `${sideAnchorX},${frontY} ${sideAnchorX},${frontY2} ${sideAnchorX + sideDepthX},${frontY2 + depthY} ${sideAnchorX + sideDepthX},${frontY + depthY}`;
+  const frontFill = bar.gradientId ? `url(#${bar.gradientId})` : bar.color;
 
   return (
     <g key={`${bar.key}-3d`}>
       <polygon fill={darkenColor(bar.color, 0.22)} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
       <polygon fill={lightenColor(bar.color, 0.24)} points={topFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-      <rect fill={bar.color} height={frontH} stroke={bar.stroke} strokeWidth={bar.strokeWidth} width={frontW} x={frontX} y={frontY} />
+      <rect fill={frontFill} height={frontH} stroke={bar.stroke} strokeWidth={bar.strokeWidth} width={frontW} x={frontX} y={frontY} />
     </g>
   );
 }
@@ -732,7 +759,11 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   const shouldReverseCategories = isHorizontal && chart.categoryAxis?.orientation !== "maxMin";
   const categories = shouldReverseCategories ? sourceCategories.slice().reverse() : sourceCategories;
   const isStacked = chartType === "ColumnStacked" || chartType === "BarPercentStacked";
-  const useChartAreaFallbackForNegative = chartType === "BarPercentStacked";
+  const negativeFillMode: "chartArea" | "none" | "series" = chartType === "BarPercentStacked"
+    ? "chartArea"
+    : chartType === "ColumnClustered"
+      ? "none"
+      : "series";
   const categoryCount = categories.length;
   const seriesCount = chart.series.length;
   const plot = chart.is3d
@@ -851,7 +882,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         }
       }
 
-      const colors = chartSeriesBarColors(chart, seriesIndex, rawValue, useChartAreaFallbackForNegative);
+      const colors = chartSeriesBarColors(chart, seriesIndex, rawValue, negativeFillMode);
       const category = categories[categoryIndex];
       const categoryStart = categoryScale(category) ?? 0;
       const barThickness = isStacked ? categoryScale.bandwidth() : seriesScale.bandwidth();
@@ -861,11 +892,13 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         const x1 = valueScale(start);
         const x2 = valueScale(end);
         bars.push({
+          categoryIndex,
           color: colors.fill,
           height: Math.max(1, barThickness),
           isHorizontal: true,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: Math.min(x1, x2),
+          seriesIndex,
           stroke: colors.stroke,
           strokeWidth: colors.strokeWidth,
           top: categoryStart + barOffset,
@@ -876,11 +909,13 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         const y1 = valueScale(start);
         const y2 = valueScale(end);
         bars.push({
+          categoryIndex,
           color: colors.fill,
           height: Math.max(1, Math.abs(y2 - y1)),
           isHorizontal: false,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: categoryStart + barOffset,
+          seriesIndex,
           stroke: colors.stroke,
           strokeWidth: colors.strokeWidth,
           top: Math.min(y1, y2),
@@ -888,6 +923,40 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           width: Math.max(1, barThickness)
         });
       }
+    }
+  }
+
+  const renderedBars = chart.is3d && isStacked && !isHorizontal
+    ? bars.slice().sort((left, right) => {
+        if (left.categoryIndex !== right.categoryIndex) {
+          return left.categoryIndex - right.categoryIndex;
+        }
+        const leftNegative = left.value < 0 ? 0 : 1;
+        const rightNegative = right.value < 0 ? 0 : 1;
+        if (leftNegative !== rightNegative) {
+          return leftNegative - rightNegative;
+        }
+        if (left.top !== right.top) {
+          return right.top - left.top;
+        }
+        return left.seriesIndex - right.seriesIndex;
+      })
+    : bars;
+
+  const useVertical3dGradient = chart.is3d && !isHorizontal;
+  const gradientByColor = new Map<string, string>();
+  if (useVertical3dGradient) {
+    for (const bar of renderedBars) {
+      if (!bar.color || bar.color === "none" || bar.color.startsWith("url(")) {
+        continue;
+      }
+      if (!gradientByColor.has(bar.color)) {
+        gradientByColor.set(
+          bar.color,
+          `bar3d-front-${chart.id}-${gradientByColor.size}`.replace(/[^A-Za-z0-9_-]/g, "-")
+        );
+      }
+      bar.gradientId = gradientByColor.get(bar.color);
     }
   }
 
@@ -921,11 +990,22 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
 
   return (
     <g>
+      {useVertical3dGradient && gradientByColor.size > 0 ? (
+        <defs>
+          {Array.from(gradientByColor.entries()).map(([color, id]) => (
+            <linearGradient id={id} key={id} x1="0%" x2="0%" y1="0%" y2="100%">
+              <stop offset="0%" stopColor={lightenColor(color, 0.28)} />
+              <stop offset="42%" stopColor={lightenColor(color, 0.12)} />
+              <stop offset="100%" stopColor={darkenColor(color, 0.1)} />
+            </linearGradient>
+          ))}
+        </defs>
+      ) : null}
       {axisNode}
       {frameNode}
       {chart.is3d
-        ? bars.map((bar) => renderExtrudedRect(bar))
-        : bars.map((bar) => (
+        ? renderedBars.map((bar) => renderExtrudedRect(bar))
+        : renderedBars.map((bar) => (
             <rect
               key={bar.key}
               fill={bar.color}
@@ -1559,31 +1639,90 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     .innerRadius(innerRadius)
     .outerRadius(outerRadius);
 
-  const depth = chartType === "Pie3D" ? Math.max(8, outerRadius * 0.18) : 0;
+  const isPie3d = chartType === "Pie3D";
+  const rotX = chart.view3d?.rotX ?? 20;
+  const tilt = isPie3d ? clamp(1 - (rotX / 90) * 1.1, 0.58, 0.92) : 1;
+  const depthScale = (chart.view3d?.depthPercent ?? 100) / 100;
+  const depth = isPie3d ? Math.max(8, outerRadius * 0.2 * depthScale) : 0;
   const dataLabelsEnabled = Boolean(chart.dataLabels?.showCategoryName || chart.dataLabels?.showPercent || chart.dataLabels?.showValue);
   const total = pieData.reduce((sum, entry) => sum + entry.value, 0);
+  const clipId = `pie3d-front-${chart.id}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  const shadowId = `pie3d-shadow-${chart.id}`.replace(/[^A-Za-z0-9_-]/g, "-");
+
+  const resolveSliceExplosion = (pointIndex: number) => {
+    const pointStyle = chart.series[0]?.dataPointStyles?.find((entry) => entry.index === pointIndex);
+    const seriesExplosion = typeof chart.series[0]?.shapeProperties?.xmlExplosion === "number"
+      ? chart.series[0].shapeProperties.xmlExplosion
+      : 0;
+    const rawExplosion = Math.max(0, pointStyle?.explosion ?? seriesExplosion ?? 0);
+    return outerRadius * clamp(rawExplosion / 100, 0, 0.65);
+  };
 
   return (
     <g>
-      {chartType === "Pie3D"
-        ? arcs.map((arc) => (
-            <path
-              key={`pie-base-${arc.data.index}`}
-              d={(arcPath(arc) ?? "")}
-              fill={darkenColor(arc.data.color, 0.28)}
-              transform={`translate(${centerX}, ${centerY + depth})`}
+      {isPie3d ? (
+        <defs>
+          <filter id={shadowId} x="-40%" y="-40%" width="180%" height="200%">
+            <feDropShadow dx="1.2" dy="3.6" floodColor="#000000" floodOpacity="0.28" stdDeviation="2.8" />
+          </filter>
+          <clipPath id={clipId}>
+            <rect
+              height={outerRadius * 2.6 + depth}
+              width={outerRadius * 4.2}
+              x={centerX - outerRadius * 2.1}
+              y={centerY}
             />
-          ))
+          </clipPath>
+        </defs>
+      ) : null}
+      {isPie3d ? (
+        <g clipPath={`url(#${clipId})`}>
+          {arcs.map((arc) => {
+            const midAngle = (arc.startAngle + arc.endAngle) / 2;
+            const explosion = resolveSliceExplosion(arc.data.index);
+            const explodeX = Math.cos(midAngle) * explosion;
+            const explodeY = Math.sin(midAngle) * explosion;
+            return (
+              <g key={`pie-side-${arc.data.index}`} transform={`translate(${explodeX}, ${explodeY})`}>
+                <path
+                  d={(arcPath(arc) ?? "")}
+                  fill="none"
+                  stroke={darkenColor(arc.data.color, 0.45)}
+                  strokeLinecap="butt"
+                  strokeLinejoin="round"
+                  strokeWidth={Math.max(2, depth * 0.95)}
+                  transform={`translate(${centerX}, ${centerY + depth * 0.5}) scale(1, ${tilt})`}
+                />
+              </g>
+            );
+          })}
+        </g>
+      ) : null}
+      {isPie3d
+        ? arcs.map((arc) => {
+            const midAngle = (arc.startAngle + arc.endAngle) / 2;
+            const explosion = resolveSliceExplosion(arc.data.index);
+            const explodeX = Math.cos(midAngle) * explosion;
+            const explodeY = Math.sin(midAngle) * explosion;
+            return (
+              <g key={`pie-base-${arc.data.index}`} transform={`translate(${explodeX}, ${explodeY})`}>
+                <path
+                  d={(arcPath(arc) ?? "")}
+                  fill={darkenColor(arc.data.color, 0.3)}
+                  transform={`translate(${centerX}, ${centerY + depth}) scale(1, ${tilt})`}
+                />
+              </g>
+            );
+          })
         : null}
       {arcs.map((arc) => {
-        const pointStyle = chart.series[0]?.dataPointStyles?.find((entry) => entry.index === arc.data.index);
-        const explosion = chartType === "PieExploded" ? Math.max(0, pointStyle?.explosion ?? 0) : 0;
+        const explosion = resolveSliceExplosion(arc.data.index);
         const midAngle = (arc.startAngle + arc.endAngle) / 2;
         const explodeX = Math.cos(midAngle) * explosion;
-        const explodeY = Math.sin(midAngle) * explosion;
+        const explodeY = Math.sin(midAngle) * explosion * tilt;
         const labelRadius = outerRadius + 12;
-        const labelX = centerX + Math.cos(midAngle) * labelRadius;
-        const labelY = centerY + Math.sin(midAngle) * labelRadius;
+        const labelX = centerX + Math.cos(midAngle) * labelRadius + explodeX;
+        const labelY = centerY + Math.sin(midAngle) * labelRadius * tilt + explodeY;
         const pieces: string[] = [];
         if (chart.dataLabels?.showCategoryName) {
           pieces.push(arc.data.label);
@@ -1601,7 +1740,8 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
               fill={arc.data.color}
               stroke={chart.chartAreaFillColor ?? palette.surface}
               strokeWidth={1.2}
-              transform={`translate(${centerX}, ${centerY})`}
+              transform={`translate(${centerX}, ${centerY})${isPie3d ? ` scale(1, ${tilt})` : ""}`}
+              filter={isPie3d ? `url(#${shadowId})` : undefined}
             />
             {dataLabelsEnabled && pieces.length > 0 ? (
               <text
