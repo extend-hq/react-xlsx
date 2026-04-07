@@ -615,9 +615,15 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
     const cachedValues = isScatterChart
       ? parseChartCacheValues(getFirstLocalChild(seriesNode, "yVal"), "numCache", "value")
       : parseChartCacheValues(getFirstLocalChild(seriesNode, "val"), "numCache", "value");
+    const cachedBubbleSizes = chart.chartType === "Bubble"
+      ? parseChartCacheValues(getFirstLocalChild(seriesNode, "bubbleSize"), "numCache", "value")
+      : null;
 
     return {
       ...series,
+      bubbleSizes: cachedBubbleSizes
+        ? cachedBubbleSizes.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null))
+        : series.bubbleSizes,
       categories: cachedCategories ?? series.categories,
       color: fillColor ?? lineStyle.color ?? series.color,
       dataPointStyles: pointStyles.length > 0 ? pointStyles : series.dataPointStyles,
@@ -722,6 +728,10 @@ function applyChartStyleFromXml(
   chart.chartStyleId = Number.isFinite(styleId) ? styleId : chart.chartStyleId;
   chart.firstSliceAngle = readChartNumericAttribute(chartTypeNode, "firstSliceAng") ?? chart.firstSliceAngle;
   chart.bubbleScale = readChartNumericAttribute(chartTypeNode, "bubbleScale") ?? chart.bubbleScale;
+  const bubble3dNode = getFirstLocalChild(chartTypeNode, "bubble3D");
+  chart.bubble3d = bubble3dNode
+    ? bubble3dNode.getAttribute("val") !== "0"
+    : chart.bubble3d;
   chart.holeSize = readChartNumericAttribute(chartTypeNode, "holeSize") ?? chart.holeSize;
   chart.radarStyle = getFirstLocalChild(chartTypeNode, "radarStyle")?.getAttribute("val") ?? chart.radarStyle;
   const wireframeNode = getFirstLocalChild(chartTypeNode, "wireframe");
@@ -730,10 +740,12 @@ function applyChartStyleFromXml(
     : chart.wireframe;
   chart.raw = {
     ...(chart.raw ?? {}),
+    bubble3d: chart.bubble3d,
     ofPieType: getFirstLocalChild(chartTypeNode, "ofPieType")?.getAttribute("val") ?? undefined,
     secondPieSize: readChartNumericAttribute(chartTypeNode, "secondPieSize"),
     splitPos: readChartNumericAttribute(chartTypeNode, "splitPos"),
-    splitType: getFirstLocalChild(chartTypeNode, "splitType")?.getAttribute("val") ?? undefined
+    splitType: getFirstLocalChild(chartTypeNode, "splitType")?.getAttribute("val") ?? undefined,
+    xmlChartType: chartTypeNode.localName
   };
   const view3dNode = getFirstLocalDescendant(chartNode, "view3D");
   if (view3dNode) {
@@ -1155,6 +1167,7 @@ function normalizeChartAxis(raw: unknown): XlsxChartAxis | null {
     crossBetween: typeof axis.crossBetween === "string" ? axis.crossBetween : undefined,
     delete: typeof axis.delete === "boolean" ? axis.delete : undefined,
     labelPosition: typeof axis.labelPosition === "string" ? axis.labelPosition : undefined,
+    logBase: typeof axis.logBase === "number" ? axis.logBase : undefined,
     majorUnit: typeof axis.majorUnit === "number" ? axis.majorUnit : undefined,
     max: typeof axis.max === "number" ? axis.max : undefined,
     min: typeof axis.min === "number" ? axis.min : undefined,
@@ -1200,6 +1213,7 @@ function readChartAxisFromXml(axisNode: Element | null): Partial<XlsxChartAxis> 
         ? false
         : undefined,
     labelPosition: getFirstLocalChild(axisNode, "tickLblPos")?.getAttribute("val") ?? undefined,
+    logBase: readChartNumericAttribute(getFirstLocalChild(axisNode, "scaling"), "logBase"),
     majorGridlines: Boolean(getFirstLocalChild(axisNode, "majorGridlines")),
     majorTickMark: getFirstLocalChild(axisNode, "majorTickMark")?.getAttribute("val") ?? undefined,
     majorUnit: readChartNumericAttribute(axisNode, "majorUnit"),
@@ -1384,8 +1398,13 @@ function normalizeChartSeries(
   const rawLineColor = typeof shapeProperties?.lineColorHex === "string"
     ? normalizeHexColor(shapeProperties.lineColorHex)
     : null;
+  const bubbleSizeRef = normalizeChartReference(series.bubbleSize ?? series.bubbleSizes ?? series.bubbles);
 
   return {
+    bubbleSizeRef,
+    bubbleSizes: resolveReferenceValues(workbook, workbookSheetIndex, bubbleSizeRef, "value").map((value) => (
+      typeof value === "number" && Number.isFinite(value) ? value : null
+    )),
     categories: resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category"),
     categoriesRef,
     color: rawFillColor ?? undefined,
@@ -1618,6 +1637,7 @@ export function loadWorkbookChartAssets(
         sheetIndex: visibleSheetIndex,
         showDlblsOverMax: typeof chart.showDlblsOverMax === "boolean" ? chart.showDlblsOverMax : undefined,
         bubbleScale: typeof chart.bubbleScale === "number" ? chart.bubbleScale : undefined,
+        bubble3d: typeof chart.bubble3d === "boolean" ? chart.bubble3d : undefined,
         textColor: undefined,
         title: typeof chart.title === "string" ? chart.title : undefined,
         titleColor: undefined,
