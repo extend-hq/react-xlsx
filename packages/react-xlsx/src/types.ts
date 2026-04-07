@@ -11,6 +11,9 @@ export interface XlsxResolvedCellStyle {
   [key: string]: unknown;
   alignment?: Record<string, unknown>;
   border?: Record<string, Record<string, unknown>>;
+  cellControl?: {
+    kind: "checkbox";
+  };
   fill?: Record<string, unknown>;
   font?: Record<string, unknown>;
 }
@@ -119,6 +122,7 @@ export interface XlsxSheetData {
   colWidths: number[];
   rowHeights: number[];
   showGridLines: boolean;
+  sparklines: XlsxSparkline[];
   themePalette: XlsxThemePalette;
   workbookSheetIndex: number;
   zoomScale?: number;
@@ -132,6 +136,22 @@ export interface XlsxCellAddress {
 export interface XlsxCellRange {
   end: XlsxCellAddress;
   start: XlsxCellAddress;
+}
+
+export interface XlsxSparkline {
+  color?: string;
+  firstColor?: string;
+  highColor?: string;
+  lastColor?: string;
+  lowColor?: string;
+  markerColor?: string;
+  markers?: boolean;
+  negative?: boolean;
+  negativeColor?: string;
+  range: XlsxCellRange;
+  sheetName?: string;
+  target: XlsxCellAddress;
+  type: "column" | "line" | "winLoss";
 }
 
 export interface XlsxClipboardData {
@@ -521,10 +541,13 @@ export interface XlsxViewerController {
   canLoadDeferred: boolean;
   canRedo: boolean;
   canUndo: boolean;
+  canZoomIn: boolean;
+  canZoomOut: boolean;
   clearSelectedCells: () => void;
   clearSelection: () => void;
   continueDeferredLoad: () => void;
   copySelectionToClipboard: () => Promise<boolean>;
+  defaultZoomScale: number;
   deferredLoadFileSize: number | null;
   defineNamedRange: (name: string, range?: XlsxCellRange | null) => void;
   displayFileName: string;
@@ -559,11 +582,14 @@ export interface XlsxViewerController {
   moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
   shapes: XlsxShape[];
   mergeSelection: () => void;
+  maxZoomScale: number;
+  minZoomScale: number;
   moveImageBy: (id: string, deltaX: number, deltaY: number) => void;
   removeActiveSheet: () => void;
   readOnly: boolean;
   recalculate: () => void;
   revision: number;
+  resetZoom: () => void;
   resizeChartBy: (
     id: string,
     handle: XlsxImageResizeHandlePosition,
@@ -587,6 +613,7 @@ export interface XlsxViewerController {
   selectedFormula: string;
   setCellFormula: (cell: XlsxCellAddress, formula: string) => void;
   setCellValue: (cell: XlsxCellAddress, value: string) => void;
+  setZoomScale: (zoomScale: number) => void;
   selectCell: (cell: XlsxCellAddress, options?: { extend?: boolean }) => void;
   selectChart: (id: string | null) => void;
   selectRange: (range: XlsxCellRange) => void;
@@ -613,6 +640,9 @@ export interface XlsxViewerController {
   unmergeSelection: () => void;
   updateChart: (id: string, patch: Partial<XlsxChart>) => void;
   workbook: Workbook | null;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  zoomScale: number;
   getActiveWorksheet: () => Worksheet | null;
   addSheet: (name?: string) => void;
 }
@@ -625,6 +655,19 @@ export interface XlsxViewerSelection {
   selectCell: (cell: XlsxCellAddress, options?: { extend?: boolean }) => void;
   selectRange: (range: XlsxCellRange) => void;
   selection: XlsxCellRange | null;
+}
+
+export interface XlsxViewerZoom {
+  canZoomIn: boolean;
+  canZoomOut: boolean;
+  defaultZoomScale: number;
+  maxZoomScale: number;
+  minZoomScale: number;
+  resetZoom: () => void;
+  setZoomScale: (zoomScale: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  zoomScale: number;
 }
 
 export interface XlsxViewerEditing {

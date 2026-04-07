@@ -2735,6 +2735,9 @@ export function loadWorkbookChartAssets(
     const classicCharts = rawCharts.map((rawChart, chartIndex) => {
       const chartId = `chart-${workbookSheetIndex}-${chartIndex}`;
       const chart = rawChart && typeof rawChart === "object" ? rawChart as Record<string, unknown> : {};
+      const rawView3d = chart.view3d && typeof chart.view3d === "object"
+        ? chart.view3d as Record<string, unknown>
+        : null;
       const rawSeries = Array.isArray(chart.series) ? chart.series : [];
       const chartLevelDataLabels = normalizeChartDataLabels(chart.dataLabels);
       const firstSeriesDataLabels = rawSeries.length > 0 && rawSeries[0] && typeof rawSeries[0] === "object"
@@ -2788,7 +2791,27 @@ export function loadWorkbookChartAssets(
         typeGroups: Array.isArray(chart.typeGroups) ? chart.typeGroups : [],
         valueAxis: normalizeChartAxis(chart.valueAxis),
         varyColors: typeof chart.varyColors === "boolean" ? chart.varyColors : undefined,
-        view3d: undefined,
+        view3d: rawView3d
+          ? {
+              depthPercent: typeof rawView3d.depthPercent === "number" ? rawView3d.depthPercent : undefined,
+              perspective: typeof rawView3d.perspective === "number" ? rawView3d.perspective : undefined,
+              rAngAx: typeof rawView3d.rAngAx === "boolean"
+                ? rawView3d.rAngAx
+                : typeof rawView3d.rightAngleAxes === "boolean"
+                  ? rawView3d.rightAngleAxes
+                  : undefined,
+              rotX: typeof rawView3d.rotX === "number"
+                ? rawView3d.rotX
+                : typeof rawView3d.rotateX === "number"
+                  ? rawView3d.rotateX
+                  : undefined,
+              rotY: typeof rawView3d.rotY === "number"
+                ? rawView3d.rotY
+                : typeof rawView3d.rotateY === "number"
+                  ? rawView3d.rotateY
+                  : undefined
+            }
+          : undefined,
         wireframe: typeof chart.wireframe === "boolean" ? chart.wireframe : undefined,
         workbookSheetIndex,
         zIndex: 200 + chartIndex

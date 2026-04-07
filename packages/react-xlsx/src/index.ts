@@ -6,6 +6,7 @@ export {
   useXlsxViewerEditing,
   useXlsxViewerImages,
   useXlsxViewerSelection,
+  useXlsxViewerZoom,
   useXlsxViewerTables,
   XlsxViewer,
   XlsxViewerProvider
@@ -48,5 +49,6 @@ export type {
   XlsxViewerProps,
   XlsxViewerProviderProps,
   XlsxViewerSelection,
+  XlsxViewerZoom,
   XlsxViewerTables
 } from "./types";
