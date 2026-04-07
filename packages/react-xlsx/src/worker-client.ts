@@ -10,6 +10,13 @@ type WorkerMessage =
     }
   | {
       id: number;
+      type: "parseCharts";
+      payload: {
+        buffer: ArrayBuffer;
+      };
+    }
+  | {
+      id: number;
       type: "getCellSnapshot";
       payload: {
         workbookSheetIndex: number;
@@ -28,6 +35,15 @@ type WorkerMessage =
     };
 
 type WorkerSuccessMessage =
+  | {
+      id: number;
+      success: true;
+      result: {
+        chartsByWorkbookSheetIndex: XlsxChart[][];
+        chartsheets: XlsxChartsheet[];
+        tabs: XlsxWorkbookTab[];
+      };
+    }
   | {
       id: number;
       success: true;
@@ -112,6 +128,18 @@ export class XlsxWorkerClient {
       payload: { col, row, workbookSheetIndex },
       type: "getCellSnapshot"
     });
+  }
+
+  parseCharts(buffer: ArrayBuffer) {
+    return this.request<{
+      chartsByWorkbookSheetIndex: XlsxChart[][];
+      chartsheets: XlsxChartsheet[];
+      tabs: XlsxWorkbookTab[];
+    }>({
+      id: 0,
+      payload: { buffer },
+      type: "parseCharts"
+    }, [buffer]);
   }
 
   getRowsBatch(workbookSheetIndex: number, startRow: number, rowCount: number) {

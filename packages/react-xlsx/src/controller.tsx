@@ -69,6 +69,23 @@ const MAX_INTERACTIVE_TOTAL_XML_BYTES = 256 * 1024 * 1024;
 const EMU_PER_PIXEL = 9525;
 const IMAGE_BATCH_ROW_COUNT = 256;
 
+type IdleRequestHandle = number;
+
+type IdleDeadline = {
+  didTimeout: boolean;
+  timeRemaining: () => number;
+};
+
+type IdleWindow = Window & {
+  cancelIdleCallback?: (handle: IdleRequestHandle) => void;
+  requestIdleCallback?: (
+    callback: (deadline: IdleDeadline) => void,
+    options?: {
+      timeout: number;
+    }
+  ) => IdleRequestHandle;
+};
+
 type SnapshotHistoryEntry = {
   kind: "snapshot";
   activeCell: XlsxCellAddress | null;
@@ -921,6 +938,26 @@ async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<{
   };
 }
 
+function scheduleLowPriorityTask(task: () => void) {
+  if (typeof window === "undefined") {
+    const timeoutHandle = setTimeout(task, 0);
+    return () => clearTimeout(timeoutHandle);
+  }
+
+  const idleWindow = window as IdleWindow;
+  if (typeof idleWindow.requestIdleCallback === "function") {
+    const idleHandle = idleWindow.requestIdleCallback(() => {
+      task();
+    }, { timeout: 120 });
+    return () => {
+      idleWindow.cancelIdleCallback?.(idleHandle);
+    };
+  }
+
+  const timeoutHandle = window.setTimeout(task, 0);
+  return () => window.clearTimeout(timeoutHandle);
+}
+
 function asFiniteNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -1412,6 +1449,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [chartsByWorkbookSheetIndex, setChartsByWorkbookSheetIndex] = React.useState<XlsxChart[][]>([]);
   const [chartsheets, setChartsheets] = React.useState<XlsxChartsheet[]>([]);
   const [tabs, setTabs] = React.useState<XlsxWorkbookTab[]>([]);
+  const [isChartsLoading, setIsChartsLoading] = React.useState(false);
   const [workerTablesByWorkbookSheetIndex, setWorkerTablesByWorkbookSheetIndex] = React.useState<XlsxTable[][]>([]);
   const [imagesByWorkbookSheetIndex, setImagesByWorkbookSheetIndex] = React.useState<XlsxImage[][]>([]);
   const [shapesByWorkbookSheetIndex, setShapesByWorkbookSheetIndex] = React.useState<XlsxShape[][]>([]);
@@ -1436,6 +1474,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [deferredLoadFileSize, setDeferredLoadFileSize] = React.useState<number | null>(null);
   const imageAssetsRef = React.useRef<WorkbookImageAssets | null>(null);
   const chartAssetsRef = React.useRef<WorkbookChartAssets | null>(null);
+  const chartLoadRequestTokenRef = React.useRef(0);
+  const chartDisplayFallbackCleanupRef = React.useRef<(() => void) | null>(null);
   const sheetOriginsRef = React.useRef<Array<WorkbookImageSheetOrigin | null>>([]);
   const workerClientRef = React.useRef<XlsxWorkerClient | null>(null);
   const workerCellSnapshotCacheRef = React.useRef(new Map<string, { displayValue: string; formula: string }>());
@@ -1470,10 +1510,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, []);
 
   const clearChartAssets = React.useCallback(() => {
+    chartLoadRequestTokenRef.current += 1;
+    chartDisplayFallbackCleanupRef.current?.();
+    chartDisplayFallbackCleanupRef.current = null;
     chartAssetsRef.current = null;
     setChartsByWorkbookSheetIndex([]);
     setChartsheets([]);
     setTabs([]);
+    setIsChartsLoading(false);
   }, []);
 
   const setImageAssets = React.useCallback((assets: WorkbookImageAssets | null) => {
@@ -1489,7 +1533,170 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setChartsByWorkbookSheetIndex(assets?.chartsByWorkbookSheetIndex ?? []);
     setChartsheets(assets?.chartsheets ?? []);
     setTabs(assets?.tabs ?? []);
+    setIsChartsLoading(false);
   }, []);
+
+  const shouldFallbackFromWorkerError = React.useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return (
+      message.includes("DOMParser is not defined")
+      || message.includes("XMLSerializer is not defined")
+      || message.includes("Worker chart payload incomplete")
+    );
+  }, []);
+
+  const hasIncompleteWorkerChartSnapshot = React.useCallback((snapshot: {
+    chartsByWorkbookSheetIndex: XlsxChart[][];
+  }) => {
+    for (const sheetCharts of snapshot.chartsByWorkbookSheetIndex) {
+      for (const chart of sheetCharts) {
+        if (!chart.chartPath) {
+          return true;
+        }
+        if (chart.chartType !== "Bubble") {
+          continue;
+        }
+        for (const series of chart.series) {
+          const pointCount = Math.max(series.values.length, series.categories.length);
+          if (pointCount <= 1) {
+            continue;
+          }
+          const numericBubbleSizes = (series.bubbleSizes ?? []).filter(
+            (value): value is number => typeof value === "number" && Number.isFinite(value)
+          );
+          if (numericBubbleSizes.length < pointCount) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }, []);
+
+  const ensureChartAssetsHydrated = React.useCallback((
+    targetWorkbook: Workbook | null,
+    targetSheets: XlsxSheetData[]
+  ) => {
+    if (chartAssetsRef.current || !targetWorkbook || !imageAssetsRef.current) {
+      return chartAssetsRef.current;
+    }
+
+    const assets = loadWorkbookChartAssets(
+      targetWorkbook,
+      imageAssetsRef.current,
+      buildVisibleSheetIndexMap(targetSheets)
+    );
+    chartAssetsRef.current = assets;
+    return assets;
+  }, []);
+
+  const startChartDisplayHydration = React.useCallback((
+    buffer: ArrayBuffer,
+    targetWorkbook: Workbook,
+    targetSheets: XlsxSheetData[]
+  ) => {
+    const visibleSheetIndexByWorkbookSheetIndex = buildVisibleSheetIndexMap(targetSheets);
+    const quickAssets = loadWorkbookChartAssets(targetWorkbook, null, visibleSheetIndexByWorkbookSheetIndex);
+    setChartAssets(quickAssets);
+
+    const hasCharts = quickAssets.chartsByWorkbookSheetIndex.some((sheetCharts) => sheetCharts.length > 0);
+    if (!hasCharts) {
+      setIsChartsLoading(false);
+      return;
+    }
+
+    setIsChartsLoading(true);
+    const requestToken = chartLoadRequestTokenRef.current + 1;
+    chartLoadRequestTokenRef.current = requestToken;
+    chartDisplayFallbackCleanupRef.current?.();
+    chartDisplayFallbackCleanupRef.current = null;
+    let fallbackTriggered = false;
+    const triggerFallback = () => {
+      if (fallbackTriggered || requestToken !== chartLoadRequestTokenRef.current) {
+        return;
+      }
+      fallbackTriggered = true;
+      runMainThreadFallback();
+    };
+    const workerTimeoutHandle = typeof window !== "undefined"
+      ? window.setTimeout(() => {
+          triggerFallback();
+        }, 1500)
+      : null;
+
+    const applyWorkerResult = (result: {
+      chartsByWorkbookSheetIndex: XlsxChart[][];
+      chartsheets: XlsxChartsheet[];
+      tabs: XlsxWorkbookTab[];
+    }) => {
+      if (requestToken !== chartLoadRequestTokenRef.current) {
+        return;
+      }
+      setChartsByWorkbookSheetIndex(result.chartsByWorkbookSheetIndex);
+      setChartsheets(result.chartsheets);
+      setTabs(result.tabs);
+      setIsChartsLoading(false);
+    };
+
+    const runMainThreadFallback = () => {
+      chartDisplayFallbackCleanupRef.current = scheduleLowPriorityTask(() => {
+        if (requestToken !== chartLoadRequestTokenRef.current) {
+          return;
+        }
+        try {
+          const hydratedAssets = loadWorkbookChartAssets(
+            targetWorkbook,
+            imageAssetsRef.current,
+            visibleSheetIndexByWorkbookSheetIndex
+          );
+          if (requestToken !== chartLoadRequestTokenRef.current) {
+            return;
+          }
+          setChartAssets(hydratedAssets);
+        } catch {
+          if (requestToken !== chartLoadRequestTokenRef.current) {
+            return;
+          }
+          setChartAssets(quickAssets);
+        } finally {
+          if (requestToken === chartLoadRequestTokenRef.current) {
+            setIsChartsLoading(false);
+          }
+        }
+      });
+    };
+
+    if (!workerSupported) {
+      runMainThreadFallback();
+      return;
+    }
+
+    void getWorkerClient().parseCharts(buffer)
+      .then((result) => {
+        if (workerTimeoutHandle !== null) {
+          window.clearTimeout(workerTimeoutHandle);
+        }
+        if (fallbackTriggered) {
+          return;
+        }
+        try {
+          if (hasIncompleteWorkerChartSnapshot(result)) {
+            triggerFallback();
+            return;
+          }
+          applyWorkerResult(result);
+        } catch {
+          triggerFallback();
+        }
+      })
+      .catch(() => {
+        if (workerTimeoutHandle !== null) {
+          window.clearTimeout(workerTimeoutHandle);
+        }
+        triggerFallback();
+      });
+  }, [getWorkerClient, hasIncompleteWorkerChartSnapshot, setChartAssets, workerSupported]);
 
   const loadWorkbookOnMainThread = React.useCallback(async (buffer: ArrayBuffer) => {
     const nextParsedWorkbook = await parseWorkbookBuffer(buffer);
@@ -1498,11 +1705,6 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       imageAssets: nextImageAssets,
       parsedWorkbook: nextParsedWorkbook
     };
-  }, []);
-
-  const shouldFallbackFromWorkerError = React.useCallback((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error ?? "");
-    return message.includes("DOMParser is not defined") || message.includes("XMLSerializer is not defined");
   }, []);
 
   const refreshWorkbookState = React.useCallback((targetWorkbook: Workbook) => {
@@ -1526,6 +1728,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [setChartAssets]);
 
   React.useEffect(() => () => {
+    chartDisplayFallbackCleanupRef.current?.();
+    chartDisplayFallbackCleanupRef.current = null;
     revokeWorkbookImageAssets(imageAssetsRef.current);
     disposeWorkerClient();
   }, [disposeWorkerClient]);
@@ -1622,6 +1826,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             if (!isCurrent) {
               return;
             }
+            if (hasIncompleteWorkerChartSnapshot(snapshot)) {
+              throw new Error("Worker chart payload incomplete");
+            }
 
             setWorkbook(null);
             setSheets(snapshot.sheets);
@@ -1633,6 +1840,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             setShouldAutoCalculate(false);
             setIsWorkerBacked(true);
             setSortState(null);
+            setIsChartsLoading(false);
             setIsLoading(false);
             return;
           } catch (workerError) {
@@ -1661,13 +1869,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           nextImageAssets.tableStyleByName
         );
         setSheets(nextSheets);
-        setChartAssets(
-          loadWorkbookChartAssets(
-            nextParsedWorkbook.workbook,
-            nextImageAssets,
-            buildVisibleSheetIndexMap(nextSheets)
-          )
-        );
+        startChartDisplayHydration(buffer, nextParsedWorkbook.workbook, nextSheets);
         setShouldAutoCalculate(nextParsedWorkbook.shouldAutoCalculate);
         setWorkerTablesByWorkbookSheetIndex([]);
         setIsWorkerBacked(false);
@@ -1704,8 +1906,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     disposeWorkerClient,
     file,
     getWorkerClient,
+    hasIncompleteWorkerChartSnapshot,
+    loadWorkbookOnMainThread,
     requestedReadOnly,
     setImageAssets,
+    startChartDisplayHydration,
+    shouldFallbackFromWorkerError,
     shouldDeferLoading,
     shouldForceReadOnlyForBuffer,
     workerSupported,
@@ -1796,6 +2002,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (shouldUseWorkerForLoad) {
       void getWorkerClient().loadWorkbook(deferredBuffer.slice(0))
         .then((snapshot) => {
+          if (hasIncompleteWorkerChartSnapshot(snapshot)) {
+            throw new Error("Worker chart payload incomplete");
+          }
           deferredBufferRef.current = null;
           setDeferredLoadFileSize(null);
           setWorkbook(null);
@@ -1808,6 +2017,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           setShouldAutoCalculate(false);
           setIsWorkerBacked(true);
           setSortState(null);
+          setIsChartsLoading(false);
           setIsLoading(false);
         })
         .catch(async (workerError: unknown) => {
@@ -1830,13 +2040,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             nextImageAssets.tableStyleByName
           );
           setSheets(nextSheets);
-          setChartAssets(
-            loadWorkbookChartAssets(
-              nextParsedWorkbook.workbook,
-              nextImageAssets,
-              buildVisibleSheetIndexMap(nextSheets)
-            )
-          );
+          startChartDisplayHydration(deferredBuffer, nextParsedWorkbook.workbook, nextSheets);
           setShouldAutoCalculate(nextParsedWorkbook.shouldAutoCalculate);
           setWorkerTablesByWorkbookSheetIndex([]);
           setIsWorkerBacked(false);
@@ -1876,13 +2080,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           nextImageAssets.tableStyleByName
         );
         setSheets(nextSheets);
-        setChartAssets(
-          loadWorkbookChartAssets(
-            nextParsedWorkbook.workbook,
-            nextImageAssets,
-            buildVisibleSheetIndexMap(nextSheets)
-          )
-        );
+        startChartDisplayHydration(deferredBuffer, nextParsedWorkbook.workbook, nextSheets);
         setShouldAutoCalculate(nextParsedWorkbook.shouldAutoCalculate);
         setWorkerTablesByWorkbookSheetIndex([]);
         setIsWorkerBacked(false);
@@ -1906,10 +2104,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [
     clearChartAssets,
     clearImageAssets,
+    disposeWorkerClient,
     getWorkerClient,
+    loadWorkbookOnMainThread,
     requestedReadOnly,
-    setChartAssets,
     setImageAssets,
+    startChartDisplayHydration,
+    hasIncompleteWorkerChartSnapshot,
+    shouldFallbackFromWorkerError,
     shouldForceReadOnlyForBuffer,
     workerSupported
   ]);
@@ -2764,7 +2966,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [getColumnWidthPx, getRowHeightPx]);
 
   const setChartRect = React.useCallback((id: string, rect: XlsxImageRect) => {
-    if (readOnly || !workbook || !activeSheet || !imageAssetsRef.current || !chartAssetsRef.current) {
+    const hydratedChartAssets = ensureChartAssetsHydrated(workbook, sheets);
+    if (readOnly || !workbook || !activeSheet || !imageAssetsRef.current || !hydratedChartAssets) {
       return;
     }
 
@@ -2782,9 +2985,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     });
 
     recordHistoryBeforeMutation();
-    updateWorkbookChartAnchor(imageAssetsRef.current, chartAssetsRef.current, id, nextAnchor);
+    updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, nextAnchor);
 
-    chartAssetsRef.current.chartsByWorkbookSheetIndex = chartAssetsRef.current.chartsByWorkbookSheetIndex.map((sheetCharts) => (
+    hydratedChartAssets.chartsByWorkbookSheetIndex = hydratedChartAssets.chartsByWorkbookSheetIndex.map((sheetCharts) => (
       sheetCharts.map((chart) => chart.id === id ? { ...chart, anchor: nextAnchor } : chart)
     ));
 
@@ -2797,8 +3000,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     getChartById,
     getColumnWidthPx,
     getRowHeightPx,
+    ensureChartAssetsHydrated,
     readOnly,
     recordHistoryBeforeMutation,
+    sheets,
     workbook
   ]);
 
@@ -2994,23 +3199,24 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const updateChart = React.useCallback((id: string, patch: Partial<XlsxChart>) => {
     const currentChart = getChartById(id);
+    const hydratedChartAssets = ensureChartAssetsHydrated(workbook, sheets);
     if (readOnly || !currentChart) {
       return;
     }
 
     recordHistoryBeforeMutation();
-    if (patch.anchor && imageAssetsRef.current && chartAssetsRef.current) {
-      updateWorkbookChartAnchor(imageAssetsRef.current, chartAssetsRef.current, id, patch.anchor);
+    if (patch.anchor && imageAssetsRef.current && hydratedChartAssets) {
+      updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, patch.anchor);
     }
-    if (imageAssetsRef.current && chartAssetsRef.current) {
-      updateWorkbookChartDefinition(imageAssetsRef.current, chartAssetsRef.current, id, patch);
+    if (imageAssetsRef.current && hydratedChartAssets) {
+      updateWorkbookChartDefinition(imageAssetsRef.current, hydratedChartAssets, id, patch);
     }
 
     setChartsByWorkbookSheetIndex((current) => current.map((sheetCharts) => (
       sheetCharts.map((chart) => chart.id === id ? { ...chart, ...patch } : chart)
     )));
     setRevision((current) => current + 1);
-  }, [getChartById, readOnly, recordHistoryBeforeMutation]);
+  }, [ensureChartAssetsHydrated, getChartById, readOnly, recordHistoryBeforeMutation, sheets, workbook]);
 
   const selectCell = React.useCallback((cell: XlsxCellAddress, options?: { extend?: boolean }) => {
     setSelectedChartId(null);
@@ -3636,6 +3842,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       images,
       isLoadDeferred,
       isLoading,
+      isChartsLoading,
       isWorkerBacked,
       mergeSelection,
       moveChartBy,
@@ -3726,6 +3933,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       images,
       isLoadDeferred,
       isLoading,
+      isChartsLoading,
       isWorkerBacked,
       mergeSelection,
       moveChartBy,
