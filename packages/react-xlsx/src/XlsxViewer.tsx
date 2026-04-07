@@ -1,6 +1,10 @@
 import * as React from "react";
 import type { Worksheet } from "@dukelib/sheets-wasm";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { extent, max, min } from "d3-array";
+import { arc, area as d3Area, line as d3Line, pie as d3Pie, radialLine, symbol, symbolCircle, symbolDiamond, symbolSquare, symbolTriangle, type PieArcDatum } from "d3-shape";
+import { path as d3Path } from "d3-path";
+import { scaleBand, scaleLinear, scalePoint } from "d3-scale";
 import { resolveWorkbookColor, resolveWorkbookFillColor } from "./colors";
 import { useXlsxViewerController } from "./controller";
 import {
@@ -11,6 +15,8 @@ import {
   resolveSheetRowHeightPixels
 } from "./images";
 import type {
+  XlsxChart,
+  XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
   XlsxImage,
@@ -24,6 +30,7 @@ import type {
   XlsxTable,
   XlsxTableColumn,
   XlsxTableHeaderMenuRenderProps,
+  XlsxViewerCharts,
   XlsxViewerTables,
   XlsxViewerController,
   XlsxViewerEditing,
@@ -54,7 +61,7 @@ const OPEN_GRID_VERTICAL_EDGE_PX = 600;
 const OPEN_GRID_HORIZONTAL_EDGE_PX = 480;
 const SELECTION_DRAG_THRESHOLD_PX = 4;
 const IMAGE_MIN_SIZE_PX = 16;
-const IMAGE_HANDLE_SIZE_PX = 12;
+const IMAGE_HANDLE_SIZE_PX = 10;
 const SHEET_SURFACE = "#ffffff";
 const SHEET_GRIDLINE = "#d9d9d9";
 const DEFAULT_CELL_PADDING = "0 4px";
@@ -541,6 +548,527 @@ function resolveShapeAnchorExtents(shape: XlsxShape) {
     maxRow: Math.max(shape.anchor.from.row, shape.anchor.to.row)
   };
 }
+
+function resolveChartAnchorExtents(chart: XlsxChart) {
+  if (chart.anchor.kind === "absolute") {
+    return { maxCol: 0, maxRow: 0 };
+  }
+
+  if (chart.anchor.kind === "one-cell") {
+    return {
+      maxCol: chart.anchor.from.col,
+      maxRow: chart.anchor.from.row
+    };
+  }
+
+  return {
+    maxCol: Math.max(chart.anchor.from.col, chart.anchor.to.col),
+    maxRow: Math.max(chart.anchor.from.row, chart.anchor.to.row)
+  };
+}
+
+function chartSeriesColor(chart: XlsxChart, seriesIndex: number) {
+  const series = chart.series[seriesIndex];
+  return series?.color ?? series?.lineColor ?? SERIES_FALLBACK_COLORS[seriesIndex % SERIES_FALLBACK_COLORS.length];
+}
+
+function chartSeriesStrokeColor(chart: XlsxChart, seriesIndex: number) {
+  const series = chart.series[seriesIndex];
+  return series?.lineColor ?? series?.color ?? SERIES_FALLBACK_COLORS[seriesIndex % SERIES_FALLBACK_COLORS.length];
+}
+
+function chartPointColor(chart: XlsxChart, pointIndex: number) {
+  const series = chart.series[0];
+  const pointStyle = series?.dataPointStyles?.find((entry) => entry.index === pointIndex);
+  if (pointStyle?.color) {
+    return pointStyle.color;
+  }
+  const palette = chart.chartColorPalette;
+  if (palette && palette.length > 0) {
+    const offset = chart.chartColorPaletteOffset ?? 0;
+    return palette[(pointIndex + offset) % palette.length] ?? palette[pointIndex % palette.length];
+  }
+  if (chart.varyColors) {
+    return SERIES_FALLBACK_COLORS[pointIndex % SERIES_FALLBACK_COLORS.length];
+  }
+  return chartSeriesColor(chart, 0);
+}
+
+function normalizeChartMarkerSymbol(value: string | undefined) {
+  if (!value || value === "none") {
+    return undefined;
+  }
+  if (value === "auto") {
+    return "circle";
+  }
+  return value;
+}
+
+function buildChartLegendEntries(chart: XlsxChart) {
+  if (chart.chartType === "Pie" || chart.chartType === "PieExploded" || chart.chartType === "Doughnut") {
+    const categories = chart.series[0]?.categories ?? [];
+    return categories.map((category, index) => ({
+      color: chartPointColor(chart, index),
+      label: String(category ?? `Item ${index + 1}`)
+    }));
+  }
+
+  return chart.series.map((series, index) => ({
+    color: chartSeriesColor(chart, index),
+    label: series.name ?? `Series ${index + 1}`
+  }));
+}
+
+function normalizeLegendPosition(position: string | undefined) {
+  switch (position) {
+    case "bottom":
+      return "b";
+    case "left":
+      return "l";
+    case "right":
+      return "r";
+    case "top":
+      return "t";
+    default:
+      return position;
+  }
+}
+
+const SERIES_FALLBACK_COLORS = [
+  "#4472c4",
+  "#ed7d31",
+  "#a5a5a5",
+  "#ffc000",
+  "#5b9bd5",
+  "#70ad47",
+  "#264478",
+  "#9e480e"
+];
+
+function renderChartMarker(
+  shape: string | undefined,
+  x: number,
+  y: number,
+  fillColor: string,
+  strokeColor = "#ffffff",
+  size = 5
+) {
+  const markerSize = Math.max(18, Math.PI * Math.pow(Math.max(2, size), 2));
+  const symbolFactory = shape === "diamond"
+    ? symbolDiamond
+    : shape === "square"
+      ? symbolSquare
+      : shape === "triangle"
+        ? symbolTriangle
+        : symbolCircle;
+  const symbolPath = symbol().type(symbolFactory).size(markerSize)();
+  return (
+    <path
+      d={symbolPath ?? undefined}
+      fill={fillColor}
+      stroke={strokeColor}
+      strokeWidth={1}
+      transform={`translate(${x}, ${y})`}
+    />
+  );
+}
+
+function renderChartSvg(chart: XlsxChart, rect: XlsxImageRect, palette: ViewerPalette) {
+  type IndexedValuePoint = { index: number; value: number | null };
+  type ScatterPoint = { x: number | null; y: number | null };
+  const width = Math.max(80, rect.width);
+  const height = Math.max(60, rect.height);
+  const chartRadius = chart.roundedCorners === false ? 0 : 8;
+  const titleHeight = chart.title ? 30 : 12;
+  const legendEntries = buildChartLegendEntries(chart);
+  const legendPosition = normalizeLegendPosition(chart.legend?.position) ?? ((chart.chartType === "Pie" || chart.chartType === "PieExploded" || chart.chartType === "Doughnut") ? "b" : undefined);
+  const showLegend = Boolean(legendPosition && legendEntries.length > 0);
+  const legendOverlay = chart.legend?.overlay === true;
+  const legendBlockHeight = showLegend && (legendPosition === "b" || legendPosition === "t") ? 28 : 0;
+  const legendBlockWidth = showLegend && (legendPosition === "l" || legendPosition === "r") ? Math.min(140, width * 0.28) : 0;
+  const plotLeft = 36 + (!legendOverlay && legendPosition === "l" ? legendBlockWidth : 0);
+  const plotTop = titleHeight + (!legendOverlay && legendPosition === "t" ? legendBlockHeight : 0);
+  const plotWidth = Math.max(24, width - plotLeft - 16 - (!legendOverlay && legendPosition === "r" ? legendBlockWidth : 0));
+  const plotHeight = Math.max(24, height - plotTop - 24 - (!legendOverlay && legendPosition === "b" ? legendBlockHeight : 0));
+  const categories = chart.series[0]?.categories ?? [];
+  const valueRows = chart.series.flatMap((series) => series.values.filter((value): value is number => typeof value === "number"));
+  const minValue = min(valueRows) ?? 0;
+  const maxValue = max(valueRows) ?? 0;
+  const categoryCount = Math.max(1, categories.length);
+  const categorySlotWidth = plotWidth / categoryCount;
+  const overlapRatio = (chart.overlap ?? 0) / 100;
+  const gapRatio = Math.max(0, (chart.gapWidth ?? 150) / 100);
+  const seriesCount = Math.max(1, chart.series.length);
+  const clusterWidthFactor = 1 + (seriesCount - 1) * (1 - overlapRatio);
+  const columnBarWidth = Math.max(3, categorySlotWidth / (clusterWidthFactor + gapRatio));
+  const clusterWidth = columnBarWidth * clusterWidthFactor;
+  const domainMin = chart.chartType === "Area" || chart.chartType === "Line" || chart.chartType === "ColumnClustered" || chart.chartType === "BarClustered"
+    ? Math.min(0, minValue)
+    : minValue;
+  const domainMax = maxValue === domainMin ? domainMin + 1 : maxValue;
+  const valueScale = scaleLinear().domain([domainMin, domainMax]).range([plotTop + plotHeight, plotTop]).nice();
+  const pointScale = scalePoint<number>().domain(categories.map((_, index) => index)).range([plotLeft + categorySlotWidth / 2, plotLeft + plotWidth - categorySlotWidth / 2]);
+  const renderLegend = () => {
+    if (!showLegend) {
+      return null;
+    }
+
+    if (legendPosition === "b" || legendPosition === "t") {
+      const legendY = legendPosition === "t" ? titleHeight - 10 : height - 10;
+      const itemWidth = Math.max(72, Math.min(110, width / Math.max(1, legendEntries.length)));
+      return (
+        <g transform={`translate(12, ${legendY - 12})`}>
+          {legendEntries.map((entry, index) => (
+            <g key={`${entry.label}-${index}`} transform={`translate(${index * itemWidth}, 0)`}>
+              <rect fill={entry.color} height={10} rx={2} ry={2} width={10} x={0} y={0} />
+              <text fill={palette.mutedText} fontSize="10" x={16} y={9}>{entry.label}</text>
+            </g>
+          ))}
+        </g>
+      );
+    }
+
+    const legendX = legendPosition === "l" ? 10 : width - legendBlockWidth + 12;
+    const legendY = plotTop + 6;
+    return (
+      <g transform={`translate(${legendX}, ${legendY})`}>
+        {legendEntries.map((entry, index) => (
+          <g key={`${entry.label}-${index}`} transform={`translate(0, ${index * 16})`}>
+            <rect fill={entry.color} height={10} rx={2} ry={2} width={10} x={0} y={0} />
+            <text fill={palette.mutedText} fontSize="10" x={16} y={9}>{entry.label}</text>
+          </g>
+        ))}
+      </g>
+    );
+  };
+
+  if (chart.chartType === "Pie" || chart.chartType === "PieExploded" || chart.chartType === "Doughnut") {
+    const values = chart.series[0]?.values.map((value: number | null) => value ?? 0) ?? [];
+    const arcs = d3Pie<number>().value((value: number) => Math.max(0, value))(values);
+    const outerRadius = Math.min(plotWidth, plotHeight) / 2;
+    const innerRadius = chart.chartType === "Doughnut"
+      ? outerRadius * Math.max(0, Math.min(0.9, (chart.holeSize ?? 56) / 100))
+      : 0;
+    const arcBuilder = arc<PieArcDatum<number>>().innerRadius(innerRadius).outerRadius(outerRadius);
+    const centerX = plotLeft + plotWidth / 2;
+    const centerY = plotTop + plotHeight / 2;
+    const totalValue = Math.max(1, values.reduce((sum: number, value: number) => sum + Math.max(0, value), 0));
+    const rotation = chart.firstSliceAngle ?? 0;
+
+    return (
+      <svg aria-label={chart.title ?? chart.chartType} style={{ display: "block", height: "100%", width: "100%" }} viewBox={`0 0 ${width} ${height}`}>
+        <rect fill={palette.surface} height={height} rx={chartRadius} ry={chartRadius} width={width} />
+        {chart.title ? <text fill={palette.text} fontSize="12" fontWeight="600" textAnchor="middle" x={width / 2} y={18}>{chart.title}</text> : null}
+        <g transform={`translate(${centerX}, ${centerY}) rotate(${rotation})`}>
+          {arcs.map((arcDatum: PieArcDatum<number>, index: number) => {
+            const [centroidX, centroidY] = arcBuilder.centroid(arcDatum);
+            const explode = chart.chartType === "PieExploded" ? 12 : 0;
+            const angle = (arcDatum.startAngle + arcDatum.endAngle) / 2;
+            const translateX = Math.cos(angle - Math.PI / 2) * explode;
+            const translateY = Math.sin(angle - Math.PI / 2) * explode;
+            const fillColor = chartPointColor(chart, index);
+            return (
+              <g key={index} transform={`translate(${translateX}, ${translateY})`}>
+                <path d={arcBuilder(arcDatum) ?? undefined} fill={fillColor} stroke={palette.surface} strokeWidth={1.5} />
+                {(chart.dataLabels?.showValue || chart.dataLabels?.showPercent || chart.dataLabels?.showCategoryName) && arcDatum.value > 0 ? (
+                  <text fill={palette.text} fontSize="10" textAnchor="middle" x={centroidX} y={centroidY}>
+                    {chart.dataLabels?.showPercent
+                      ? `${Math.round((arcDatum.value / totalValue) * 100)}%`
+                      : chart.dataLabels?.showCategoryName
+                        ? String(categories[index] ?? "")
+                        : String(arcDatum.value)}
+                  </text>
+                ) : null}
+              </g>
+            );
+          })}
+        </g>
+        {renderLegend()}
+      </svg>
+    );
+  }
+
+  if (chart.chartType === "Radar") {
+    const maxRadarValue = Math.max(1, maxValue);
+    const radiusScale = scaleLinear().domain([0, maxRadarValue]).range([0, Math.min(plotWidth, plotHeight) / 2 - 12]);
+    const centerX = plotLeft + plotWidth / 2;
+    const centerY = plotTop + plotHeight / 2;
+    const radarPoints = Math.max(3, categoryCount);
+    const angleForIndex = (index: number) => -Math.PI / 2 + (Math.PI * 2 * index) / radarPoints;
+    const polygonPointsAtRadius = (radius: number) => Array.from({ length: radarPoints }, (_, index) => {
+      const angle = angleForIndex(index);
+      return [centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius] as const;
+    });
+    const buildPolygonPath = (values: Array<number | null>) => {
+      const points = values.map((value, index) => {
+        const angle = angleForIndex(index);
+        const radius = radiusScale(typeof value === "number" ? value : 0);
+        return [centerX + Math.cos(angle) * radius, centerY + Math.sin(angle) * radius] as const;
+      });
+      if (points.length === 0) {
+        return undefined;
+      }
+      return `${points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ")} Z`;
+    };
+
+    return (
+      <svg aria-label={chart.title ?? chart.chartType} style={{ display: "block", height: "100%", width: "100%" }} viewBox={`0 0 ${width} ${height}`}>
+        <rect fill={palette.surface} height={height} rx={chartRadius} ry={chartRadius} width={width} />
+        {chart.title ? <text fill={palette.text} fontSize="12" fontWeight="600" textAnchor="middle" x={width / 2} y={18}>{chart.title}</text> : null}
+        {[0.25, 0.5, 0.75, 1].map((ratio) => (
+          <path
+            key={ratio}
+            d={`${polygonPointsAtRadius(radiusScale(maxRadarValue * ratio)).map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ")} Z`}
+            fill="none"
+            stroke={palette.border}
+            strokeDasharray="2 2"
+          />
+        ))}
+        {Array.from({ length: radarPoints }, (_, index) => {
+          const angle = angleForIndex(index);
+          const radius = radiusScale(maxRadarValue);
+          const x = centerX + Math.cos(angle) * radius;
+          const y = centerY + Math.sin(angle) * radius;
+          const labelX = centerX + Math.cos(angle) * (radius + 14);
+          const labelY = centerY + Math.sin(angle) * (radius + 14);
+          const label = categories[index] ?? "";
+          return (
+            <g key={index}>
+              <line stroke={palette.border} x1={centerX} x2={x} y1={centerY} y2={y} />
+              <text fill={palette.mutedText} fontSize="10" textAnchor="middle" x={labelX} y={labelY}>{String(label)}</text>
+            </g>
+          );
+        })}
+        {chart.series.map((series, seriesIndex) => {
+          const color = chartSeriesColor(chart, seriesIndex);
+          const strokeColor = chartSeriesStrokeColor(chart, seriesIndex);
+          const shouldRenderMarkers = chart.radarStyle === "marker" || normalizeChartMarkerSymbol(series.markerSymbol) !== undefined;
+          return (
+            <g key={series.id}>
+              <path
+                d={buildPolygonPath(series.values)}
+                fill={color}
+                fillOpacity={0.12}
+                stroke={strokeColor}
+                strokeWidth={series.lineWidthPx ?? 2}
+              />
+              {shouldRenderMarkers
+                ? series.values.map((value, index) => {
+                    if (typeof value !== "number") {
+                      return null;
+                    }
+                    const angle = angleForIndex(index);
+                    const radius = radiusScale(value);
+                    return (
+                      <g key={`${series.id}-marker-${index}`}>
+                        {renderChartMarker(
+                          normalizeChartMarkerSymbol(series.markerSymbol) ?? "circle",
+                          centerX + Math.cos(angle) * radius,
+                          centerY + Math.sin(angle) * radius,
+                          series.markerColor ?? color,
+                          series.markerLineColor ?? palette.surface,
+                          series.markerSize ?? 5
+                        )}
+                      </g>
+                    );
+                  })
+                : null}
+            </g>
+          );
+        })}
+        {renderLegend()}
+      </svg>
+    );
+  }
+
+  const axisTicks = Array.from({ length: 5 }, (_, index) => {
+    const value = domainMin + ((domainMax - domainMin) * index) / 4;
+    return { position: valueScale(value), value };
+  });
+
+  const lineBuilder = d3Line<IndexedValuePoint>()
+    .defined((point: IndexedValuePoint) => typeof point.value === "number")
+    .x((point: IndexedValuePoint) => pointScale(point.index) ?? (plotLeft + categorySlotWidth / 2))
+    .y((point: IndexedValuePoint) => valueScale(point.value ?? 0));
+  const areaBuilder = d3Area<IndexedValuePoint>()
+    .defined((point: IndexedValuePoint) => typeof point.value === "number")
+    .x((point: IndexedValuePoint) => pointScale(point.index) ?? (plotLeft + categorySlotWidth / 2))
+    .y0(valueScale(Math.min(0, domainMin)))
+    .y1((point: IndexedValuePoint) => valueScale(point.value ?? 0));
+  const horizontalValueScale = scaleLinear().domain([Math.min(0, domainMin), domainMax]).range([plotLeft, plotLeft + plotWidth]).nice();
+
+  return (
+    <svg aria-label={chart.title ?? chart.chartType} style={{ display: "block", height: "100%", width: "100%" }} viewBox={`0 0 ${width} ${height}`}>
+      <rect fill={palette.surface} height={height} rx={chartRadius} ry={chartRadius} width={width} />
+      {chart.title ? <text fill={palette.text} fontSize="12" fontWeight="600" textAnchor="middle" x={width / 2} y={18}>{chart.title}</text> : null}
+      {axisTicks.map((tick, index) => (
+        <g key={index}>
+          <line stroke={palette.border} strokeDasharray={index === 0 ? undefined : "2 2"} x1={plotLeft} x2={plotLeft + plotWidth} y1={tick.position} y2={tick.position} />
+          <text fill={palette.mutedText} fontSize="9" textAnchor="end" x={plotLeft - 4} y={tick.position + 3}>{Math.round(tick.value * 100) / 100}</text>
+        </g>
+      ))}
+      {categories.map((label, index) => {
+        const x = pointScale(index) ?? (plotLeft + categorySlotWidth / 2);
+        return (
+          <text key={index} fill={palette.mutedText} fontSize="9" textAnchor="middle" x={x} y={plotTop + plotHeight + 14}>
+            {String(label ?? "")}
+          </text>
+        );
+      })}
+      {chart.chartType === "ColumnClustered" ? chart.series.map((series, seriesIndex) => {
+        const color = chartSeriesColor(chart, seriesIndex);
+        const strokeColor = chartSeriesStrokeColor(chart, seriesIndex);
+        const xStep = columnBarWidth * (1 - overlapRatio);
+        return series.values.map((value, index) => {
+          if (typeof value !== "number") {
+            return null;
+          }
+          const slotStart = plotLeft + categorySlotWidth * index;
+          const clusterStart = slotStart + (categorySlotWidth - clusterWidth) / 2;
+          const x = clusterStart + seriesIndex * xStep;
+          const y = valueScale(Math.max(value, 0));
+          const y0 = valueScale(Math.min(0, value));
+          return (
+            <rect
+              key={`${series.id}-${index}`}
+              fill={color}
+              height={Math.max(1, Math.abs(y0 - y))}
+              opacity={0.9}
+              rx={2}
+              stroke={strokeColor}
+              strokeWidth={series.lineWidthPx ? Math.min(series.lineWidthPx, 1.5) : 0}
+              width={Math.max(2, columnBarWidth)}
+              x={x}
+              y={Math.min(y, y0)}
+            />
+          );
+        });
+      }) : null}
+      {chart.chartType === "BarClustered" ? chart.series.map((series, seriesIndex) => {
+        const rowSlotHeight = plotHeight / categoryCount;
+        const barHeight = Math.max(3, rowSlotHeight / (clusterWidthFactor + gapRatio));
+        const clusterHeight = barHeight * clusterWidthFactor;
+        const yStep = barHeight * (1 - overlapRatio);
+        return series.values.map((value, index) => {
+          if (typeof value !== "number") {
+            return null;
+          }
+          const rowStart = plotTop + rowSlotHeight * index;
+          const clusterStart = rowStart + (rowSlotHeight - clusterHeight) / 2;
+          const y = clusterStart + seriesIndex * yStep;
+          const x0 = horizontalValueScale(0);
+          const x = horizontalValueScale(Math.min(0, value));
+          return (
+            <rect
+              key={`${series.id}-${index}`}
+              fill={chartSeriesColor(chart, seriesIndex)}
+              height={Math.max(2, barHeight)}
+              rx={2}
+              width={Math.max(1, Math.abs(horizontalValueScale(value) - x0))}
+              x={Math.min(x0, x)}
+              y={y}
+            />
+          );
+        });
+      }) : null}
+      {chart.chartType === "Area" ? chart.series.map((series, seriesIndex) => {
+        const points = series.values.map((value, index) => ({ index, value }));
+        const color = chartSeriesColor(chart, seriesIndex);
+        const strokeColor = chartSeriesStrokeColor(chart, seriesIndex);
+        const hasLine = series.shapeProperties?.lineNoFill !== true;
+        return (
+          <g key={series.id}>
+            <path d={areaBuilder(points) ?? undefined} fill={color} fillOpacity={1} stroke="none" />
+            {hasLine ? (
+              <path d={lineBuilder(points) ?? undefined} fill="none" stroke={strokeColor} strokeWidth={series.lineWidthPx ?? 2} />
+            ) : null}
+          </g>
+        );
+      }) : null}
+      {chart.chartType === "Line" || chart.chartType === "ScatterLines" ? chart.series.map((series, seriesIndex) => {
+        const color = chartSeriesColor(chart, seriesIndex);
+        const strokeColor = chartSeriesStrokeColor(chart, seriesIndex);
+        const scatterCategories = series.categories.filter((value: number | string | null): value is number => typeof value === "number");
+        const scatterDomain = extent(scatterCategories);
+        const scatterXScale = scaleLinear()
+          .domain([
+            scatterDomain[0] ?? 0,
+            scatterDomain[1] ?? Math.max(1, scatterCategories.length - 1)
+          ])
+          .range([plotLeft, plotLeft + plotWidth]);
+        const pointBuilder = chart.chartType === "ScatterLines" && series.categories.every((value: number | string | null) => typeof value === "number")
+          ? d3Line<ScatterPoint>()
+              .defined((point: ScatterPoint) => typeof point.x === "number" && typeof point.y === "number")
+              .x((point: ScatterPoint) => scatterXScale(point.x ?? 0))
+              .y((point: ScatterPoint) => valueScale(point.y ?? 0))
+          : null;
+        const lineData = series.values.map((value: number | null, index: number) => ({
+          index,
+          value
+        }));
+        const scatterData = series.values.map((value: number | null, index: number) => ({
+          x: typeof series.categories[index] === "number" ? series.categories[index] as number : null,
+          y: value
+        }));
+        return (
+          <g key={series.id}>
+            <path
+              d={pointBuilder ? pointBuilder(scatterData) ?? undefined : lineBuilder(lineData) ?? undefined}
+              fill="none"
+              stroke={strokeColor}
+              strokeLinejoin="round"
+              strokeWidth={series.lineWidthPx ?? 2}
+            />
+            {series.values.map((value, index) => {
+              if (typeof value !== "number") {
+                return null;
+              }
+              const markerSymbol = normalizeChartMarkerSymbol(series.markerSymbol);
+              if (!markerSymbol) {
+                return null;
+              }
+              const x = pointBuilder && typeof scatterData[index]?.x === "number"
+                ? scatterXScale(scatterData[index]?.x ?? 0)
+                : pointScale(index) ?? (plotLeft + categorySlotWidth / 2);
+              return (
+                <g key={`${series.id}-marker-${index}`}>
+                  {renderChartMarker(
+                    markerSymbol,
+                    x,
+                    valueScale(value),
+                    series.markerColor ?? color,
+                    series.markerLineColor ?? palette.surface,
+                    series.markerSize ?? 5
+                  )}
+                </g>
+              );
+            })}
+          </g>
+        );
+      }) : null}
+      <line stroke={palette.strongBorder} x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotTop + plotHeight} />
+      <line stroke={palette.strongBorder} x1={plotLeft} x2={plotLeft + plotWidth} y1={plotTop + plotHeight} y2={plotTop + plotHeight} />
+      {renderLegend()}
+    </svg>
+  );
+}
+
+type ChartSvgProps = {
+  chart: XlsxChart;
+  palette: ViewerPalette;
+  rect: XlsxImageRect;
+};
+
+const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, rect }: ChartSvgProps) {
+  return renderChartSvg(chart, rect, palette);
+}, (prev, next) => (
+  prev.chart === next.chart &&
+  prev.palette === next.palette &&
+  prev.rect.left === next.rect.left &&
+  prev.rect.top === next.rect.top &&
+  prev.rect.width === next.rect.width &&
+  prev.rect.height === next.rect.height
+));
 
 type FrozenDrawingPane = "corner" | "left" | "scroll" | "top";
 
@@ -1600,7 +2128,7 @@ function resolveImageHandleStyle(position: XlsxImageResizeHandlePosition, stroke
   const style: React.CSSProperties = {
     backgroundColor: surface,
     border: `1px solid ${stroke}`,
-    borderRadius: 999,
+    borderRadius: 6,
     cursor: IMAGE_HANDLE_CURSOR[position],
     height: IMAGE_HANDLE_SIZE_PX,
     pointerEvents: "auto",
@@ -2593,7 +3121,7 @@ function DefaultTableHeaderMenu({
 }
 
 function DefaultToolbar({ controller, palette }: { controller: XlsxViewerController; palette: ViewerPalette }) {
-  const { activeSheetIndex, canDownload, displayFileName, download, sheets, setActiveSheetIndex } = controller;
+  const { activeTabIndex, canDownload, displayFileName, download, setActiveTabIndex, tabs } = controller;
 
   return (
     <>
@@ -2643,7 +3171,7 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
           </button>
         ) : null}
       </div>
-      {sheets.length > 1 ? (
+      {tabs.length > 1 ? (
         <div
           style={{
             backgroundColor: palette.subtleSurface,
@@ -2654,16 +3182,16 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
             padding: "8px 12px"
           }}
         >
-          {sheets.map((sheet, index) => (
+          {tabs.map((tab, index) => (
             <button
-              key={sheet.name}
-              onClick={() => setActiveSheetIndex(index)}
+              key={tab.id}
+              onClick={() => setActiveTabIndex(index)}
               style={{
-                backgroundColor: index === activeSheetIndex ? palette.sheetActiveSurface : palette.sheetInactiveSurface,
-                border: `1px solid ${index === activeSheetIndex ? palette.strongBorder : "transparent"}`,
+                backgroundColor: index === activeTabIndex ? palette.sheetActiveSurface : palette.sheetInactiveSurface,
+                border: `1px solid ${index === activeTabIndex ? palette.strongBorder : "transparent"}`,
                 borderRadius: 8,
-                boxShadow: index === activeSheetIndex ? palette.shadow : "none",
-                color: index === activeSheetIndex ? palette.sheetActiveText : palette.sheetInactiveText,
+                boxShadow: index === activeTabIndex ? palette.shadow : "none",
+                color: index === activeTabIndex ? palette.sheetActiveText : palette.sheetInactiveText,
                 cursor: "pointer",
                 fontSize: 12,
                 fontWeight: 500,
@@ -2672,7 +3200,7 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
               }}
               type="button"
             >
-              {sheet.name}
+              {tab.name}
             </button>
           ))}
         </div>
@@ -3638,7 +4166,11 @@ function XlsxGrid({
     activeCell,
     activeSheet,
     activeSheetIndex,
+    activeTab,
+    activeTabIndex,
     canLoadDeferred,
+    charts,
+    clearSelectedChart,
     clearSelectedImage,
     clearSelectedCells,
     continueDeferredLoad,
@@ -3646,6 +4178,7 @@ function XlsxGrid({
     error,
     fillSelection,
     getActiveWorksheet,
+    getChartById,
     getRowsBatchAsync,
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
@@ -3661,16 +4194,21 @@ function XlsxGrid({
     readOnly,
     redo,
     revision,
+    selectedChart,
+    selectedChartId,
     selectedImage,
     selectedImageId,
     selectCell,
+    selectChart,
     selectImage,
     selectRange,
     selection,
     setActiveSheetIndex,
+    setChartRect,
     setImageRect,
     setCellValue,
     sheets,
+    tabs,
     sortState,
     sortTable,
     tables,
@@ -3762,10 +4300,36 @@ function XlsxGrid({
       }
     | null
   >(null);
+  const chartInteractionCleanupRef = React.useRef<(() => void) | null>(null);
+  const chartInteractionRef = React.useRef<
+    | {
+        baseRect: XlsxImageRect;
+        didMove: boolean;
+        chartId: string;
+        pointerId: number;
+        startClientX: number;
+        startClientY: number;
+        type: "move";
+      }
+    | {
+        baseRect: XlsxImageRect;
+        didMove: boolean;
+        chartId: string;
+        handle: XlsxImageResizeHandlePosition;
+        pointerId: number;
+        startClientX: number;
+        startClientY: number;
+        type: "resize";
+      }
+    | null
+  >(null);
   const [editingCell, setEditingCell] = React.useState<XlsxCellAddress | null>(null);
   const [editingValue, setEditingValue] = React.useState("");
   const [openTableMenu, setOpenTableMenu] = React.useState<{ col: number; row: number; tableName: string } | null>(null);
   const [fillPreviewRange, setFillPreviewRange] = React.useState<XlsxCellRange | null>(null);
+  const [chartPreviewRect, setChartPreviewRect] = React.useState<{ id: string; rect: XlsxImageRect } | null>(null);
+  const chartPreviewRectRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
+  const skipNextChartClickRef = React.useRef<string | null>(null);
   const [selectionPreviewRange, setSelectionPreviewRange] = React.useState<XlsxCellRange | null>(null);
   const [imagePreviewRect, setImagePreviewRect] = React.useState<{ id: string; rect: XlsxImageRect } | null>(null);
   const imagePreviewRectRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
@@ -3996,7 +4560,7 @@ function XlsxGrid({
   const firstVisibleCol = visibleCols[0];
   const lastVisibleCol = visibleCols[visibleCols.length - 1];
   const displayedSelection = fillPreviewRange ?? selectionPreviewRange ?? normalizedSelection;
-  const hasFloatingDrawings = showImages && (images.length > 0 || shapes.length > 0);
+  const hasFloatingDrawings = showImages && (images.length > 0 || shapes.length > 0 || charts.length > 0);
   const shouldVirtualizeRows = !activeSheet?.hasVerticalMerges && !hasFloatingDrawings && frozenRows.length === 0;
   const shouldVirtualizeCols = !activeSheet?.hasHorizontalMerges && frozenCols.length === 0;
 
@@ -4076,6 +4640,10 @@ function XlsxGrid({
   }, [readOnly]);
 
   React.useEffect(() => {
+    chartPreviewRectRef.current = chartPreviewRect;
+  }, [chartPreviewRect]);
+
+  React.useEffect(() => {
     imagePreviewRectRef.current = imagePreviewRect;
   }, [imagePreviewRect]);
 
@@ -4142,6 +4710,16 @@ function XlsxGrid({
       },
       { maxCol: -1, maxRow: -1 }
     );
+    const chartExtents = charts.reduce(
+      (current, chart) => {
+        const extents = resolveChartAnchorExtents(chart);
+        return {
+          maxCol: Math.max(current.maxCol, extents.maxCol),
+          maxRow: Math.max(current.maxRow, extents.maxRow)
+        };
+      },
+      { maxCol: -1, maxRow: -1 }
+    );
     const nextRowLimit = Math.max(
       resolveInitialDisplayExtent(
         activeSheet?.maxUsedRow ?? -1,
@@ -4153,7 +4731,8 @@ function XlsxGrid({
       (activeCell?.row ?? -1) + OPEN_GRID_ROW_PADDING + 1,
       (selectionEnd?.row ?? -1) + OPEN_GRID_ROW_PADDING + 1,
       imageExtents.maxRow + OPEN_GRID_ROW_PADDING + 1,
-      shapeExtents.maxRow + OPEN_GRID_ROW_PADDING + 1
+      shapeExtents.maxRow + OPEN_GRID_ROW_PADDING + 1,
+      chartExtents.maxRow + OPEN_GRID_ROW_PADDING + 1
     );
     const nextColLimit = Math.max(
       resolveInitialDisplayExtent(
@@ -4166,12 +4745,13 @@ function XlsxGrid({
       (activeCell?.col ?? -1) + OPEN_GRID_COL_PADDING + 1,
       (selectionEnd?.col ?? -1) + OPEN_GRID_COL_PADDING + 1,
       imageExtents.maxCol + OPEN_GRID_COL_PADDING + 1,
-      shapeExtents.maxCol + OPEN_GRID_COL_PADDING + 1
+      shapeExtents.maxCol + OPEN_GRID_COL_PADDING + 1,
+      chartExtents.maxCol + OPEN_GRID_COL_PADDING + 1
     );
 
     setDisplayRowLimit((current) => (current < nextRowLimit ? nextRowLimit : current));
     setDisplayColLimit((current) => (current < nextColLimit ? nextColLimit : current));
-  }, [activeCell, activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, images, normalizedSelection, shapes]);
+  }, [activeCell, activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, charts, images, normalizedSelection, shapes]);
 
   React.useEffect(() => {
     if (shouldVirtualizeRows) {
@@ -4338,12 +4918,15 @@ function XlsxGrid({
   React.useEffect(() => {
     selectionDragCleanupRef.current?.();
     fillDragCleanupRef.current?.();
+    chartInteractionCleanupRef.current?.();
     imageInteractionCleanupRef.current?.();
     selectionDragCleanupRef.current = null;
     fillDragCleanupRef.current = null;
+    chartInteractionCleanupRef.current = null;
     imageInteractionCleanupRef.current = null;
     selectionDragRef.current = null;
     fillDragRef.current = null;
+    chartInteractionRef.current = null;
     imageInteractionRef.current = null;
     pendingResizePreviewRef.current = null;
     if (columnPreviewRef.current) {
@@ -4357,6 +4940,8 @@ function XlsxGrid({
     setEditingCell(null);
     setEditingValue("");
     setFillPreviewRange(null);
+    chartPreviewRectRef.current = null;
+    setChartPreviewRect(null);
     imagePreviewRectRef.current = null;
     setImagePreviewRect(null);
     setSelectionPreviewRange(null);
@@ -4800,6 +5385,40 @@ function XlsxGrid({
       rowIndexByActual,
       rowPrefixSums,
       shapes,
+      showImages,
+      visibleCols,
+      visibleRows
+    ]
+  );
+  const chartRects = React.useMemo(
+    () =>
+      showImages
+        ? charts.map((chart) => ({
+            chart,
+            rect:
+              chartPreviewRect && chartPreviewRect.id === chart.id
+                ? chartPreviewRect.rect
+                : resolveAnchoredRect(chart.anchor, visibleRows, visibleCols, effectiveRowHeights, effectiveColWidths, {
+                    actualColPrefixSums,
+                    actualRowPrefixSums,
+                    colIndexByActual,
+                    colPrefixSums,
+                    rowIndexByActual,
+                    rowPrefixSums
+                  })
+          }))
+        : [],
+    [
+      actualColPrefixSums,
+      actualRowPrefixSums,
+      chartPreviewRect,
+      charts,
+      colIndexByActual,
+      colPrefixSums,
+      effectiveColWidths,
+      effectiveRowHeights,
+      rowIndexByActual,
+      rowPrefixSums,
       showImages,
       visibleCols,
       visibleRows
@@ -5284,6 +5903,75 @@ function XlsxGrid({
     );
   }, [effectiveTables, palette.mutedText, sortState]);
 
+  const startChartMove = React.useCallback((
+    event: React.PointerEvent<HTMLElement>,
+    chart: XlsxChart,
+    rect: XlsxImageRect
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    focusGrid();
+    selectChart(chart.id);
+
+    if (readOnlyRef.current || chart.editable === false) {
+      return;
+    }
+
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    chartInteractionRef.current = {
+      baseRect: rect,
+      chartId: chart.id,
+      didMove: false,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      type: "move"
+    };
+    chartPreviewRectRef.current = { id: chart.id, rect };
+    setChartPreviewRect({ id: chart.id, rect });
+    setInteractionMode("select");
+    document.body.style.cursor = "move";
+    document.body.style.userSelect = "none";
+    installChartInteractionListeners(event.pointerId);
+  }, [focusGrid, selectChart]);
+
+  const startChartResize = React.useCallback((
+    event: React.PointerEvent<HTMLElement>,
+    chart: XlsxChart,
+    rect: XlsxImageRect,
+    handle: XlsxImageResizeHandlePosition
+  ) => {
+    if (readOnlyRef.current || chart.editable === false || event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    focusGrid();
+    selectChart(chart.id);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    chartInteractionRef.current = {
+      baseRect: rect,
+      chartId: chart.id,
+      didMove: false,
+      handle,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      type: "resize"
+    };
+    chartPreviewRectRef.current = { id: chart.id, rect };
+    setChartPreviewRect({ id: chart.id, rect });
+    setInteractionMode("select");
+    document.body.style.cursor = String(IMAGE_HANDLE_CURSOR[handle]);
+    document.body.style.userSelect = "none";
+    installChartInteractionListeners(event.pointerId);
+  }, [focusGrid, selectChart]);
+
   const startImageMove = React.useCallback((
     event: React.PointerEvent<HTMLElement>,
     image: XlsxImage,
@@ -5370,6 +6058,15 @@ function XlsxGrid({
     }
   }, [openHyperlink]);
 
+  const handleChartClick = React.useCallback((chart: XlsxChart) => {
+    if (skipNextChartClickRef.current === chart.id) {
+      skipNextChartClickRef.current = null;
+      return;
+    }
+
+    selectChart(chart.id);
+  }, [selectChart]);
+
   if (isLoading) {
     return <>{renderLoading(loadingComponent, loadingState, palette)}</>;
   }
@@ -5380,6 +6077,55 @@ function XlsxGrid({
 
   if (error) {
     return <>{renderError(errorState, error, palette)}</>;
+  }
+
+  if (!activeSheet && activeTab?.kind === "chartsheet") {
+    return (
+      <div
+        style={{
+          alignItems: "stretch",
+          backgroundColor: palette.canvas,
+          display: "flex",
+          flex: 1,
+          justifyContent: "center",
+          minHeight: 0,
+          minWidth: 0,
+          padding: 16
+        }}
+      >
+        <div
+          style={{
+            backgroundColor: palette.surface,
+            border: `1px solid ${palette.border}`,
+            borderRadius: 12,
+            display: "grid",
+            gap: 16,
+            gridTemplateColumns: charts.length > 1 ? "repeat(auto-fit, minmax(320px, 1fr))" : "minmax(320px, 1fr)",
+            padding: 16,
+            width: "100%"
+          }}
+        >
+              {charts.length > 0 ? charts.map((chart) => (
+                <div key={chart.id} style={{ minHeight: 320, position: "relative" }}>
+                  <MemoChartSvg chart={chart} palette={palette} rect={{ height: 320, left: 0, top: 0, width: 640 }} />
+                </div>
+              )) : (
+            <div
+              style={{
+                alignItems: "center",
+                color: palette.mutedText,
+                display: "flex",
+                fontSize: 13,
+                justifyContent: "center",
+                minHeight: 320
+              }}
+            >
+              Chartsheet metadata is present, but no embedded chart payload was exposed for this tab.
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   if (!activeSheet) {
@@ -5699,9 +6445,82 @@ function XlsxGrid({
           style={{
             ...style,
             background: "transparent",
-            cursor: canEditImage ? "move" : image.hyperlink ? "pointer" : "default",
+            cursor: canEditImage && selectedImageId === image.id ? "move" : image.hyperlink ? "pointer" : "cell",
             pointerEvents: "auto",
             zIndex: isFrozenDrawing ? image.zIndex + 21 : image.zIndex + 1
+          }}
+        />
+        {selectionNode}
+      </React.Fragment>
+    );
+  }
+
+  function renderChartDrawing(
+    chart: XlsxChart,
+    rect: XlsxImageRect,
+    pane: FrozenDrawingPane
+  ) {
+    const drawingPane = resolveDrawingPane(rect);
+    if (drawingPane !== pane) {
+      return null;
+    }
+
+    const isFrozenDrawing = pane !== "scroll";
+    const canEditChart = !readOnly && chart.editable !== false;
+    const style: React.CSSProperties = {
+      height: rect.height,
+      left: rect.left,
+      overflow: "hidden",
+      pointerEvents: "none",
+      position: "absolute",
+      top: rect.top,
+      width: rect.width,
+      zIndex: isFrozenDrawing ? chart.zIndex + 20 : chart.zIndex
+    };
+    const selectionNode = selectedChartId === chart.id ? (
+      <div
+        style={{
+          ...style,
+          overflow: "visible",
+          pointerEvents: "none",
+          zIndex: isFrozenDrawing ? chart.zIndex + 22 : chart.zIndex + 2
+        }}
+      >
+        <div
+          style={{
+            border: `1.5px solid ${selectionStroke}`,
+            boxShadow: `0 0 0 1px ${palette.surface}`,
+            boxSizing: "border-box",
+            inset: 0,
+            pointerEvents: "none",
+            position: "absolute"
+          }}
+        >
+          {canEditChart
+            ? IMAGE_HANDLE_POSITIONS.map((position) => (
+                <div
+                  key={position}
+                  onPointerDown={(event) => startChartResize(event, chart, rect, position)}
+                  style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                />
+              ))
+            : null}
+        </div>
+      </div>
+    ) : null;
+
+    return (
+      <React.Fragment key={`${pane}-${chart.id}`}>
+        <div style={style}><MemoChartSvg chart={chart} palette={palette} rect={rect} /></div>
+        <div
+          onClick={() => handleChartClick(chart)}
+          onPointerDown={(event) => startChartMove(event, chart, rect)}
+          style={{
+            ...style,
+            background: "transparent",
+            cursor: canEditChart && selectedChartId === chart.id ? "move" : "cell",
+            pointerEvents: "auto",
+            zIndex: isFrozenDrawing ? chart.zIndex + 21 : chart.zIndex + 1
           }}
         />
         {selectionNode}
@@ -5722,7 +6541,7 @@ function XlsxGrid({
     position: "sticky",
     top: 0,
     width: 0,
-    zIndex: 20
+    zIndex: 40
   };
   const leftOverlayStyle: React.CSSProperties = {
     height: 0,
@@ -5731,7 +6550,7 @@ function XlsxGrid({
     pointerEvents: "none",
     position: "sticky",
     width: 0,
-    zIndex: 20
+    zIndex: 40
   };
   const cornerOverlayStyle: React.CSSProperties = {
     height: 0,
@@ -5741,8 +6560,45 @@ function XlsxGrid({
     position: "sticky",
     top: 0,
     width: 0,
-    zIndex: 20
+    zIndex: 40
   };
+  const paneDrawingNodes = !showImages
+    ? {
+        corner: null,
+        left: null,
+        scroll: null,
+        top: null
+      } satisfies Record<FrozenDrawingPane, React.ReactNode>
+    : {
+        corner: (
+          <>
+            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "corner"))}
+            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "corner"))}
+            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "corner"))}
+          </>
+        ),
+        left: (
+          <>
+            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "left"))}
+            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "left"))}
+            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "left"))}
+          </>
+        ),
+        scroll: (
+          <>
+            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "scroll"))}
+            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "scroll"))}
+            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "scroll"))}
+          </>
+        ),
+        top: (
+          <>
+            {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "top"))}
+            {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "top"))}
+            {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "top"))}
+          </>
+        )
+      } satisfies Record<FrozenDrawingPane, React.ReactNode>;
 
   function startColumnResize(pointerId: number, actualCol: number, widthPx: number, startX: number) {
     if (readOnly) {
@@ -5938,6 +6794,73 @@ function XlsxGrid({
     imageInteractionCleanupRef.current = cleanup;
   }
 
+  function installChartInteractionListeners(pointerId: number) {
+    chartInteractionCleanupRef.current?.();
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) {
+        return;
+      }
+
+      const interaction = chartInteractionRef.current;
+      if (!interaction) {
+        return;
+      }
+
+      const deltaX = event.clientX - interaction.startClientX;
+      const deltaY = event.clientY - interaction.startClientY;
+      if (!interaction.didMove && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
+        interaction.didMove = true;
+      }
+      const nextRect = clampImageRect(
+        interaction.type === "move"
+          ? {
+              ...interaction.baseRect,
+              left: interaction.baseRect.left + deltaX,
+              top: interaction.baseRect.top + deltaY
+            }
+          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, 48)
+      );
+
+      chartPreviewRectRef.current = { id: interaction.chartId, rect: nextRect };
+      setChartPreviewRect({ id: interaction.chartId, rect: nextRect });
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) {
+        return;
+      }
+
+      const interaction = chartInteractionRef.current;
+      const preview = chartPreviewRectRef.current;
+      chartInteractionRef.current = null;
+      chartInteractionCleanupRef.current = null;
+      setInteractionMode("idle");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      cleanup();
+      if (interaction && preview && preview.id === interaction.chartId) {
+        if (interaction.didMove) {
+          skipNextChartClickRef.current = interaction.chartId;
+        }
+        setChartRect(interaction.chartId, preview.rect);
+      }
+      chartPreviewRectRef.current = null;
+      setChartPreviewRect(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    chartInteractionCleanupRef.current = cleanup;
+  }
+
   function resolveCurrentCell() {
     if (activeCell && rowIndexByActual.has(activeCell.row) && colIndexByActual.has(activeCell.col)) {
       return activeCell;
@@ -5962,7 +6885,7 @@ function XlsxGrid({
   return (
     <div style={{ backgroundColor: palette.canvas, display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
       <div
-        key={activeSheetIndex}
+        key={activeTabIndex}
         ref={scrollRef}
         onScroll={handleScrollerScroll}
         onCopy={(event) => {
@@ -6136,22 +7059,10 @@ function XlsxGrid({
         >
           {showImages ? (
             <>
-              <div style={topOverlayStyle}>
-                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "top"))}
-                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "top"))}
-              </div>
-              <div style={leftOverlayStyle}>
-                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "left"))}
-                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "left"))}
-              </div>
-              <div style={cornerOverlayStyle}>
-                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "corner"))}
-                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "corner"))}
-              </div>
-              <div style={scrollOverlayStyle}>
-                {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "scroll"))}
-                {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "scroll"))}
-              </div>
+              <div style={topOverlayStyle}>{paneDrawingNodes.top}</div>
+              <div style={leftOverlayStyle}>{paneDrawingNodes.left}</div>
+              <div style={cornerOverlayStyle}>{paneDrawingNodes.corner}</div>
+              <div style={scrollOverlayStyle}>{paneDrawingNodes.scroll}</div>
             </>
           ) : null}
           <table
@@ -6635,45 +7546,144 @@ export function useXlsxViewerTables(): XlsxViewerTables {
 
 export function useXlsxViewerImages(): XlsxViewerImages {
   const {
+    charts,
+    clearSelectedChart,
     clearSelectedImage,
+    getChartById,
+    getSheetCharts,
     getImageById,
     getSheetImages,
     images,
+    moveChartBy,
     moveImageBy,
     readOnly,
+    resizeChartBy,
     resizeImageBy,
+    selectedChart,
+    selectedChartId,
     selectedImage,
     selectedImageId,
+    selectChart,
     selectImage,
-    setImageRect
+    setChartRect,
+    setImageRect,
+    updateChart
   } = useXlsxViewer();
 
   return React.useMemo(
     () => ({
+      charts,
+      clearSelectedChart,
       clearSelectedImage,
+      getChartById,
+      getSheetCharts,
       getImageById,
       getSheetImages,
       images,
+      moveChartBy,
       moveImageBy,
       readOnly,
+      resizeChartBy,
       resizeImageBy,
+      selectedChart,
+      selectedChartId,
       selectedImage,
       selectedImageId,
+      selectChart,
       selectImage,
-      setImageRect
+      setChartRect,
+      setImageRect,
+      updateChart
     }),
     [
+      charts,
+      clearSelectedChart,
       clearSelectedImage,
+      getChartById,
+      getSheetCharts,
       getImageById,
       getSheetImages,
       images,
+      moveChartBy,
       moveImageBy,
       readOnly,
+      resizeChartBy,
       resizeImageBy,
+      selectedChart,
+      selectedChartId,
       selectedImage,
       selectedImageId,
+      selectChart,
       selectImage,
-      setImageRect
+      setChartRect,
+      setImageRect,
+      updateChart
+    ]
+  );
+}
+
+export function useXlsxViewerCharts(): XlsxViewerCharts {
+  const {
+    activeTab,
+    activeTabIndex,
+    charts,
+    chartsheets,
+    clearSelectedChart,
+    getChartById,
+    getChartsheetById,
+    getSheetCharts,
+    moveChartBy,
+    readOnly,
+    resizeChartBy,
+    selectChart,
+    selectedChart,
+    selectedChartId,
+    setActiveTabIndex,
+    setChartRect,
+    tabs,
+    updateChart
+  } = useXlsxViewer();
+
+  return React.useMemo(
+    () => ({
+      activeTab,
+      activeTabIndex,
+      charts,
+      chartsheets,
+      clearSelectedChart,
+      getChartById,
+      getChartsheetById,
+      getSheetCharts,
+      moveChartBy,
+      readOnly,
+      resizeChartBy,
+      selectChart,
+      selectedChart,
+      selectedChartId,
+      setActiveTabIndex,
+      setChartRect,
+      tabs,
+      updateChart
+    }),
+    [
+      activeTab,
+      activeTabIndex,
+      charts,
+      chartsheets,
+      clearSelectedChart,
+      getChartById,
+      getChartsheetById,
+      getSheetCharts,
+      moveChartBy,
+      readOnly,
+      resizeChartBy,
+      selectChart,
+      selectedChart,
+      selectedChartId,
+      setActiveTabIndex,
+      setChartRect,
+      tabs,
+      updateChart
     ]
   );
 }

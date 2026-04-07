@@ -2183,6 +2183,7 @@ function parsePictureNode(
       description: nonVisualProps?.getAttribute("descr") ?? undefined,
       hyperlink: getHyperlinkTarget(nonVisualProps ?? pictureNode, drawingRelationships),
       id: imageId,
+      mediaPath: mediaRelationship.target,
       mimeType: resolveContentType(contentTypes, mediaRelationship.target),
       name: nonVisualProps?.getAttribute("name") ?? undefined,
       sheetIndex: workbookSheetIndex,

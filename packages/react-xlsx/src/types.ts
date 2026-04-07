@@ -196,6 +196,7 @@ export interface XlsxImage {
   editable?: boolean;
   hyperlink?: string;
   id: string;
+  mediaPath?: string;
   mimeType: string;
   name?: string;
   sheetIndex: number;
@@ -273,6 +274,130 @@ export interface XlsxShape {
   zIndex: number;
 }
 
+export interface XlsxChartReference {
+  formula?: string;
+  refType?: string;
+  values?: Array<number | string | null>;
+}
+
+export interface XlsxChartDataLabels {
+  raw?: Record<string, unknown>;
+  showBubbleSize?: boolean;
+  showCategoryName?: boolean;
+  showLegendKey?: boolean;
+  showPercent?: boolean;
+  showSeriesName?: boolean;
+  showValue?: boolean;
+}
+
+export interface XlsxChartLegend {
+  overlay?: boolean;
+  position?: string;
+  raw?: Record<string, unknown>;
+}
+
+export interface XlsxChartAxis {
+  crosses?: string;
+  crossBetween?: string;
+  delete?: boolean;
+  labelPosition?: string;
+  majorGridlines?: boolean;
+  majorTickMark?: string;
+  minorGridlines?: boolean;
+  minorTickMark?: string;
+  numberFormat?: {
+    formatCode?: string;
+    sourceLinked?: boolean;
+  };
+  position?: string;
+  raw?: Record<string, unknown>;
+  shapeProperties?: Record<string, unknown>;
+}
+
+export interface XlsxChartPointStyle {
+  color?: string;
+  index: number;
+  lineColor?: string;
+}
+
+export interface XlsxChartSeries {
+  categories: Array<number | string | null>;
+  categoriesRef?: XlsxChartReference | null;
+  color?: string;
+  dataPoints: unknown[];
+  dataPointStyles?: XlsxChartPointStyle[];
+  id: string;
+  invertIfNegative?: boolean;
+  lineColor?: string;
+  lineWidthPx?: number;
+  marker?: Record<string, unknown>;
+  markerColor?: string;
+  markerLineColor?: string;
+  markerSize?: number;
+  markerSymbol?: string;
+  name?: string;
+  raw?: Record<string, unknown>;
+  shapeProperties?: Record<string, unknown>;
+  smooth?: boolean;
+  values: Array<number | null>;
+  valuesRef?: XlsxChartReference | null;
+}
+
+export interface XlsxChart {
+  anchor: XlsxImageAnchor;
+  autoTitleDeleted?: boolean;
+  axes: XlsxChartAxis[];
+  categoryAxis?: XlsxChartAxis | null;
+  chartColorPalette?: string[];
+  chartColorPaletteOffset?: number;
+  chartPath?: string;
+  chartType: string;
+  dataLabels?: XlsxChartDataLabels | null;
+  displayBlanksAs?: string;
+  editable?: boolean;
+  firstSliceAngle?: number;
+  gapWidth?: number;
+  holeSize?: number;
+  id: string;
+  is3d?: boolean;
+  legend?: XlsxChartLegend | null;
+  name?: string;
+  overlap?: number;
+  plotVisibleOnly?: boolean;
+  raw?: Record<string, unknown>;
+  radarStyle?: string;
+  roundedCorners?: boolean;
+  series: XlsxChartSeries[];
+  sheetIndex: number;
+  showDlblsOverMax?: boolean;
+  title?: string;
+  typeGroups?: unknown[];
+  valueAxis?: XlsxChartAxis | null;
+  varyColors?: boolean;
+  workbookSheetIndex: number;
+  zIndex: number;
+}
+
+export interface XlsxChartsheet {
+  chartIds: string[];
+  chartPath?: string;
+  id: string;
+  index: number;
+  name: string;
+  raw?: Record<string, unknown>;
+  workbookSheetIndex?: number;
+}
+
+export interface XlsxWorkbookTab {
+  chartsheetIndex?: number;
+  id: string;
+  index: number;
+  kind: "chartsheet" | "sheet";
+  name: string;
+  sheetIndex?: number;
+  workbookSheetIndex?: number;
+}
+
 export interface XlsxImageRect {
   height: number;
   left: number;
@@ -316,6 +441,8 @@ export interface XlsxViewerController {
   activeCellAddress: string | null;
   activeSheet: XlsxSheetData | null;
   activeSheetIndex: number;
+  activeTab: XlsxWorkbookTab | null;
+  activeTabIndex: number;
   canDownload: boolean;
   canExport: boolean;
   canLoadDeferred: boolean;
@@ -329,12 +456,18 @@ export interface XlsxViewerController {
   defineNamedRange: (name: string, range?: XlsxCellRange | null) => void;
   displayFileName: string;
   download: () => void;
+  charts: XlsxChart[];
+  chartsheets: XlsxChartsheet[];
   exportCsv: () => void;
   exportXlsx: () => void;
   error: Error | null;
   file?: ArrayBuffer;
   fillSelection: (targetRange: XlsxCellRange) => void;
+  clearSelectedChart: () => void;
   clearSelectedImage: () => void;
+  getChartById: (id: string) => XlsxChart | null;
+  getChartsheetById: (id: string) => XlsxChartsheet | null;
+  getSheetCharts: (sheetIndex?: number) => XlsxChart[];
   getImageById: (id: string) => XlsxImage | null;
   getSheetImages: (sheetIndex?: number) => XlsxImage[];
   getSheetShapes: (sheetIndex?: number) => XlsxShape[];
@@ -349,6 +482,7 @@ export interface XlsxViewerController {
   isLoading: boolean;
   isWorkerBacked?: boolean;
   images: XlsxImage[];
+  moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
   shapes: XlsxShape[];
   mergeSelection: () => void;
   moveImageBy: (id: string, deltaX: number, deltaY: number) => void;
@@ -356,6 +490,12 @@ export interface XlsxViewerController {
   readOnly: boolean;
   recalculate: () => void;
   revision: number;
+  resizeChartBy: (
+    id: string,
+    handle: XlsxImageResizeHandlePosition,
+    deltaX: number,
+    deltaY: number
+  ) => void;
   resizeImageBy: (
     id: string,
     handle: XlsxImageResizeHandlePosition,
@@ -374,9 +514,13 @@ export interface XlsxViewerController {
   setCellFormula: (cell: XlsxCellAddress, formula: string) => void;
   setCellValue: (cell: XlsxCellAddress, value: string) => void;
   selectCell: (cell: XlsxCellAddress, options?: { extend?: boolean }) => void;
+  selectChart: (id: string | null) => void;
   selectRange: (range: XlsxCellRange) => void;
   selection: XlsxCellRange | null;
   setActiveSheetIndex: (index: number) => void;
+  setActiveTabIndex: (index: number) => void;
+  selectedChart: XlsxChart | null;
+  selectedChartId: string | null;
   selectedImage: XlsxImage | null;
   selectedImageId: string | null;
   setSelectedCellFormula: (formula: string) => void;
@@ -386,11 +530,14 @@ export interface XlsxViewerController {
   sortState: XlsxTableSortState | null;
   sortTable: (tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => void;
   selectImage: (id: string | null) => void;
+  setChartRect: (id: string, rect: XlsxImageRect) => void;
   setImageRect: (id: string, rect: XlsxImageRect) => void;
   getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<unknown[] | null>;
   tables: XlsxTable[];
+  tabs: XlsxWorkbookTab[];
   undo: () => void;
   unmergeSelection: () => void;
+  updateChart: (id: string, patch: Partial<XlsxChart>) => void;
   workbook: Workbook | null;
   getActiveWorksheet: () => Worksheet | null;
   addSheet: (name?: string) => void;
@@ -441,22 +588,64 @@ export interface XlsxViewerTables {
 }
 
 export interface XlsxViewerImages {
+  charts: XlsxChart[];
+  clearSelectedChart: () => void;
   clearSelectedImage: () => void;
+  getChartById: (id: string) => XlsxChart | null;
+  getSheetCharts: (sheetIndex?: number) => XlsxChart[];
   getImageById: (id: string) => XlsxImage | null;
   getSheetImages: (sheetIndex?: number) => XlsxImage[];
   images: XlsxImage[];
+  moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
   moveImageBy: (id: string, deltaX: number, deltaY: number) => void;
   readOnly: boolean;
+  resizeChartBy: (
+    id: string,
+    handle: XlsxImageResizeHandlePosition,
+    deltaX: number,
+    deltaY: number
+  ) => void;
   resizeImageBy: (
     id: string,
     handle: XlsxImageResizeHandlePosition,
     deltaX: number,
     deltaY: number
   ) => void;
+  selectedChart: XlsxChart | null;
+  selectedChartId: string | null;
   selectedImage: XlsxImage | null;
   selectedImageId: string | null;
+  selectChart: (id: string | null) => void;
   selectImage: (id: string | null) => void;
+  setChartRect: (id: string, rect: XlsxImageRect) => void;
   setImageRect: (id: string, rect: XlsxImageRect) => void;
+  updateChart: (id: string, patch: Partial<XlsxChart>) => void;
+}
+
+export interface XlsxViewerCharts {
+  activeTab: XlsxWorkbookTab | null;
+  activeTabIndex: number;
+  charts: XlsxChart[];
+  chartsheets: XlsxChartsheet[];
+  clearSelectedChart: () => void;
+  getChartById: (id: string) => XlsxChart | null;
+  getChartsheetById: (id: string) => XlsxChartsheet | null;
+  getSheetCharts: (sheetIndex?: number) => XlsxChart[];
+  moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
+  readOnly: boolean;
+  resizeChartBy: (
+    id: string,
+    handle: XlsxImageResizeHandlePosition,
+    deltaX: number,
+    deltaY: number
+  ) => void;
+  selectChart: (id: string | null) => void;
+  selectedChart: XlsxChart | null;
+  selectedChartId: string | null;
+  setActiveTabIndex: (index: number) => void;
+  setChartRect: (id: string, rect: XlsxImageRect) => void;
+  tabs: XlsxWorkbookTab[];
+  updateChart: (id: string, patch: Partial<XlsxChart>) => void;
 }
 
 export interface XlsxTableHeaderMenuRenderProps {

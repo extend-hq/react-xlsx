@@ -26,11 +26,28 @@
   "dependencies": {
     "@dukelib/sheets-wasm": "0.1.13",
     "@tanstack/react-virtual": "^3.13.12",
+    "d3-array": "^3.2.4",
+    "d3-axis": "^3.0.0",
+    "d3-color": "^3.1.0",
+    "d3-drag": "^3.0.0",
+    "d3-format": "^3.1.2",
+    "d3-path": "^3.1.0",
+    "d3-scale": "^4.0.2",
+    "d3-selection": "^3.0.0",
+    "d3-shape": "^3.2.0",
+    "d3-time": "^3.1.0",
+    "d3-time-format": "^4.1.0",
     "fflate": "^0.8.2"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --external react,react-dom && tsup src/xlsx-worker.ts --format esm --sourcemap --clean false --out-dir dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/d3-array": "^3.2.2",
+    "@types/d3-path": "^3.1.1",
+    "@types/d3-scale": "^4.0.9",
+    "@types/d3-shape": "^3.1.8"
   }
 }

@@ -1,8 +1,11 @@
 import type { Workbook } from "@dukelib/sheets-wasm";
+import { loadWorkbookChartAssets } from "./charts";
 import { parseWorkbookStructureAssets, resolveSheetColumnWidthPixels } from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { getSheetsWasmModule } from "./wasm";
 import type {
+  XlsxChart,
+  XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
   XlsxDataValidation,
@@ -10,7 +13,8 @@ import type {
   XlsxResolvedCellStyle,
   XlsxSheetData,
   XlsxTable,
-  XlsxTableStyleDefinition
+  XlsxTableStyleDefinition,
+  XlsxWorkbookTab
 } from "./types";
 
 const DEFAULT_ROW_HEIGHT = 24;
@@ -50,8 +54,11 @@ type WorkerSuccessResponse = {
   success: true;
   result:
     | {
+        chartsByWorkbookSheetIndex: XlsxChart[][];
+        chartsheets: XlsxChartsheet[];
         sheets: XlsxSheetData[];
         tablesByWorkbookSheetIndex: XlsxTable[][];
+        tabs: XlsxWorkbookTab[];
       }
     | {
         displayValue: string;
@@ -70,8 +77,11 @@ type WorkerErrorResponse = {
 type WorkerResponse = WorkerSuccessResponse | WorkerErrorResponse;
 
 let workbook: Workbook | null = null;
+let chartsByWorkbookSheetIndex: XlsxChart[][] = [];
+let chartsheets: XlsxChartsheet[] = [];
 let sheets: XlsxSheetData[] = [];
 let tablesByWorkbookSheetIndex: XlsxTable[][] = [];
+let tabs: XlsxWorkbookTab[] = [];
 
 function normalizeRange(range: XlsxCellRange): XlsxCellRange {
   return {
@@ -395,9 +405,17 @@ async function loadWorkbook(buffer: ArrayBuffer) {
       structureAssets?.tableMetadataByWorkbookSheetIndex[workbookSheetIndex] ?? null
     )
   );
+  const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
+  const chartAssets = loadWorkbookChartAssets(nextWorkbook, null, visibleSheetIndexByWorkbookSheetIndex);
+  chartsByWorkbookSheetIndex = chartAssets.chartsByWorkbookSheetIndex;
+  chartsheets = chartAssets.chartsheets;
+  tabs = chartAssets.tabs;
   return {
+    chartsByWorkbookSheetIndex,
+    chartsheets,
     sheets,
-    tablesByWorkbookSheetIndex
+    tablesByWorkbookSheetIndex,
+    tabs
   };
 }
 
