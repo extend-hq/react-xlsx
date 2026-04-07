@@ -1101,7 +1101,12 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
     const seriesExplosion = readChartNumericAttribute(seriesNode, "explosion");
     const invertNegativeStyle = parseInvertNegativeStyle(seriesNode, themePalette);
     const invertIfNegative = readChartBooleanAttribute(seriesNode, "invertIfNegative");
-    const isScatterChart = chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth" || chart.chartType === "Bubble";
+    const isScatterChart = (
+      chart.chartType === "Scatter"
+      || chart.chartType === "ScatterLines"
+      || chart.chartType === "ScatterSmooth"
+      || chart.chartType === "Bubble"
+    );
     const cachedCategories = isScatterChart
       ? (
           parseChartCacheValues(getFirstLocalChild(seriesNode, "xVal"), "numCache", "value")
@@ -1269,6 +1274,7 @@ function applyChartStyleFromXml(
       ?? getLocalChildren(plotAreaNode, "doughnutChart")[0]
       ?? getLocalChildren(plotAreaNode, "scatterChart")[0]
       ?? getLocalChildren(plotAreaNode, "areaChart")[0]
+      ?? getLocalChildren(plotAreaNode, "area3DChart")[0]
       ?? getLocalChildren(plotAreaNode, "radarChart")[0]
       ?? getLocalChildren(plotAreaNode, "bar3DChart")[0]
       ?? getLocalChildren(plotAreaNode, "pie3DChart")[0]
@@ -1308,14 +1314,27 @@ function applyChartStyleFromXml(
       }
       break;
     }
-    case "areaChart": {
+    case "areaChart":
+    case "area3DChart": {
       const grouping = getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val");
+      chart.is3d = chartTypeNode.localName === "area3DChart" ? true : chart.is3d;
       if (grouping === "stacked") {
         chart.chartType = "AreaStacked";
       } else if (grouping === "percentStacked") {
         chart.chartType = "AreaPercentStacked";
       } else {
         chart.chartType = "Area";
+      }
+      break;
+    }
+    case "lineChart": {
+      const grouping = getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val");
+      if (grouping === "stacked") {
+        chart.chartType = "LineStacked";
+      } else if (grouping === "percentStacked") {
+        chart.chartType = "LinePercentStacked";
+      } else {
+        chart.chartType = "Line";
       }
       break;
     }
@@ -1448,7 +1467,12 @@ function applyChartStyleFromXml(
   }
   const categoryAxisNodes = getLocalChildren(plotArea, "catAx");
   const valueAxisNodes = getLocalChildren(plotArea, "valAx");
-  const isScatterLikeChart = chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth" || chart.chartType === "Bubble";
+  const isScatterLikeChart = (
+    chart.chartType === "Scatter"
+    || chart.chartType === "ScatterLines"
+    || chart.chartType === "ScatterSmooth"
+    || chart.chartType === "Bubble"
+  );
   let categoryAxisNode = categoryAxisNodes[0] ?? null;
   let valueAxisNode = valueAxisNodes[0] ?? null;
   if (!categoryAxisNode && isScatterLikeChart && valueAxisNodes.length >= 2) {
@@ -1753,10 +1777,22 @@ function resolveReferenceSheet(workbook: Workbook, fallbackSheetIndex: number, f
     };
   }
 
-  const split = splitSheetReference(formula);
+  const trimmedFormula = formula.trim();
+  if (trimmedFormula.length > 0 && !trimmedFormula.includes("!")) {
+    try {
+      const namedRange = workbook.getNamedRange(trimmedFormula);
+      if (typeof namedRange === "string" && namedRange.length > 0 && namedRange !== trimmedFormula) {
+        return resolveReferenceSheet(workbook, fallbackSheetIndex, namedRange);
+      }
+    } catch {
+      // Fall back to direct A1 parsing when the workbook has no matching name.
+    }
+  }
+
+  const split = splitSheetReference(trimmedFormula);
   if (!split) {
     return {
-      range: parseA1Range(formula),
+      range: parseA1Range(trimmedFormula),
       sheet: workbook.getSheet(fallbackSheetIndex),
       sheetName: workbook.getSheet(fallbackSheetIndex)?.name ?? ""
     };
@@ -1775,6 +1811,264 @@ function resolveReferenceSheet(workbook: Workbook, fallbackSheetIndex: number, f
       sheetName: workbook.getSheet(fallbackSheetIndex)?.name ?? ""
     };
   }
+}
+
+function resolveChartReferenceLabel(
+  workbook: Workbook,
+  fallbackSheetIndex: number,
+  reference: XlsxChartReference | null | undefined,
+  fallbackLabel: string
+) {
+  if (!reference?.formula) {
+    return fallbackLabel;
+  }
+
+  const resolved = resolveReferenceSheet(workbook, fallbackSheetIndex, reference.formula);
+  if (!resolved.sheet || !resolved.range) {
+    return fallbackLabel;
+  }
+
+  const { start } = resolved.range;
+  if (start.row > 0) {
+    const headerDisplay = cellValueToDisplay(
+      typeof resolved.sheet.getFormattedValueAt === "function"
+        ? resolved.sheet.getFormattedValueAt(start.row - 1, start.col)
+        : null
+    );
+    if (headerDisplay.length > 0) {
+      return headerDisplay;
+    }
+  }
+
+  const firstDisplay = cellValueToDisplay(
+    typeof resolved.sheet.getFormattedValueAt === "function"
+      ? resolved.sheet.getFormattedValueAt(start.row, start.col)
+      : null
+  );
+  return firstDisplay.length > 0 ? firstDisplay : fallbackLabel;
+}
+
+function normalizeChartExLegend(raw: unknown): XlsxChartLegend | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const legend = raw as Record<string, unknown>;
+  const position = typeof legend.pos === "string"
+    ? normalizeLegendPosition(String(legend.pos))
+    : undefined;
+  return {
+    overlay: typeof legend.overlay === "boolean" ? legend.overlay : undefined,
+    position,
+    raw: legend
+  };
+}
+
+function humanizeChartExLayoutLabel(layout: string | undefined) {
+  if (!layout) {
+    return undefined;
+  }
+  return layout
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function normalizeChartExAxis(raw: unknown): XlsxChartAxis | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const axis = raw as Record<string, unknown>;
+  const scaling = axis.scaling && typeof axis.scaling === "object"
+    ? axis.scaling as Record<string, unknown>
+    : null;
+  const numberFormat = axis.numberFormat && typeof axis.numberFormat === "object"
+    ? axis.numberFormat as Record<string, unknown>
+    : null;
+
+  return {
+    delete: typeof axis.hidden === "boolean" ? axis.hidden : undefined,
+    majorGridlines: axis.majorGridlines != null ? true : undefined,
+    majorUnit: typeof scaling?.majorUnit === "number" ? scaling.majorUnit : undefined,
+    max: typeof scaling?.max === "number" ? scaling.max : undefined,
+    min: typeof scaling?.min === "number" ? scaling.min : undefined,
+    minorGridlines: axis.minorGridlines != null ? true : undefined,
+    minorUnit: typeof scaling?.minorUnit === "number" ? scaling.minorUnit : undefined,
+    numberFormat: numberFormat
+      ? {
+          formatCode: typeof numberFormat.formatCode === "string" ? numberFormat.formatCode : undefined,
+          sourceLinked: typeof numberFormat.sourceLinked === "boolean" ? numberFormat.sourceLinked : undefined
+        }
+      : undefined,
+    raw: axis
+  };
+}
+
+function resolveChartExLayoutChartType(layout: string | undefined) {
+  switch (layout) {
+    case "funnel":
+      return "Funnel";
+    case "sunburst":
+      return "Sunburst";
+    case "treemap":
+      return "Treemap";
+    case "waterfall":
+      return "Waterfall";
+    default:
+      return layout ? `Unsupported(cx:${layout})` : "ColumnClustered";
+  }
+}
+
+function normalizeChartExSeries(
+  workbook: Workbook,
+  workbookSheetIndex: number,
+  chartId: string,
+  raw: unknown,
+  dataById: Map<number, Record<string, unknown>>,
+  index: number
+): XlsxChartSeries {
+  const series = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const dataId = typeof series.dataId === "number" ? series.dataId : null;
+  const dataEntry = dataId != null ? dataById.get(dataId) ?? null : null;
+  const dimensions = Array.isArray(dataEntry?.dimensions)
+    ? dataEntry.dimensions.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === "object"))
+    : [];
+  const primaryDimension = dimensions[0] ?? null;
+  const valuesRef = primaryDimension
+    ? normalizeChartReference({
+        formula: typeof primaryDimension.formula === "string" ? primaryDimension.formula : undefined
+      })
+    : null;
+  const values = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value").map((value) => (
+    typeof value === "number" && Number.isFinite(value) ? value : null
+  ));
+  const categories = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "category");
+
+  return {
+    bubbleSizeRef: null,
+    bubbleSizes: [],
+    categories,
+    categoriesRef: valuesRef,
+    color: undefined,
+    dataPoints: Array.isArray(series.dataPoints) ? series.dataPoints : [],
+    dataPointStyles: undefined,
+    formatIdx: typeof series.formatIdx === "number" ? series.formatIdx : undefined,
+    hidden: typeof series.hidden === "boolean" ? series.hidden : undefined,
+    id: `${chartId}-series-${index}`,
+    invertIfNegative: undefined,
+    lineColor: undefined,
+    lineWidthPx: undefined,
+    marker: undefined,
+    markerColor: undefined,
+    markerLineColor: undefined,
+    markerSize: undefined,
+    markerSymbol: undefined,
+    name: typeof series.text === "string"
+      ? series.text
+      : resolveChartReferenceLabel(workbook, workbookSheetIndex, valuesRef, `Series ${index + 1}`),
+    negativeColor: undefined,
+    negativeLineColor: undefined,
+    raw: {
+      ...series,
+      data: dataEntry,
+      dimType: typeof primaryDimension?.dimType === "string" ? primaryDimension.dimType : undefined
+    },
+    shapeProperties: series.shapeProperties && typeof series.shapeProperties === "object"
+      ? series.shapeProperties as Record<string, unknown>
+      : undefined,
+    smooth: undefined,
+    values,
+    valuesRef
+  };
+}
+
+function normalizeChartExChart(
+  workbook: Workbook,
+  workbookSheetIndex: number,
+  visibleSheetIndex: number,
+  raw: unknown,
+  index: number,
+  themePalette?: XlsxThemePalette | null
+): XlsxChart {
+  const chart = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const plotArea = chart.plotArea && typeof chart.plotArea === "object"
+    ? chart.plotArea as Record<string, unknown>
+    : {};
+  const rawSeries = Array.isArray(plotArea.series) ? plotArea.series : [];
+  const dataEntries = Array.isArray(chart.data) ? chart.data : [];
+  const dataById = new Map<number, Record<string, unknown>>();
+  dataEntries.forEach((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record.id === "number") {
+      dataById.set(record.id, record);
+    }
+  });
+  const axes = Array.isArray(plotArea.axes)
+    ? plotArea.axes.map(normalizeChartExAxis).filter((value): value is XlsxChartAxis => Boolean(value))
+    : [];
+  const fallbackTitle = humanizeChartExLayoutLabel(typeof chart.layout === "string" ? chart.layout : undefined);
+  const chartType = resolveChartExLayoutChartType(typeof chart.layout === "string" ? chart.layout : undefined);
+  const normalizedChart: XlsxChart = {
+    anchor: normalizeChartAnchor(chart.anchor),
+    autoTitleDeleted: undefined,
+    axes,
+    axisLabelColor: undefined,
+    axisLineColor: undefined,
+    categoryAxis: axes[0] ?? null,
+    chartAreaBorderColor: undefined,
+    chartAreaFillColor: undefined,
+    chartColorPalette: undefined,
+    chartColorPaletteOffset: undefined,
+    chartExLayout: typeof chart.layout === "string" ? chart.layout : undefined,
+    chartPath: undefined,
+    chartStyleId: undefined,
+    chartType,
+    dataLabels: rawSeries.length > 0 && rawSeries[0] && typeof rawSeries[0] === "object"
+      ? normalizeChartDataLabels((rawSeries[0] as Record<string, unknown>).dataLabels)
+      : null,
+    displayBlanksAs: undefined,
+    editable: true,
+    firstSliceAngle: undefined,
+    fontFamily: undefined,
+    gapWidth: undefined,
+    holeSize: undefined,
+    id: `chart-ex-${workbookSheetIndex}-${index}`,
+    is3d: undefined,
+    legend: normalizeChartExLegend(chart.legend),
+    name: typeof chart.title === "string" ? chart.title : fallbackTitle,
+    overlap: undefined,
+    plotVisibleOnly: undefined,
+    raw: chart,
+    radarStyle: undefined,
+    scatterStyle: undefined,
+    roundedCorners: undefined,
+    series: rawSeries.map((entry, seriesIndex) => (
+      normalizeChartExSeries(workbook, workbookSheetIndex, `chart-ex-${workbookSheetIndex}-${index}`, entry, dataById, seriesIndex)
+    )),
+    sheetIndex: visibleSheetIndex,
+    showDlblsOverMax: undefined,
+    bubbleScale: undefined,
+    bubble3d: undefined,
+    textColor: undefined,
+    title: typeof chart.title === "string" ? chart.title : fallbackTitle,
+    titleColor: undefined,
+    titleFontFamily: undefined,
+    typeGroups: [],
+    valueAxis: axes.find((axis) => axis.numberFormat || axis.majorGridlines) ?? axes[1] ?? null,
+    varyColors: undefined,
+    view3d: undefined,
+    wireframe: undefined,
+    workbookSheetIndex,
+    zIndex: index
+  };
+
+  applyBuiltinChartDefaults(normalizedChart, themePalette);
+  return normalizedChart;
 }
 
 function cellValueToNumber(value: unknown) {
@@ -2435,9 +2729,10 @@ export function loadWorkbookChartAssets(
   const chartsByWorkbookSheetIndex = Array.from({ length: workbook.sheetCount }, (_, workbookSheetIndex) => {
     const worksheet = workbook.getSheet(workbookSheetIndex);
     const rawCharts = Array.isArray(worksheet.charts) ? worksheet.charts : [];
+    const rawChartsEx = Array.isArray(worksheet.chartsEx) ? worksheet.chartsEx : [];
     const visibleSheetIndex = visibleSheetIndexByWorkbookSheetIndex.get(workbookSheetIndex) ?? workbookSheetIndex;
 
-    return rawCharts.map((rawChart, chartIndex) => {
+    const classicCharts = rawCharts.map((rawChart, chartIndex) => {
       const chartId = `chart-${workbookSheetIndex}-${chartIndex}`;
       const chart = rawChart && typeof rawChart === "object" ? rawChart as Record<string, unknown> : {};
       const rawSeries = Array.isArray(chart.series) ? chart.series : [];
@@ -2499,6 +2794,19 @@ export function loadWorkbookChartAssets(
         zIndex: 200 + chartIndex
       } satisfies XlsxChart;
     });
+
+    const modernCharts = rawChartsEx.map((rawChartEx, chartExIndex) => (
+      normalizeChartExChart(
+        workbook,
+        workbookSheetIndex,
+        visibleSheetIndex,
+        rawChartEx,
+        chartExIndex,
+        imageAssets?.themePalette ?? null
+      )
+    ));
+
+    return [...classicCharts, ...modernCharts];
   });
 
   const chartsheets = Array.isArray(workbook.chartsheets)
@@ -2644,11 +2952,19 @@ function updateSeriesNodes(chartTypeNode: Element, chart: Partial<XlsxChart>) {
       setLeafValue(strRef, "f", series.name);
     }
     if (series.categoriesRef?.formula) {
-      const target = chart.chartType === "ScatterLines" ? ensureChild(seriesNode, "xVal") : ensureChild(seriesNode, "cat");
+      const target = (
+        chart.chartType === "Scatter" || chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth"
+      )
+        ? ensureChild(seriesNode, "xVal")
+        : ensureChild(seriesNode, "cat");
       setRefFormula(target, "strRef", series.categoriesRef.formula);
     }
     if (series.valuesRef?.formula) {
-      const target = chart.chartType === "ScatterLines" ? ensureChild(seriesNode, "yVal") : ensureChild(seriesNode, "val");
+      const target = (
+        chart.chartType === "Scatter" || chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth"
+      )
+        ? ensureChild(seriesNode, "yVal")
+        : ensureChild(seriesNode, "val");
       setRefFormula(target, "numRef", series.valuesRef.formula);
     }
     if (series.invertIfNegative !== undefined) {
