@@ -67,6 +67,7 @@ type BarRect = {
   categoryIndex: number;
   bottomScale?: number;
   color: string;
+  depthOrder?: number;
   depthOffsetX?: number;
   depthOffsetY?: number;
   depthX?: number;
@@ -1900,11 +1901,40 @@ function resolve3dFrameOffsets(chart: XlsxChart, baseDepthX = 11, baseDepthY = 8
   const depthRatio = clamp((chart.view3d?.depthPercent ?? 100) / 100, 0.35, 3.2);
   const rotX = clamp(chart.view3d?.rotX ?? 20, -80, 80);
   const rotY = clamp(chart.view3d?.rotY ?? 20, -80, 80);
-  const horizontalSign = rotY < 0 ? -1 : 1;
+  const usePerspective = chart.view3d?.rAngAx === false;
+  const perspectiveStrength = clamp((chart.view3d?.perspective ?? (usePerspective ? 26 : 0)) / 100, 0, 1);
+  const projectedOrigin = projectCartesian3dPoint(
+    0,
+    0,
+    0,
+    rotX * (Math.PI / 180),
+    rotY * (Math.PI / 180),
+    usePerspective,
+    perspectiveStrength
+  );
+  const projectedDepthPoint = projectCartesian3dPoint(
+    0,
+    0,
+    1,
+    rotX * (Math.PI / 180),
+    rotY * (Math.PI / 180),
+    usePerspective,
+    perspectiveStrength
+  );
+  const depthDirectionX = projectedDepthPoint.x - projectedOrigin.x;
+  const depthDirectionY = projectedDepthPoint.y - projectedOrigin.y;
+  const horizontalBias = clamp(1.42 + Math.abs(rotY) / 48 + depthRatio * 0.06, 1.5, 1.95);
+  const verticalBias = clamp(1.18 + Math.abs(rotX) / 78, 1.22, 1.5);
+  const biasedDepthDirectionX = depthDirectionX * horizontalBias;
+  const biasedDepthDirectionY = depthDirectionY * verticalBias;
+  const depthDirectionMagnitude = Math.hypot(biasedDepthDirectionX, biasedDepthDirectionY) || 1;
   const horizontalFactor = clamp(Math.abs(rotY) / 22, 0.55, 2.2);
   const verticalFactor = clamp(Math.abs(rotX) / 18, 0.45, 1.9);
-  const depthX = Math.max(6, baseDepthX * depthRatio * horizontalFactor) * horizontalSign;
-  const depthY = -Math.max(4, baseDepthY * depthRatio * verticalFactor);
+  const legacyDepthX = Math.max(6, baseDepthX * depthRatio * horizontalFactor) * (rotY < 0 ? -1 : 1);
+  const legacyDepthY = -Math.max(4, baseDepthY * depthRatio * verticalFactor);
+  const depthMagnitude = Math.max(10, Math.hypot(legacyDepthX, legacyDepthY) * 1.34);
+  const depthX = biasedDepthDirectionX / depthDirectionMagnitude * depthMagnitude;
+  const depthY = biasedDepthDirectionY / depthDirectionMagnitude * depthMagnitude;
   return {
     depthRatio,
     depthX,
@@ -2359,6 +2389,118 @@ function renderCartesianAxes(
   );
 }
 
+function scaleProjectedVector(vector: { x: number; y: number }, scale: number) {
+  return {
+    x: vector.x * scale,
+    y: vector.y * scale
+  };
+}
+
+function sampleProjectedEllipseArc(
+  center: { x: number; y: number },
+  axisA: { x: number; y: number },
+  axisB: { x: number; y: number },
+  startAngle: number,
+  endAngle: number
+) {
+  const steps = Math.max(12, Math.ceil(Math.abs(endAngle - startAngle) / (Math.PI / 14)));
+  const points: Array<{ x: number; y: number }> = [];
+  for (let step = 0; step <= steps; step += 1) {
+    const ratio = step / steps;
+    const angle = startAngle + ((endAngle - startAngle) * ratio);
+    points.push({
+      x: center.x + (axisA.x * Math.cos(angle)) + (axisB.x * Math.sin(angle)),
+      y: center.y + (axisA.y * Math.cos(angle)) + (axisB.y * Math.sin(angle))
+    });
+  }
+  return points;
+}
+
+function buildRibbonSvgPath(startArc: Array<{ x: number; y: number }>, endArc: Array<{ x: number; y: number }>) {
+  if (startArc.length === 0 || endArc.length === 0) {
+    return "";
+  }
+  return buildLinearSvgPath([...startArc, ...endArc.slice().reverse()], true);
+}
+
+function renderRadialFrustum(
+  bar: BarRect,
+  normalizedShape: "cone" | "cylinder",
+  frontFill: string,
+  sideFill: string,
+  topFill: string
+) {
+  const depthX = bar.depthX ?? (bar.isHorizontal ? 10 : 9);
+  const depthY = bar.depthY ?? -7;
+  const frontX = bar.left + (bar.depthOffsetX ?? 0);
+  const frontY = bar.top + (bar.depthOffsetY ?? 0);
+  const frontW = bar.width;
+  const frontH = bar.height;
+  const centerX = frontX + frontW / 2;
+  const centerY = frontY + frontH / 2;
+  const showStartCap = bar.capStart !== false;
+  const showEndCap = bar.capEnd !== false;
+  const startScale = normalizedShape === "cone" ? clamp(bar.bottomScale ?? 1, 0, 1) : 1;
+  const endScale = normalizedShape === "cone" ? clamp(bar.topScale ?? 1, 0, 1) : 1;
+  const radialDepthScale = normalizedShape === "cylinder"
+    ? (bar.isHorizontal ? 0.52 : 0.48)
+    : (bar.isHorizontal ? 0.7 : 0.58);
+  const depthAxis = scaleProjectedVector({ x: depthX / 2, y: depthY / 2 }, radialDepthScale);
+  const secondaryStrokeWidth = Math.max(0.6, bar.strokeWidth * 0.65);
+
+  if (bar.isHorizontal) {
+    const startCenter = { x: frontX + depthAxis.x, y: centerY + depthAxis.y };
+    const endCenter = { x: frontX + frontW + depthAxis.x, y: centerY + depthAxis.y };
+    const startAxisA = { x: 0, y: (frontH * startScale) / 2 };
+    const endAxisA = { x: 0, y: (frontH * endScale) / 2 };
+    const startAxisB = scaleProjectedVector(depthAxis, startScale);
+    const endAxisB = scaleProjectedVector(depthAxis, endScale);
+    const backStartArc = sampleProjectedEllipseArc(startCenter, startAxisA, startAxisB, 0, Math.PI);
+    const backEndArc = sampleProjectedEllipseArc(endCenter, endAxisA, endAxisB, 0, Math.PI);
+    const frontStartArc = sampleProjectedEllipseArc(startCenter, startAxisA, startAxisB, Math.PI, Math.PI * 2);
+    const frontEndArc = sampleProjectedEllipseArc(endCenter, endAxisA, endAxisB, Math.PI, Math.PI * 2);
+    const backWallPath = buildRibbonSvgPath(backEndArc, backStartArc);
+    const frontWallPath = buildRibbonSvgPath(frontEndArc, frontStartArc);
+    const endCapPath = endScale > 0.018
+      ? buildLinearSvgPath(sampleProjectedEllipseArc(endCenter, endAxisA, endAxisB, 0, Math.PI * 2), true)
+      : "";
+    const startCapPath = startScale > 0.028
+      ? buildLinearSvgPath(sampleProjectedEllipseArc(startCenter, startAxisA, startAxisB, 0, Math.PI * 2), true)
+      : "";
+    return (
+      <g key={`${bar.key}-3d-horizontal-${normalizedShape}`}>
+        {backWallPath ? <path d={backWallPath} fill={sideFill} stroke={bar.stroke} strokeWidth={secondaryStrokeWidth} /> : null}
+        {showEndCap && endCapPath ? <path d={endCapPath} fill={topFill} stroke={bar.stroke} strokeWidth={secondaryStrokeWidth} /> : null}
+        {frontWallPath ? <path d={frontWallPath} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} /> : null}
+        {showStartCap && startCapPath ? <path d={startCapPath} fill={frontFill} stroke={bar.stroke} strokeWidth={secondaryStrokeWidth} /> : null}
+      </g>
+    );
+  }
+
+  const startCenter = { x: centerX + depthAxis.x, y: frontY + frontH + depthAxis.y };
+  const endCenter = { x: centerX + depthAxis.x, y: frontY + depthAxis.y };
+  const startAxisA = { x: (frontW * startScale) / 2, y: 0 };
+  const endAxisA = { x: (frontW * endScale) / 2, y: 0 };
+  const startAxisB = scaleProjectedVector(depthAxis, startScale);
+  const endAxisB = scaleProjectedVector(depthAxis, endScale);
+  const backStartArc = sampleProjectedEllipseArc(startCenter, startAxisA, startAxisB, 0, Math.PI);
+  const backEndArc = sampleProjectedEllipseArc(endCenter, endAxisA, endAxisB, 0, Math.PI);
+  const frontStartArc = sampleProjectedEllipseArc(startCenter, startAxisA, startAxisB, Math.PI, Math.PI * 2);
+  const frontEndArc = sampleProjectedEllipseArc(endCenter, endAxisA, endAxisB, Math.PI, Math.PI * 2);
+  const backWallPath = buildRibbonSvgPath(backEndArc, backStartArc);
+  const frontWallPath = buildRibbonSvgPath(frontEndArc, frontStartArc);
+  const endCapPath = endScale > 0.018
+    ? buildLinearSvgPath(sampleProjectedEllipseArc(endCenter, endAxisA, endAxisB, 0, Math.PI * 2), true)
+    : "";
+  return (
+    <g key={`${bar.key}-3d-${normalizedShape}`}>
+      {backWallPath ? <path d={backWallPath} fill={sideFill} stroke={bar.stroke} strokeWidth={secondaryStrokeWidth} /> : null}
+      {showEndCap && endCapPath ? <path d={endCapPath} fill={topFill} stroke={bar.stroke} strokeWidth={secondaryStrokeWidth} /> : null}
+      {frontWallPath ? <path d={frontWallPath} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} /> : null}
+    </g>
+  );
+}
+
 function renderExtrudedRect(bar: BarRect) {
   const normalizedShape = (() => {
     switch (bar.shape3d) {
@@ -2403,6 +2545,10 @@ function renderExtrudedRect(bar: BarRect) {
   const sideFill = bar.invertedNegative ? bar.color : darkenColor(bar.color, 0.22);
   const topFill = bar.invertedNegative ? lightenColor(bar.color, 0.04) : lightenColor(bar.color, 0.24);
 
+  if (normalizedShape === "cylinder" || normalizedShape === "cone") {
+    return renderRadialFrustum(bar, normalizedShape, frontFill, sideFill, topFill);
+  }
+
   if (normalizedShape === "box") {
     return (
       <g key={`${bar.key}-3d`}>
@@ -2424,142 +2570,14 @@ function renderExtrudedRect(bar: BarRect) {
     const topFacePoints = `${frontX},${startTop} ${frontX2},${endTop} ${frontX2 + sideDepthX},${endTop + depthY} ${frontX + sideDepthX},${startTop + depthY}`;
     const farSidePoints = `${frontX2},${endTop} ${frontX2},${endBottom} ${frontX2 + sideDepthX},${endBottom + depthY} ${frontX2 + sideDepthX},${endTop + depthY}`;
 
-    if (normalizedShape === "cylinder") {
-      const capRx = Math.max(2, Math.min(8, frontH * 0.18));
-      const bodyHeight = Math.max(1, endBottom - endTop);
-      const bodyPath = [
-        `M ${toSvgNumber(frontX)} ${toSvgNumber(startTop)}`,
-        `C ${toSvgNumber(frontX - capRx * 0.22)} ${toSvgNumber(centerY - startHalfHeight * 0.68)} ${toSvgNumber(frontX - capRx * 0.22)} ${toSvgNumber(centerY + startHalfHeight * 0.68)} ${toSvgNumber(frontX)} ${toSvgNumber(startBottom)}`,
-        `L ${toSvgNumber(frontX2)} ${toSvgNumber(endBottom)}`,
-        `C ${toSvgNumber(frontX2 + capRx * 0.22)} ${toSvgNumber(centerY + endHalfHeight * 0.68)} ${toSvgNumber(frontX2 + capRx * 0.22)} ${toSvgNumber(centerY - endHalfHeight * 0.68)} ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
-        "Z"
-      ].join(" ");
-      return (
-        <g key={`${bar.key}-3d-horizontal-cylinder`}>
-          <polygon fill={sideFill} points={farSidePoints} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-          {showEndCap ? (
-            <ellipse
-              cx={frontX2 + sideDepthX * 0.5}
-              cy={centerY + depthY}
-              fill={topFill}
-              rx={capRx}
-              ry={Math.max(1.5, bodyHeight * 0.5)}
-              stroke={bar.stroke}
-              strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
-            />
-          ) : null}
-          <polygon fill={topFill} points={topFacePoints} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-          <path d={bodyPath} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
-          {showStartCap ? (
-            <ellipse
-              cx={frontX}
-              cy={centerY}
-              fill={frontFill}
-              rx={capRx}
-              ry={Math.max(1.5, startHalfHeight)}
-              stroke={bar.stroke}
-              strokeWidth={Math.max(0.6, bar.strokeWidth * 0.75)}
-            />
-          ) : null}
-        </g>
-      );
-    }
-
     const taperedFarFace = `${frontX2},${endTop} ${frontX2 + sideDepthX},${endTop + depthY} ${frontX2 + sideDepthX},${endBottom + depthY} ${frontX2},${endBottom}`;
     const frontPolygon = `${frontX},${startTop} ${frontX2},${endTop} ${frontX2},${endBottom} ${frontX},${startBottom}`;
-    const coneFrontFace = [
-      `M ${toSvgNumber(frontX)} ${toSvgNumber(startTop)}`,
-      `Q ${toSvgNumber(frontX + frontW * 0.54)} ${toSvgNumber(startTop + (endTop - startTop) * 0.18)} ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
-      `Q ${toSvgNumber(frontX + frontW * 0.82)} ${toSvgNumber(centerY)} ${toSvgNumber(frontX2)} ${toSvgNumber(endBottom)}`,
-      `L ${toSvgNumber(frontX)} ${toSvgNumber(startBottom)}`,
-      `Q ${toSvgNumber(frontX + frontW * 0.08)} ${toSvgNumber(centerY)} ${toSvgNumber(frontX)} ${toSvgNumber(startTop)}`,
-      "Z"
-    ].join(" ");
-    const coneSideFace = [
-      `M ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
-      `L ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(endTop + depthY)}`,
-      `Q ${toSvgNumber(frontX2 + sideDepthX + Math.abs(sideDepthX) * 0.22)} ${toSvgNumber(centerY + depthY)} ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(endBottom + depthY)}`,
-      `L ${toSvgNumber(frontX2)} ${toSvgNumber(endBottom)}`,
-      `Q ${toSvgNumber(frontX2 + frontW * 0.14)} ${toSvgNumber(centerY)} ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
-      "Z"
-    ].join(" ");
-    const coneCapRx = Math.max(1.5, Math.abs(sideDepthX) * 0.42);
 
     return (
       <g key={`${bar.key}-3d-horizontal-${normalizedShape}`}>
-        {normalizedShape === "cone" ? (
-          <path d={coneSideFace} fill={sideFill} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-        ) : (
-          <polygon fill={sideFill} points={taperedFarFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-        )}
+        <polygon fill={sideFill} points={taperedFarFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
         <polygon fill={topFill} points={topFacePoints} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-        {normalizedShape === "cone" ? (
-          <>
-            <path d={coneFrontFace} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
-            {showEndCap ? (
-              <ellipse
-                cx={frontX2 + sideDepthX * 0.5}
-                cy={centerY + depthY}
-                fill={topFill}
-                rx={coneCapRx}
-                ry={Math.max(1.25, endHalfHeight)}
-                stroke={bar.stroke}
-                strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
-              />
-            ) : null}
-          </>
-        ) : (
-          <polygon fill={frontFill} points={frontPolygon} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
-        )}
-      </g>
-    );
-  }
-
-  if (normalizedShape === "cylinder") {
-    const capRy = Math.max(2, Math.min(8, frontW * 0.18));
-    const bodyPath = [
-      `M ${toSvgNumber(frontX)} ${toSvgNumber(showEndCap ? frontY + capRy : frontY)}`,
-      showEndCap
-        ? `Q ${toSvgNumber(centerX)} ${toSvgNumber(frontY - capRy * 0.7)} ${toSvgNumber(frontX2)} ${toSvgNumber(frontY + capRy)}`
-        : `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY)}`,
-      `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY2)}`,
-      `C ${toSvgNumber(frontX2 - frontW * 0.12)} ${toSvgNumber(frontY2 - capRy * 0.18)} ${toSvgNumber(frontX + frontW * 0.12)} ${toSvgNumber(frontY2 - capRy * 0.18)} ${toSvgNumber(frontX)} ${toSvgNumber(frontY2)}`,
-      "Z"
-    ].join(" ");
-    const cylinderSide = [
-      `M ${toSvgNumber(frontX2)} ${toSvgNumber(frontY + capRy)}`,
-      `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY2 - capRy)}`,
-      `L ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(frontY2 + depthY - capRy)}`,
-      `L ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(frontY + depthY + capRy)}`,
-      "Z"
-    ].join(" ");
-
-    return (
-      <g key={`${bar.key}-3d-cylinder`}>
-        <path d={cylinderSide} fill={sideFill} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-        {showEndCap ? (
-          <ellipse
-            cx={frontX2 + sideDepthX * 0.5}
-            cy={frontY + depthY + capRy}
-            fill={topFill}
-            rx={Math.max(1.5, frontW * 0.5)}
-            ry={capRy}
-            stroke={bar.stroke}
-            strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
-          />
-        ) : null}
-        <path d={bodyPath} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
-        {showStartCap ? (
-          <ellipse
-            cx={centerX}
-            cy={frontY + capRy}
-            fill={topFill}
-            rx={Math.max(1.5, frontW * 0.5)}
-            ry={capRy}
-            stroke={bar.stroke}
-            strokeWidth={Math.max(0.6, bar.strokeWidth * 0.75)}
-          />
-        ) : null}
+        <polygon fill={frontFill} points={frontPolygon} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
       </g>
     );
   }
@@ -2567,51 +2585,14 @@ function renderExtrudedRect(bar: BarRect) {
   const taperedTopFace = `${topLeft},${frontY} ${topRight},${frontY} ${topRight + sideDepthX},${frontY + depthY} ${topLeft + sideDepthX},${frontY + depthY}`;
   const taperedSideFace = `${topRight},${frontY} ${bottomRight},${frontY2} ${bottomRight + sideDepthX},${frontY2 + depthY} ${topRight + sideDepthX},${frontY + depthY}`;
   const pyramidFrontFace = `${topLeft},${frontY} ${topRight},${frontY} ${bottomRight},${frontY2} ${bottomLeft},${frontY2}`;
-  const coneFrontFace = [
-    `M ${toSvgNumber(topLeft)} ${toSvgNumber(frontY)}`,
-    `L ${toSvgNumber(topRight)} ${toSvgNumber(frontY)}`,
-    `C ${toSvgNumber(topRight + (bottomRight - topRight) * 0.18)} ${toSvgNumber(frontY + frontH * 0.32)} ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY + frontH * 0.72)} ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY2)}`,
-    `L ${toSvgNumber(bottomLeft)} ${toSvgNumber(frontY2)}`,
-    `C ${toSvgNumber(bottomLeft)} ${toSvgNumber(frontY + frontH * 0.72)} ${toSvgNumber(topLeft - (topLeft - bottomLeft) * 0.18)} ${toSvgNumber(frontY + frontH * 0.32)} ${toSvgNumber(topLeft)} ${toSvgNumber(frontY)}`,
-    "Z"
-  ].join(" ");
-  const coneSideFace = [
-    `M ${toSvgNumber(topRight)} ${toSvgNumber(frontY)}`,
-    `L ${toSvgNumber(topRight + sideDepthX)} ${toSvgNumber(frontY + depthY)}`,
-    `C ${toSvgNumber(topRight + sideDepthX + Math.abs(sideDepthX) * 0.08)} ${toSvgNumber(frontY + frontH * 0.24 + depthY)} ${toSvgNumber(bottomRight + sideDepthX)} ${toSvgNumber(frontY + frontH * 0.76 + depthY)} ${toSvgNumber(bottomRight + sideDepthX)} ${toSvgNumber(frontY2 + depthY)}`,
-    `L ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY2)}`,
-    `C ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY + frontH * 0.74)} ${toSvgNumber(topRight + (bottomRight - topRight) * 0.18)} ${toSvgNumber(frontY + frontH * 0.28)} ${toSvgNumber(topRight)} ${toSvgNumber(frontY)}`,
-    "Z"
-  ].join(" ");
-  const coneCapRy = Math.max(1.5, Math.min(7, Math.abs(depthY) * 0.85));
 
   return (
     <g key={`${bar.key}-3d-${normalizedShape}`}>
-      {normalizedShape === "cone" ? (
-        <path d={coneSideFace} fill={sideFill} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-      ) : (
-        <polygon fill={sideFill} points={taperedSideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-      )}
+      <polygon fill={sideFill} points={taperedSideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
       {showEndCap ? (
-        normalizedShape === "cone" ? (
-          <ellipse
-            cx={centerX + sideDepthX * 0.5}
-            cy={frontY + depthY}
-            fill={topFill}
-            rx={Math.max(1.5, topHalfWidth)}
-            ry={coneCapRy}
-            stroke={bar.stroke}
-            strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
-          />
-        ) : (
-          <polygon fill={topFill} points={taperedTopFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-        )
+        <polygon fill={topFill} points={taperedTopFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
       ) : null}
-      {normalizedShape === "cone" ? (
-        <path d={coneFrontFace} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
-      ) : (
-        <polygon fill={frontFill} points={pyramidFrontFace} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
-      )}
+      <polygon fill={frontFill} points={pyramidFrontFace} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
     </g>
   );
 }
@@ -3168,24 +3149,22 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     && seriesCount > 1
     && chart.seriesAxis != null
   );
-  const shapeTowerDepthMultiplier = usesSeriesDepthAxis
-    ? normalized3dShape === "cylinder" || normalized3dShape === "cone" || normalized3dShape === "pyramid"
-      ? 1.42
-      : 1.16
+  const depthLaneSpread = usesSeriesDepthAxis
+    ? clamp(1.26 + seriesCount * 0.16, 1.4, 1.96)
     : 1;
   const depthGridSpanX = usesSeriesDepthAxis && frameOffsets
-    ? frameOffsets.depthX * shapeTowerDepthMultiplier
+    ? frameOffsets.depthX * depthLaneSpread
     : 0;
   const depthGridSpanY = usesSeriesDepthAxis && frameOffsets
-    ? frameOffsets.depthY * shapeTowerDepthMultiplier
+    ? frameOffsets.depthY * depthLaneSpread
     : 0;
   const depthSlotX = usesSeriesDepthAxis ? depthGridSpanX / Math.max(1, seriesCount) : 0;
   const depthSlotY = usesSeriesDepthAxis ? depthGridSpanY / Math.max(1, seriesCount) : 0;
   const depthBarX = usesSeriesDepthAxis
-    ? Math.sign(depthSlotX || 1) * Math.max(4, Math.abs(depthSlotX) * 0.6)
+    ? Math.sign(depthSlotX || frameOffsets?.depthX || 1) * Math.max(8, Math.abs(depthSlotX) * 1.14)
     : frameOffsets?.depthX;
   const depthBarY = usesSeriesDepthAxis
-    ? Math.sign(depthSlotY || -1) * Math.max(3, Math.abs(depthSlotY) * 0.6)
+    ? Math.sign(depthSlotY || frameOffsets?.depthY || -1) * Math.max(5.5, Math.abs(depthSlotY) * 1.12)
     : frameOffsets?.depthY;
 
   const shouldReverseValueAxis = chart.valueAxis?.orientation === "maxMin";
@@ -3263,15 +3242,22 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           : (seriesScale(String(seriesIndex)) ?? 0);
       const depthOffsetX = usesSeriesDepthAxis ? depthSlotX * seriesIndex : 0;
       const depthOffsetY = usesSeriesDepthAxis ? depthSlotY * seriesIndex : 0;
+      const depthOrder = depthOffsetX * (frameOffsets?.depthX ?? 0) + depthOffsetY * (frameOffsets?.depthY ?? 0);
       const shapeTaper = normalized3dShape === "pyramid"
         ? 0.94
         : normalized3dShape === "cone"
-          ? 0.88
+          ? 1
           : 0;
       let topScale = 1;
       let bottomScale = 1;
       if (chart.is3d && shapeTaper > 0) {
-        const scaleAt = (ratio: number) => clamp(1 - clamp(ratio, 0, 1) * shapeTaper, 0.04, 1);
+        const scaleAt = (ratio: number) => {
+          const clampedRatio = clamp(ratio, 0, 1);
+          const taperedRatio = normalized3dShape === "cone"
+            ? Math.pow(clampedRatio, isHorizontal ? 1.2 : 1.08)
+            : clampedRatio;
+          return clamp(1 - (taperedRatio * shapeTaper), normalized3dShape === "cone" ? 0 : 0.04, 1);
+        };
         if (rawValue >= 0) {
           const total = Math.max(1e-6, isStacked ? positiveTotals[categoryIndex] : Math.abs(rawValue));
           bottomScale = scaleAt(isStacked ? start / total : 0);
@@ -3296,6 +3282,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           bottomScale,
           categoryIndex,
           color: colors.fill,
+          depthOrder,
           depthOffsetX,
           depthOffsetY,
           height: Math.max(1, barThickness),
@@ -3327,6 +3314,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           bottomScale,
           categoryIndex,
           color: colors.fill,
+          depthOrder,
           depthOffsetX,
           depthOffsetY,
           height: Math.max(1, Math.abs(y2 - y1)),
@@ -3373,8 +3361,8 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     : bars;
   const sortedBars = usesSeriesDepthAxis
     ? renderedBars.slice().sort((left, right) => {
-        if (left.seriesIndex !== right.seriesIndex) {
-          return right.seriesIndex - left.seriesIndex;
+        if ((left.depthOrder ?? 0) !== (right.depthOrder ?? 0)) {
+          return (right.depthOrder ?? 0) - (left.depthOrder ?? 0);
         }
         if (left.categoryIndex !== right.categoryIndex) {
           return left.categoryIndex - right.categoryIndex;

@@ -69,27 +69,12 @@ function ThemeToggle() {
   );
 }
 
-function RibbonGroup({
-  children,
-  label,
-}: {
-  children: React.ReactNode;
-  label: string;
-}) {
+function ToolbarCluster({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-col items-stretch">
-      <div className="flex items-center gap-1 px-2 py-1">
-        {children}
-      </div>
-      <div className="text-muted-foreground border-t px-2 py-0.5 text-center text-[10px] font-medium">
-        {label}
-      </div>
+    <div className="bg-background/80 flex min-w-0 items-center gap-1 rounded-lg border px-2 py-1 shadow-sm">
+      {children}
     </div>
   );
-}
-
-function RibbonSeparator() {
-  return <div className="bg-border mx-1 h-[52px] w-px shrink-0 self-center" />;
 }
 
 function ViewerEmptyState() {
@@ -233,9 +218,9 @@ function WorkbookToolbar({
         </div>
       </div>
 
-      {/* Ribbon */}
-      <div className="flex items-stretch border-b bg-muted/30 px-2">
-        <RibbonGroup label="File">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 border-b bg-muted/30 px-2 py-2">
+        <ToolbarCluster>
           <Button onClick={onOpenFile} size="sm">
             <Upload />
             Open
@@ -252,13 +237,11 @@ function WorkbookToolbar({
             <Download />
             CSV
           </Button>
-        </RibbonGroup>
+        </ToolbarCluster>
 
-        <RibbonSeparator />
-
-        <RibbonGroup label="URL">
+        <ToolbarCluster>
           <Input
-            className="min-w-[200px]"
+            className="min-w-[220px]"
             onChange={(event) => setRemoteUrl(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -273,46 +256,40 @@ function WorkbookToolbar({
             <Link2 />
             Load
           </Button>
-        </RibbonGroup>
+        </ToolbarCluster>
 
-        <RibbonSeparator />
-
-        <RibbonGroup label="Clipboard">
+        <ToolbarCluster>
           <ButtonGroup>
-            <Button disabled={!canUndo} onClick={undo} size="sm" variant="outline">
+            <Button aria-label="Undo" disabled={!canUndo} onClick={undo} size="sm" variant="outline">
               <Undo2 />
             </Button>
-            <Button disabled={!canRedo} onClick={redo} size="sm" variant="outline">
+            <Button aria-label="Redo" disabled={!canRedo} onClick={redo} size="sm" variant="outline">
               <Redo2 />
             </Button>
           </ButtonGroup>
-        </RibbonGroup>
+        </ToolbarCluster>
 
-        <RibbonSeparator />
-
-        <RibbonGroup label="Cells">
+        <ToolbarCluster>
           <Button disabled={!hasSelection || isReadOnly} onClick={mergeSelection} size="sm" variant="outline">
             Merge
           </Button>
           <Button disabled={!hasSelection || isReadOnly} onClick={unmergeSelection} size="sm" variant="outline">
             Unmerge
           </Button>
-        </RibbonGroup>
+        </ToolbarCluster>
 
-        <RibbonSeparator />
-
-        <RibbonGroup label="Sheets">
-          <Button disabled={!hasWorkbook || isReadOnly} onClick={() => addSheet()} size="sm" variant="outline">
+        <ToolbarCluster>
+          <Button aria-label="Add sheet" disabled={!hasWorkbook || isReadOnly} onClick={() => addSheet()} size="sm" variant="outline">
             <Plus />
           </Button>
-          <Button disabled={sheets.length <= 1 || isReadOnly} onClick={removeActiveSheet} size="sm" variant="outline">
+          <Button aria-label="Delete active sheet" disabled={sheets.length <= 1 || isReadOnly} onClick={removeActiveSheet} size="sm" variant="outline">
             <Trash2 />
           </Button>
           <ButtonGroup>
-            <Button disabled={!activeSheet || activeSheetIndex <= 0} onClick={() => setActiveSheetIndex(activeSheetIndex - 1)} size="sm" variant="outline">
+            <Button aria-label="Previous sheet" disabled={!activeSheet || activeSheetIndex <= 0} onClick={() => setActiveSheetIndex(activeSheetIndex - 1)} size="sm" variant="outline">
               <ChevronLeft />
             </Button>
-            <Button disabled={!activeSheet || activeSheetIndex >= sheets.length - 1} onClick={() => setActiveSheetIndex(activeSheetIndex + 1)} size="sm" variant="outline">
+            <Button aria-label="Next sheet" disabled={!activeSheet || activeSheetIndex >= sheets.length - 1} onClick={() => setActiveSheetIndex(activeSheetIndex + 1)} size="sm" variant="outline">
               <ChevronRight />
             </Button>
           </ButtonGroup>
@@ -332,11 +309,9 @@ function WorkbookToolbar({
               ))}
             </SelectContent>
           </Select>
-        </RibbonGroup>
+        </ToolbarCluster>
 
-        <RibbonSeparator />
-
-        <RibbonGroup label="Names">
+        <ToolbarCluster>
           <Input
             className="min-w-[120px]"
             onChange={(event) => setNamedRangeDraft(event.target.value)}
@@ -352,13 +327,11 @@ function WorkbookToolbar({
           <Button disabled={!hasSelection || !namedRangeDraft.trim() || isReadOnly} onClick={handleDefineNamedRange} size="sm" variant="outline">
             Define
           </Button>
-        </RibbonGroup>
+        </ToolbarCluster>
 
-        <RibbonSeparator />
-
-        <RibbonGroup label="View">
+        <ToolbarCluster>
           <ButtonGroup>
-            <Button disabled={!hasWorkbook || !canZoomOut} onClick={zoomOut} size="sm" variant="outline">
+            <Button aria-label="Zoom out" disabled={!hasWorkbook || !canZoomOut} onClick={zoomOut} size="sm" variant="outline">
               <Minus />
             </Button>
             <Select
@@ -377,7 +350,7 @@ function WorkbookToolbar({
                 ))}
               </SelectContent>
             </Select>
-            <Button disabled={!hasWorkbook || !canZoomIn} onClick={zoomIn} size="sm" variant="outline">
+            <Button aria-label="Zoom in" disabled={!hasWorkbook || !canZoomIn} onClick={zoomIn} size="sm" variant="outline">
               <Plus />
             </Button>
           </ButtonGroup>
@@ -389,11 +362,9 @@ function WorkbookToolbar({
           >
             Reset
           </Button>
-        </RibbonGroup>
+        </ToolbarCluster>
 
-        <RibbonSeparator />
-
-        <RibbonGroup label="Tools">
+        <ToolbarCluster>
           <Button disabled={!canExport} onClick={recalculate} size="sm" variant="outline">
             <RefreshCcw />
             Recalc
@@ -402,7 +373,7 @@ function WorkbookToolbar({
             <Trash2 />
             Clear
           </Button>
-        </RibbonGroup>
+        </ToolbarCluster>
       </div>
 
       {/* Formula bar */}
