@@ -9,7 +9,7 @@ import {
   type Virtualizer
 } from "@tanstack/react-virtual";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
-import { useXlsxViewerController } from "./controller";
+import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
 import { MemoChartSvg } from "./chart-renderer";
 import {
   emuToPixels,
@@ -3178,6 +3178,72 @@ function renderEmpty(emptyState: XlsxViewerProps["emptyState"], palette: ViewerP
   );
 }
 
+function formatBinaryBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function renderFileTooLarge(
+  fileTooLargeState: XlsxViewerProps["fileTooLargeState"],
+  renderProps: {
+    displayFileName: string;
+    fileSizeBytes: number;
+    maxFileSizeBytes: number;
+  },
+  palette: ViewerPalette
+) {
+  const defaultNode = (
+    <div
+      style={{
+        alignItems: "center",
+        color: palette.mutedText,
+        display: "flex",
+        flexDirection: "column",
+        fontSize: 14,
+        gap: 8,
+        height: "100%",
+        justifyContent: "center",
+        padding: 24,
+        textAlign: "center"
+      }}
+    >
+      <div style={{ color: palette.text, fontWeight: 600 }}>
+        {renderProps.displayFileName}
+      </div>
+      <div>
+        File size {formatBinaryBytes(renderProps.fileSizeBytes)} exceeds the configured limit of{" "}
+        {formatBinaryBytes(renderProps.maxFileSizeBytes)}.
+      </div>
+    </div>
+  );
+
+  if (typeof fileTooLargeState === "function") {
+    return fileTooLargeState({
+      defaultNode,
+      displayFileName: renderProps.displayFileName,
+      fileSizeBytes: renderProps.fileSizeBytes,
+      maxFileSizeBytes: renderProps.maxFileSizeBytes
+    });
+  }
+
+  if (fileTooLargeState !== undefined) {
+    return fileTooLargeState;
+  }
+
+  return defaultNode;
+}
+
 function renderDefaultChartLoadingCard(rect: XlsxImageRect) {
   const bars = [18, 32, 24];
   const barWidth = Math.max(8, Math.min(12, Math.round(rect.width * 0.018)));
@@ -4210,6 +4276,7 @@ function XlsxGrid({
   controller,
   emptyState,
   errorState,
+  fileTooLargeState,
   loadingComponent,
   loadingState,
   renderChartLoading,
@@ -4223,7 +4290,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "emptyState" | "errorState" | "loadingComponent" | "loadingState" | "renderChartLoading" | "renderImage" | "renderImageSelection" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "emptyState" | "errorState" | "fileTooLargeState" | "loadingComponent" | "loadingState" | "renderChartLoading" | "renderImage" | "renderImageSelection" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -4241,6 +4308,7 @@ function XlsxGrid({
     clearSelectedCells,
     continueDeferredLoad,
     deferredLoadFileSize,
+    displayFileName,
     error,
     fillSelection,
     getActiveWorksheet,
@@ -6973,6 +7041,22 @@ function XlsxGrid({
   }
 
   if (error) {
+    if (error instanceof XlsxFileSizeLimitExceededError) {
+      return (
+        <>
+          {renderFileTooLarge(
+            fileTooLargeState,
+            {
+              displayFileName,
+              fileSizeBytes: error.fileSizeBytes,
+              maxFileSizeBytes: error.maxFileSizeBytes
+            },
+            palette
+          )}
+        </>
+      );
+    }
+
     return <>{renderError(errorState, error, palette)}</>;
   }
 
@@ -8358,6 +8442,7 @@ function XlsxViewerInner({
   controller,
   emptyState,
   errorState,
+  fileTooLargeState,
   height = "100%",
   loadingComponent,
   loadingState,
@@ -8405,6 +8490,7 @@ function XlsxViewerInner({
             controller={controller}
             emptyState={emptyState}
             errorState={errorState}
+            fileTooLargeState={fileTooLargeState}
             loadingComponent={loadingComponent}
             loadingState={loadingState}
             palette={palette}
