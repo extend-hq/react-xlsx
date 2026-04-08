@@ -1362,10 +1362,12 @@ function buildPieOuterWallPath(
   tilt: number,
   depth: number,
   startAngle: number,
-  endAngle: number
+  endAngle: number,
+  fullArc = false
 ) {
   const ry = radius * tilt;
-  return resolvePieFrontSegments(startAngle, endAngle).map(([segmentStart, segmentEnd]) => {
+  const segments = fullArc ? [[startAngle, endAngle] as [number, number]] : resolvePieFrontSegments(startAngle, endAngle);
+  return segments.map(([segmentStart, segmentEnd]) => {
     const topStart = pieEllipsePoint(centerX, centerY, radius, tilt, segmentStart, 0);
     const topEnd = pieEllipsePoint(centerX, centerY, radius, tilt, segmentEnd, 0);
     const bottomStart = pieEllipsePoint(centerX, centerY, radius, tilt, segmentStart, depth);
@@ -1392,9 +1394,10 @@ function buildPieRadialWallPath(
   radius: number,
   tilt: number,
   depth: number,
-  angle: number
+  angle: number,
+  forceVisible = false
 ) {
-  if (!isPieFrontFacingAngle(angle)) {
+  if (!forceVisible && !isPieFrontFacingAngle(angle)) {
     return null;
   }
   const topCenter = { x: centerX, y: centerY };
@@ -1814,10 +1817,23 @@ function renderLineOrAreaChart3d(
   const normalizeY = (value: number) => (
     -((((value - minValue) / valueSpan) - 0.5) * 2)
   );
+  const stackedAreaDepthSpan = isAreaChart && isStackedSeries
+    ? Math.max(0.14, (frontZ - backZ) * 0.42)
+    : 0;
+  const stackedAreaBackZ = frontZ - stackedAreaDepthSpan;
   const normalizeZ = (seriesIndex: number) => (
     seriesCount <= 1 || (isAreaChart && isStackedSeries)
       ? frontZ * 0.94
       : (((seriesIndex / (seriesCount - 1)) - 0.5) * (frontZ - backZ))
+  );
+  const projectSeriesPoint = (x: number, value: number, z: number) => projectCartesian3dPoint(
+    x,
+    normalizeY(value),
+    z,
+    rotXRad,
+    rotYRad,
+    usePerspective,
+    perspectiveStrength
   );
 
   const cubeCorners = [
@@ -1847,36 +1863,31 @@ function renderLineOrAreaChart3d(
       const bottomValue = isAreaChart
         ? (isStackedSeries ? (point.y0 ?? baseValue) : baseValue)
         : baseValue;
-      const top = projectCartesian3dPoint(
-        x,
-        normalizeY(topValue),
-        z,
-        rotXRad,
-        rotYRad,
-        usePerspective,
-        perspectiveStrength
-      );
-      const bottom = projectCartesian3dPoint(
-        x,
-        normalizeY(bottomValue),
-        z,
-        rotXRad,
-        rotYRad,
-        usePerspective,
-        perspectiveStrength
-      );
+      const top = projectSeriesPoint(x, topValue, z);
+      const bottom = projectSeriesPoint(x, bottomValue, z);
+      const topBack = isAreaChart && isStackedSeries
+        ? projectSeriesPoint(x, topValue, stackedAreaBackZ)
+        : null;
+      const bottomBack = isAreaChart && isStackedSeries
+        ? projectSeriesPoint(x, bottomValue, stackedAreaBackZ)
+        : null;
       return {
         bottom,
+        bottomBack,
         defined: point.defined,
         depth: top.depth,
-        top
+        depthBack: topBack?.depth ?? top.depth,
+        top,
+        topBack
       };
     });
   });
 
   const bounds = [
     ...cubeCorners,
-    ...projectedSeries.flatMap((series) => series.flatMap((point) => point.defined ? [point.top, point.bottom] : []))
+    ...projectedSeries.flatMap((series) => series.flatMap((point) => point.defined
+      ? [point.top, point.bottom, ...(point.topBack ? [point.topBack] : []), ...(point.bottomBack ? [point.bottomBack] : [])]
+      : []))
   ];
   const minX = Math.min(...bounds.map((point) => point.x));
   const maxX = Math.max(...bounds.map((point) => point.x));
@@ -1898,11 +1909,13 @@ function renderLineOrAreaChart3d(
 
   const screenCorners = cubeCorners.map(toScreenPoint);
   const seriesGeometry = projectedSeries.map((series, seriesIndex) => ({
-    averageDepth: series.reduce((sum, point) => sum + point.depth, 0) / Math.max(1, series.length),
+    averageDepth: series.reduce((sum, point) => sum + ((point.depth + point.depthBack) / 2), 0) / Math.max(1, series.length),
     points: series.map((point) => ({
       bottom: toScreenPoint(point.bottom),
+      bottomBack: point.bottomBack ? toScreenPoint(point.bottomBack) : null,
       defined: point.defined,
-      top: toScreenPoint(point.top)
+      top: toScreenPoint(point.top),
+      topBack: point.topBack ? toScreenPoint(point.topBack) : null
     })),
     seriesIndex
   })).sort((left, right) => left.averageDepth - right.averageDepth);
@@ -1982,13 +1995,93 @@ function renderLineOrAreaChart3d(
               ...definedPoints.slice().reverse().map((point) => point.bottom)
             ]
           : [];
+        const areaBackPoints = isAreaChart && isStackedSeries
+          ? [
+              ...definedPoints.map((point) => point.topBack ?? point.top),
+              ...definedPoints.slice().reverse().map((point) => point.bottomBack ?? point.bottom)
+            ]
+          : [];
         const strokeColor = chartSeriesStrokeColor(chart, seriesIndex);
         const fillColor = chartSeriesColor(chart, seriesIndex);
         const markerSymbol = normalizeChartMarkerSymbol(chart.series[seriesIndex]?.markerSymbol);
         const markerPath = markerSymbolPath(markerSymbol, Math.max(4, chart.series[seriesIndex]?.markerSize ?? 6) * 0.52);
+        const slabFaces = isAreaChart && isStackedSeries
+          ? definedPoints.slice(1).map((point, pointIndex) => {
+              const previous = definedPoints[pointIndex];
+              if (!previous?.topBack || !point.topBack || !previous.bottomBack || !point.bottomBack) {
+                return null;
+              }
+              const topFace = buildLinearSvgPath([previous.top, point.top, point.topBack, previous.topBack], true);
+              const bottomFace = buildLinearSvgPath([previous.bottom, point.bottom, point.bottomBack, previous.bottomBack], true);
+              return (
+                <React.Fragment key={`line3d-area-face-${seriesIndex}-${pointIndex}`}>
+                  <path
+                    d={topFace}
+                    fill={lightenColor(fillColor, 0.08)}
+                    fillOpacity={0.8}
+                    stroke={darkenColor(fillColor, 0.16)}
+                    strokeWidth={0.8}
+                  />
+                  <path
+                    d={bottomFace}
+                    fill={darkenColor(fillColor, 0.2)}
+                    fillOpacity={0.34}
+                    stroke={darkenColor(fillColor, 0.24)}
+                    strokeWidth={0.6}
+                  />
+                </React.Fragment>
+              );
+            })
+          : [];
+        const firstDefinedPoint = definedPoints[0] ?? null;
+        const lastDefinedPoint = definedPoints[definedPoints.length - 1] ?? null;
+        const startCap = isAreaChart && isStackedSeries && firstDefinedPoint?.topBack && firstDefinedPoint?.bottomBack
+          ? buildLinearSvgPath([
+              firstDefinedPoint.top,
+              firstDefinedPoint.bottom,
+              firstDefinedPoint.bottomBack,
+              firstDefinedPoint.topBack
+            ], true)
+          : "";
+        const endCap = isAreaChart && isStackedSeries && lastDefinedPoint?.topBack && lastDefinedPoint?.bottomBack
+          ? buildLinearSvgPath([
+              lastDefinedPoint.top,
+              lastDefinedPoint.bottom,
+              lastDefinedPoint.bottomBack,
+              lastDefinedPoint.topBack
+            ], true)
+          : "";
 
         return (
           <g key={`line3d-series-${seriesIndex}`}>
+            {isAreaChart && isStackedSeries && areaBackPoints.length >= 3 ? (
+              <path
+                d={buildLinearSvgPath(areaBackPoints, true)}
+                fill={darkenColor(fillColor, 0.18)}
+                fillOpacity={0.44}
+                stroke={darkenColor(fillColor, 0.26)}
+                strokeWidth={0.8}
+              />
+            ) : null}
+            {slabFaces}
+            {startCap ? (
+              <path
+                d={startCap}
+                fill={darkenColor(fillColor, 0.24)}
+                fillOpacity={0.54}
+                stroke={darkenColor(fillColor, 0.3)}
+                strokeWidth={0.7}
+              />
+            ) : null}
+            {endCap ? (
+              <path
+                d={endCap}
+                fill={darkenColor(fillColor, 0.14)}
+                fillOpacity={0.6}
+                stroke={darkenColor(fillColor, 0.24)}
+                strokeWidth={0.7}
+              />
+            ) : null}
             {isAreaChart && areaPoints.length >= 3 ? (
               <path
                 d={buildLinearSvgPath(areaPoints, true)}
@@ -3528,7 +3621,7 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     .innerRadius(innerRadius)
     .outerRadius(outerRadius);
 
-  const isPie3d = chartType === "Pie3D";
+  const isPie3d = chartType === "Pie3D" || (chartType === "PieExploded" && chart.is3d === true);
   const rotX = chart.view3d?.rotX ?? 20;
   const perspective = chart.view3d?.perspective ?? 30;
   const tiltFromRotX = clamp(0.14 + (rotX / 90) * 0.72, 0.12, 0.92);
@@ -3630,11 +3723,12 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
                 centerX,
                 centerY,
                 outerRadius,
-              tilt,
-              depth,
-              arc.startAngle,
-              arc.endAngle
-            );
+                tilt,
+                depth,
+                arc.startAngle,
+                arc.endAngle,
+                explosion > 0
+              );
             if (sidePaths.length === 0) {
               return null;
             }
@@ -3656,7 +3750,8 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
                     outerRadius,
                     tilt,
                     depth,
-                    arc.startAngle
+                    arc.startAngle,
+                    true
                   );
                   const endWall = buildPieRadialWallPath(
                     centerX,
@@ -3664,7 +3759,8 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
                     outerRadius,
                     tilt,
                     depth,
-                    arc.endAngle
+                    arc.endAngle,
+                    true
                   );
                   return (
                     <>
