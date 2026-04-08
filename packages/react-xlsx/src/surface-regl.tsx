@@ -63,6 +63,8 @@ type SurfaceScene = {
   fillPositions: Float32Array;
   lineColors: Float32Array;
   linePositions: Float32Array;
+  wallColors: Float32Array;
+  wallPositions: Float32Array;
 };
 
 function clamp(value: number, min: number, max: number) {
@@ -423,7 +425,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const isContour = isContourSurfaceChart(chart);
   const isWireframe = chart.wireframe === true;
   const fillVertices: SurfaceVertex[] = [];
-  const solidTriangles: SolidSurfaceTriangle[] = [];
+  const wallTriangles: SolidSurfaceTriangle[] = [];
   const contourLines: Array<{ color: string; from: { x: number; y: number }; to: { x: number; y: number } }> = [];
   const meshLines: Array<{ color: string; from: SurfacePoint3D; to: SurfacePoint3D }> = [];
   const stepsPerCell = isContour ? 12 : 8;
@@ -439,18 +441,18 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const floorFill = chart.floor?.fillColor ?? "#d0d2d8";
   const projectPoint = (column: number, row: number, value: number): SurfacePoint3D => {
     const worldX = normalizeSurfaceX(column, cols);
-    const worldY = normalizeSurfaceY(row, rows);
     if (isContour) {
       return {
         depth: 0,
         worldX,
-        worldY,
+        worldY: normalizeSurfaceY(row, rows),
         worldZ: 0,
         x: worldX,
-        y: worldY
+        y: normalizeSurfaceY(row, rows)
       };
     }
-    const worldZ = normalizeSurfaceZ(value, domain, depthScale);
+    const worldY = normalizeSurfaceZ(value, domain, depthScale);
+    const worldZ = normalizeSurfaceY(row, rows);
     const projected = projectCartesian3dPoint(worldX, worldY, worldZ, rotX, rotY, usePerspective, perspectiveStrength);
     return {
       depth: projected.depth,
@@ -461,8 +463,8 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
       y: projected.y
     };
   };
-  const addSolidQuad = (a: SurfacePoint3D, b: SurfacePoint3D, c: SurfacePoint3D, d: SurfacePoint3D, color: string) => {
-    solidTriangles.push(
+  const addWallQuad = (a: SurfacePoint3D, b: SurfacePoint3D, c: SurfacePoint3D, d: SurfacePoint3D, color: string) => {
+    wallTriangles.push(
       { color, points: [a, b, c] },
       { color, points: [a, c, d] }
     );
@@ -577,7 +579,9 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     const topRight = withProjectedDepth(projectPoint(cols - 1, 0, domain.minValue), -0.12);
     const bottomRight = withProjectedDepth(projectPoint(cols - 1, rows - 1, domain.minValue), -0.12);
     const bottomLeft = withProjectedDepth(projectPoint(0, rows - 1, domain.minValue), -0.12);
-    addSolidQuad(topLeft, topRight, bottomRight, bottomLeft, backWallFill);
+    if (chart.backWall?.hidden !== true && backWallFill !== "transparent") {
+      addWallQuad(topLeft, topRight, bottomRight, bottomLeft, backWallFill);
+    }
     for (let columnIndex = 0; columnIndex < cols; columnIndex += columnSkip) {
       addMeshLine(
         withProjectedDepth(projectPoint(columnIndex, 0, domain.minValue), 0.04),
@@ -595,44 +599,63 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   } else {
     const minPlaneValue = domain.minValue;
     const wallDepthOffset = -0.2;
-    addSolidQuad(
-      nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, minPlaneValue), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(0, rows - 1, minPlaneValue), wallDepthOffset),
-      floorFill
-    );
-    addSolidQuad(
-      nudgeProjectedDepth(projectPoint(0, 0, domain.safeMax), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
-      backWallFill
-    );
-    addSolidQuad(
-      nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, domain.safeMax), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, minPlaneValue), wallDepthOffset),
-      nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
-      sideWallFill
-    );
+    if (chart.floor?.hidden !== true && floorFill !== "transparent") {
+      addWallQuad(
+        nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(0, rows - 1, minPlaneValue), wallDepthOffset),
+        floorFill
+      );
+    }
+    if (chart.backWall?.hidden !== true && backWallFill !== "transparent") {
+      addWallQuad(
+        nudgeProjectedDepth(projectPoint(0, 0, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
+        backWallFill
+      );
+    }
+    if (chart.sideWall?.hidden !== true && sideWallFill !== "transparent") {
+      addWallQuad(
+        nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
+        sideWallFill
+      );
+    }
     for (const tick of domain.ticks) {
-      addMeshLine(nudgeProjectedDepth(projectPoint(0, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), wallLineColor);
-      addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, tick), wallDepthOffset * 0.75), wallLineColor);
+      if (chart.backWall?.hidden !== true && wallLineColor !== "transparent") {
+        addMeshLine(nudgeProjectedDepth(projectPoint(0, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), wallLineColor);
+      }
+      if (chart.sideWall?.hidden !== true && wallLineColor !== "transparent") {
+        addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, tick), wallDepthOffset * 0.75), wallLineColor);
+      }
     }
     for (let columnIndex = 0; columnIndex < cols; columnIndex += columnSkip) {
-      addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, rows - 1, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
-      addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, 0, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
+      if (chart.floor?.hidden !== true && wallLineColor !== "transparent") {
+        addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, rows - 1, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
+      }
+      if (chart.backWall?.hidden !== true && wallLineColor !== "transparent") {
+        addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, 0, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
+      }
     }
     for (let rowIndex = 0; rowIndex < rows; rowIndex += rowSkip) {
-      addMeshLine(nudgeProjectedDepth(projectPoint(0, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
-      addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
+      if (chart.floor?.hidden !== true && wallLineColor !== "transparent") {
+        addMeshLine(nudgeProjectedDepth(projectPoint(0, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
+      }
+      if (chart.sideWall?.hidden !== true && wallLineColor !== "transparent") {
+        addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
+      }
     }
   }
 
   if (!isContour && isWireframe) {
-    const lineColor = chart.axisLineColor ?? darkenColor(resolveSurfaceBaseColor(chart, palette), 0.1);
     const addWireMeshLine = (fromColumn: number, fromRow: number, toColumn: number, toRow: number, fromValue: number, toValue: number) => {
+      const averageValue = (fromValue + toValue) * 0.5;
+      const lineColor = resolveSurfaceBandColor(chart, palette, domain, averageValue);
       addMeshLine(
         projectPoint(fromColumn, fromRow, fromValue),
         projectPoint(toColumn, toRow, toValue),
@@ -717,12 +740,14 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
 
   const fillPositions: number[] = [];
   const fillColors: number[] = [];
-  for (const triangle of solidTriangles) {
+  const wallPositions: number[] = [];
+  const wallColors: number[] = [];
+  for (const triangle of wallTriangles) {
     const rgba = colorToRgba(triangle.color, 1);
     for (const point of triangle.points) {
       const clip = toClipPoint(point);
-      fillPositions.push(clip.x, clip.y, clip.z);
-      fillColors.push(rgba[0], rgba[1], rgba[2], rgba[3]);
+      wallPositions.push(clip.x, clip.y, clip.z);
+      wallColors.push(rgba[0], rgba[1], rgba[2], rgba[3] * 0.92);
     }
   }
   for (let index = 0; index < fillVertices.length; index += 3) {
@@ -782,7 +807,9 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     fillColors: new Float32Array(fillColors),
     fillPositions: new Float32Array(fillPositions),
     lineColors: new Float32Array(lineColors),
-    linePositions: new Float32Array(linePositions)
+    linePositions: new Float32Array(linePositions),
+    wallColors: new Float32Array(wallColors),
+    wallPositions: new Float32Array(wallPositions)
   };
 }
 
@@ -875,6 +902,45 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
               `
             })
           : null;
+        const wallCommand = scene.wallPositions.length > 0
+          ? reglInstance({
+              attributes: {
+                color: scene.wallColors,
+                position: scene.wallPositions
+              },
+              blend: {
+                enable: true,
+                func: {
+                  dstRGB: "one minus src alpha",
+                  dstAlpha: "one minus src alpha",
+                  srcRGB: "src alpha",
+                  srcAlpha: "src alpha"
+                }
+              },
+              count: scene.wallPositions.length / 3,
+              depth: {
+                enable: false
+              },
+              frag: `
+                precision mediump float;
+                varying vec4 vColor;
+                void main() {
+                  gl_FragColor = vColor;
+                }
+              `,
+              primitive: "triangles",
+              vert: `
+                precision mediump float;
+                attribute vec3 position;
+                attribute vec4 color;
+                varying vec4 vColor;
+                void main() {
+                  gl_Position = vec4(position, 1.0);
+                  vColor = color;
+                }
+              `
+            })
+          : null;
         const lineCommand = scene.linePositions.length > 0
           ? reglInstance({
               attributes: {
@@ -892,7 +958,7 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
               },
               count: scene.linePositions.length / 3,
               depth: {
-                enable: true
+                enable: false
               },
               frag: `
                 precision mediump float;
@@ -917,6 +983,7 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
           : null;
 
         reglInstance.clear({ color: [0, 0, 0, 0], depth: 1 });
+        wallCommand?.();
         fillCommand?.();
         lineCommand?.();
         if (!cancelled) {

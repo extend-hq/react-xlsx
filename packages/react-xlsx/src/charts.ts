@@ -1305,6 +1305,7 @@ function applyChartStyleFromXml(
   if (!chartXml) {
     return;
   }
+  const relationships = chartPath ? readChartRelationships(archive, chartPath) : new Map<string, string>();
   const fallbackPointStylesBySeries = parseFallbackPointStylesFromChartXml(chartXml, themePalette);
   const fallbackSeriesStyles = parseFallbackSeriesStylesFromChartXml(chartXml, themePalette);
   const fallbackBubbleSizesBySeries = parseFallbackBubbleSizesFromChartXml(chartXml);
@@ -1376,6 +1377,22 @@ function applyChartStyleFromXml(
       });
     }
   };
+  const applyRelationshipStyles = () => {
+    chart.chartColorPalette = readChartColorPalette(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE), themePalette);
+    const styleAppearance = readChartStyleAppearance(
+      archive,
+      relationships.get(CHART_STYLE_REL_TYPE),
+      themePalette
+    );
+    chart.axisLabelColor = styleAppearance.axisLabelColor ?? chart.axisLabelColor;
+    chart.axisLineColor = styleAppearance.axisLineColor ?? chart.axisLineColor;
+    chart.chartAreaBorderColor = styleAppearance.chartAreaBorderColor ?? chart.chartAreaBorderColor;
+    chart.chartAreaFillColor = styleAppearance.chartAreaFillColor ?? chart.chartAreaFillColor;
+    chart.chartColorPaletteOffset = styleAppearance.paletteOffset ?? chart.chartColorPaletteOffset;
+    chart.textColor = styleAppearance.textColor ?? chart.textColor;
+    chart.titleColor = styleAppearance.titleColor ?? chart.titleColor;
+    return styleAppearance;
+  };
 
   const chartDocument = parseXml(chartXml);
   const chartNode = chartDocument ? getFirstLocalDescendant(chartDocument, "chart") : null;
@@ -1384,12 +1401,14 @@ function applyChartStyleFromXml(
   const chartTypeNode = findPrimaryChartTypeNode(plotAreaNode);
 
   if (!chartNode || !chartTypeNode) {
+    applyRelationshipStyles();
     applyFallbackSeriesStyles();
     applyBuiltinChartDefaults(chart, themePalette);
     return;
   }
   const plotArea = plotAreaNode;
   if (!plotArea) {
+    applyRelationshipStyles();
     applyFallbackSeriesStyles();
     applyBuiltinChartDefaults(chart, themePalette);
     return;
@@ -1541,20 +1560,7 @@ function applyChartStyleFromXml(
   chart.sideWall = readChartWallFromXml(getFirstLocalChild(chartNode, "sideWall"), themePalette) ?? chart.sideWall;
   chart.backWall = readChartWallFromXml(getFirstLocalChild(chartNode, "backWall"), themePalette) ?? chart.backWall;
 
-  const relationships = chartPath ? readChartRelationships(archive, chartPath) : new Map<string, string>();
-  chart.chartColorPalette = readChartColorPalette(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE), themePalette);
-  const styleAppearance = readChartStyleAppearance(
-    archive,
-    relationships.get(CHART_STYLE_REL_TYPE),
-    themePalette
-  );
-  chart.axisLabelColor = styleAppearance.axisLabelColor ?? chart.axisLabelColor;
-  chart.axisLineColor = styleAppearance.axisLineColor ?? chart.axisLineColor;
-  chart.chartAreaBorderColor = styleAppearance.chartAreaBorderColor ?? chart.chartAreaBorderColor;
-  chart.chartAreaFillColor = styleAppearance.chartAreaFillColor ?? chart.chartAreaFillColor;
-  chart.chartColorPaletteOffset = styleAppearance.paletteOffset ?? chart.chartColorPaletteOffset;
-  chart.textColor = styleAppearance.textColor ?? chart.textColor;
-  chart.titleColor = styleAppearance.titleColor ?? chart.titleColor;
+  const styleAppearance = applyRelationshipStyles();
   const chartTextTypeface = readChartTextTypeface(getFirstLocalChild(chartNode, "txPr"), themePalette);
   const titleTypeface = readChartTextTypeface(getFirstLocalDescendant(chartNode, "title"), themePalette);
   chart.fontFamily = chartTextTypeface ?? chart.fontFamily;
@@ -1902,6 +1908,22 @@ function parseA1Range(reference: string) {
   };
 }
 
+function formatA1Column(col: number) {
+  let current = col + 1;
+  let label = "";
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    current = Math.floor((current - 1) / 26);
+  }
+  return label;
+}
+
+function buildA1RangeFormula(sheetName: string, start: { col: number; row: number }, end: { col: number; row: number }) {
+  const escapedSheetName = sheetName.replace(/'/g, "''");
+  return `'${escapedSheetName}'!$${formatA1Column(start.col)}$${start.row + 1}:$${formatA1Column(end.col)}$${end.row + 1}`;
+}
+
 function resolveReferenceSheet(workbook: Workbook, fallbackSheetIndex: number, formula?: string | null) {
   if (!formula) {
     return {
@@ -1982,6 +2004,42 @@ function resolveChartReferenceLabel(
   return firstDisplay.length > 0 ? firstDisplay : fallbackLabel;
 }
 
+function resolveReferenceRowPaths(
+  workbook: Workbook,
+  fallbackSheetIndex: number,
+  reference: XlsxChartReference | null | undefined
+) {
+  if (!reference?.formula) {
+    return [] as string[][];
+  }
+
+  const resolved = resolveReferenceSheet(workbook, fallbackSheetIndex, reference.formula);
+  if (!resolved.sheet || !resolved.range) {
+    return [];
+  }
+
+  const rows: string[][] = [];
+  for (let row = resolved.range.start.row; row <= resolved.range.end.row; row += 1) {
+    const parts: string[] = [];
+    for (let col = resolved.range.start.col; col <= resolved.range.end.col; col += 1) {
+      const calculated = typeof resolved.sheet.getCalculatedValueAt === "function"
+        ? resolved.sheet.getCalculatedValueAt(row, col)
+        : null;
+      const formatted = typeof resolved.sheet.getFormattedValueAt === "function"
+        ? resolved.sheet.getFormattedValueAt(row, col)
+        : calculated;
+      const display = cellValueToDisplay(formatted ?? calculated);
+      const numeric = cellValueToNumber(calculated ?? formatted);
+      const label = display.length > 0 ? display : (numeric != null ? String(numeric) : "");
+      if (label.length > 0) {
+        parts.push(label);
+      }
+    }
+    rows.push(parts);
+  }
+  return rows;
+}
+
 function normalizeChartExLegend(raw: unknown): XlsxChartLegend | null {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -2039,6 +2097,7 @@ function normalizeChartExAxis(raw: unknown): XlsxChartAxis | null {
         }
       : undefined,
     raw: axis,
+    position: typeof axis.position === "string" ? axis.position : undefined,
     tickLabelSkip: typeof axis.tickLabelSkip === "number" ? axis.tickLabelSkip : undefined,
     tickMarkSkip: typeof axis.tickMarkSkip === "number" ? axis.tickMarkSkip : undefined
   };
@@ -2046,8 +2105,14 @@ function normalizeChartExAxis(raw: unknown): XlsxChartAxis | null {
 
 function resolveChartExLayoutChartType(layout: string | undefined) {
   switch (layout) {
+    case "boxWhisker":
+      return "BoxWhisker";
+    case "clusteredColumn":
+      return "ColumnClustered";
     case "funnel":
       return "Funnel";
+    case "paretoLine":
+      return "Line";
     case "regionMap":
       return "RegionMap";
     case "sunburst":
@@ -2059,6 +2124,211 @@ function resolveChartExLayoutChartType(layout: string | undefined) {
     default:
       return layout ? `Unsupported(cx:${layout})` : "ColumnClustered";
   }
+}
+
+function resolveChartExSeriesLayout(raw: unknown) {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  return typeof record.layout === "string"
+    ? record.layout
+    : typeof record.layoutId === "string"
+      ? record.layoutId
+      : undefined;
+}
+
+function resolveChartExSeriesAxisIds(raw: unknown) {
+  if (!raw || typeof raw !== "object") {
+    return [];
+  }
+  const record = raw as Record<string, unknown>;
+  if (Array.isArray(record.axisIds)) {
+    return record.axisIds.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  }
+  if (Array.isArray(record.axisId)) {
+    return record.axisId.flatMap((value) => {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return [value];
+      }
+      if (value && typeof value === "object" && typeof (value as { val?: unknown }).val === "number") {
+        return [(value as { val: number }).val];
+      }
+      return [];
+    });
+  }
+  if (typeof record.axisId === "number" && Number.isFinite(record.axisId)) {
+    return [record.axisId];
+  }
+  return [];
+}
+
+function niceHistogramStep(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 1;
+  }
+  const exponent = Math.floor(Math.log10(value));
+  const scale = 10 ** exponent;
+  const normalized = value / scale;
+  if (normalized <= 1) {
+    return scale;
+  }
+  if (normalized <= 2) {
+    return scale * 2;
+  }
+  if (normalized <= 5) {
+    return scale * 5;
+  }
+  return scale * 10;
+}
+
+type ChartExHistogramBin = {
+  count: number;
+  label: string;
+  lower: number;
+  upper: number;
+};
+
+function buildChartExHistogramBins(values: number[], rawSeries: unknown, sortByFrequency: boolean) {
+  if (values.length === 0) {
+    return [] as ChartExHistogramBin[];
+  }
+
+  const rawRecord = rawSeries && typeof rawSeries === "object" ? rawSeries as Record<string, unknown> : null;
+  const layoutProperties = rawRecord?.layoutPr && typeof rawRecord.layoutPr === "object"
+    ? rawRecord.layoutPr as Record<string, unknown>
+    : null;
+  const rawBinning = layoutProperties?.binning && typeof layoutProperties.binning === "object"
+    ? layoutProperties.binning as Record<string, unknown>
+    : null;
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const explicitWidth = typeof rawBinning?.binWidth === "number" && Number.isFinite(rawBinning.binWidth) && rawBinning.binWidth > 0
+    ? rawBinning.binWidth
+    : typeof rawBinning?.width === "number" && Number.isFinite(rawBinning.width) && rawBinning.width > 0
+      ? rawBinning.width
+      : undefined;
+  const explicitCount = typeof rawBinning?.binCount === "number" && Number.isFinite(rawBinning.binCount) && rawBinning.binCount > 0
+    ? rawBinning.binCount
+    : typeof rawBinning?.count === "number" && Number.isFinite(rawBinning.count) && rawBinning.count > 0
+      ? rawBinning.count
+      : undefined;
+  const closedRight = rawBinning?.intervalClosed === "r" || rawBinning?.intervalClosed === "right";
+  const roughWidth = explicitWidth
+    ?? niceHistogramStep((maxValue - minValue) / Math.max(1, explicitCount ?? Math.ceil(Math.log2(values.length) + 1)));
+  const binWidth = Math.max(roughWidth, 1e-6);
+  const start = Math.floor(minValue / binWidth) * binWidth;
+  const end = Math.max(start + binWidth, Math.ceil(maxValue / binWidth) * binWidth);
+  const binCount = Math.max(1, Math.ceil((end - start) / binWidth));
+  const bins = Array.from({ length: binCount }, (_, index) => {
+    const lower = start + binWidth * index;
+    const upper = lower + binWidth;
+    return {
+      count: 0,
+      label: `${Number(lower.toFixed(6))}-${Number(upper.toFixed(6))}`,
+      lower,
+      upper
+    } satisfies ChartExHistogramBin;
+  });
+
+  values.forEach((value) => {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    const offset = (value - start) / binWidth;
+    let binIndex = Math.floor(offset);
+    if (closedRight && Math.abs(offset - Math.round(offset)) < 1e-9 && value > start) {
+      binIndex -= 1;
+    }
+    if (value >= end) {
+      binIndex = bins.length - 1;
+    }
+    if (value <= start) {
+      binIndex = 0;
+    }
+    const target = bins[Math.max(0, Math.min(bins.length - 1, binIndex))];
+    if (target) {
+      target.count += 1;
+    }
+  });
+
+  if (sortByFrequency) {
+    bins.sort((left, right) => (
+      right.count - left.count
+      || left.lower - right.lower
+    ));
+  }
+  return bins;
+}
+
+function buildChartExHistogramSeries(
+  series: XlsxChartSeries,
+  rawSeries: unknown,
+  sortByFrequency: boolean
+) {
+  const layout = resolveChartExSeriesLayout(rawSeries);
+  const rawRecord = rawSeries && typeof rawSeries === "object" ? rawSeries as Record<string, unknown> : null;
+  const hasBinning = Boolean(
+    layout === "clusteredColumn"
+    && rawRecord?.layoutPr
+    && typeof rawRecord.layoutPr === "object"
+    && (rawRecord.layoutPr as Record<string, unknown>).binning != null
+  );
+  if (!hasBinning) {
+    return series;
+  }
+
+  const numericValues = series.values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (numericValues.length === 0) {
+    return series;
+  }
+
+  const bins = buildChartExHistogramBins(numericValues, rawSeries, sortByFrequency);
+  if (bins.length === 0) {
+    return series;
+  }
+
+  return {
+    ...series,
+    categories: bins.map((bin) => bin.label),
+    categoriesRef: null,
+    raw: {
+      ...series.raw,
+      chartExHistogramBins: bins,
+      chartExSourceValues: numericValues
+    },
+    values: bins.map((bin) => bin.count)
+  };
+}
+
+function buildChartExParetoLineSeries(series: XlsxChartSeries, sourceRaw: unknown, index: number) {
+  const counts = series.values.map((value) => (
+    typeof value === "number" && Number.isFinite(value) ? value : 0
+  ));
+  const total = counts.reduce((sum, value) => sum + value, 0);
+  let running = 0;
+  const cumulative = counts.map((value) => {
+    running += value;
+    return total > 0 ? (running / total) * 100 : 0;
+  });
+  return {
+    ...series,
+    color: undefined,
+    lineColor: undefined,
+    markerColor: undefined,
+    markerLineColor: undefined,
+    markerSize: 7,
+    markerSymbol: "circle",
+    name: typeof (sourceRaw as { text?: unknown } | null)?.text === "string"
+      ? (sourceRaw as { text: string }).text
+      : "Pareto",
+    raw: {
+      ...(series.raw ?? {}),
+      chartExLayout: "paretoLine",
+      source: sourceRaw && typeof sourceRaw === "object" ? sourceRaw as Record<string, unknown> : undefined
+    },
+    values: cumulative
+  };
 }
 
 function resolveChartExTextFormula(raw: unknown) {
@@ -2101,13 +2371,43 @@ function resolveChartExTitleText(raw: unknown) {
   return typeof record.value === "string" && record.value.length > 0 ? record.value : undefined;
 }
 
+function resolveChartExFallbackCategoryReference(
+  workbook: Workbook,
+  fallbackSheetIndex: number,
+  valueFormula: string | undefined
+) {
+  if (!valueFormula) {
+    return null;
+  }
+
+  const resolved = resolveReferenceSheet(workbook, fallbackSheetIndex, valueFormula);
+  if (!resolved.sheet || !resolved.range || resolved.range.start.col <= 0) {
+    return null;
+  }
+
+  return normalizeChartReference({
+    formula: buildA1RangeFormula(
+      resolved.sheetName,
+      {
+        col: resolved.range.start.col - 1,
+        row: resolved.range.start.row
+      },
+      {
+        col: resolved.range.start.col - 1,
+        row: resolved.range.end.row
+      }
+    )
+  });
+}
+
 function normalizeChartExSeries(
   workbook: Workbook,
   workbookSheetIndex: number,
   chartId: string,
   raw: unknown,
   dataById: Map<number, Record<string, unknown>>,
-  index: number
+  index: number,
+  chartType?: XlsxChart["chartType"]
 ): XlsxChartSeries {
   const series = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const dataId = typeof series.dataId === "number" ? series.dataId : null;
@@ -2117,7 +2417,6 @@ function normalizeChartExSeries(
     : [];
   const categoryDimension = dimensions.find((dimension) => dimension.dimType === "cat")
     ?? dimensions.find((dimension) => dimension.dimType === "name")
-    ?? dimensions[0]
     ?? null;
   const valueDimension = dimensions.find((dimension) => (
     dimension.dimType === "val"
@@ -2127,39 +2426,64 @@ function normalizeChartExSeries(
   ))
     ?? dimensions.find((dimension) => dimension !== categoryDimension)
     ?? categoryDimension;
+  const categoryDimensionFormula = typeof categoryDimension?.formula === "string" ? categoryDimension.formula : undefined;
+  const valueDimensionFormula = typeof valueDimension?.formula === "string" ? valueDimension.formula : undefined;
+  const fallbackCategoryRef = (
+    (chartType === "Sunburst" || chartType === "Treemap")
+    && !categoryDimension
+    && typeof valueDimensionFormula === "string"
+  )
+    ? resolveChartExFallbackCategoryReference(workbook, workbookSheetIndex, valueDimensionFormula)
+    : null;
   const categoriesRef = categoryDimension
     ? normalizeChartReference({
-        formula: typeof categoryDimension.formula === "string" ? categoryDimension.formula : undefined
+        formula: categoryDimensionFormula
       })
-    : null;
+    : fallbackCategoryRef;
   const valuesRef = valueDimension
     ? normalizeChartReference({
-        formula: typeof valueDimension.formula === "string" ? valueDimension.formula : undefined
+        formula: valueDimensionFormula
       })
     : null;
   const values = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value").map((value) => (
     typeof value === "number" && Number.isFinite(value) ? value : null
   ));
   const categories = resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category");
+  const hierarchyCategories = (
+    chartType === "Sunburst" || chartType === "Treemap"
+  )
+    ? resolveReferenceRowPaths(workbook, workbookSheetIndex, categoriesRef)
+    : [];
   const seriesTextFormula = resolveChartExTextFormula(series.text);
+  const shapeProperties = series.shapeProperties && typeof series.shapeProperties === "object"
+    ? series.shapeProperties as Record<string, unknown>
+    : undefined;
+  const rawFillColor = typeof shapeProperties?.solidFillHex === "string"
+    ? normalizeHexColor(shapeProperties.solidFillHex)
+    : null;
+  const rawLineColor = typeof shapeProperties?.lineColorHex === "string"
+    ? normalizeHexColor(shapeProperties.lineColorHex)
+    : null;
 
   return {
     bubbleSizeRef: null,
     bubbleSizes: [],
     categories,
     categoriesRef,
-    color: undefined,
+    color: rawFillColor ?? undefined,
     dataPoints: Array.isArray(series.dataPoints) ? series.dataPoints : [],
     dataPointStyles: undefined,
     formatIdx: typeof series.formatIdx === "number" ? series.formatIdx : undefined,
     hidden: typeof series.hidden === "boolean" ? series.hidden : undefined,
     id: `${chartId}-series-${index}`,
     invertIfNegative: undefined,
-    lineColor: undefined,
-    lineWidthPx: undefined,
+    lineColor: rawLineColor ?? rawFillColor ?? undefined,
+    lineWidthPx: typeof shapeProperties?.lineWidth === "number"
+      ? Math.max(1, Number(shapeProperties.lineWidth) / EMU_PER_PIXEL)
+      : undefined,
     marker: undefined,
-    markerColor: undefined,
-    markerLineColor: undefined,
+    markerColor: rawFillColor ?? undefined,
+    markerLineColor: rawLineColor ?? rawFillColor ?? undefined,
     markerSize: undefined,
     markerSymbol: undefined,
     name: typeof series.text === "string"
@@ -2171,12 +2495,11 @@ function normalizeChartExSeries(
     negativeLineColor: undefined,
     raw: {
       ...series,
+      chartExHierarchyCategories: hierarchyCategories,
       data: dataEntry,
       dimType: typeof valueDimension?.dimType === "string" ? valueDimension.dimType : undefined
     },
-    shapeProperties: series.shapeProperties && typeof series.shapeProperties === "object"
-      ? series.shapeProperties as Record<string, unknown>
-      : undefined,
+    shapeProperties,
     smooth: undefined,
     values,
     valuesRef
@@ -2185,6 +2508,26 @@ function normalizeChartExSeries(
 
 function collapseChartExPointSeries(chartType: XlsxChart["chartType"], series: XlsxChartSeries[]) {
   if (chartType !== "Funnel" && chartType !== "Waterfall") {
+    if (
+      (chartType === "Sunburst" || chartType === "Treemap")
+      && series.length > 1
+      && series.every((entry) => {
+        const raw = entry.raw && typeof entry.raw === "object" ? entry.raw as Record<string, unknown> : null;
+        return raw?.dimType === "size";
+      })
+    ) {
+      const primarySeries = series.find((entry) => entry.hidden !== true) ?? series[0] ?? null;
+      if (!primarySeries) {
+        return series;
+      }
+      return [
+        {
+          ...primarySeries,
+          dataPoints: [],
+          hidden: false
+        }
+      ];
+    }
     return series;
   }
 
@@ -2217,6 +2560,7 @@ function normalizeChartExChart(
     ? chart.plotArea as Record<string, unknown>
     : {};
   const rawSeries = Array.isArray(plotArea.series) ? plotArea.series : [];
+  const seriesLayouts = rawSeries.map(resolveChartExSeriesLayout);
   const dataEntries = Array.isArray(chart.data) ? chart.data : [];
   const dataById = new Map<number, Record<string, unknown>>();
   dataEntries.forEach((entry) => {
@@ -2231,12 +2575,66 @@ function normalizeChartExChart(
   const axes = Array.isArray(plotArea.axes)
     ? plotArea.axes.map(normalizeChartExAxis).filter((value): value is XlsxChartAxis => Boolean(value))
     : [];
-  const fallbackTitle = humanizeChartExLayoutLabel(typeof chart.layout === "string" ? chart.layout : undefined);
-  const chartTitle = resolveChartExTitleText(chart.title) ?? fallbackTitle;
-  const chartType = resolveChartExLayoutChartType(typeof chart.layout === "string" ? chart.layout : undefined);
+  const primaryLayout = typeof chart.layout === "string"
+    ? chart.layout
+    : seriesLayouts.find((value): value is string => typeof value === "string" && value.length > 0);
+  const fallbackTitle = humanizeChartExLayoutLabel(primaryLayout);
+  const chartTitle = resolveChartExTitleText(chart.title) ?? (chart.title != null ? "Chart Title" : fallbackTitle);
+  const chartType = resolveChartExLayoutChartType(primaryLayout);
   const normalizedSeries = rawSeries.map((entry, seriesIndex) => (
-    normalizeChartExSeries(workbook, workbookSheetIndex, `chart-ex-${workbookSheetIndex}-${index}`, entry, dataById, seriesIndex)
+    normalizeChartExSeries(workbook, workbookSheetIndex, `chart-ex-${workbookSheetIndex}-${index}`, entry, dataById, seriesIndex, chartType)
   ));
+  const clusteredColumnSeriesIndex = seriesLayouts.findIndex((layout) => layout === "clusteredColumn");
+  const hasParetoLine = seriesLayouts.includes("paretoLine");
+  const clusteredColumnAxisIds = clusteredColumnSeriesIndex >= 0
+    ? resolveChartExSeriesAxisIds(rawSeries[clusteredColumnSeriesIndex])
+    : [];
+  const paretoLineSeriesIndex = seriesLayouts.findIndex((layout) => layout === "paretoLine");
+  const paretoLineAxisIds = paretoLineSeriesIndex >= 0
+    ? resolveChartExSeriesAxisIds(rawSeries[paretoLineSeriesIndex])
+    : [];
+  const primaryHistogramSeries = clusteredColumnSeriesIndex >= 0
+    ? buildChartExHistogramSeries(normalizedSeries[clusteredColumnSeriesIndex] ?? normalizedSeries[0], rawSeries[clusteredColumnSeriesIndex], hasParetoLine)
+    : null;
+  const synthesizedParetoSeries = (
+    hasParetoLine
+    && primaryHistogramSeries
+    && primaryHistogramSeries.values.length > 0
+  )
+    ? buildChartExParetoLineSeries(primaryHistogramSeries, rawSeries[paretoLineSeriesIndex], paretoLineSeriesIndex)
+    : null;
+  const resolvedSeries = synthesizedParetoSeries
+    ? [primaryHistogramSeries!, synthesizedParetoSeries]
+    : primaryHistogramSeries
+      ? [
+          primaryHistogramSeries,
+          ...normalizedSeries.filter((_, seriesIndex) => seriesIndex !== clusteredColumnSeriesIndex)
+        ]
+      : collapseChartExPointSeries(chartType, normalizedSeries);
+  const resolvedChartType = primaryHistogramSeries ? "ColumnClustered" : chartType;
+  const resolvedGapWidth = primaryHistogramSeries ? 0 : undefined;
+  const typeGroups = synthesizedParetoSeries
+    ? [
+        {
+          axisIds: clusteredColumnAxisIds,
+          chartType: "ColumnClustered",
+          gapWidth: 0,
+          raw: {
+            gapWidth: 0,
+            layout: "clusteredColumn"
+          },
+          series: [primaryHistogramSeries!]
+        },
+        {
+          axisIds: paretoLineAxisIds,
+          chartType: "Line",
+          raw: {
+            layout: "paretoLine"
+          },
+          series: [synthesizedParetoSeries]
+        }
+      ]
+    : [];
   const normalizedChart: XlsxChart = {
     anchor: normalizeChartAnchor(chart.anchor),
     autoTitleDeleted: undefined,
@@ -2248,10 +2646,10 @@ function normalizeChartExChart(
     chartAreaFillColor: undefined,
     chartColorPalette: undefined,
     chartColorPaletteOffset: undefined,
-    chartExLayout: typeof chart.layout === "string" ? chart.layout : undefined,
+    chartExLayout: primaryLayout,
     chartPath: undefined,
     chartStyleId: undefined,
-    chartType,
+    chartType: resolvedChartType,
     dataLabels: rawSeries.length > 0 && rawSeries[0] && typeof rawSeries[0] === "object"
       ? normalizeChartDataLabels((rawSeries[0] as Record<string, unknown>).dataLabels)
       : null,
@@ -2259,7 +2657,7 @@ function normalizeChartExChart(
     editable: true,
     firstSliceAngle: undefined,
     fontFamily: undefined,
-    gapWidth: undefined,
+    gapWidth: resolvedGapWidth,
     holeSize: undefined,
     id: `chart-ex-${workbookSheetIndex}-${index}`,
     is3d: undefined,
@@ -2273,7 +2671,7 @@ function normalizeChartExChart(
     roundedCorners: undefined,
     shape3d: undefined,
     seriesAxis: null,
-    series: collapseChartExPointSeries(chartType, normalizedSeries),
+    series: resolvedSeries,
     sheetIndex: visibleSheetIndex,
     showDlblsOverMax: undefined,
     sideWall: null,
@@ -2286,7 +2684,7 @@ function normalizeChartExChart(
     title: chartTitle,
     titleColor: undefined,
     titleFontFamily: undefined,
-    typeGroups: [],
+    typeGroups,
     valueAxis: axes.find((axis) => axis.numberFormat || axis.majorGridlines) ?? axes[1] ?? null,
     varyColors: typeof chart.valueColors === "boolean" ? chart.valueColors : undefined,
     view3d: undefined,
@@ -2418,11 +2816,6 @@ function resolveReferenceValues(
 function resolveSeriesName(workbook: Workbook, fallbackSheetIndex: number, rawName: unknown) {
   if (typeof rawName !== "string" || !rawName) {
     return undefined;
-  }
-
-  const split = splitSheetReference(rawName);
-  if (!split) {
-    return rawName;
   }
 
   const resolved = resolveReferenceSheet(workbook, fallbackSheetIndex, rawName);
