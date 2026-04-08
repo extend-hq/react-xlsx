@@ -548,10 +548,18 @@ export interface XlsxChartLoadingRenderProps {
   rect: XlsxImageRect;
 }
 
+export interface XlsxFileTooLargeRenderProps {
+  defaultNode: React.ReactNode;
+  displayFileName: string;
+  fileSizeBytes: number;
+  maxFileSizeBytes: number;
+}
+
 export interface UseXlsxViewerControllerOptions {
   deferLoadingAboveBytes?: number;
   file?: ArrayBuffer;
   fileName?: string;
+  maxFileSizeBytes?: number;
   readOnly?: boolean;
   readOnlyAboveBytes?: number;
   src?: string;
@@ -815,6 +823,7 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   controller?: XlsxViewerController;
   emptyState?: React.ReactNode;
   errorState?: React.ReactNode | ((error: Error) => React.ReactNode);
+  fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode);
   height?: React.CSSProperties["height"];
   loadingComponent?: React.ReactElement;
   loadingState?: React.ReactNode;

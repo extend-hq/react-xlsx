@@ -1,4 +1,4 @@
-export { useXlsxViewerController } from "./controller";
+export { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
 export {
   DefaultXlsxToolbar,
   useXlsxViewerCharts,
@@ -22,6 +22,7 @@ export type {
   XlsxChartSeries,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxFileTooLargeRenderProps,
   XlsxImage,
   XlsxImageAnchor,
   XlsxImageRect,

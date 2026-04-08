@@ -80,6 +80,7 @@ export type WorkbookChartOrigin = {
   anchorIndex: number;
   anchor: XlsxImageAnchor | null;
   chartPath: string | null;
+  chartKind: "classic" | "modern";
   drawingPath: string;
   workbookSheetIndex: number;
 };
@@ -1689,9 +1690,26 @@ function applyChartStyleFromXml(
   chart.dataLabels = chartTypeDataLabels ?? seriesDataLabels ?? chart.dataLabels;
   const seriesSp3dNode = firstSeriesNode ? getFirstLocalDescendant(firstSeriesNode, "sp3d") : null;
   chart.surfaceMaterial = seriesSp3dNode?.getAttribute("prstMaterial") ?? chart.surfaceMaterial;
+  const bandFormatsNode = getLocalChildren(chartTypeNode, "bandFmts")[0] ?? null;
+  const bandFormatNodes = bandFormatsNode ? getLocalChildren(bandFormatsNode, "bandFmt") : [];
+  const bandFormatColors = bandFormatNodes
+    .map((bandFormatNode) => {
+      const shapeProperties = getFirstLocalChild(bandFormatNode, "spPr");
+      return resolveChartFillColor(shapeProperties, themePalette) ?? undefined;
+    })
+    .filter((color): color is string => typeof color === "string" && color.length > 0);
+  const bandFormatLineColors = bandFormatNodes
+    .map((bandFormatNode) => {
+      const shapeProperties = getFirstLocalChild(bandFormatNode, "spPr");
+      return resolveChartLineStyle(shapeProperties, themePalette).color ?? undefined;
+    })
+    .filter((color): color is string => typeof color === "string" && color.length > 0);
+
   chart.raw = {
     ...(chart.raw ?? {}),
-    bandFormatCount: getLocalChildren(chartTypeNode, "bandFmts")[0] ? getLocalChildren(getLocalChildren(chartTypeNode, "bandFmts")[0], "bandFmt").length : undefined,
+    bandFormatCount: bandFormatNodes.length > 0 ? bandFormatNodes.length : undefined,
+    bandFormatColors: bandFormatColors.length > 0 ? bandFormatColors : undefined,
+    bandFormatLineColors: bandFormatLineColors.length > 0 ? bandFormatLineColors : undefined,
     date1904: readChartBooleanAttribute(chartDocument?.documentElement ?? null, "date1904"),
     bubble3d: chart.bubble3d,
     grouping: getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val") ?? undefined,
@@ -3554,6 +3572,7 @@ function collectChartOriginsForSheet(
       chartOrigins.push({
         anchorIndex: chartAnchorIndex,
         anchor: parseChartAnchorNode(anchorNode),
+        chartKind: relationship.type === CHART_EX_REL_TYPE ? "modern" : "classic",
         chartPath: relationship.target,
         drawingPath: attachment.drawingPath,
         workbookSheetIndex: origin.workbookSheetIndex
@@ -3574,8 +3593,19 @@ function applyChartOrigins(
   for (let workbookSheetIndex = 0; workbookSheetIndex < chartsByWorkbookSheetIndex.length; workbookSheetIndex += 1) {
     const charts = chartsByWorkbookSheetIndex[workbookSheetIndex] ?? [];
     const origins = collectChartOriginsForSheet(archive, sheetOrigins[workbookSheetIndex] ?? null);
-    charts.forEach((chart, index) => {
-      const origin = origins[index];
+    const originsByKind = {
+      classic: origins.filter((origin) => origin.chartKind === "classic"),
+      modern: origins.filter((origin) => origin.chartKind === "modern")
+    };
+    const chartIndexByKind = {
+      classic: 0,
+      modern: 0
+    };
+
+    charts.forEach((chart) => {
+      const chartKind = chart.id.startsWith("chart-ex-") ? "modern" : "classic";
+      const origin = originsByKind[chartKind][chartIndexByKind[chartKind]];
+      chartIndexByKind[chartKind] += 1;
       if (!origin) {
         return;
       }

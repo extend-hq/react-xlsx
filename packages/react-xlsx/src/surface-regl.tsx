@@ -209,7 +209,7 @@ function getSurfaceBandCount(chart: XlsxChart) {
   const explicitBandCount = typeof raw?.bandFormatCount === "number" && Number.isFinite(raw.bandFormatCount)
     ? raw.bandFormatCount
     : null;
-  if (explicitBandCount != null && explicitBandCount > 0) {
+  if (explicitBandCount != null && explicitBandCount > 0 && !(isContourSurfaceChart(chart) && chart.wireframe !== true)) {
     return explicitBandCount;
   }
   const builtinPalette = getBuiltinSurfacePalette(chart);
@@ -304,18 +304,49 @@ function resolveSurfaceColor(chart: XlsxChart, palette: SurfacePalette, ratio: n
   return mixRgbColor(stops[lowerIndex] ?? stops[0], stops[upperIndex] ?? stops[stops.length - 1], mixRatio);
 }
 
-function resolveSurfaceBandColor(chart: XlsxChart, palette: SurfacePalette, domain: SurfaceDomain, value: number) {
+function resolveSurfaceBandPaletteColor(chart: XlsxChart, palette: SurfacePalette, domain: SurfaceDomain, value: number) {
+  const stops = getSurfaceColorStops(chart, palette);
+  if (stops.length === 0) {
+    return resolveSurfaceBaseColor(chart, palette);
+  }
   const ticks = domain.ticks;
   for (let index = 0; index < ticks.length - 1; index += 1) {
-    const start = ticks[index] ?? domain.minValue;
     const end = ticks[index + 1] ?? domain.safeMax;
     if (value <= end || index === ticks.length - 2) {
-      const midpoint = start + (end - start) * 0.5;
-      const ratio = (midpoint - domain.minValue) / Math.max(1e-6, domain.safeMax - domain.minValue);
-      return resolveSurfaceColor(chart, palette, ratio);
+      return stops[Math.min(stops.length - 1, Math.max(0, index))] ?? stops[stops.length - 1] ?? resolveSurfaceBaseColor(chart, palette);
     }
   }
-  return resolveSurfaceColor(chart, palette, 1);
+  return stops[stops.length - 1] ?? resolveSurfaceBaseColor(chart, palette);
+}
+
+function resolveSurfaceBandColor(chart: XlsxChart, palette: SurfacePalette, domain: SurfaceDomain, value: number) {
+  return resolveSurfaceBandPaletteColor(chart, palette, domain, value);
+}
+
+function getSurfaceWireframePalette(chart: XlsxChart, palette: SurfacePalette) {
+  const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
+  const explicit = Array.isArray(raw?.bandFormatLineColors)
+    ? raw.bandFormatLineColors.filter((color): color is string => typeof color === "string" && color.length > 0)
+    : [];
+  if (explicit.length > 0) {
+    return explicit;
+  }
+  return getSurfaceColorStops(chart, palette);
+}
+
+function resolveSurfaceWireframeColor(chart: XlsxChart, palette: SurfacePalette, domain: SurfaceDomain, value: number) {
+  const stops = getSurfaceWireframePalette(chart, palette);
+  if (stops.length === 0) {
+    return resolveSurfaceBandPaletteColor(chart, palette, domain, value);
+  }
+  const ticks = domain.ticks;
+  for (let index = 0; index < ticks.length - 1; index += 1) {
+    const end = ticks[index + 1] ?? domain.safeMax;
+    if (value <= end || index === ticks.length - 2) {
+      return stops[Math.min(stops.length - 1, Math.max(0, index))] ?? resolveSurfaceBandPaletteColor(chart, palette, domain, value);
+    }
+  }
+  return stops[stops.length - 1] ?? resolveSurfaceBandPaletteColor(chart, palette, domain, value);
 }
 
 function colorToRgba(color: string, alpha = 1) {
@@ -443,9 +474,9 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const isWireframe = chart.wireframe === true;
   const fillVertices: SurfaceVertex[] = [];
   const wallTriangles: SolidSurfaceTriangle[] = [];
-  const contourLines: Array<{ color: string; from: { x: number; y: number }; to: { x: number; y: number } }> = [];
+  const contourLines: Array<{ color: string; from: SurfacePoint3D; to: SurfacePoint3D }> = [];
   const meshLines: Array<{ color: string; from: SurfacePoint3D; to: SurfacePoint3D }> = [];
-  const stepsPerCell = isContour ? 12 : 8;
+  const stepsPerCell = isContour ? 12 : 24;
   const rotX = clamp(chart.view3d?.rotX ?? (isWireframe ? 85 : 25), -88, 88) * (Math.PI / 180);
   const rotY = clamp(chart.view3d?.rotY ?? (isWireframe ? 0 : 30), -88, 88) * (Math.PI / 180);
   const usePerspective = !isContour && chart.view3d?.rAngAx === false;
@@ -534,8 +565,8 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
         }
       }
 
+      const thresholds = domain.ticks.slice(1, -1);
       if (isContour && isWireframe) {
-        const thresholds = domain.ticks.slice(1, -1);
         const corners = [
           { value: p00, x: columnIndex, y: rowIndex },
           { value: p10, x: columnIndex + 1, y: rowIndex },
@@ -568,8 +599,8 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
           if (intersections.length === 2) {
             contourLines.push({
               color: darkenColor(resolveSurfaceBandColor(chart, palette, domain, threshold), 0.22),
-              from: intersections[0],
-              to: intersections[1]
+              from: withProjectedDepth(projectPoint(intersections[0]?.x ?? columnIndex, intersections[0]?.y ?? rowIndex, threshold), 0.18),
+              to: withProjectedDepth(projectPoint(intersections[1]?.x ?? columnIndex + 1, intersections[1]?.y ?? rowIndex + 1, threshold), 0.18)
             });
           } else if (intersections.length === 4) {
             const center = (p00 + p10 + p01 + p11) / 4;
@@ -577,10 +608,70 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
               ? [[0, 1], [2, 3]]
               : [[0, 3], [1, 2]];
             pairings.forEach(([leftIndex, rightIndex]) => {
+              const leftPoint = intersections[leftIndex] ?? intersections[0];
+              const rightPoint = intersections[rightIndex] ?? intersections[intersections.length - 1];
+              if (!leftPoint || !rightPoint) {
+                return;
+              }
               contourLines.push({
                 color: darkenColor(resolveSurfaceBandColor(chart, palette, domain, threshold), 0.22),
-                from: intersections[leftIndex] ?? intersections[0],
-                to: intersections[rightIndex] ?? intersections[intersections.length - 1]
+                from: withProjectedDepth(projectPoint(leftPoint.x, leftPoint.y, threshold), 0.18),
+                to: withProjectedDepth(projectPoint(rightPoint.x, rightPoint.y, threshold), 0.18)
+              });
+            });
+          }
+        });
+      } else if (!isContour) {
+        const corners = [
+          { value: p00, x: columnIndex, y: rowIndex },
+          { value: p10, x: columnIndex + 1, y: rowIndex },
+          { value: p11, x: columnIndex + 1, y: rowIndex + 1 },
+          { value: p01, x: columnIndex, y: rowIndex + 1 }
+        ];
+        const edges: Array<[typeof corners[number], typeof corners[number]]> = [
+          [corners[0], corners[1]],
+          [corners[1], corners[2]],
+          [corners[2], corners[3]],
+          [corners[3], corners[0]]
+        ];
+        thresholds.forEach((threshold) => {
+          const intersections: Array<{ x: number; y: number }> = [];
+          edges.forEach(([start, end]) => {
+            const delta = end.value - start.value;
+            if (delta === 0) {
+              return;
+            }
+            const crosses = (start.value < threshold && end.value > threshold) || (start.value > threshold && end.value < threshold);
+            if (!crosses) {
+              return;
+            }
+            const ratio = (threshold - start.value) / delta;
+            intersections.push({
+              x: start.x + (end.x - start.x) * ratio,
+              y: start.y + (end.y - start.y) * ratio
+            });
+          });
+          if (intersections.length === 2) {
+            contourLines.push({
+              color: darkenColor(resolveSurfaceBandPaletteColor(chart, palette, domain, threshold), 0.26),
+              from: projectPoint(intersections[0]?.x ?? columnIndex, intersections[0]?.y ?? rowIndex, threshold),
+              to: projectPoint(intersections[1]?.x ?? columnIndex + 1, intersections[1]?.y ?? rowIndex + 1, threshold)
+            });
+          } else if (intersections.length === 4) {
+            const center = (p00 + p10 + p01 + p11) / 4;
+            const pairings = center >= threshold
+              ? [[0, 1], [2, 3]]
+              : [[0, 3], [1, 2]];
+            pairings.forEach(([leftIndex, rightIndex]) => {
+              const leftPoint = intersections[leftIndex] ?? intersections[0];
+              const rightPoint = intersections[rightIndex] ?? intersections[intersections.length - 1];
+              if (!leftPoint || !rightPoint) {
+                return;
+              }
+              contourLines.push({
+                color: darkenColor(resolveSurfaceBandPaletteColor(chart, palette, domain, threshold), 0.26),
+                from: projectPoint(leftPoint.x, leftPoint.y, threshold),
+                to: projectPoint(rightPoint.x, rightPoint.y, threshold)
               });
             });
           }
@@ -670,16 +761,30 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   }
 
   if (!isContour && isWireframe) {
-    const addWireMeshLine = (fromColumn: number, fromRow: number, toColumn: number, toRow: number, fromValue: number, toValue: number) => {
+    const addWireMeshLine = (
+      fromColumn: number,
+      fromRow: number,
+      toColumn: number,
+      toRow: number,
+      fromValue: number,
+      toValue: number,
+      color: string
+    ) => {
       const averageValue = (fromValue + toValue) * 0.5;
-      const lineColor = resolveSurfaceBandColor(chart, palette, domain, averageValue);
       addMeshLine(
         projectPoint(fromColumn, fromRow, fromValue),
         projectPoint(toColumn, toRow, toValue),
-        lineColor
+        color || resolveSurfaceWireframeColor(chart, palette, domain, averageValue)
       );
     };
     for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+      const rowValues = matrix[rowIndex]?.filter((value): value is number => value != null) ?? [];
+      const rowAverage = rowValues.length > 0
+        ? rowValues.reduce((sum, value) => sum + value, 0) / rowValues.length
+        : domain.minValue;
+      const rowColor = chart.series[rowIndex]?.lineColor
+        ?? chart.series[rowIndex]?.color
+        ?? resolveSurfaceWireframeColor(chart, palette, domain, rowAverage);
       for (let columnIndex = 0; columnIndex < cols - 1; columnIndex += 1) {
         const left = matrix[rowIndex]?.[columnIndex];
         const right = matrix[rowIndex]?.[columnIndex + 1];
@@ -693,11 +798,17 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
           const toColumn = columnIndex + u1;
           const fromValue = left + (right - left) * u0;
           const toValue = left + (right - left) * u1;
-          addWireMeshLine(fromColumn, rowIndex, toColumn, rowIndex, fromValue, toValue);
+          addWireMeshLine(fromColumn, rowIndex, toColumn, rowIndex, fromValue, toValue, rowColor);
         }
       }
     }
     for (let columnIndex = 0; columnIndex < cols; columnIndex += 1) {
+      const columnValues = Array.from({ length: rows }, (_, rowIndex) => matrix[rowIndex]?.[columnIndex])
+        .filter((value): value is number => value != null);
+      const columnAverage = columnValues.length > 0
+        ? columnValues.reduce((sum, value) => sum + value, 0) / columnValues.length
+        : domain.minValue;
+      const columnColor = resolveSurfaceWireframeColor(chart, palette, domain, columnAverage);
       for (let rowIndex = 0; rowIndex < rows - 1; rowIndex += 1) {
         const top = matrix[rowIndex]?.[columnIndex];
         const bottom = matrix[rowIndex + 1]?.[columnIndex];
@@ -711,7 +822,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
           const toRow = rowIndex + v1;
           const fromValue = top + (bottom - top) * v0;
           const toValue = top + (bottom - top) * v1;
-          addWireMeshLine(columnIndex, fromRow, columnIndex, toRow, fromValue, toValue);
+          addWireMeshLine(columnIndex, fromRow, columnIndex, toRow, fromValue, toValue, columnColor);
         }
       }
     }
@@ -719,11 +830,9 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
 
   const allPoints = [
     ...fillVertices.map((vertex) => vertex.point),
+    ...wallTriangles.flatMap((triangle) => triangle.points),
     ...meshLines.flatMap((line) => [line.from, line.to]),
-    ...contourLines.flatMap((line) => [
-      { depth: 0.18, worldX: 0, worldY: 0, worldZ: 0, x: normalizeSurfaceX(line.from.x, cols), y: normalizeSurfaceY(line.from.y, rows) },
-      { depth: 0.18, worldX: 0, worldY: 0, worldZ: 0, x: normalizeSurfaceX(line.to.x, cols), y: normalizeSurfaceY(line.to.y, rows) }
-    ])
+    ...contourLines.flatMap((line) => [line.from, line.to])
   ];
   if (allPoints.length === 0) {
     return null;
@@ -779,7 +888,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     const rawLight = normal.x * lightDirection.x + normal.y * lightDirection.y + normal.z * lightDirection.z;
     const shaded = usesFlatMaterial
       ? colorToRgba(left.bandColor, 1)
-      : shadeSurfaceColor(left.bandColor, clamp(0.72 + rawLight * 0.35, 0.4, 1.18));
+      : shadeSurfaceColor(left.bandColor, clamp(0.8 + rawLight * 0.28, 0.52, 1.08));
     [left, middle, right].forEach((vertex) => {
       const clip = toClipPoint(vertex.point);
       fillPositions.push(clip.x, clip.y, clip.z);
@@ -797,24 +906,8 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     lineColors.push(rgba[0], rgba[1], rgba[2], rgba[3], rgba[0], rgba[1], rgba[2], rgba[3]);
   });
   contourLines.forEach((line) => {
-    const fromPoint: SurfacePoint3D = {
-      depth: 0.18,
-      worldX: 0,
-      worldY: 0,
-      worldZ: 0,
-      x: normalizeSurfaceX(line.from.x, cols),
-      y: normalizeSurfaceY(line.from.y, rows)
-    };
-    const toPoint: SurfacePoint3D = {
-      depth: 0.18,
-      worldX: 0,
-      worldY: 0,
-      worldZ: 0,
-      x: normalizeSurfaceX(line.to.x, cols),
-      y: normalizeSurfaceY(line.to.y, rows)
-    };
-    const from = toClipPoint(fromPoint);
-    const to = toClipPoint(toPoint);
+    const from = toClipPoint(line.from);
+    const to = toClipPoint(line.to);
     const rgba = colorToRgba(line.color, 1);
     linePositions.push(from.x, from.y, from.z, to.x, to.y, to.z);
     lineColors.push(rgba[0], rgba[1], rgba[2], rgba[3], rgba[0], rgba[1], rgba[2], rgba[3]);

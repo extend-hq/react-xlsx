@@ -64,6 +64,7 @@ const GRID_ROW_HEADER_WIDTH = 40;
 const HISTORY_LIMIT = 100;
 const INTERNAL_CLIPBOARD_MIME = "application/x-react-xlsx-range+json";
 const DEFAULT_DEFER_LOADING_ABOVE_BYTES = 0;
+const DEFAULT_MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_INTERACTIVE_WORKSHEET_XML_BYTES = 200 * 1024 * 1024;
 const MAX_INTERACTIVE_SHARED_STRINGS_BYTES = 50 * 1024 * 1024;
 const MAX_INTERACTIVE_TOTAL_XML_BYTES = 256 * 1024 * 1024;
@@ -419,6 +420,20 @@ function createWorkbookTooLargeError(preflight: WorkbookPreflightResult) {
     + `Largest worksheet XML: ${formatBinaryBytes(preflight.largestWorksheetXmlBytes)}; `
     + `shared strings: ${formatBinaryBytes(preflight.sharedStringsBytes)}.`
   );
+}
+
+export class XlsxFileSizeLimitExceededError extends Error {
+  fileSizeBytes: number;
+  maxFileSizeBytes: number;
+
+  constructor(fileSizeBytes: number, maxFileSizeBytes: number) {
+    super(
+      `XLSX file size ${formatBinaryBytes(fileSizeBytes)} exceeds the configured limit of ${formatBinaryBytes(maxFileSizeBytes)}.`
+    );
+    this.name = "XlsxFileSizeLimitExceededError";
+    this.fileSizeBytes = fileSizeBytes;
+    this.maxFileSizeBytes = maxFileSizeBytes;
+  }
 }
 
 type HistoryEntry = SnapshotHistoryEntry | CellEditHistoryEntry | RangeEditHistoryEntry;
@@ -1704,6 +1719,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     deferLoadingAboveBytes = DEFAULT_DEFER_LOADING_ABOVE_BYTES,
     file,
     fileName,
+    maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
     readOnly: requestedReadOnly = false,
     readOnlyAboveBytes = 0,
     src,
@@ -2070,6 +2086,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           return;
         }
 
+        if (maxFileSizeBytes > 0 && buffer.byteLength > maxFileSizeBytes) {
+          throw new XlsxFileSizeLimitExceededError(buffer.byteLength, maxFileSizeBytes);
+        }
+
         const preflight = preflightWorkbookBuffer(buffer);
         if (preflight?.tooLarge) {
           throw createWorkbookTooLargeError(preflight);
@@ -2178,6 +2198,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     getWorkerClient,
     hasIncompleteWorkerChartSnapshot,
     loadWorkbookOnMainThread,
+    maxFileSizeBytes,
     requestedReadOnly,
     setImageAssets,
     startChartDisplayHydration,
@@ -2294,6 +2315,22 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     setIsLoading(true);
     setError(null);
+
+    if (maxFileSizeBytes > 0 && deferredBuffer.byteLength > maxFileSizeBytes) {
+      deferredBufferRef.current = null;
+      setDeferredLoadFileSize(null);
+      setWorkbook(null);
+      setSheets([]);
+      clearChartAssets();
+      setWorkerTablesByWorkbookSheetIndex([]);
+      clearImageAssets();
+      setShouldAutoCalculate(false);
+      setIsWorkerBacked(false);
+      setSortState(null);
+      setError(new XlsxFileSizeLimitExceededError(deferredBuffer.byteLength, maxFileSizeBytes));
+      setIsLoading(false);
+      return;
+    }
 
     const preflight = preflightWorkbookBuffer(deferredBuffer);
     if (preflight?.tooLarge) {
@@ -2428,6 +2465,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setImageAssets,
     startChartDisplayHydration,
     hasIncompleteWorkerChartSnapshot,
+    maxFileSizeBytes,
     shouldFallbackFromWorkerError,
     shouldForceReadOnlyForBuffer,
     workerSupported
