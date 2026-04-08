@@ -2192,6 +2192,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const activeSheet = activeTab?.kind === "sheet"
     ? sheets[activeTab.sheetIndex ?? -1] ?? null
     : null;
+  const deferredMetadataCell = React.useDeferredValue(activeCell);
+  const deferredMetadataSheet = React.useDeferredValue(activeSheet);
   const activeZoomTabKey = activeTab?.id ?? DEFAULT_ZOOM_TAB_KEY;
   const defaultZoomScale = React.useMemo(
     () => resolveDefaultZoomScale(activeTab, activeSheet),
@@ -2821,17 +2823,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [activeCell, getActiveWorksheet, getCellDisplayValue, selection]);
 
   React.useEffect(() => {
-    if (!isWorkerBacked || !activeSheet || !activeCell) {
+    if (!isWorkerBacked || !deferredMetadataSheet || !deferredMetadataCell) {
       return;
     }
 
-    const cacheKey = `${activeSheet.workbookSheetIndex}:${activeCell.row}:${activeCell.col}`;
+    const cacheKey = `${deferredMetadataSheet.workbookSheetIndex}:${deferredMetadataCell.row}:${deferredMetadataCell.col}`;
     if (workerCellSnapshotCacheRef.current.has(cacheKey)) {
       return;
     }
 
     let isCurrent = true;
-    void getCellSnapshotAsync(activeSheet.workbookSheetIndex, activeCell.row, activeCell.col)
+    void getCellSnapshotAsync(deferredMetadataSheet.workbookSheetIndex, deferredMetadataCell.row, deferredMetadataCell.col)
       .then((snapshot) => {
         if (!isCurrent) {
           return;
@@ -2855,17 +2857,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     return () => {
       isCurrent = false;
     };
-  }, [activeCell, activeSheet, getCellSnapshotAsync, isWorkerBacked]);
+  }, [deferredMetadataCell, deferredMetadataSheet, getCellSnapshotAsync, isWorkerBacked]);
 
   const activeCellAddress = React.useMemo(() => (activeCell ? cellAddressToA1(activeCell) : null), [activeCell]);
   const selectedRangeAddress = React.useMemo(() => (selection ? rangeToA1(selection) : null), [selection]);
   const selectedValue = React.useMemo(
-    () => getCellDisplayValue(activeCell),
-    [activeCell, getCellDisplayValue, revision, workerCellSnapshotRevision]
+    () => getCellDisplayValue(deferredMetadataCell),
+    [deferredMetadataCell, getCellDisplayValue, revision, workerCellSnapshotRevision]
   );
   const selectedFormula = React.useMemo(
-    () => getCellFormula(activeCell),
-    [activeCell, getCellFormula, revision, workerCellSnapshotRevision]
+    () => getCellFormula(deferredMetadataCell),
+    [deferredMetadataCell, getCellFormula, revision, workerCellSnapshotRevision]
   );
   const isLoadDeferred = deferredLoadFileSize !== null;
   const canLoadDeferred = !isLoading && isLoadDeferred;

@@ -1,5 +1,5 @@
-import { hierarchy as d3Hierarchy, partition as d3Partition, treemap as d3Treemap, treemapSquarify } from "d3-hierarchy";
-import { geoNaturalEarth1, geoPath } from "d3-geo";
+import { hierarchy as d3Hierarchy, partition as d3Partition, treemap as d3Treemap, treemapBinary, treemapDice, treemapSquarify } from "d3-hierarchy";
+import { geoMiller, geoNaturalEarth1, geoPath } from "d3-geo";
 import * as React from "react";
 import { scaleBand, scaleLinear, scalePoint } from "d3-scale";
 import {
@@ -61,9 +61,13 @@ type ChartLayout = {
 };
 
 type BarRect = {
+  capEnd?: boolean;
+  capStart?: boolean;
   categoryIndex: number;
   bottomScale?: number;
   color: string;
+  depthOffsetX?: number;
+  depthOffsetY?: number;
   depthX?: number;
   depthY?: number;
   gradientId?: string;
@@ -105,6 +109,21 @@ type ChartStage = {
   isSubtotal: boolean;
   label: string;
   value: number;
+};
+
+type BoxWhiskerStats = {
+  lowerFence: number;
+  lowerWhisker: number;
+  max: number;
+  mean: number;
+  median: number;
+  min: number;
+  outliers: number[];
+  q1: number;
+  q3: number;
+  upperFence: number;
+  upperWhisker: number;
+  visiblePoints: number[];
 };
 
 type SurfaceDomain = {
@@ -325,6 +344,17 @@ function chartPointColor(chart: XlsxChart, pointIndex: number, seriesIndex = 0) 
   return chartSeriesColor(chart, seriesIndex);
 }
 
+function isHistogramLikeSeries(series: XlsxChartSeries | null | undefined) {
+  const raw = series?.raw && typeof series.raw === "object"
+    ? series.raw as Record<string, unknown>
+    : null;
+  return Array.isArray(raw?.chartExHistogramBins) && raw.chartExHistogramBins.length > 0;
+}
+
+function isHistogramLikeChart(chart: XlsxChart) {
+  return chart.series.some((series) => isHistogramLikeSeries(series));
+}
+
 function resolveRegionMapFeature(value: unknown) {
   const rawKey = normalizeRegionMapKey(value);
   if (!rawKey) {
@@ -339,6 +369,15 @@ function resolveRegionMapBaseColor(chart: XlsxChart, seriesIndex: number) {
     ?? chart.series[seriesIndex]?.lineColor
     ?? chart.chartColorPalette?.[0]
     ?? "#ff006e";
+}
+
+function resolveRegionMapLayoutProperties(series: XlsxChartSeries | null | undefined) {
+  const raw = series?.raw && typeof series.raw === "object"
+    ? series.raw as Record<string, unknown>
+    : null;
+  return raw?.layoutProperties && typeof raw.layoutProperties === "object"
+    ? raw.layoutProperties as Record<string, unknown>
+    : null;
 }
 
 function resolveRegionMapValueColor(baseColor: string, ratio: number) {
@@ -634,9 +673,24 @@ function getComboLegendSeries(chart: XlsxChart) {
   ));
 }
 
-function findAxisForGroup(chart: XlsxChart, axisIds: number[], positionMatcher: (position: string | undefined) => boolean) {
-  return chart.axes.find((axis) => axis.id != null && axisIds.includes(axis.id) && positionMatcher(axis.position))
-    ?? null;
+function findAxisForGroup(
+  chart: XlsxChart,
+  axisIds: number[],
+  positionMatcher: (position: string | undefined) => boolean,
+  allowAnyMatch = false
+) {
+  const positionedMatch = chart.axes.find((axis) => (
+    axis.id != null
+    && axisIds.includes(axis.id)
+    && positionMatcher(axis.position)
+  ));
+  if (positionedMatch) {
+    return positionedMatch;
+  }
+  if (!allowAnyMatch) {
+    return null;
+  }
+  return chart.axes.find((axis) => axis.id != null && axisIds.includes(axis.id)) ?? null;
 }
 
 function buildComboGroups(chart: XlsxChart): ComboRenderableGroup[] {
@@ -645,7 +699,7 @@ function buildComboGroups(chart: XlsxChart): ComboRenderableGroup[] {
     const categoryAxis = findAxisForGroup(chart, axisIds, (position) => position === "b" || position === "t")
       ?? chart.categoryAxis
       ?? null;
-    const valueAxis = findAxisForGroup(chart, axisIds, (position) => position === "l" || position === "r")
+    const valueAxis = findAxisForGroup(chart, axisIds, (position) => position === "l" || position === "r", true)
       ?? chart.valueAxis
       ?? null;
     return {
@@ -781,10 +835,27 @@ function buildHierarchyData(chart: XlsxChart) {
   };
   const rootChildren = root.children ?? [];
   const topLevelIndexByName = new Map<string, number>();
-  const rowCount = Math.max(0, ...chart.series.map((series) => series.values.length));
+  const primaryHierarchySeries = chart.series.find((series) => {
+    const raw = series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : null;
+    return Array.isArray(raw?.chartExHierarchyCategories);
+  }) ?? null;
+  const primaryHierarchyPaths = (() => {
+    if (!primaryHierarchySeries) {
+      return null;
+    }
+    const raw = primaryHierarchySeries.raw as Record<string, unknown>;
+    return Array.isArray(raw.chartExHierarchyCategories)
+      ? raw.chartExHierarchyCategories.map((entry) => Array.isArray(entry)
+        ? entry.map((value) => normalizeCategoryLabel(value)).filter((value) => value.length > 0)
+        : [])
+      : null;
+  })();
+  const rowCount = primaryHierarchyPaths
+    ? primaryHierarchyPaths.length
+    : Math.max(0, ...chart.series.map((series) => series.values.length));
 
   for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-    const path = chart.series
+    const path = primaryHierarchyPaths?.[rowIndex] ?? chart.series
       .map((series) => normalizeCategoryLabel(series.categories[rowIndex] ?? series.values[rowIndex]))
       .filter((value) => value.length > 0);
     if (path.length === 0) {
@@ -809,10 +880,103 @@ function buildHierarchyData(chart: XlsxChart) {
       current = next;
     });
 
-    current.value = (current.value ?? 0) + Math.max(0.0001, safeNumber(chart.series[chart.series.length - 1]?.values[rowIndex]) ?? 1);
+    const valueSource = primaryHierarchySeries ?? chart.series[chart.series.length - 1] ?? null;
+    current.value = (current.value ?? 0) + Math.max(0.0001, safeNumber(valueSource?.values[rowIndex]) ?? 1);
   }
 
   return rootChildren.length > 0 ? root : null;
+}
+
+function resolveBoxWhiskerQuartileMethod(series: XlsxChartSeries) {
+  const raw = series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : null;
+  const layoutProperties = raw?.layoutProperties && typeof raw.layoutProperties === "object"
+    ? raw.layoutProperties as Record<string, unknown>
+    : null;
+  const statistics = layoutProperties?.statistics && typeof layoutProperties.statistics === "object"
+    ? layoutProperties.statistics as Record<string, unknown>
+    : null;
+  return statistics?.quartileMethod === "inclusive" ? "inclusive" : "exclusive";
+}
+
+function resolveBoxWhiskerVisibility(series: XlsxChartSeries) {
+  const raw = series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : null;
+  const layoutProperties = raw?.layoutProperties && typeof raw.layoutProperties === "object"
+    ? raw.layoutProperties as Record<string, unknown>
+    : null;
+  const visibility = layoutProperties?.visibility && typeof layoutProperties.visibility === "object"
+    ? layoutProperties.visibility as Record<string, unknown>
+    : null;
+  return {
+    meanLine: visibility?.meanLine === true,
+    meanMarker: visibility?.meanMarker !== false,
+    nonoutliers: visibility?.nonoutliers === true,
+    outliers: visibility?.outliers !== false
+  };
+}
+
+function computePercentile(sortedValues: number[], percentile: number, method: "exclusive" | "inclusive") {
+  const count = sortedValues.length;
+  if (count === 0) {
+    return 0;
+  }
+  if (count === 1) {
+    return sortedValues[0] ?? 0;
+  }
+
+  const rank = method === "exclusive"
+    ? percentile * (count + 1)
+    : 1 + percentile * (count - 1);
+  if (rank <= 1) {
+    return sortedValues[0] ?? 0;
+  }
+  if (rank >= count) {
+    return sortedValues[count - 1] ?? 0;
+  }
+
+  const lowerIndex = Math.floor(rank) - 1;
+  const upperIndex = Math.ceil(rank) - 1;
+  const fraction = rank - Math.floor(rank);
+  const lower = sortedValues[Math.max(0, lowerIndex)] ?? sortedValues[0] ?? 0;
+  const upper = sortedValues[Math.max(0, upperIndex)] ?? sortedValues[count - 1] ?? 0;
+  return lower + (upper - lower) * fraction;
+}
+
+function computeBoxWhiskerStats(series: XlsxChartSeries): BoxWhiskerStats | null {
+  const sortedValues = series.values
+    .map((value) => safeNumber(value))
+    .filter((value): value is number => value != null)
+    .sort((left, right) => left - right);
+  if (sortedValues.length === 0) {
+    return null;
+  }
+
+  const quartileMethod = resolveBoxWhiskerQuartileMethod(series);
+  const q1 = computePercentile(sortedValues, 0.25, quartileMethod);
+  const median = computePercentile(sortedValues, 0.5, quartileMethod);
+  const q3 = computePercentile(sortedValues, 0.75, quartileMethod);
+  const iqr = q3 - q1;
+  const lowerFence = q1 - iqr * 1.5;
+  const upperFence = q3 + iqr * 1.5;
+  const visiblePoints = sortedValues.filter((value) => value >= lowerFence && value <= upperFence);
+  const outliers = sortedValues.filter((value) => value < lowerFence || value > upperFence);
+  const lowerWhisker = visiblePoints[0] ?? sortedValues[0] ?? 0;
+  const upperWhisker = visiblePoints[visiblePoints.length - 1] ?? sortedValues[sortedValues.length - 1] ?? 0;
+  const mean = sortedValues.reduce((sum, value) => sum + value, 0) / sortedValues.length;
+
+  return {
+    lowerFence,
+    lowerWhisker,
+    max: sortedValues[sortedValues.length - 1] ?? 0,
+    mean,
+    median,
+    min: sortedValues[0] ?? 0,
+    outliers,
+    q1,
+    q3,
+    upperFence,
+    upperWhisker,
+    visiblePoints
+  };
 }
 
 function resolveHierarchyNodeColor(chart: XlsxChart, node: HierarchyNode<ChartHierarchyDatum>) {
@@ -822,6 +986,25 @@ function resolveHierarchyNodeColor(chart: XlsxChart, node: HierarchyNode<ChartHi
   const baseColor = chartSeriesColor(chart, baseIndex);
   const depth = Math.max(0, node.depth - 1);
   return depth === 0 ? baseColor : lightenColor(baseColor, clamp(depth * 0.16, 0, 0.5));
+}
+
+function resolveTreemapNodeColor(chart: XlsxChart, node: HierarchyNode<ChartHierarchyDatum>) {
+  const lineage = node.ancestors().reverse();
+  const topLevel = lineage[1];
+  return chartSeriesColor(chart, topLevel?.data.colorIndex ?? 0);
+}
+
+function excelTreemapTile(node: HierarchyRectangularNode<ChartHierarchyDatum>, x0: number, y0: number, x1: number, y1: number) {
+  if (!node.children || node.children.length === 0) {
+    return;
+  }
+  if (node.depth === 0) {
+    treemapDice(node, x0, y0, x1, y1);
+    node.children.forEach((child) => excelTreemapTile(child, child.x0, child.y0, child.x1, child.y1));
+    return;
+  }
+  treemapBinary(node, x0, y0, x1, y1);
+  node.children.forEach((child) => excelTreemapTile(child, child.x0, child.y0, child.x1, child.y1));
 }
 
 function resolveSurfaceBaseColor(chart: XlsxChart, palette: ChartRendererPalette) {
@@ -976,6 +1159,20 @@ function resolveSurfaceColor(chart: XlsxChart, palette: ChartRendererPalette, ra
   const upperIndex = Math.min(stops.length - 1, lowerIndex + 1);
   const mixRatio = clamped - lowerIndex;
   return mixRgbColor(stops[lowerIndex] ?? stops[0], stops[upperIndex] ?? stops[stops.length - 1], mixRatio);
+}
+
+function resolveSurfaceBandColor(chart: XlsxChart, palette: ChartRendererPalette, domain: SurfaceDomain, value: number) {
+  const ticks = domain.ticks;
+  for (let index = 0; index < ticks.length - 1; index += 1) {
+    const start = ticks[index] ?? domain.minValue;
+    const end = ticks[index + 1] ?? domain.safeMax;
+    if (value <= end || index === ticks.length - 2) {
+      const midpoint = start + (end - start) * 0.5;
+      const ratio = (midpoint - domain.minValue) / Math.max(1e-6, domain.safeMax - domain.minValue);
+      return resolveSurfaceColor(chart, palette, ratio);
+    }
+  }
+  return resolveSurfaceColor(chart, palette, 1);
 }
 
 function buildSurfaceLegendItems(chart: XlsxChart, palette: ChartRendererPalette) {
@@ -1208,7 +1405,9 @@ function getLegendItems(chart: XlsxChart, chartType: string, palette: ChartRende
 function buildLayout(chart: XlsxChart, rect: XlsxImageRect, legendItems: LegendItem[]): ChartLayout {
   const width = Math.max(80, Math.round(rect.width));
   const height = Math.max(60, Math.round(rect.height));
-  const titleHeight = chart.title ? 24 : 8;
+  const isSurfaceChart = chart.chartType === "Surface"
+    || (chart.raw && typeof chart.raw === "object" && typeof (chart.raw as Record<string, unknown>).xmlChartType === "string" && String((chart.raw as Record<string, unknown>).xmlChartType).includes("surface"));
+  const titleHeight = chart.title ? (isSurfaceChart ? 30 : 24) : 8;
   const legendPosition = normalizeLegendPosition(chart.legend?.position);
 
   const legendVertical = legendItems.length > 0 && (legendPosition === "right" || legendPosition === "left");
@@ -1588,6 +1787,7 @@ function renderTitle(chart: XlsxChart, layout: ChartLayout, palette: ChartRender
   }
   const fontSize = 12;
   const text = truncateSvgText(chart.title, Math.max(40, layout.width - 12), fontSize);
+  const baselineY = layout.titleHeight >= 30 ? 19 : 16;
   return (
     <text
       fill={chart.titleColor ?? chart.textColor ?? DEFAULT_CHART_TEXT_COLOR}
@@ -1596,7 +1796,7 @@ function renderTitle(chart: XlsxChart, layout: ChartLayout, palette: ChartRender
       fontWeight={600}
       textAnchor="middle"
       x={layout.width / 2}
-      y={16}
+      y={baselineY}
     >
       {text}
     </text>
@@ -1810,8 +2010,8 @@ function renderExtrudedRect(bar: BarRect) {
   })();
   const depthX = bar.depthX ?? (bar.isHorizontal ? 10 : 9);
   const depthY = bar.depthY ?? -7;
-  const frontX = bar.left;
-  const frontY = bar.top;
+  const frontX = bar.left + (bar.depthOffsetX ?? 0);
+  const frontY = bar.top + (bar.depthOffsetY ?? 0);
   const frontW = bar.width;
   const frontH = bar.height;
   const frontX2 = frontX + frontW;
@@ -1828,6 +2028,8 @@ function renderExtrudedRect(bar: BarRect) {
   const bottomRight = centerX + bottomHalfWidth;
   const topLeft = centerX - topHalfWidth;
   const topRight = centerX + topHalfWidth;
+  const showStartCap = bar.capStart !== false;
+  const showEndCap = bar.capEnd !== false;
 
   const topFace = `${frontX},${frontY} ${frontX2},${frontY} ${frontX2 + sideDepthX},${frontY + depthY} ${frontX + sideDepthX},${frontY + depthY}`;
   const sideFace = `${sideAnchorX},${frontY} ${sideAnchorX},${frontY2} ${sideAnchorX + sideDepthX},${frontY2 + depthY} ${sideAnchorX + sideDepthX},${frontY + depthY}`;
@@ -1835,7 +2037,7 @@ function renderExtrudedRect(bar: BarRect) {
   const sideFill = bar.invertedNegative ? bar.color : darkenColor(bar.color, 0.22);
   const topFill = bar.invertedNegative ? lightenColor(bar.color, 0.04) : lightenColor(bar.color, 0.24);
 
-  if (bar.isHorizontal || normalizedShape === "box") {
+  if (normalizedShape === "box") {
     return (
       <g key={`${bar.key}-3d`}>
         <polygon fill={sideFill} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
@@ -1845,13 +2047,117 @@ function renderExtrudedRect(bar: BarRect) {
     );
   }
 
+  if (bar.isHorizontal) {
+    const centerY = frontY + frontH / 2;
+    const startHalfHeight = (frontH * clamp(bar.bottomScale ?? 1, 0.04, 1)) / 2;
+    const endHalfHeight = (frontH * clamp(bar.topScale ?? 1, 0.04, 1)) / 2;
+    const startTop = centerY - startHalfHeight;
+    const startBottom = centerY + startHalfHeight;
+    const endTop = centerY - endHalfHeight;
+    const endBottom = centerY + endHalfHeight;
+    const topFacePoints = `${frontX},${startTop} ${frontX2},${endTop} ${frontX2 + sideDepthX},${endTop + depthY} ${frontX + sideDepthX},${startTop + depthY}`;
+    const farSidePoints = `${frontX2},${endTop} ${frontX2},${endBottom} ${frontX2 + sideDepthX},${endBottom + depthY} ${frontX2 + sideDepthX},${endTop + depthY}`;
+
+    if (normalizedShape === "cylinder") {
+      const capRx = Math.max(2, Math.min(8, frontH * 0.18));
+      const bodyHeight = Math.max(1, endBottom - endTop);
+      const bodyPath = [
+        `M ${toSvgNumber(frontX)} ${toSvgNumber(startTop)}`,
+        `C ${toSvgNumber(frontX - capRx * 0.22)} ${toSvgNumber(centerY - startHalfHeight * 0.68)} ${toSvgNumber(frontX - capRx * 0.22)} ${toSvgNumber(centerY + startHalfHeight * 0.68)} ${toSvgNumber(frontX)} ${toSvgNumber(startBottom)}`,
+        `L ${toSvgNumber(frontX2)} ${toSvgNumber(endBottom)}`,
+        `C ${toSvgNumber(frontX2 + capRx * 0.22)} ${toSvgNumber(centerY + endHalfHeight * 0.68)} ${toSvgNumber(frontX2 + capRx * 0.22)} ${toSvgNumber(centerY - endHalfHeight * 0.68)} ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
+        "Z"
+      ].join(" ");
+      return (
+        <g key={`${bar.key}-3d-horizontal-cylinder`}>
+          <polygon fill={sideFill} points={farSidePoints} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+          {showEndCap ? (
+            <ellipse
+              cx={frontX2 + sideDepthX * 0.5}
+              cy={centerY + depthY}
+              fill={topFill}
+              rx={capRx}
+              ry={Math.max(1.5, bodyHeight * 0.5)}
+              stroke={bar.stroke}
+              strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
+            />
+          ) : null}
+          <polygon fill={topFill} points={topFacePoints} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+          <path d={bodyPath} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
+          {showStartCap ? (
+            <ellipse
+              cx={frontX}
+              cy={centerY}
+              fill={frontFill}
+              rx={capRx}
+              ry={Math.max(1.5, startHalfHeight)}
+              stroke={bar.stroke}
+              strokeWidth={Math.max(0.6, bar.strokeWidth * 0.75)}
+            />
+          ) : null}
+        </g>
+      );
+    }
+
+    const taperedFarFace = `${frontX2},${endTop} ${frontX2 + sideDepthX},${endTop + depthY} ${frontX2 + sideDepthX},${endBottom + depthY} ${frontX2},${endBottom}`;
+    const frontPolygon = `${frontX},${startTop} ${frontX2},${endTop} ${frontX2},${endBottom} ${frontX},${startBottom}`;
+    const coneFrontFace = [
+      `M ${toSvgNumber(frontX)} ${toSvgNumber(startTop)}`,
+      `Q ${toSvgNumber(frontX + frontW * 0.54)} ${toSvgNumber(startTop + (endTop - startTop) * 0.18)} ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
+      `Q ${toSvgNumber(frontX + frontW * 0.82)} ${toSvgNumber(centerY)} ${toSvgNumber(frontX2)} ${toSvgNumber(endBottom)}`,
+      `L ${toSvgNumber(frontX)} ${toSvgNumber(startBottom)}`,
+      `Q ${toSvgNumber(frontX + frontW * 0.08)} ${toSvgNumber(centerY)} ${toSvgNumber(frontX)} ${toSvgNumber(startTop)}`,
+      "Z"
+    ].join(" ");
+    const coneSideFace = [
+      `M ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
+      `L ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(endTop + depthY)}`,
+      `Q ${toSvgNumber(frontX2 + sideDepthX + Math.abs(sideDepthX) * 0.22)} ${toSvgNumber(centerY + depthY)} ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(endBottom + depthY)}`,
+      `L ${toSvgNumber(frontX2)} ${toSvgNumber(endBottom)}`,
+      `Q ${toSvgNumber(frontX2 + frontW * 0.14)} ${toSvgNumber(centerY)} ${toSvgNumber(frontX2)} ${toSvgNumber(endTop)}`,
+      "Z"
+    ].join(" ");
+    const coneCapRx = Math.max(1.5, Math.abs(sideDepthX) * 0.42);
+
+    return (
+      <g key={`${bar.key}-3d-horizontal-${normalizedShape}`}>
+        {normalizedShape === "cone" ? (
+          <path d={coneSideFace} fill={sideFill} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+        ) : (
+          <polygon fill={sideFill} points={taperedFarFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+        )}
+        <polygon fill={topFill} points={topFacePoints} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+        {normalizedShape === "cone" ? (
+          <>
+            <path d={coneFrontFace} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
+            {showEndCap ? (
+              <ellipse
+                cx={frontX2 + sideDepthX * 0.5}
+                cy={centerY + depthY}
+                fill={topFill}
+                rx={coneCapRx}
+                ry={Math.max(1.25, endHalfHeight)}
+                stroke={bar.stroke}
+                strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
+              />
+            ) : null}
+          </>
+        ) : (
+          <polygon fill={frontFill} points={frontPolygon} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
+        )}
+      </g>
+    );
+  }
+
   if (normalizedShape === "cylinder") {
     const capRy = Math.max(2, Math.min(8, frontW * 0.18));
     const bodyPath = [
-      `M ${toSvgNumber(frontX)} ${toSvgNumber(frontY + capRy)}`,
-      `Q ${toSvgNumber(centerX)} ${toSvgNumber(frontY - capRy * 0.7)} ${toSvgNumber(frontX2)} ${toSvgNumber(frontY + capRy)}`,
-      `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY2 - capRy)}`,
-      `Q ${toSvgNumber(centerX)} ${toSvgNumber(frontY2 + capRy * 0.7)} ${toSvgNumber(frontX)} ${toSvgNumber(frontY2 - capRy)}`,
+      `M ${toSvgNumber(frontX)} ${toSvgNumber(showEndCap ? frontY + capRy : frontY)}`,
+      showEndCap
+        ? `Q ${toSvgNumber(centerX)} ${toSvgNumber(frontY - capRy * 0.7)} ${toSvgNumber(frontX2)} ${toSvgNumber(frontY + capRy)}`
+        : `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY)}`,
+      `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY2)}`,
+      `C ${toSvgNumber(frontX2 - frontW * 0.12)} ${toSvgNumber(frontY2 - capRy * 0.18)} ${toSvgNumber(frontX + frontW * 0.12)} ${toSvgNumber(frontY2 - capRy * 0.18)} ${toSvgNumber(frontX)} ${toSvgNumber(frontY2)}`,
       "Z"
     ].join(" ");
     const cylinderSide = [
@@ -1865,25 +2171,29 @@ function renderExtrudedRect(bar: BarRect) {
     return (
       <g key={`${bar.key}-3d-cylinder`}>
         <path d={cylinderSide} fill={sideFill} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-        <ellipse
-          cx={frontX2 + sideDepthX * 0.5}
-          cy={frontY + depthY + capRy}
-          fill={topFill}
-          rx={Math.max(1.5, frontW * 0.5)}
-          ry={capRy}
-          stroke={bar.stroke}
-          strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
-        />
+        {showEndCap ? (
+          <ellipse
+            cx={frontX2 + sideDepthX * 0.5}
+            cy={frontY + depthY + capRy}
+            fill={topFill}
+            rx={Math.max(1.5, frontW * 0.5)}
+            ry={capRy}
+            stroke={bar.stroke}
+            strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
+          />
+        ) : null}
         <path d={bodyPath} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
-        <ellipse
-          cx={centerX}
-          cy={frontY + capRy}
-          fill={topFill}
-          rx={Math.max(1.5, frontW * 0.5)}
-          ry={capRy}
-          stroke={bar.stroke}
-          strokeWidth={Math.max(0.6, bar.strokeWidth * 0.75)}
-        />
+        {showStartCap ? (
+          <ellipse
+            cx={centerX}
+            cy={frontY + capRy}
+            fill={topFill}
+            rx={Math.max(1.5, frontW * 0.5)}
+            ry={capRy}
+            stroke={bar.stroke}
+            strokeWidth={Math.max(0.6, bar.strokeWidth * 0.75)}
+          />
+        ) : null}
       </g>
     );
   }
@@ -1899,11 +2209,38 @@ function renderExtrudedRect(bar: BarRect) {
     `C ${toSvgNumber(bottomLeft)} ${toSvgNumber(frontY + frontH * 0.72)} ${toSvgNumber(topLeft - (topLeft - bottomLeft) * 0.18)} ${toSvgNumber(frontY + frontH * 0.32)} ${toSvgNumber(topLeft)} ${toSvgNumber(frontY)}`,
     "Z"
   ].join(" ");
+  const coneSideFace = [
+    `M ${toSvgNumber(topRight)} ${toSvgNumber(frontY)}`,
+    `L ${toSvgNumber(topRight + sideDepthX)} ${toSvgNumber(frontY + depthY)}`,
+    `C ${toSvgNumber(topRight + sideDepthX + Math.abs(sideDepthX) * 0.08)} ${toSvgNumber(frontY + frontH * 0.24 + depthY)} ${toSvgNumber(bottomRight + sideDepthX)} ${toSvgNumber(frontY + frontH * 0.76 + depthY)} ${toSvgNumber(bottomRight + sideDepthX)} ${toSvgNumber(frontY2 + depthY)}`,
+    `L ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY2)}`,
+    `C ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY + frontH * 0.74)} ${toSvgNumber(topRight + (bottomRight - topRight) * 0.18)} ${toSvgNumber(frontY + frontH * 0.28)} ${toSvgNumber(topRight)} ${toSvgNumber(frontY)}`,
+    "Z"
+  ].join(" ");
+  const coneCapRy = Math.max(1.5, Math.min(7, Math.abs(depthY) * 0.85));
 
   return (
     <g key={`${bar.key}-3d-${normalizedShape}`}>
-      <polygon fill={sideFill} points={taperedSideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-      <polygon fill={topFill} points={taperedTopFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      {normalizedShape === "cone" ? (
+        <path d={coneSideFace} fill={sideFill} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      ) : (
+        <polygon fill={sideFill} points={taperedSideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      )}
+      {showEndCap ? (
+        normalizedShape === "cone" ? (
+          <ellipse
+            cx={centerX + sideDepthX * 0.5}
+            cy={frontY + depthY}
+            fill={topFill}
+            rx={Math.max(1.5, topHalfWidth)}
+            ry={coneCapRy}
+            stroke={bar.stroke}
+            strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
+          />
+        ) : (
+          <polygon fill={topFill} points={taperedTopFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+        )
+      ) : null}
       {normalizedShape === "cone" ? (
         <path d={coneFrontFace} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
       ) : (
@@ -2345,6 +2682,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   }
   const isPercentStacked = chartType === "ColumnPercentStacked" || chartType === "BarPercentStacked";
   const isHorizontal = chartType === "BarClustered" || chartType === "BarStacked" || chartType === "BarPercentStacked";
+  const isHistogramLike = isHistogramLikeChart(chart) && chartType === "ColumnClustered";
   const shouldReverseCategories = isHorizontal && chart.categoryAxis?.orientation !== "maxMin";
   const categories = shouldReverseCategories ? sourceCategories.slice().reverse() : sourceCategories;
   const isStacked = chartType === "ColumnStacked" || chartType === "BarStacked" || isPercentStacked;
@@ -2443,7 +2781,9 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   minValue = valueDomain.min;
   maxValue = valueDomain.max;
 
-  const categoryBandPadding = resolveCategoryBandPadding(chart.gapWidth);
+  const categoryBandPadding = isHistogramLike
+    ? { inner: 0, outer: 0 }
+    : resolveCategoryBandPadding(chart.gapWidth);
   const categoryScale = scaleBand<string>()
     .domain(categories)
     .range(isHorizontal ? [plot.top, plot.top + plot.height] : [plot.left, plot.left + plot.width])
@@ -2453,8 +2793,34 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   const seriesScale = scaleBand<string>()
     .domain(Array.from({ length: seriesCount }, (_, index) => String(index)))
     .range([0, categoryScale.bandwidth()])
-    .paddingInner(0.16)
-    .paddingOuter(0.08);
+    .paddingInner(isHistogramLike ? 0 : 0.16)
+    .paddingOuter(isHistogramLike ? 0 : 0.08);
+  const usesSeriesDepthAxis = (
+    chart.is3d === true
+    && !isHorizontal
+    && !isStacked
+    && seriesCount > 1
+    && chart.seriesAxis != null
+  );
+  const shapeTowerDepthMultiplier = usesSeriesDepthAxis
+    ? normalized3dShape === "cylinder" || normalized3dShape === "cone" || normalized3dShape === "pyramid"
+      ? 1.42
+      : 1.16
+    : 1;
+  const depthGridSpanX = usesSeriesDepthAxis && frameOffsets
+    ? frameOffsets.depthX * shapeTowerDepthMultiplier
+    : 0;
+  const depthGridSpanY = usesSeriesDepthAxis && frameOffsets
+    ? frameOffsets.depthY * shapeTowerDepthMultiplier
+    : 0;
+  const depthSlotX = usesSeriesDepthAxis ? depthGridSpanX / Math.max(1, seriesCount) : 0;
+  const depthSlotY = usesSeriesDepthAxis ? depthGridSpanY / Math.max(1, seriesCount) : 0;
+  const depthBarX = usesSeriesDepthAxis
+    ? Math.sign(depthSlotX || 1) * Math.max(4, Math.abs(depthSlotX) * 0.6)
+    : frameOffsets?.depthX;
+  const depthBarY = usesSeriesDepthAxis
+    ? Math.sign(depthSlotY || -1) * Math.max(3, Math.abs(depthSlotY) * 0.6)
+    : frameOffsets?.depthY;
 
   const shouldReverseValueAxis = chart.valueAxis?.orientation === "maxMin";
   const valueScale = scaleLinear()
@@ -2515,8 +2881,22 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       }
       const category = categories[categoryIndex];
       const categoryStart = categoryScale(category) ?? 0;
-      const barThickness = isStacked ? categoryScale.bandwidth() : seriesScale.bandwidth();
-      const barOffset = isStacked ? 0 : (seriesScale(String(seriesIndex)) ?? 0);
+      const barThickness = usesSeriesDepthAxis
+        ? Math.max(7, categoryScale.bandwidth() * 0.4)
+        : isHistogramLike
+          ? categoryScale.bandwidth()
+        : isStacked
+          ? categoryScale.bandwidth()
+          : seriesScale.bandwidth();
+      const barOffset = usesSeriesDepthAxis
+        ? Math.max(0, (categoryScale.bandwidth() - barThickness) * 0.5)
+        : isHistogramLike
+          ? 0
+        : isStacked
+          ? 0
+          : (seriesScale(String(seriesIndex)) ?? 0);
+      const depthOffsetX = usesSeriesDepthAxis ? depthSlotX * seriesIndex : 0;
+      const depthOffsetY = usesSeriesDepthAxis ? depthSlotY * seriesIndex : 0;
       const shapeTaper = normalized3dShape === "pyramid"
         ? 0.94
         : normalized3dShape === "cone"
@@ -2524,7 +2904,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           : 0;
       let topScale = 1;
       let bottomScale = 1;
-      if (chart.is3d && !isHorizontal && shapeTaper > 0) {
+      if (chart.is3d && shapeTaper > 0) {
         const scaleAt = (ratio: number) => clamp(1 - clamp(ratio, 0, 1) * shapeTaper, 0.04, 1);
         if (rawValue >= 0) {
           const total = Math.max(1e-6, isStacked ? positiveTotals[categoryIndex] : Math.abs(rawValue));
@@ -2540,16 +2920,24 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       if (isHorizontal) {
         const x1 = valueScale(start);
         const x2 = valueScale(end);
+        const maxPositive = positiveTotals[categoryIndex] ?? 0;
+        const maxNegative = negativeTotals[categoryIndex] ?? 0;
         bars.push({
+          capEnd: !isStacked || (rawValue >= 0
+            ? Math.abs(end - maxPositive) < 1e-6
+            : Math.abs(end - maxNegative) < 1e-6),
+          capStart: !isStacked || Math.abs(start) < 1e-6,
           bottomScale,
           categoryIndex,
           color: colors.fill,
+          depthOffsetX,
+          depthOffsetY,
           height: Math.max(1, barThickness),
           isHorizontal: true,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: Math.min(x1, x2),
-          depthX: frameOffsets?.depthX,
-          depthY: frameOffsets?.depthY,
+          depthX: usesSeriesDepthAxis ? depthBarX : frameOffsets?.depthX,
+          depthY: usesSeriesDepthAxis ? depthBarY : frameOffsets?.depthY,
           shape3d: normalized3dShape,
           seriesIndex,
           stroke: colors.stroke,
@@ -2563,16 +2951,24 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       } else {
         const y1 = valueScale(start);
         const y2 = valueScale(end);
+        const maxPositive = positiveTotals[categoryIndex] ?? 0;
+        const maxNegative = negativeTotals[categoryIndex] ?? 0;
         bars.push({
+          capEnd: !isStacked || (rawValue >= 0
+            ? Math.abs(end - maxPositive) < 1e-6
+            : Math.abs(end - maxNegative) < 1e-6),
+          capStart: !isStacked || Math.abs(start) < 1e-6,
           bottomScale,
           categoryIndex,
           color: colors.fill,
+          depthOffsetX,
+          depthOffsetY,
           height: Math.max(1, Math.abs(y2 - y1)),
           isHorizontal: false,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: categoryStart + barOffset,
-          depthX: frameOffsets?.depthX,
-          depthY: frameOffsets?.depthY,
+          depthX: usesSeriesDepthAxis ? depthBarX : frameOffsets?.depthX,
+          depthY: usesSeriesDepthAxis ? depthBarY : frameOffsets?.depthY,
           shape3d: normalized3dShape,
           seriesIndex,
           stroke: colors.stroke,
@@ -2609,6 +3005,17 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         return left.seriesIndex - right.seriesIndex;
       })
     : bars;
+  const sortedBars = usesSeriesDepthAxis
+    ? renderedBars.slice().sort((left, right) => {
+        if (left.seriesIndex !== right.seriesIndex) {
+          return right.seriesIndex - left.seriesIndex;
+        }
+        if (left.categoryIndex !== right.categoryIndex) {
+          return left.categoryIndex - right.categoryIndex;
+        }
+        return left.top - right.top;
+      })
+    : renderedBars;
 
   const useVertical3dGradient = chart.is3d && !isHorizontal;
   const gradientByColor = new Map<string, string>();
@@ -2638,18 +3045,73 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     (value) => valueScale(value),
     isPercentStacked ? formatPercentTickValue : formatTickValue
   );
+  const depthAxisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const depthGridColor = lightenColor(depthAxisColor, 0.48);
+  const frameDepthX = usesSeriesDepthAxis ? depthGridSpanX : (frameOffsets?.depthX ?? 0);
+  const frameDepthY = usesSeriesDepthAxis ? depthGridSpanY : (frameOffsets?.depthY ?? 0);
+  const depthAxisNode = usesSeriesDepthAxis && frameOffsets ? (
+    <g>
+      {Array.from({ length: categoryCount + 1 }, (_, boundaryIndex) => {
+        const x = plot.left + ((boundaryIndex / Math.max(1, categoryCount)) * plot.width);
+        return (
+          <line
+            key={`bar3d-floor-x-${boundaryIndex}`}
+            stroke={depthGridColor}
+            strokeWidth={0.9}
+            x1={x}
+            x2={x + depthGridSpanX}
+            y1={plot.top + plot.height}
+            y2={plot.top + plot.height + depthGridSpanY}
+          />
+        );
+      })}
+      {Array.from({ length: seriesCount + 1 }, (_, boundaryIndex) => {
+        const ratio = boundaryIndex / Math.max(1, seriesCount);
+        const offsetX = depthGridSpanX * ratio;
+        const offsetY = depthGridSpanY * ratio;
+        return (
+          <line
+            key={`bar3d-floor-z-${boundaryIndex}`}
+            stroke={depthGridColor}
+            strokeWidth={0.9}
+            x1={plot.left + offsetX}
+            x2={plot.left + plot.width + offsetX}
+            y1={plot.top + plot.height + offsetY}
+            y2={plot.top + plot.height + offsetY}
+          />
+        );
+      })}
+      {chart.series.map((series, seriesIndex) => {
+        const ratio = (seriesIndex + 0.5) / Math.max(1, seriesCount);
+        const x = plot.left + plot.width + depthGridSpanX * ratio;
+        const y = plot.top + plot.height + depthGridSpanY * ratio;
+        return (
+          <text
+            key={`bar3d-ser-label-${seriesIndex}`}
+            fill={resolveChartAxisTextColor(chart)}
+            fontSize={10}
+            textAnchor="start"
+            x={x + 7}
+            y={y + 3}
+          >
+            {series.name ?? `Series ${seriesIndex + 1}`}
+          </text>
+        );
+      })}
+    </g>
+  ) : null;
 
   const frameNode = chart.is3d && frameOffsets ? (
     <g>
       <polygon
         fill={lightenColor(chart.chartAreaFillColor ?? palette.surface, 0.05)}
-        points={`${plot.left},${plot.top + plot.height} ${plot.left + plot.width},${plot.top + plot.height} ${plot.left + plot.width + frameOffsets.depthX},${plot.top + plot.height + frameOffsets.depthY} ${plot.left + frameOffsets.depthX},${plot.top + plot.height + frameOffsets.depthY}`}
+        points={`${plot.left},${plot.top + plot.height} ${plot.left + plot.width},${plot.top + plot.height} ${plot.left + plot.width + frameDepthX},${plot.top + plot.height + frameDepthY} ${plot.left + frameDepthX},${plot.top + plot.height + frameDepthY}`}
         stroke={lightenColor(chart.axisLineColor ?? palette.border, 0.2)}
         strokeWidth={1}
       />
       <polygon
         fill={lightenColor(chart.chartAreaFillColor ?? palette.surface, 0.12)}
-        points={`${plot.left},${plot.top} ${plot.left + plot.width},${plot.top} ${plot.left + plot.width + frameOffsets.depthX},${plot.top + frameOffsets.depthY} ${plot.left + frameOffsets.depthX},${plot.top + frameOffsets.depthY}`}
+        points={`${plot.left},${plot.top} ${plot.left + plot.width},${plot.top} ${plot.left + plot.width + frameDepthX},${plot.top + frameDepthY} ${plot.left + frameDepthX},${plot.top + frameDepthY}`}
         stroke={lightenColor(chart.axisLineColor ?? palette.border, 0.2)}
         strokeWidth={1}
       />
@@ -2671,15 +3133,16 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       ) : null}
       {axisNode}
       {frameNode}
+      {depthAxisNode}
       {chart.is3d
-        ? renderedBars.map((bar) => renderExtrudedRect(bar))
+        ? sortedBars.map((bar) => renderExtrudedRect(bar))
         : renderedBars.map((bar) => (
             <rect
               key={bar.key}
               fill={bar.color}
               height={bar.height}
-              stroke={bar.stroke}
-              strokeWidth={bar.strokeWidth}
+              stroke={isHistogramLike ? "none" : bar.stroke}
+              strokeWidth={isHistogramLike ? 0 : bar.strokeWidth}
               width={bar.width}
               x={bar.left}
               y={bar.top}
@@ -3046,7 +3509,10 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
   const groupGapWidth = typeof columnGroup.raw?.gapWidth === "number" && Number.isFinite(columnGroup.raw.gapWidth)
     ? columnGroup.raw.gapWidth
     : columnGroup.gapWidth ?? chart.gapWidth;
-  const categoryBandPadding = resolveCategoryBandPadding(groupGapWidth);
+  const histogramColumns = columnGroup.series.some((series) => isHistogramLikeSeries(series));
+  const categoryBandPadding = histogramColumns
+    ? { inner: 0, outer: 0 }
+    : resolveCategoryBandPadding(groupGapWidth);
   const categoryScale = scaleBand<string>()
     .domain(categories)
     .range([plot.left, plot.left + plot.width])
@@ -3055,8 +3521,8 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
   const seriesScale = scaleBand<string>()
     .domain(Array.from({ length: columnGroup.series.length }, (_, index) => String(index)))
     .range([0, categoryScale.bandwidth()])
-    .paddingInner(0.16)
-    .paddingOuter(0.08);
+    .paddingInner(histogramColumns ? 0 : 0.16)
+    .paddingOuter(histogramColumns ? 0 : 0.08);
   const categoryPositions = categories.map((category) => (
     (categoryScale(category) ?? plot.left) + categoryScale.bandwidth() / 2
   ));
@@ -3130,8 +3596,8 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
       {columnGroup.series.flatMap((series, seriesIndex) => categories.map((category, categoryIndex) => {
         const value = safeNumber(series.values[categoryIndex]) ?? 0;
         const categoryStart = categoryScale(category) ?? plot.left;
-        const barWidth = Math.max(1, seriesScale.bandwidth());
-        const x = categoryStart + (seriesScale(String(seriesIndex)) ?? 0);
+        const barWidth = Math.max(1, histogramColumns ? categoryScale.bandwidth() : seriesScale.bandwidth());
+        const x = categoryStart + (histogramColumns ? 0 : (seriesScale(String(seriesIndex)) ?? 0));
         const y = primaryScale(Math.max(0, value));
         const zeroY = primaryScale(0);
         const height = Math.max(1, Math.abs(zeroY - primaryScale(value)));
@@ -3140,8 +3606,8 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
             key={`combo-bar-${seriesIndex}-${categoryIndex}`}
             fill={series.color ?? series.lineColor ?? chartSeriesColor(primaryChart, seriesIndex)}
             height={height}
-            stroke={series.lineColor ?? series.color ?? chartSeriesStrokeColor(primaryChart, seriesIndex)}
-            strokeWidth={1}
+            stroke={histogramColumns ? "none" : (series.lineColor ?? series.color ?? chartSeriesStrokeColor(primaryChart, seriesIndex))}
+            strokeWidth={histogramColumns ? 0 : 1}
             width={barWidth}
             x={x}
             y={Math.min(y, zeroY)}
@@ -4083,6 +4549,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
     return null;
   }
   const raw = (chart.raw ?? {}) as Record<string, unknown>;
+  const ofPieType = raw.ofPieType === "pie" ? "pie" : "bar";
   const splitPos = typeof raw.splitPos === "number" ? raw.splitPos : 0;
   let secondaryIndices = values
     .map((value, index) => ({ index, value }))
@@ -4120,16 +4587,27 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
 
   const secondaryLabels = secondaryIndices.map((index) => categories[index] ?? "");
   const secondaryValues = secondaryIndices.map((index) => values[index] ?? 0);
-  const barAreaLeft = layout.plot.left + layout.plot.width * 0.62;
-  const barAreaWidth = layout.plot.width * 0.34;
-  const barScale = scaleLinear()
-    .domain([0, Math.max(1, ...secondaryValues)])
-    .range([barAreaLeft, barAreaLeft + barAreaWidth]);
-  const bandScale = scaleBand<string>()
-    .domain(secondaryLabels)
-    .range([layout.plot.top + 8, layout.plot.top + layout.plot.height - 8])
-    .paddingInner(0.25)
-    .paddingOuter(0.15);
+  const connectorTargetX = layout.plot.left + layout.plot.width * 0.69;
+  const secondaryData = secondaryIndices.map((index) => ({
+    color: chartPointColor(chart, index, pieSeriesIndex),
+    label: categories[index] ?? "",
+    value: values[index] ?? 0
+  }));
+  const secondaryCenterX = layout.plot.left + layout.plot.width * 0.79;
+  const secondaryCenterY = pieCenterY;
+  const secondaryRadius = pieRadius * clamp(((typeof raw.secondPieSize === "number" ? raw.secondPieSize : 100) / 100), 0.55, 1.5);
+  const secondaryArc = d3Arc<{ endAngle: number; startAngle: number }>().innerRadius(0).outerRadius(secondaryRadius);
+  const secondaryPieArcs = d3Pie<{ color: string; label: string; value: number }>()
+    .value((entry) => entry.value)
+    .sort(null)
+    .startAngle(((90 - (chart.firstSliceAngle ?? 0)) * Math.PI) / 180)
+    .endAngle(((90 - (chart.firstSliceAngle ?? 0)) * Math.PI) / 180 + Math.PI * 2)(secondaryData);
+  const stackedBarLeft = layout.plot.left + layout.plot.width * 0.72;
+  const stackedBarWidth = Math.max(20, layout.plot.width * 0.13);
+  const stackedBarTop = layout.plot.top + 16;
+  const stackedBarHeight = Math.max(28, layout.plot.height - 32);
+  const secondaryTotalSafe = Math.max(1e-6, secondaryTotal);
+  let stackCursor = stackedBarTop;
 
   return (
     <g>
@@ -4147,7 +4625,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
         stroke={chart.chartAreaBorderColor ?? palette.border}
         strokeWidth={1}
         x1={pieCenterX + pieRadius}
-        x2={barAreaLeft}
+        x2={connectorTargetX}
         y1={pieCenterY - pieRadius * 0.4}
         y2={layout.plot.top + 10}
       />
@@ -4155,34 +4633,50 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
         stroke={chart.chartAreaBorderColor ?? palette.border}
         strokeWidth={1}
         x1={pieCenterX + pieRadius}
-        x2={barAreaLeft}
+        x2={connectorTargetX}
         y1={pieCenterY + pieRadius * 0.4}
         y2={layout.plot.top + layout.plot.height - 10}
       />
-      {secondaryLabels.map((label, index) => {
-        const y = bandScale(label) ?? layout.plot.top;
-        const barWidth = Math.max(1, (barScale(secondaryValues[index] ?? 0) - barAreaLeft));
-        return (
-          <g key={`bar-of-pie-secondary-${index}`}>
-            <rect
-              fill={chartPointColor(chart, secondaryIndices[index] ?? index, pieSeriesIndex)}
-              height={bandScale.bandwidth()}
-              width={barWidth}
-              x={barAreaLeft}
-              y={y}
-            />
-            <text
-              fill={resolveChartAxisTextColor(chart)}
-              fontSize={10}
-              textAnchor="end"
-              x={barAreaLeft - 4}
-              y={y + bandScale.bandwidth() * 0.6}
-            >
-              {label}
-            </text>
-          </g>
-        );
-      })}
+      {ofPieType === "pie"
+        ? secondaryPieArcs.map((entry, index) => (
+          <path
+            key={`bar-of-pie-secondary-pie-${index}`}
+            d={secondaryArc(entry) ?? ""}
+            fill={entry.data.color}
+            stroke={chart.chartAreaFillColor ?? palette.surface}
+            strokeWidth={1}
+            transform={`translate(${secondaryCenterX}, ${secondaryCenterY})`}
+          />
+        ))
+        : secondaryData.map((entry, index) => {
+          const segmentHeight = index === secondaryData.length - 1
+            ? Math.max(1, stackedBarTop + stackedBarHeight - stackCursor)
+            : Math.max(1, (entry.value / secondaryTotalSafe) * stackedBarHeight);
+          const y = stackCursor;
+          stackCursor += segmentHeight;
+          return (
+            <g key={`bar-of-pie-secondary-bar-${index}`}>
+              <rect
+                fill={entry.color}
+                height={segmentHeight}
+                stroke={chart.chartAreaFillColor ?? palette.surface}
+                strokeWidth={1}
+                width={stackedBarWidth}
+                x={stackedBarLeft}
+                y={y}
+              />
+              <text
+                fill={resolveChartAxisTextColor(chart)}
+                fontSize={10}
+                textAnchor="start"
+                x={stackedBarLeft + stackedBarWidth + 6}
+                y={y + segmentHeight * 0.5 + 3}
+              >
+                {entry.label}
+              </text>
+            </g>
+          );
+        })}
     </g>
   );
 }
@@ -4230,13 +4724,12 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
         const y0 = layout.plot.top + layout.plot.height - (rowIndex / Math.max(1, rows - 1)) * layout.plot.height;
         const y1 = layout.plot.top + layout.plot.height - ((rowIndex + 1) / Math.max(1, rows - 1)) * layout.plot.height;
         const averageValue = (p00 + p10 + p01 + p11) / 4;
-        const ratio = clamp((averageValue - minValue) / Math.max(1e-6, safeMax - minValue), 0, 1);
 
         if (!chart.wireframe) {
           quads.push(
             <rect
               key={`surface-contour-cell-${rowIndex}-${columnIndex}`}
-              fill={resolveSurfaceColor(chart, palette, ratio)}
+              fill={resolveSurfaceBandColor(chart, palette, domain, averageValue)}
               height={Math.abs(y1 - y0)}
               stroke={lightenColor(wallLineColor, 0.14)}
               strokeWidth={0.5}
@@ -4280,7 +4773,7 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
             contourLines.push(
               <line
                 key={`surface-contour-line-${rowIndex}-${columnIndex}-${threshold}`}
-                stroke={darkenColor(resolveSurfaceColor(chart, palette, clamp((threshold - minValue) / Math.max(1e-6, safeMax - minValue), 0, 1)), 0.18)}
+                stroke={darkenColor(resolveSurfaceBandColor(chart, palette, domain, threshold), 0.18)}
                 strokeWidth={1.2}
                 x1={intersections[0]?.x}
                 x2={intersections[1]?.x}
@@ -4299,7 +4792,7 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
               contourLines.push(
                 <line
                   key={`surface-contour-line-${rowIndex}-${columnIndex}-${threshold}-${pairingIndex}`}
-                  stroke={darkenColor(resolveSurfaceColor(chart, palette, clamp((threshold - minValue) / Math.max(1e-6, safeMax - minValue), 0, 1)), 0.18)}
+                  stroke={darkenColor(resolveSurfaceBandColor(chart, palette, domain, threshold), 0.18)}
                   strokeWidth={1.2}
                   x1={leftPoint?.x}
                   x2={rightPoint?.x}
@@ -4389,8 +4882,8 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
       const value = matrix[rowIndex][columnIndex];
       const hasValue = value != null;
       const normalizedX = cols <= 1 ? 0 : ((columnIndex / (cols - 1)) - 0.5) * 2;
-      const normalizedY = rows <= 1 ? 0 : ((rowIndex / (rows - 1)) - 0.5) * 2;
-      const normalizedZ = hasValue ? ((((value - minValue) / (safeMax - minValue)) - 0.5) * 1.8 * depthScale) : (-0.9 * depthScale);
+      const normalizedY = hasValue ? ((((value - minValue) / (safeMax - minValue)) - 0.5) * 1.8 * depthScale) : (-0.9 * depthScale);
+      const normalizedZ = rows <= 1 ? 0 : ((rowIndex / (rows - 1)) - 0.5) * 2;
 
       const x1 = normalizedX * cosY + normalizedZ * sinY;
       const z1 = -normalizedX * sinY + normalizedZ * cosY;
@@ -4881,34 +5374,31 @@ function renderFunnelChart(chart: XlsxChart, palette: ChartRendererPalette, layo
   return (
     <g>
       {stages.map((stage, index) => {
-        const nextValue = stages[index + 1]?.value ?? 0;
-        const topWidth = (stage.value / maxValue) * plot.width;
-        const bottomWidth = (nextValue / maxValue) * plot.width;
+        const stageWidth = (stage.value / maxValue) * plot.width;
         const topY = plot.top + index * sectionHeight;
-        const bottomY = topY + sectionHeight - 2;
+        const stageHeight = Math.max(6, sectionHeight - 2);
+        const left = centerX - stageWidth * 0.5;
         const fill = stage.isSubtotal ? darkenColor(stage.color, 0.14) : stage.color;
-        const path = [
-          `M ${centerX - topWidth * 0.5} ${topY}`,
-          `L ${centerX + topWidth * 0.5} ${topY}`,
-          `L ${centerX + bottomWidth * 0.5} ${bottomY}`,
-          `L ${centerX - bottomWidth * 0.5} ${bottomY}`,
-          "Z"
-        ].join(" ");
-        const labelFitsInside = topWidth > 90;
+        const labelFitsInside = stageWidth > 90;
 
         return (
           <g key={`funnel-stage-${index}`}>
-            <path
-              d={path}
+            <rect
               fill={fill}
+              height={stageHeight}
+              rx={0}
+              ry={0}
               stroke={darkenColor(fill, 0.2)}
               strokeWidth={1}
+              width={stageWidth}
+              x={left}
+              y={topY}
             />
             <text
               fill={labelColor}
               fontSize={10}
               textAnchor={labelFitsInside ? "middle" : "start"}
-              x={labelFitsInside ? centerX : centerX + topWidth * 0.5 + 8}
+              x={labelFitsInside ? centerX : centerX + stageWidth * 0.5 + 8}
               y={topY + sectionHeight * 0.5}
             >
               {`${stage.label} ${formatTickValue(stage.value)}`}
@@ -5000,12 +5490,12 @@ function renderTreemapChart(chart: XlsxChart, palette: ChartRendererPalette, lay
     .paddingInner(2)
     .paddingOuter(1)
     .round(true)
-    .tile(treemapSquarify)(root);
+    .tile(excelTreemapTile)(root);
 
   return (
     <g transform={`translate(${layout.plot.left}, ${layout.plot.top})`}>
       {treemapRoot.leaves().map((leaf, index) => {
-        const fill = resolveHierarchyNodeColor(chart, leaf);
+        const fill = resolveTreemapNodeColor(chart, leaf);
         const width = Math.max(0, leaf.x1 - leaf.x0);
         const height = Math.max(0, leaf.y1 - leaf.y0);
         const canShowLabel = width > 48 && height > 22;
@@ -5051,6 +5541,244 @@ function renderTreemapChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   );
 }
 
+function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const visibleSeries = chart.series.filter((series) => series.hidden !== true);
+  if (visibleSeries.length === 0) {
+    return null;
+  }
+
+  const seriesStats = visibleSeries.map((series, index) => ({
+    color: series.color ?? chartSeriesColor(chart, typeof series.formatIdx === "number" ? series.formatIdx : index),
+    label: normalizeCategoryLabel(series.name) || `Series ${index + 1}`,
+    lineColor: series.lineColor ?? series.color ?? chartSeriesColor(chart, typeof series.formatIdx === "number" ? series.formatIdx : index),
+    series,
+    stats: computeBoxWhiskerStats(series),
+    visibility: resolveBoxWhiskerVisibility(series)
+  })).filter((entry): entry is {
+    color: string;
+    label: string;
+    lineColor: string;
+    series: XlsxChartSeries;
+    stats: BoxWhiskerStats;
+    visibility: ReturnType<typeof resolveBoxWhiskerVisibility>;
+  } => entry.stats != null);
+
+  if (seriesStats.length === 0) {
+    return null;
+  }
+
+  const allValues = seriesStats.flatMap((entry) => [
+    entry.stats.min,
+    entry.stats.lowerWhisker,
+    entry.stats.q1,
+    entry.stats.median,
+    entry.stats.q3,
+    entry.stats.upperWhisker,
+    entry.stats.max
+  ]);
+  const minValue = Math.min(...allValues);
+  const maxValue = Math.max(...allValues);
+  const valueDomain = resolveAxisDomainWithChartOverrides(chart.valueAxis, minValue, maxValue, false);
+  const yScale = scaleLinear()
+    .domain([valueDomain.min, valueDomain.max])
+    .range([layout.plot.top + layout.plot.height, layout.plot.top]);
+  const xScale = scalePoint<number>()
+    .domain(seriesStats.map((_, index) => index))
+    .range([layout.plot.left + 24, layout.plot.left + layout.plot.width - 24]);
+  const gap = seriesStats.length > 1
+    ? Math.abs((xScale(1) ?? 0) - (xScale(0) ?? 0))
+    : layout.plot.width * 0.5;
+  const boxWidth = clamp(gap * 0.34, 20, 54);
+  const capWidth = Math.max(8, boxWidth * 0.52);
+  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const labelColor = resolveChartAxisTextColor(chart);
+  const meanLinePoints = seriesStats
+    .filter((entry) => entry.visibility.meanLine)
+    .map((entry, index) => `${xScale(index) ?? layout.plot.left},${yScale(entry.stats.mean)}`);
+
+  return (
+    <g>
+      {valueDomain.ticks.map((tick, index) => {
+        const y = yScale(tick);
+        return (
+          <g key={`box-whisker-grid-${index}`}>
+            <line
+              stroke={lightenColor(axisColor, 0.22)}
+              strokeWidth={0.8}
+              x1={layout.plot.left}
+              x2={layout.plot.left + layout.plot.width}
+              y1={y}
+              y2={y}
+            />
+            <text
+              fill={labelColor}
+              fontSize={10}
+              textAnchor="end"
+              x={layout.plot.left - 6}
+              y={y + 3}
+            >
+              {formatTickValue(tick)}
+            </text>
+          </g>
+        );
+      })}
+      <line
+        stroke={axisColor}
+        strokeWidth={1}
+        x1={layout.plot.left}
+        x2={layout.plot.left}
+        y1={layout.plot.top}
+        y2={layout.plot.top + layout.plot.height}
+      />
+      <line
+        stroke={axisColor}
+        strokeWidth={1}
+        x1={layout.plot.left}
+        x2={layout.plot.left + layout.plot.width}
+        y1={layout.plot.top + layout.plot.height}
+        y2={layout.plot.top + layout.plot.height}
+      />
+      {meanLinePoints.length >= 2 ? (
+        <polyline
+          fill="none"
+          points={meanLinePoints.join(" ")}
+          stroke={darkenColor(axisColor, 0.2)}
+          strokeDasharray="4 3"
+          strokeWidth={1}
+        />
+      ) : null}
+      {seriesStats.map((entry, index) => {
+        const x = xScale(index) ?? layout.plot.left;
+        const boxTop = yScale(entry.stats.q3);
+        const boxBottom = yScale(entry.stats.q1);
+        const medianY = yScale(entry.stats.median);
+        const lowerWhiskerY = yScale(entry.stats.lowerWhisker);
+        const upperWhiskerY = yScale(entry.stats.upperWhisker);
+        const meanY = yScale(entry.stats.mean);
+        const visiblePoints = entry.visibility.nonoutliers
+          ? entry.stats.visiblePoints
+          : [];
+        const outliers = entry.visibility.outliers
+          ? entry.stats.outliers
+          : [];
+
+        return (
+          <g key={`box-whisker-series-${index}`}>
+            <line
+              stroke={entry.lineColor}
+              strokeWidth={1.5}
+              x1={x}
+              x2={x}
+              y1={upperWhiskerY}
+              y2={boxTop}
+            />
+            <line
+              stroke={entry.lineColor}
+              strokeWidth={1.5}
+              x1={x}
+              x2={x}
+              y1={boxBottom}
+              y2={lowerWhiskerY}
+            />
+            <line
+              stroke={entry.lineColor}
+              strokeWidth={1.5}
+              x1={x - capWidth * 0.5}
+              x2={x + capWidth * 0.5}
+              y1={upperWhiskerY}
+              y2={upperWhiskerY}
+            />
+            <line
+              stroke={entry.lineColor}
+              strokeWidth={1.5}
+              x1={x - capWidth * 0.5}
+              x2={x + capWidth * 0.5}
+              y1={lowerWhiskerY}
+              y2={lowerWhiskerY}
+            />
+            <rect
+              fill={lightenColor(entry.color, 0.35)}
+              fillOpacity={0.72}
+              height={Math.max(1, boxBottom - boxTop)}
+              stroke={entry.lineColor}
+              strokeWidth={1.5}
+              width={boxWidth}
+              x={x - boxWidth * 0.5}
+              y={boxTop}
+            />
+            <line
+              stroke={darkenColor(entry.lineColor, 0.15)}
+              strokeWidth={2}
+              x1={x - boxWidth * 0.5}
+              x2={x + boxWidth * 0.5}
+              y1={medianY}
+              y2={medianY}
+            />
+            {entry.visibility.meanMarker ? (
+              <>
+                <line
+                  stroke={darkenColor(entry.lineColor, 0.18)}
+                  strokeWidth={1.2}
+                  x1={x - 4}
+                  x2={x + 4}
+                  y1={meanY - 4}
+                  y2={meanY + 4}
+                />
+                <line
+                  stroke={darkenColor(entry.lineColor, 0.18)}
+                  strokeWidth={1.2}
+                  x1={x - 4}
+                  x2={x + 4}
+                  y1={meanY + 4}
+                  y2={meanY - 4}
+                />
+              </>
+            ) : null}
+            {visiblePoints.map((value, pointIndex) => {
+              const y = yScale(value);
+              const jitter = ((pointIndex % 7) - 3) * (boxWidth / 16);
+              return (
+                <circle
+                  key={`box-whisker-visible-${index}-${pointIndex}`}
+                  cx={x + jitter}
+                  cy={y}
+                  fill={entry.color}
+                  fillOpacity={0.45}
+                  r={2}
+                  stroke="none"
+                />
+              );
+            })}
+            {outliers.map((value, pointIndex) => {
+              const y = yScale(value);
+              return (
+                <circle
+                  key={`box-whisker-outlier-${index}-${pointIndex}`}
+                  cx={x}
+                  cy={y}
+                  fill="#ffffff"
+                  r={3}
+                  stroke={entry.lineColor}
+                  strokeWidth={1.2}
+                />
+              );
+            })}
+            <text
+              fill={labelColor}
+              fontSize={10}
+              textAnchor="middle"
+              x={x}
+              y={layout.plot.top + layout.plot.height + 14}
+            >
+              {entry.label}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
   const primarySeriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
   const primarySeries = chart.series[primarySeriesIndex] ?? null;
@@ -5075,7 +5803,22 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
     value: number;
   }>;
 
-  const projection = geoNaturalEarth1();
+  const layoutProperties = resolveRegionMapLayoutProperties(primarySeries);
+  const geography = layoutProperties?.geography && typeof layoutProperties.geography === "object"
+    ? layoutProperties.geography as Record<string, unknown>
+    : null;
+  const viewedRegionType = typeof geography?.viewedRegionType === "string"
+    ? geography.viewedRegionType
+    : null;
+  const projectionType = typeof geography?.projectionType === "string"
+    ? geography.projectionType
+    : null;
+  const projection = projectionType === "miller"
+    ? geoMiller()
+    : geoNaturalEarth1();
+  const fitFeatures = viewedRegionType === "dataOnly" && entries.length > 0
+    ? entries.map((entry) => entry.feature)
+    : WORLD_COUNTRY_FEATURES;
   projection.fitExtent(
     [
       [layout.plot.left + 8, layout.plot.top + 8],
@@ -5083,10 +5826,13 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
     ],
     {
       type: "FeatureCollection",
-      features: WORLD_COUNTRY_FEATURES
+      features: fitFeatures
     } satisfies FeatureCollection<Geometry, { name?: string }>
   );
   const path = geoPath(projection);
+  const baseFeatures = viewedRegionType === "dataOnly" && entries.length > 0
+    ? fitFeatures
+    : WORLD_COUNTRY_FEATURES;
   const noDataFill = chart.chartAreaFillColor && chart.chartAreaFillColor !== "transparent"
     ? lightenColor(chart.chartAreaFillColor, 0.16)
     : "#d9d9d9";
@@ -5096,14 +5842,11 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
   const baseColor = resolveRegionMapBaseColor(chart, primarySeriesIndex);
   const minValue = entries.length > 0 ? Math.min(...entries.map((entry) => entry.value)) : 0;
   const maxValue = entries.length > 0 ? Math.max(...entries.map((entry) => entry.value)) : 1;
-  const labelLayout = primarySeries.raw && typeof primarySeries.raw === "object"
-    ? (primarySeries.raw as Record<string, unknown>).layoutProperties as Record<string, unknown> | undefined
-    : undefined;
-  const showRegionLabels = labelLayout?.regionLabelLayout !== "none";
+  const showRegionLabels = layoutProperties?.regionLabelLayout !== "none";
 
   return (
     <g>
-      {WORLD_COUNTRY_FEATURES.map((feature, index) => {
+      {baseFeatures.map((feature, index) => {
         const d = path(feature);
         if (!d) {
           return null;
@@ -5249,6 +5992,9 @@ function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout
   }
   if (chartType === "Funnel") {
     return renderFunnelChart(chart, palette, layout);
+  }
+  if (chartType === "BoxWhisker") {
+    return renderBoxWhiskerChart(chart, palette, layout);
   }
   if (chartType === "Sunburst") {
     return renderSunburstChart(chart, palette, layout);
