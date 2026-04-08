@@ -29,7 +29,8 @@
     "d3-hierarchy": "^3.1.2",
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "regl": "^2.1.1"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --external react,react-dom && tsup src/xlsx-worker.ts --format esm --sourcemap --clean false --out-dir dist",

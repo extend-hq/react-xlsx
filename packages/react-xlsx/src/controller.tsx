@@ -2080,7 +2080,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         if (shouldUseWorkerForLoad) {
           try {
-            const snapshot = await getWorkerClient().loadWorkbook(buffer.slice(0));
+            const snapshot = await getWorkerClient().loadWorkbook(buffer);
             if (!isCurrent) {
               return;
             }
@@ -2303,7 +2303,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const shouldUseWorkerForLoad = workerSupported && (requestedReadOnly || shouldForceReadOnly);
 
     if (shouldUseWorkerForLoad) {
-      void getWorkerClient().loadWorkbook(deferredBuffer.slice(0))
+      void getWorkerClient().loadWorkbook(deferredBuffer)
         .then((snapshot) => {
           if (hasIncompleteWorkerChartSnapshot(snapshot)) {
             throw new Error("Worker chart payload incomplete");

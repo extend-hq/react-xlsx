@@ -54,6 +54,24 @@ const THEME_COLOR_INDEX_BY_NAME: Record<string, number> = {
   bg1: 0,
   bg2: 2
 };
+const PRIMARY_CHART_TYPE_LOCAL_NAMES = [
+  "barChart",
+  "lineChart",
+  "line3DChart",
+  "stockChart",
+  "radarChart",
+  "scatterChart",
+  "pieChart",
+  "pie3DChart",
+  "doughnutChart",
+  "areaChart",
+  "area3DChart",
+  "bar3DChart",
+  "ofPieChart",
+  "bubbleChart",
+  "surfaceChart",
+  "surface3DChart"
+] as const;
 
 export type WorkbookChartOrigin = {
   anchorIndex: number;
@@ -353,19 +371,40 @@ function resolveArchiveFallbackBubbleSizes(
 }
 
 function parseChartTypeFromXml(chartXml: string) {
-  if (/<c:pie3DChart\b/i.test(chartXml)) {
-    return "pie3DChart";
-  }
-  if (/<c:pieChart\b/i.test(chartXml)) {
-    return "pieChart";
-  }
-  if (/<c:doughnutChart\b/i.test(chartXml)) {
-    return "doughnutChart";
-  }
-  if (/<c:ofPieChart\b/i.test(chartXml)) {
-    return "ofPieChart";
+  for (const chartType of PRIMARY_CHART_TYPE_LOCAL_NAMES) {
+    if (new RegExp(`<c:${chartType}\\b`, "i").test(chartXml)) {
+      return chartType;
+    }
   }
   return "";
+}
+
+function findPrimaryChartTypeNode(plotAreaNode: Element | null) {
+  if (!plotAreaNode) {
+    return null;
+  }
+
+  for (const localName of PRIMARY_CHART_TYPE_LOCAL_NAMES) {
+    const node = getLocalChildren(plotAreaNode, localName)[0];
+    if (node) {
+      return node;
+    }
+  }
+
+  return null;
+}
+
+function resolveScatterChartType(scatterStyle: string | null | undefined) {
+  switch (scatterStyle) {
+    case "line":
+    case "lineMarker":
+      return "ScatterLines";
+    case "smooth":
+    case "smoothMarker":
+      return "ScatterSmooth";
+    default:
+      return "Scatter";
+  }
 }
 
 function resolveArchiveFallbackPointStyles(
@@ -1267,24 +1306,7 @@ function applyChartStyleFromXml(
   const chartNode = chartDocument ? getFirstLocalDescendant(chartDocument, "chart") : null;
   const plotAreaNode = chartNode ? getFirstLocalChild(chartNode, "plotArea") : null;
   const styleIdNode = chartDocument?.documentElement ? getFirstLocalChild(chartDocument.documentElement, "style") : null;
-  const chartTypeNode = plotAreaNode
-    ? getLocalChildren(plotAreaNode, "barChart")[0]
-      ?? getLocalChildren(plotAreaNode, "lineChart")[0]
-      ?? getLocalChildren(plotAreaNode, "pieChart")[0]
-      ?? getLocalChildren(plotAreaNode, "doughnutChart")[0]
-      ?? getLocalChildren(plotAreaNode, "scatterChart")[0]
-      ?? getLocalChildren(plotAreaNode, "areaChart")[0]
-      ?? getLocalChildren(plotAreaNode, "area3DChart")[0]
-      ?? getLocalChildren(plotAreaNode, "radarChart")[0]
-      ?? getLocalChildren(plotAreaNode, "bar3DChart")[0]
-      ?? getLocalChildren(plotAreaNode, "pie3DChart")[0]
-      ?? getLocalChildren(plotAreaNode, "ofPieChart")[0]
-      ?? getLocalChildren(plotAreaNode, "bubbleChart")[0]
-      ?? getLocalChildren(plotAreaNode, "surfaceChart")[0]
-      ?? getLocalChildren(plotAreaNode, "surface3DChart")[0]
-      ?? getLocalChildren(plotAreaNode, "stockChart")[0]
-      ?? null
-    : null;
+  const chartTypeNode = findPrimaryChartTypeNode(plotAreaNode);
 
   if (!chartNode || !chartTypeNode) {
     applyFallbackSeriesStyles();
@@ -1327,8 +1349,10 @@ function applyChartStyleFromXml(
       }
       break;
     }
-    case "lineChart": {
+    case "lineChart":
+    case "line3DChart": {
       const grouping = getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val");
+      chart.is3d = chartTypeNode.localName === "line3DChart" ? true : chart.is3d;
       if (grouping === "stacked") {
         chart.chartType = "LineStacked";
       } else if (grouping === "percentStacked") {
@@ -1338,20 +1362,35 @@ function applyChartStyleFromXml(
       }
       break;
     }
+    case "pieChart":
+      chart.chartType = "Pie";
+      break;
     case "pie3DChart":
       chart.chartType = "Pie3D";
       chart.is3d = true;
       break;
+    case "doughnutChart":
+      chart.chartType = "Doughnut";
+      break;
     case "ofPieChart":
       chart.chartType = "BarOfPie";
       break;
+    case "scatterChart":
+      chart.chartType = resolveScatterChartType(getFirstLocalChild(chartTypeNode, "scatterStyle")?.getAttribute("val"));
+      break;
+    case "radarChart":
+      chart.chartType = "Radar";
+      break;
     case "surfaceChart":
       chart.chartType = "Surface";
-      chart.is3d = true;
+      chart.is3d = false;
       break;
     case "surface3DChart":
       chart.chartType = "Surface";
       chart.is3d = true;
+      break;
+    case "stockChart":
+      chart.chartType = "Stock";
       break;
     case "bubbleChart":
       chart.chartType = "Bubble";
@@ -1380,6 +1419,7 @@ function applyChartStyleFromXml(
   chart.gapWidth = readChartNumericAttribute(chartTypeNode, "gapWidth") ?? chart.gapWidth;
   chart.overlap = readChartNumericAttribute(chartTypeNode, "overlap") ?? chart.overlap;
   chart.bubbleScale = readChartNumericAttribute(chartTypeNode, "bubbleScale") ?? chart.bubbleScale;
+  chart.varyColors = readChartBooleanAttribute(chartTypeNode, "varyColors") ?? chart.varyColors;
   const bubble3dNode = getFirstLocalChild(chartTypeNode, "bubble3D");
   chart.bubble3d = bubble3dNode
     ? bubble3dNode.getAttribute("val") !== "0"
@@ -1397,6 +1437,7 @@ function applyChartStyleFromXml(
   chart.dataLabels = chartTypeDataLabels ?? seriesDataLabels ?? chart.dataLabels;
   chart.raw = {
     ...(chart.raw ?? {}),
+    date1904: readChartBooleanAttribute(chartDocument?.documentElement ?? null, "date1904"),
     bubble3d: chart.bubble3d,
     grouping: getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val") ?? undefined,
     ofPieType: getFirstLocalChild(chartTypeNode, "ofPieType")?.getAttribute("val") ?? undefined,
@@ -1465,7 +1506,10 @@ function applyChartStyleFromXml(
   if (!chart.chartAreaFillColor && (styleAppearance.chartAreaNoFill === true || plotAreaNoFill)) {
     chart.chartAreaFillColor = "transparent";
   }
-  const categoryAxisNodes = getLocalChildren(plotArea, "catAx");
+  const categoryAxisNodes = [
+    ...getLocalChildren(plotArea, "catAx"),
+    ...getLocalChildren(plotArea, "dateAx")
+  ];
   const valueAxisNodes = getLocalChildren(plotArea, "valAx");
   const isScatterLikeChart = (
     chart.chartType === "Scatter"
@@ -1984,6 +2028,27 @@ function normalizeChartExSeries(
   };
 }
 
+function collapseChartExPointSeries(chartType: XlsxChart["chartType"], series: XlsxChartSeries[]) {
+  if (chartType !== "Funnel" && chartType !== "Waterfall") {
+    return series;
+  }
+
+  const primarySeries = series.find((entry) => entry.hidden !== true) ?? series[0] ?? null;
+  if (!primarySeries) {
+    return series;
+  }
+
+  return [
+    {
+      ...primarySeries,
+      categories: [],
+      categoriesRef: null,
+      dataPoints: [],
+      hidden: false
+    }
+  ];
+}
+
 function normalizeChartExChart(
   workbook: Workbook,
   workbookSheetIndex: number,
@@ -2013,6 +2078,9 @@ function normalizeChartExChart(
     : [];
   const fallbackTitle = humanizeChartExLayoutLabel(typeof chart.layout === "string" ? chart.layout : undefined);
   const chartType = resolveChartExLayoutChartType(typeof chart.layout === "string" ? chart.layout : undefined);
+  const normalizedSeries = rawSeries.map((entry, seriesIndex) => (
+    normalizeChartExSeries(workbook, workbookSheetIndex, `chart-ex-${workbookSheetIndex}-${index}`, entry, dataById, seriesIndex)
+  ));
   const normalizedChart: XlsxChart = {
     anchor: normalizeChartAnchor(chart.anchor),
     autoTitleDeleted: undefined,
@@ -2047,9 +2115,7 @@ function normalizeChartExChart(
     radarStyle: undefined,
     scatterStyle: undefined,
     roundedCorners: undefined,
-    series: rawSeries.map((entry, seriesIndex) => (
-      normalizeChartExSeries(workbook, workbookSheetIndex, `chart-ex-${workbookSheetIndex}-${index}`, entry, dataById, seriesIndex)
-    )),
+    series: collapseChartExPointSeries(chartType, normalizedSeries),
     sheetIndex: visibleSheetIndex,
     showDlblsOverMax: undefined,
     bubbleScale: undefined,
@@ -2060,7 +2126,7 @@ function normalizeChartExChart(
     titleFontFamily: undefined,
     typeGroups: [],
     valueAxis: axes.find((axis) => axis.numberFormat || axis.majorGridlines) ?? axes[1] ?? null,
-    varyColors: undefined,
+    varyColors: typeof chart.valueColors === "boolean" ? chart.valueColors : undefined,
     view3d: undefined,
     wireframe: undefined,
     workbookSheetIndex,
@@ -3136,16 +3202,7 @@ export function updateWorkbookChartDefinition(
 
   const chartNode = getFirstLocalDescendant(chartDocument, "chart");
   const plotAreaNode = chartNode ? getFirstLocalChild(chartNode, "plotArea") : null;
-  const chartTypeNode = plotAreaNode
-    ? getLocalChildren(plotAreaNode, "barChart")[0]
-      ?? getLocalChildren(plotAreaNode, "lineChart")[0]
-      ?? getLocalChildren(plotAreaNode, "pieChart")[0]
-      ?? getLocalChildren(plotAreaNode, "doughnutChart")[0]
-      ?? getLocalChildren(plotAreaNode, "scatterChart")[0]
-      ?? getLocalChildren(plotAreaNode, "areaChart")[0]
-      ?? getLocalChildren(plotAreaNode, "radarChart")[0]
-      ?? null
-    : null;
+  const chartTypeNode = findPrimaryChartTypeNode(plotAreaNode);
   if (!chartNode || !plotAreaNode || !chartTypeNode) {
     return false;
   }
@@ -3177,7 +3234,13 @@ export function updateWorkbookChartDefinition(
     updateDataLabels(chartTypeNode, patch.dataLabels);
   }
   updateSeriesNodes(chartTypeNode, patch);
-  updateAxisNode(getLocalChildren(plotAreaNode, "catAx")[0] ?? getLocalChildren(plotAreaNode, "serAx")[0] ?? null, patch.categoryAxis);
+  updateAxisNode(
+    getLocalChildren(plotAreaNode, "catAx")[0]
+      ?? getLocalChildren(plotAreaNode, "dateAx")[0]
+      ?? getLocalChildren(plotAreaNode, "serAx")[0]
+      ?? null,
+    patch.categoryAxis
+  );
   updateAxisNode(getLocalChildren(plotAreaNode, "valAx")[0] ?? null, patch.valueAxis);
 
   imageAssets.archive[normalizeArchivePath(origin.chartPath)] = strToU8(serializeXml(chartDocument));

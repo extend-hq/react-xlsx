@@ -4127,7 +4127,7 @@ function GridRow({
               >
                 {renderSparkline(cellData.sparkline.config, cellData.sparkline.values, palette)}
               </div>
-            ) : cellData.checkboxState !== null ? (
+            ) : cellData.checkboxState != null ? (
               <div
                 style={{
                   alignItems: "center",
@@ -4460,6 +4460,8 @@ function XlsxGrid({
   );
   const hiddenRowSet = React.useMemo(() => new Set(activeSheet?.hiddenRows ?? []), [activeSheet?.hiddenRows]);
   const hiddenColSet = React.useMemo(() => new Set(activeSheet?.hiddenCols ?? []), [activeSheet?.hiddenCols]);
+  const useNativeZoomViewport =
+    zoomFactor !== 1 && (((activeSheet?.freezePanes?.row ?? 0) > 0) || ((activeSheet?.freezePanes?.col ?? 0) > 0));
   const syncDrawingViewport = React.useCallback((scroller: HTMLDivElement | null) => {
     if (!scroller) {
       return;
@@ -4468,8 +4470,8 @@ function XlsxGrid({
     setDrawingViewport((current) => {
       const next = {
         height: scroller.clientHeight / zoomFactor,
-        left: scroller.scrollLeft / zoomFactor,
-        top: scroller.scrollTop / zoomFactor,
+        left: scroller.scrollLeft / (useNativeZoomViewport ? 1 : zoomFactor),
+        top: scroller.scrollTop / (useNativeZoomViewport ? 1 : zoomFactor),
         width: scroller.clientWidth / zoomFactor
       };
       return current.left === next.left
@@ -4479,7 +4481,7 @@ function XlsxGrid({
         ? current
         : next;
     });
-  }, [zoomFactor]);
+  }, [useNativeZoomViewport, zoomFactor]);
   const visibleRows = React.useMemo(() => {
     return buildVisibleAxisIndices(
       activeSheet?.visibleRows ?? [],
@@ -4677,6 +4679,30 @@ function XlsxGrid({
     () => buildStickyOffsets(frozenCols, actualColWidths, ROW_HEADER_WIDTH),
     [actualColWidths, frozenCols]
   );
+  const frozenPaneBottom = React.useMemo(
+    () => (
+      frozenRows.length > 0
+        ? frozenRows.reduce(
+            (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? HEADER_HEIGHT) + (actualRowHeights[row] ?? DEFAULT_ROW_HEIGHT)),
+            HEADER_HEIGHT
+          )
+        : HEADER_HEIGHT
+    ),
+    [actualRowHeights, frozenRows, stickyTopByRow]
+  );
+  const frozenPaneRight = React.useMemo(
+    () => (
+      frozenCols.length > 0
+        ? frozenCols.reduce(
+            (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? ROW_HEADER_WIDTH) + (actualColWidths[col] ?? DEFAULT_COL_WIDTH)),
+            ROW_HEADER_WIDTH
+          )
+        : ROW_HEADER_WIDTH
+    ),
+    [actualColWidths, frozenCols, stickyLeftByCol]
+  );
+  const useNativeZoomForFrozenPanes = zoomFactor !== 1 && (frozenRows.length > 0 || frozenCols.length > 0);
+  const scrollOffsetFactor = useNativeZoomForFrozenPanes ? 1 : zoomFactor;
   const rowPrefixSumsRef = React.useRef<number[]>(rowPrefixSums);
   const colPrefixSumsRef = React.useRef<number[]>(colPrefixSums);
   const firstVisibleRow = visibleRows[0];
@@ -4731,10 +4757,10 @@ function XlsxGrid({
     estimateSize: (index) => effectiveRowHeights[index] ?? DEFAULT_ROW_HEIGHT,
     getScrollElement: () => scrollRef.current,
     getItemKey: (index) => visibleRows[index] ?? index,
-    observeElementOffset: (instance, cb) => observeZoomedElementOffset(instance, zoomFactor, cb),
+    observeElementOffset: (instance, cb) => observeZoomedElementOffset(instance, scrollOffsetFactor, cb),
     observeElementRect: (instance, cb) => observeZoomedElementRect(instance, zoomFactor, cb),
     overscan: 10,
-    scrollToFn: (offset, options, instance) => scrollToZoomedOffset(offset, zoomFactor, options, instance)
+    scrollToFn: (offset, options, instance) => scrollToZoomedOffset(offset, scrollOffsetFactor, options, instance)
   });
   const colVirtualizer = useVirtualizer({
     count: visibleCols.length,
@@ -4742,10 +4768,10 @@ function XlsxGrid({
     getScrollElement: () => scrollRef.current,
     getItemKey: (index) => visibleCols[index] ?? index,
     horizontal: true,
-    observeElementOffset: (instance, cb) => observeZoomedElementOffset(instance, zoomFactor, cb),
+    observeElementOffset: (instance, cb) => observeZoomedElementOffset(instance, scrollOffsetFactor, cb),
     observeElementRect: (instance, cb) => observeZoomedElementRect(instance, zoomFactor, cb),
     overscan: 6,
-    scrollToFn: (offset, options, instance) => scrollToZoomedOffset(offset, zoomFactor, options, instance)
+    scrollToFn: (offset, options, instance) => scrollToZoomedOffset(offset, scrollOffsetFactor, options, instance)
   });
   const currentRowVirtualItems = rowVirtualizer.getVirtualItems();
   const currentColVirtualItems = colVirtualizer.getVirtualItems();
@@ -4894,11 +4920,16 @@ function XlsxGrid({
       return;
     }
 
-    scroller.scrollLeft = (scroller.scrollLeft / previousZoomFactor) * zoomFactor;
-    scroller.scrollTop = (scroller.scrollTop / previousZoomFactor) * zoomFactor;
+    if (!useNativeZoomForFrozenPanes) {
+      scroller.scrollLeft = (scroller.scrollLeft / previousZoomFactor) * zoomFactor;
+      scroller.scrollTop = (scroller.scrollTop / previousZoomFactor) * zoomFactor;
+    }
+
     previousZoomFactorRef.current = zoomFactor;
+    rowVirtualizer.measure();
+    colVirtualizer.measure();
     syncDrawingViewport(scroller);
-  }, [syncDrawingViewport, zoomFactor]);
+  }, [colVirtualizer, rowVirtualizer, syncDrawingViewport, useNativeZoomForFrozenPanes, zoomFactor]);
 
   React.useLayoutEffect(() => {
     syncDrawingViewport(scrollRef.current);
@@ -5083,71 +5114,79 @@ function XlsxGrid({
       return null;
     }
 
-    const elementsAtPoint = typeof document.elementsFromPoint === "function"
-      ? document.elementsFromPoint(clientX, clientY)
-      : [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => Boolean(element));
-    for (const element of elementsAtPoint) {
-      if (!(element instanceof HTMLElement)) {
-        continue;
-      }
+    const resolveCellFromHitTest = () => {
+      const elementsAtPoint = typeof document.elementsFromPoint === "function"
+        ? document.elementsFromPoint(clientX, clientY)
+        : [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => Boolean(element));
+      for (const element of elementsAtPoint) {
+        if (!(element instanceof HTMLElement)) {
+          continue;
+        }
 
-      const cell = parseCellAddressAttribute(element.closest<HTMLElement>("[data-xlsx-cell]")?.getAttribute("data-xlsx-cell") ?? null);
-      if (cell) {
-        return cell;
-      }
+        const cell = parseCellAddressAttribute(element.closest<HTMLElement>("[data-xlsx-cell]")?.getAttribute("data-xlsx-cell") ?? null);
+        if (cell) {
+          return cell;
+        }
 
-      const colHeader = element.closest<HTMLElement>("[data-xlsx-col-header]");
-      if (colHeader && firstVisibleRowRef.current !== undefined) {
-        const actualCol = Number(colHeader.getAttribute("data-xlsx-col-header"));
-        if (Number.isInteger(actualCol) && actualCol >= 0) {
-          return { row: firstVisibleRowRef.current, col: actualCol };
+        const colHeader = element.closest<HTMLElement>("[data-xlsx-col-header]");
+        if (colHeader && firstVisibleRowRef.current !== undefined) {
+          const actualCol = Number(colHeader.getAttribute("data-xlsx-col-header"));
+          if (Number.isInteger(actualCol) && actualCol >= 0) {
+            return { row: firstVisibleRowRef.current, col: actualCol };
+          }
+        }
+
+        const rowElement = element.closest<HTMLTableRowElement>("tr[data-xlsx-row]");
+        if (rowElement && firstVisibleColRef.current !== undefined) {
+          const actualRow = Number(rowElement.getAttribute("data-xlsx-row"));
+          if (Number.isInteger(actualRow) && actualRow >= 0) {
+            return { row: actualRow, col: firstVisibleColRef.current };
+          }
         }
       }
 
-      const rowElement = element.closest<HTMLTableRowElement>("tr[data-xlsx-row]");
-      if (rowElement && firstVisibleColRef.current !== undefined) {
-        const actualRow = Number(rowElement.getAttribute("data-xlsx-row"));
-        if (Number.isInteger(actualRow) && actualRow >= 0) {
-          return { row: actualRow, col: firstVisibleColRef.current };
-        }
-      }
-    }
-
-    const localX = (clientX - scrollerRect.left + scroller.scrollLeft) / zoomFactor;
-    const localY = (clientY - scrollerRect.top + scroller.scrollTop) / zoomFactor;
+      return null;
+    };
+    const pointerOffsetX = clientX - scrollerRect.left;
+    const pointerOffsetY = clientY - scrollerRect.top;
+    const localX =
+      (pointerOffsetX / zoomFactor)
+      + (pointerOffsetX >= frozenPaneRight * zoomFactor ? (scroller.scrollLeft / scrollOffsetFactor) : 0);
+    const localY =
+      (pointerOffsetY / zoomFactor)
+      + (pointerOffsetY >= frozenPaneBottom * zoomFactor ? (scroller.scrollTop / scrollOffsetFactor) : 0);
     const rowContentOffset = localY - HEADER_HEIGHT;
     const colContentOffset = localX - ROW_HEADER_WIDTH;
+    let geometryCell: XlsxCellAddress | null = null;
 
     if (localY >= HEADER_HEIGHT && localX < ROW_HEADER_WIDTH) {
       const rowIndex = findIndexForOffsetPrefix(rowPrefixSumsCurrent, rowContentOffset);
       const actualRow = visibleRowsCurrent[rowIndex];
       if (actualRow !== undefined && firstVisibleColRef.current !== undefined) {
-        return { row: actualRow, col: firstVisibleColRef.current };
+        geometryCell = { row: actualRow, col: firstVisibleColRef.current };
       }
-      return null;
-    }
-
-    if (localY < HEADER_HEIGHT && localX >= ROW_HEADER_WIDTH) {
+    } else if (localY < HEADER_HEIGHT && localX >= ROW_HEADER_WIDTH) {
       const colIndex = findIndexForOffsetPrefix(colPrefixSumsCurrent, colContentOffset);
       const actualCol = visibleColsCurrent[colIndex];
       if (actualCol !== undefined && firstVisibleRowRef.current !== undefined) {
-        return { row: firstVisibleRowRef.current, col: actualCol };
+        geometryCell = { row: firstVisibleRowRef.current, col: actualCol };
       }
-      return null;
-    }
-
-    if (localY >= HEADER_HEIGHT && localX >= ROW_HEADER_WIDTH) {
+    } else if (localY >= HEADER_HEIGHT && localX >= ROW_HEADER_WIDTH) {
       const rowIndex = findIndexForOffsetPrefix(rowPrefixSumsCurrent, rowContentOffset);
       const colIndex = findIndexForOffsetPrefix(colPrefixSumsCurrent, colContentOffset);
       const actualRow = visibleRowsCurrent[rowIndex];
       const actualCol = visibleColsCurrent[colIndex];
       if (actualRow !== undefined && actualCol !== undefined) {
-        return { row: actualRow, col: actualCol };
+        geometryCell = { row: actualRow, col: actualCol };
       }
     }
 
-    return null;
-  }, [zoomFactor]);
+    if (geometryCell && !worksheet?.isMergedSecondary(geometryCell.row, geometryCell.col)) {
+      return geometryCell;
+    }
+
+    return resolveCellFromHitTest() ?? geometryCell;
+  }, [frozenPaneBottom, frozenPaneRight, scrollOffsetFactor, worksheet, zoomFactor]);
 
   const applyColumnPreview = React.useCallback((actualCol: number, widthPx: number | null) => {
     const colElement = colElementRefs.current.get(actualCol);
@@ -5741,7 +5780,6 @@ function XlsxGrid({
     const normalized = normalizeRange(range);
     const wrapper = wrapperRef.current;
     if (wrapper) {
-      const wrapperRect = wrapper.getBoundingClientRect();
       const startCell = wrapper.querySelector<HTMLElement>(
         `[data-xlsx-cell="${normalized.start.row}:${normalized.start.col}"]`
       );
@@ -5750,12 +5788,27 @@ function XlsxGrid({
       );
 
       if (startCell && endCell) {
-        const startRect = startCell.getBoundingClientRect();
-        const endRect = endCell.getBoundingClientRect();
-        const left = (Math.min(startRect.left, endRect.left) - wrapperRect.left) / zoomFactor;
-        const top = (Math.min(startRect.top, endRect.top) - wrapperRect.top) / zoomFactor;
-        const right = (Math.max(startRect.right, endRect.right) - wrapperRect.left) / zoomFactor;
-        const bottom = (Math.max(startRect.bottom, endRect.bottom) - wrapperRect.top) / zoomFactor;
+        if (useNativeZoomForFrozenPanes) {
+          const wrapperRect = wrapper.getBoundingClientRect();
+          const startRect = startCell.getBoundingClientRect();
+          const endRect = endCell.getBoundingClientRect();
+          const left = (Math.min(startRect.left, endRect.left) - wrapperRect.left) / zoomFactor;
+          const top = (Math.min(startRect.top, endRect.top) - wrapperRect.top) / zoomFactor;
+          const right = (Math.max(startRect.right, endRect.right) - wrapperRect.left) / zoomFactor;
+          const bottom = (Math.max(startRect.bottom, endRect.bottom) - wrapperRect.top) / zoomFactor;
+
+          return {
+            height: Math.max(0, bottom - top),
+            left,
+            top,
+            width: Math.max(0, right - left)
+          };
+        }
+
+        const left = Math.min(startCell.offsetLeft, endCell.offsetLeft);
+        const top = Math.min(startCell.offsetTop, endCell.offsetTop);
+        const right = Math.max(startCell.offsetLeft + startCell.offsetWidth, endCell.offsetLeft + endCell.offsetWidth);
+        const bottom = Math.max(startCell.offsetTop + startCell.offsetHeight, endCell.offsetTop + endCell.offsetHeight);
 
         return {
           height: Math.max(0, bottom - top),
@@ -5786,7 +5839,7 @@ function XlsxGrid({
     }
 
     return null;
-  }, [colIndexByActual, colPrefixSums, rowIndexByActual, rowPrefixSums, zoomFactor]);
+  }, [colIndexByActual, colPrefixSums, rowIndexByActual, rowPrefixSums, useNativeZoomForFrozenPanes, zoomFactor]);
 
   const openTableMenuState = React.useMemo(() => {
     if (!openTableMenu) {
@@ -7543,8 +7596,9 @@ function XlsxGrid({
               left: 0,
               position: "absolute",
               top: 0,
-              transform: zoomFactor === 1 ? undefined : `scale(${zoomFactor})`,
+              transform: useNativeZoomForFrozenPanes || zoomFactor === 1 ? undefined : `scale(${zoomFactor})`,
               transformOrigin: "top left",
+              zoom: useNativeZoomForFrozenPanes ? zoomFactor : undefined,
               width: totalWidth
             }}
           >

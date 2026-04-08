@@ -106,6 +106,7 @@ export class XlsxWorkerClient {
   }
 
   loadWorkbook(buffer: ArrayBuffer) {
+    const workerBuffer = cloneArrayBufferForTransfer(buffer);
     return this.request<{
       chartsByWorkbookSheetIndex: XlsxChart[][];
       chartsheets: XlsxChartsheet[];
@@ -114,9 +115,9 @@ export class XlsxWorkerClient {
       tabs: XlsxWorkbookTab[];
     }>({
       id: 0,
-      payload: { buffer },
+      payload: { buffer: workerBuffer },
       type: "load"
-    }, [buffer]);
+    }, [workerBuffer]);
   }
 
   getCellSnapshot(workbookSheetIndex: number, row: number, col: number) {
@@ -131,15 +132,16 @@ export class XlsxWorkerClient {
   }
 
   parseCharts(buffer: ArrayBuffer) {
+    const workerBuffer = cloneArrayBufferForTransfer(buffer);
     return this.request<{
       chartsByWorkbookSheetIndex: XlsxChart[][];
       chartsheets: XlsxChartsheet[];
       tabs: XlsxWorkbookTab[];
     }>({
       id: 0,
-      payload: { buffer },
+      payload: { buffer: workerBuffer },
       type: "parseCharts"
-    }, [buffer]);
+    }, [workerBuffer]);
   }
 
   getRowsBatch(workbookSheetIndex: number, startRow: number, rowCount: number) {
@@ -181,4 +183,8 @@ export class XlsxWorkerClient {
 
     request.resolve(message.result);
   };
+}
+
+function cloneArrayBufferForTransfer(buffer: ArrayBuffer) {
+  return buffer.slice(0);
 }
