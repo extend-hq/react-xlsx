@@ -486,6 +486,30 @@ export function App() {
         ? { src: source.src, fileName: source.fileName, readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
         : { readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
   );
+  const zoomInitializedForSourceRef = React.useRef<string | null>(null);
+  const sourceKey = React.useMemo(() => {
+    if (!source) {
+      return null;
+    }
+
+    return source.type === "file"
+      ? `file:${source.fileName}:${source.file.byteLength}`
+      : `url:${source.fileName ?? ""}:${source.src}`;
+  }, [source]);
+
+  React.useEffect(() => {
+    if (!sourceKey) {
+      zoomInitializedForSourceRef.current = null;
+      return;
+    }
+
+    if (controller.tabs.length === 0 || zoomInitializedForSourceRef.current === sourceKey) {
+      return;
+    }
+
+    controller.setZoomScale(100);
+    zoomInitializedForSourceRef.current = sourceKey;
+  }, [controller, sourceKey]);
 
   const loadWorkbookFile = React.useCallback(async (nextFile: File) => {
     setIsReadingFile(true);

@@ -18,6 +18,7 @@ import {
   symbolTriangle
 } from "d3-shape";
 import type { CurveFactory } from "d3-shape";
+import { MemoSurfaceChartComposite } from "./surface-regl";
 import type { HierarchyNode, HierarchyRectangularNode } from "d3-hierarchy";
 import type { XlsxChart, XlsxImageRect } from "./types";
 
@@ -420,26 +421,29 @@ function getCategoryLabels(chart: XlsxChart) {
   if (categoryCount <= 0) {
     return [];
   }
+  const hasAnyExplicitCategory = chart.series.some((series) => (
+    series.categories.some((value) => normalizeCategoryLabel(value).length > 0)
+  ));
   const fallbackToImplicitOrdinal = chart.series.some((series) => {
     const categoriesLength = series.categories.length;
     if (categoriesLength === 0) {
       return false;
     }
     return series.categories.every((value) => normalizeCategoryLabel(value).length === 0);
-  });
+  }) || !hasAnyExplicitCategory;
   return Array.from({ length: categoryCount }, (_, categoryIndex) => {
     const primary = primaryCategories[categoryIndex];
     if (primary != null) {
       const normalizedPrimary = normalizeCategoryLabel(primary);
       if (normalizedPrimary.length > 0) {
-        return normalizedPrimary;
+        return formatCategoryLabel(chart, primary, normalizedPrimary);
       }
     }
     const fallback = chart.series
       .map((series) => series.categories[categoryIndex])
       .find((value) => normalizeCategoryLabel(value).length > 0);
     if (fallback != null) {
-      return normalizeCategoryLabel(fallback);
+      return formatCategoryLabel(chart, fallback, normalizeCategoryLabel(fallback));
     }
     return fallbackToImplicitOrdinal ? String(categoryIndex + 1) : "";
   });
@@ -513,6 +517,32 @@ function resolveChartStageSubtotal(series: XlsxChart["series"][number]) {
 }
 
 function buildChartStages(chart: XlsxChart) {
+  if (chart.chartType === "Funnel" || chart.chartType === "Waterfall") {
+    const primarySeriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
+    const primarySeries = chart.series[primarySeriesIndex] ?? null;
+    if (!primarySeries) {
+      return [];
+    }
+
+    const labels = getCategoryLabels(chart);
+    return primarySeries.values
+      .map((rawValue, index): ChartStage | null => {
+        const value = safeNumber(rawValue);
+        if (value == null || !Number.isFinite(value)) {
+          return null;
+        }
+        return {
+          color: chart.varyColors
+            ? chartPointColor(chart, index, primarySeriesIndex)
+            : chartSeriesColor(chart, primarySeriesIndex),
+          isSubtotal: false,
+          label: normalizeCategoryLabel(labels[index]) || String(index + 1),
+          value
+        };
+      })
+      .filter((stage): stage is ChartStage => stage != null);
+  }
+
   return chart.series
     .map((series, index): ChartStage | null => {
       const value = series.values.reduce<number>((sum, entry) => sum + (safeNumber(entry) ?? 0), 0);
@@ -799,6 +829,81 @@ function formatTickValue(value: number) {
 
 function formatPercentTickValue(value: number) {
   return `${formatTickValue(value)}%`;
+}
+
+function isLikelyDateFormatCode(formatCode: string | undefined) {
+  if (!formatCode) {
+    return false;
+  }
+  const normalized = formatCode
+    .toLowerCase()
+    .replace(/\[[^\]]*]/g, " ")
+    .replace(/"[^"]*"/g, " ")
+    .replace(/\\./g, " ");
+  return /(?:d|m|y)/.test(normalized);
+}
+
+function excelSerialToDate(serial: number, use1904: boolean) {
+  const wholeDays = Math.trunc(serial);
+  const milliseconds = Math.round((serial - wholeDays) * 86_400_000);
+  const baseUtc = use1904
+    ? Date.UTC(1904, 0, 1)
+    : Date.UTC(1899, 11, 30);
+  return new Date(baseUtc + wholeDays * 86_400_000 + milliseconds);
+}
+
+function formatExcelDateSerial(value: number, formatCode: string | undefined, use1904: boolean) {
+  const date = excelSerialToDate(value, use1904);
+  const normalized = (formatCode ?? "").toLowerCase();
+  const options: Intl.DateTimeFormatOptions = {};
+
+  if (/yyyy/.test(normalized)) {
+    options.year = "numeric";
+  } else if (/yy/.test(normalized)) {
+    options.year = "2-digit";
+  }
+
+  if (/mmmm/.test(normalized)) {
+    options.month = "long";
+  } else if (/mmm/.test(normalized)) {
+    options.month = "short";
+  } else if (/(^|[^a-z])m([^a-z]|$)|(^|[^a-z])mm([^a-z]|$)/.test(normalized)) {
+    options.month = "numeric";
+  }
+
+  if (/dddd/.test(normalized)) {
+    options.weekday = "long";
+  } else if (/ddd/.test(normalized)) {
+    options.weekday = "short";
+  }
+
+  if (/d/.test(normalized)) {
+    options.day = "numeric";
+  }
+
+  if (Object.keys(options).length === 0) {
+    options.month = "short";
+    options.day = "numeric";
+  }
+
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
+function formatCategoryLabel(chart: XlsxChart, value: unknown, fallback = "") {
+  const rawRecord = chart.raw && typeof chart.raw === "object"
+    ? chart.raw as Record<string, unknown>
+    : null;
+  const numeric = safeNumber(value);
+  const formatCode = chart.categoryAxis?.numberFormat?.formatCode;
+  if (numeric != null && isLikelyDateFormatCode(formatCode)) {
+    return formatExcelDateSerial(numeric, formatCode, rawRecord?.date1904 === true);
+  }
+
+  const normalized = normalizeCategoryLabel(value);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return fallback;
 }
 
 function truncateSvgText(value: string, maxWidth: number, fontSize = 10) {
@@ -1178,6 +1283,328 @@ function renderExtrudedRect(bar: BarRect) {
       <polygon fill={sideFill} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
       <polygon fill={topFill} points={topFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
       <rect fill={frontFill} height={frontH} stroke={bar.stroke} strokeWidth={bar.strokeWidth} width={frontW} x={frontX} y={frontY} />
+    </g>
+  );
+}
+
+function buildLinearSvgPath(points: Array<{ x: number; y: number }>, close = false) {
+  if (points.length === 0) {
+    return "";
+  }
+  const commands = points.map((point, index) => (
+    `${index === 0 ? "M" : "L"} ${toSvgNumber(point.x)} ${toSvgNumber(point.y)}`
+  ));
+  if (close) {
+    commands.push("Z");
+  }
+  return commands.join(" ");
+}
+
+function projectCartesian3dPoint(
+  x: number,
+  y: number,
+  z: number,
+  rotXRad: number,
+  rotYRad: number,
+  usePerspective: boolean,
+  perspectiveStrength: number
+) {
+  const cosX = Math.cos(rotXRad);
+  const sinX = Math.sin(rotXRad);
+  const cosY = Math.cos(rotYRad);
+  const sinY = Math.sin(rotYRad);
+
+  const x1 = x * cosY + z * sinY;
+  const z1 = -x * sinY + z * cosY;
+  const y1 = y * cosX - z1 * sinX;
+  const z2 = y * sinX + z1 * cosX;
+  const perspective = usePerspective
+    ? 1 / Math.max(0.22, 1 + z2 * (0.26 + perspectiveStrength * 0.54))
+    : 1;
+
+  return {
+    depth: z2,
+    x: x1 * perspective,
+    y: y1 * perspective
+  };
+}
+
+function renderLineOrAreaChart3d(
+  chart: XlsxChart,
+  palette: ChartRendererPalette,
+  layout: ChartLayout,
+  categories: string[],
+  stackedPointsBySeries: Array<Array<{ defined: boolean; y: number | null; y0: number | null; y1: number | null }>>,
+  minValue: number,
+  maxValue: number,
+  isAreaChart: boolean,
+  isStackedSeries: boolean
+) {
+  const plot = layout.plot;
+  const valueSpan = Math.max(1e-6, maxValue - minValue);
+  const seriesCount = Math.max(1, chart.series.length);
+  const categoryCount = Math.max(1, categories.length);
+  const frontZ = seriesCount <= 1 ? 0.7 : 0.9;
+  const backZ = seriesCount <= 1 ? -0.7 : -0.9;
+  const baseValue = isAreaChart ? Math.max(minValue, Math.min(maxValue, 0)) : minValue;
+  const rotXRad = clamp(chart.view3d?.rotX ?? 18, -80, 80) * (Math.PI / 180);
+  const rotYRad = clamp(chart.view3d?.rotY ?? 24, -80, 80) * (Math.PI / 180);
+  const usePerspective = chart.view3d?.rAngAx === false;
+  const perspectiveStrength = clamp((chart.view3d?.perspective ?? (usePerspective ? 26 : 0)) / 100, 0, 1);
+
+  const normalizeX = (categoryIndex: number) => (
+    categoryCount <= 1 ? 0 : ((categoryIndex / (categoryCount - 1)) - 0.5) * 2
+  );
+  const normalizeY = (value: number) => (
+    -((((value - minValue) / valueSpan) - 0.5) * 2)
+  );
+  const normalizeZ = (seriesIndex: number) => (
+    seriesCount <= 1 || (isAreaChart && isStackedSeries)
+      ? 0
+      : (((seriesIndex / (seriesCount - 1)) - 0.5) * (frontZ - backZ))
+  );
+
+  const cubeCorners = [
+    { x: -1, y: -1, z: backZ },
+    { x: 1, y: -1, z: backZ },
+    { x: 1, y: 1, z: backZ },
+    { x: -1, y: 1, z: backZ },
+    { x: -1, y: -1, z: frontZ },
+    { x: 1, y: -1, z: frontZ },
+    { x: 1, y: 1, z: frontZ },
+    { x: -1, y: 1, z: frontZ }
+  ].map((corner) => projectCartesian3dPoint(
+    corner.x,
+    corner.y,
+    corner.z,
+    rotXRad,
+    rotYRad,
+    usePerspective,
+    perspectiveStrength
+  ));
+
+  const projectedSeries = stackedPointsBySeries.map((seriesPoints, seriesIndex) => {
+    const z = normalizeZ(seriesIndex);
+    return seriesPoints.map((point, categoryIndex) => {
+      const x = normalizeX(categoryIndex);
+      const topValue = isStackedSeries ? (point.y1 ?? point.y ?? baseValue) : (point.y ?? baseValue);
+      const bottomValue = isAreaChart
+        ? (isStackedSeries ? (point.y0 ?? baseValue) : baseValue)
+        : baseValue;
+      const top = projectCartesian3dPoint(
+        x,
+        normalizeY(topValue),
+        z,
+        rotXRad,
+        rotYRad,
+        usePerspective,
+        perspectiveStrength
+      );
+      const bottom = projectCartesian3dPoint(
+        x,
+        normalizeY(bottomValue),
+        z,
+        rotXRad,
+        rotYRad,
+        usePerspective,
+        perspectiveStrength
+      );
+      return {
+        bottom,
+        defined: point.defined,
+        depth: top.depth,
+        top
+      };
+    });
+  });
+
+  const bounds = [
+    ...cubeCorners,
+    ...projectedSeries.flatMap((series) => series.flatMap((point) => point.defined ? [point.top, point.bottom] : []))
+  ];
+  const minX = Math.min(...bounds.map((point) => point.x));
+  const maxX = Math.max(...bounds.map((point) => point.x));
+  const minY = Math.min(...bounds.map((point) => point.y));
+  const maxY = Math.max(...bounds.map((point) => point.y));
+  const scale = Math.min(
+    plot.width / Math.max(0.4, maxX - minX),
+    plot.height / Math.max(0.4, maxY - minY)
+  ) * 0.82;
+  const centerRawX = (minX + maxX) / 2;
+  const centerRawY = (minY + maxY) / 2;
+  const centerX = plot.left + plot.width / 2;
+  const centerY = plot.top + plot.height / 2;
+  const toScreenPoint = (point: { depth: number; x: number; y: number }) => ({
+    depth: point.depth,
+    x: centerX + (point.x - centerRawX) * scale,
+    y: centerY + (point.y - centerRawY) * scale
+  });
+
+  const screenCorners = cubeCorners.map(toScreenPoint);
+  const seriesGeometry = projectedSeries.map((series, seriesIndex) => ({
+    averageDepth: series.reduce((sum, point) => sum + point.depth, 0) / Math.max(1, series.length),
+    points: series.map((point) => ({
+      bottom: toScreenPoint(point.bottom),
+      defined: point.defined,
+      top: toScreenPoint(point.top)
+    })),
+    seriesIndex
+  })).sort((left, right) => left.averageDepth - right.averageDepth);
+
+  const edgeColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const gridColor = lightenColor(edgeColor, 0.56);
+  const labelColor = resolveChartAxisTextColor(chart);
+  const boxEdges: Array<[number, number, boolean]> = [
+    [0, 1, false], [1, 2, false], [2, 3, false], [3, 0, false],
+    [4, 5, true], [5, 6, true], [6, 7, true], [7, 4, true],
+    [0, 4, false], [1, 5, true], [2, 6, true], [3, 7, false]
+  ];
+  const yTicks = buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit);
+  const xLabelPoints = categories.map((category, categoryIndex) => ({
+    label: category,
+    point: toScreenPoint(projectCartesian3dPoint(
+      normalizeX(categoryIndex),
+      -1.06,
+      frontZ,
+      rotXRad,
+      rotYRad,
+      usePerspective,
+      perspectiveStrength
+    ))
+  }));
+  const yLabelPoints = yTicks.map((tick) => ({
+    point: toScreenPoint(projectCartesian3dPoint(
+      -1.04,
+      normalizeY(tick),
+      frontZ,
+      rotXRad,
+      rotYRad,
+      usePerspective,
+      perspectiveStrength
+    )),
+    tick
+  }));
+
+  return (
+    <g>
+      {yTicks.map((tick) => {
+        const yNorm = normalizeY(tick);
+        const leftBack = toScreenPoint(projectCartesian3dPoint(-1, yNorm, backZ, rotXRad, rotYRad, usePerspective, perspectiveStrength));
+        const rightBack = toScreenPoint(projectCartesian3dPoint(1, yNorm, backZ, rotXRad, rotYRad, usePerspective, perspectiveStrength));
+        const leftFront = toScreenPoint(projectCartesian3dPoint(-1, yNorm, frontZ, rotXRad, rotYRad, usePerspective, perspectiveStrength));
+        return (
+          <g key={`line3d-grid-${tick}`}>
+            <line stroke={gridColor} strokeWidth={1} x1={leftBack.x} x2={rightBack.x} y1={leftBack.y} y2={rightBack.y} />
+            <line stroke={gridColor} strokeWidth={0.9} x1={leftBack.x} x2={leftFront.x} y1={leftBack.y} y2={leftFront.y} />
+          </g>
+        );
+      })}
+      {boxEdges.map(([startIndex, endIndex, emphasized], index) => {
+        const start = screenCorners[startIndex];
+        const end = screenCorners[endIndex];
+        return (
+          <line
+            key={`line3d-box-${index}`}
+            stroke={emphasized ? edgeColor : lightenColor(edgeColor, 0.34)}
+            strokeWidth={emphasized ? 1.35 : 1}
+            x1={start.x}
+            x2={end.x}
+            y1={start.y}
+            y2={end.y}
+          />
+        );
+      })}
+      {seriesGeometry.map(({ points, seriesIndex }) => {
+        const definedPoints = points.filter((point) => point.defined);
+        if (definedPoints.length === 0) {
+          return null;
+        }
+        const linePoints = definedPoints.map((point) => point.top);
+        const areaPoints = isAreaChart
+          ? [
+              ...definedPoints.map((point) => point.top),
+              ...definedPoints.slice().reverse().map((point) => point.bottom)
+            ]
+          : [];
+        const strokeColor = chartSeriesStrokeColor(chart, seriesIndex);
+        const fillColor = chartSeriesColor(chart, seriesIndex);
+        const markerSymbol = normalizeChartMarkerSymbol(chart.series[seriesIndex]?.markerSymbol);
+        const markerPath = markerSymbolPath(markerSymbol, Math.max(4, chart.series[seriesIndex]?.markerSize ?? 6) * 0.52);
+
+        return (
+          <g key={`line3d-series-${seriesIndex}`}>
+            {isAreaChart && areaPoints.length >= 3 ? (
+              <path
+                d={buildLinearSvgPath(areaPoints, true)}
+                fill={fillColor}
+                fillOpacity={0.74}
+                stroke={darkenColor(fillColor, 0.12)}
+                strokeWidth={0.9}
+              />
+            ) : null}
+            {!isAreaChart
+              ? definedPoints.map((point, pointIndex) => (
+                  <line
+                    key={`line3d-drop-${seriesIndex}-${pointIndex}`}
+                    stroke={lightenColor(strokeColor, 0.44)}
+                    strokeDasharray="2 2"
+                    strokeWidth={0.9}
+                    x1={point.top.x}
+                    x2={point.bottom.x}
+                    y1={point.top.y}
+                    y2={point.bottom.y}
+                  />
+                ))
+              : null}
+            <path
+              d={buildLinearSvgPath(linePoints)}
+              fill="none"
+              stroke={strokeColor}
+              strokeLinejoin="round"
+              strokeWidth={Math.max(1.8, chart.series[seriesIndex]?.lineWidthPx ?? 2)}
+            />
+            {markerPath.length > 0
+              ? definedPoints.map((point, pointIndex) => (
+                  <g
+                    key={`line3d-marker-${seriesIndex}-${pointIndex}`}
+                    transform={`translate(${toSvgNumber(point.top.x)}, ${toSvgNumber(point.top.y)})`}
+                  >
+                    <path
+                      d={markerPath}
+                      fill={chart.series[seriesIndex]?.markerColor ?? fillColor}
+                      stroke={chart.series[seriesIndex]?.markerLineColor ?? chart.chartAreaFillColor ?? palette.surface}
+                      strokeWidth={1}
+                    />
+                  </g>
+                ))
+              : null}
+          </g>
+        );
+      })}
+      {yLabelPoints.map(({ point, tick }) => (
+        <text
+          key={`line3d-y-label-${tick}`}
+          fill={labelColor}
+          fontSize={10}
+          textAnchor="end"
+          x={point.x - 6}
+          y={point.y + 3}
+        >
+          {formatTickValue(tick)}
+        </text>
+      ))}
+      {xLabelPoints.map(({ label, point }, index) => (
+        <text
+          key={`line3d-x-label-${index}`}
+          fill={labelColor}
+          fontSize={10}
+          textAnchor="middle"
+          x={point.x}
+          y={point.y + 14}
+        >
+          {label}
+        </text>
+      ))}
     </g>
   );
 }
@@ -1606,6 +2033,20 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
 
   const curve: CurveFactory = curveLinear;
   const areaBaseline = yScale(Math.max(minValue, 0));
+
+  if (chart.is3d) {
+    return renderLineOrAreaChart3d(
+      chart,
+      palette,
+      layout,
+      categories,
+      stackedPointsBySeries,
+      minValue,
+      maxValue,
+      isAreaChart,
+      isStackedSeries
+    );
+  }
 
   return (
     <g>
@@ -2862,18 +3303,47 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
     return null;
   }
 
-  const highIndex = indexByName(chart.series, /high|max|top/) ?? 0;
-  const lowIndex = indexByName(chart.series, /low|min|bottom/) ?? Math.min(1, chart.series.length - 1);
-  const closeIndex = indexByName(chart.series, /close|last|end/) ?? Math.min(2, chart.series.length - 1);
+  const explicitRoles = {
+    close: indexByName(chart.series, /close|last|end/),
+    high: indexByName(chart.series, /high|max|top/),
+    low: indexByName(chart.series, /low|min|bottom/),
+    open: indexByName(chart.series, /open|start/),
+    volume: indexByName(chart.series, /volume|vol/)
+  };
+  const usedIndices = new Set<number>(Object.values(explicitRoles).filter((value): value is number => value != null));
+  const remainingIndices = chart.series.map((_, index) => index).filter((index) => !usedIndices.has(index));
+  const canonicalOrder = chart.series.length >= 4
+    ? (["open", "high", "low", "close"] as const)
+    : (["high", "low", "close"] as const);
+  canonicalOrder.forEach((role) => {
+    if (explicitRoles[role] == null) {
+      const nextIndex = remainingIndices.shift();
+      if (nextIndex != null) {
+        explicitRoles[role] = nextIndex;
+      }
+    }
+  });
+
+  const highIndex = explicitRoles.high ?? 0;
+  const lowIndex = explicitRoles.low ?? Math.min(1, chart.series.length - 1);
+  const closeIndex = explicitRoles.close ?? Math.min(2, chart.series.length - 1);
+  const openIndex = explicitRoles.open;
+  const volumeIndex = explicitRoles.volume != null && ![highIndex, lowIndex, closeIndex, openIndex].includes(explicitRoles.volume)
+    ? explicitRoles.volume
+    : null;
   const high = chart.series[highIndex];
   const low = chart.series[lowIndex];
   const close = chart.series[closeIndex];
+  const open = openIndex != null ? chart.series[openIndex] : null;
+  const volume = volumeIndex != null ? chart.series[volumeIndex] : null;
 
   const points = categories
     .map((category, index) => {
       const highValue = safeNumber(high.values[index]);
       const lowValue = safeNumber(low.values[index]);
       const closeValue = safeNumber(close.values[index]);
+      const openValue = open ? safeNumber(open.values[index]) : null;
+      const volumeValue = volume ? safeNumber(volume.values[index]) : null;
       if (highValue == null || lowValue == null || closeValue == null) {
         return null;
       }
@@ -2881,28 +3351,65 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         category,
         close: closeValue,
         high: highValue,
-        low: lowValue
+        low: lowValue,
+        open: openValue,
+        volume: volumeValue
       };
     })
-    .filter((entry): entry is { category: string; close: number; high: number; low: number } => entry != null);
+    .filter((entry): entry is { category: string; close: number; high: number; low: number; open: number | null; volume: number | null } => entry != null);
   if (points.length === 0) {
     return null;
   }
 
   const plot = layout.plot;
-  const minValue = Math.min(...points.map((entry) => entry.low ?? 0));
-  const maxValue = Math.max(...points.map((entry) => entry.high ?? 0));
+  const hasVolume = volume != null && points.some((entry) => (entry.volume ?? 0) > 0);
+  const pricePlot = hasVolume
+    ? {
+        ...plot,
+        height: Math.max(40, plot.height * 0.68)
+      }
+    : plot;
+  const volumePlot = hasVolume
+    ? {
+        height: Math.max(28, plot.height - pricePlot.height - 18),
+        left: plot.left,
+        top: pricePlot.top + pricePlot.height + 18,
+        width: plot.width
+      }
+    : null;
+  let minValue = Math.min(...points.map((entry) => entry.low));
+  let maxValue = Math.max(...points.map((entry) => entry.high));
+  if (typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)) {
+    minValue = chart.valueAxis.min;
+  }
+  if (typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)) {
+    maxValue = chart.valueAxis.max;
+  }
+  if (maxValue <= minValue) {
+    maxValue = minValue + 1;
+  }
   const yScale = scaleLinear()
-    .domain([minValue, maxValue <= minValue ? minValue + 1 : maxValue])
-    .range([plot.top + plot.height, plot.top]);
+    .domain([minValue, maxValue])
+    .range([pricePlot.top + pricePlot.height, pricePlot.top]);
   const xScale = scaleBand<string>()
     .domain(categories)
     .range([plot.left, plot.left + plot.width])
-    .paddingInner(0.32)
+    .paddingInner(0.28)
     .paddingOuter(0.18);
-  const ticks = buildNumericTickValues(minValue, maxValue <= minValue ? minValue + 1 : maxValue, chart.valueAxis?.majorUnit);
+  const ticks = buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit);
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = resolveChartAxisTextColor(chart);
+  const upColor = chartSeriesColor(chart, closeIndex);
+  const downColor = chartSeriesColor(chart, lowIndex);
+  const openTickColor = openIndex != null ? chartSeriesColor(chart, openIndex) : axisColor;
+  const closeTickColor = chartSeriesColor(chart, closeIndex);
+  const volumeMax = hasVolume
+    ? Math.max(1, ...points.map((entry) => entry.volume ?? 0))
+    : 1;
+  const volumeScale = volumePlot
+    ? scaleLinear().domain([0, volumeMax]).range([volumePlot.top + volumePlot.height, volumePlot.top])
+    : null;
+  const labelStep = Math.max(1, Math.ceil(categories.length / Math.max(4, Math.floor(plot.width / 68))));
 
   return (
     <g>
@@ -2911,17 +3418,20 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
           <line
             stroke={lightenColor(axisColor, 0.72)}
             strokeWidth={1}
-            x1={plot.left}
-            x2={plot.left + plot.width}
+            x1={pricePlot.left}
+            x2={pricePlot.left + pricePlot.width}
             y1={yScale(tick)}
             y2={yScale(tick)}
           />
-          <text fill={labelColor} fontSize={10} textAnchor="end" x={plot.left - 6} y={yScale(tick) + 3}>
+          <text fill={labelColor} fontSize={10} textAnchor="end" x={pricePlot.left - 6} y={yScale(tick) + 3}>
             {formatTickValue(tick)}
           </text>
         </g>
       ))}
-      {categories.map((category) => {
+      {categories.map((category, index) => {
+        if (index % labelStep !== 0 && index !== categories.length - 1) {
+          return null;
+        }
         const x = (xScale(category) ?? plot.left) + xScale.bandwidth() * 0.5;
         return (
           <text
@@ -2930,23 +3440,67 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
             fontSize={10}
             textAnchor="middle"
             x={x}
-            y={plot.top + plot.height + 14}
+            y={volumePlot ? (volumePlot.top + volumePlot.height + 14) : (pricePlot.top + pricePlot.height + 14)}
           >
             {category}
           </text>
         );
       })}
-      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left} y1={plot.top} y2={plot.top + plot.height} />
-      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left + plot.width} y1={plot.top + plot.height} y2={plot.top + plot.height} />
+      <line stroke={axisColor} strokeWidth={1.2} x1={pricePlot.left} x2={pricePlot.left} y1={pricePlot.top} y2={pricePlot.top + pricePlot.height} />
+      <line stroke={axisColor} strokeWidth={1.2} x1={pricePlot.left} x2={pricePlot.left + pricePlot.width} y1={pricePlot.top + pricePlot.height} y2={pricePlot.top + pricePlot.height} />
+      {volumePlot ? (
+        <>
+          <line stroke={axisColor} strokeWidth={1.1} x1={volumePlot.left} x2={volumePlot.left} y1={volumePlot.top} y2={volumePlot.top + volumePlot.height} />
+          <line stroke={axisColor} strokeWidth={1.1} x1={volumePlot.left} x2={volumePlot.left + volumePlot.width} y1={volumePlot.top + volumePlot.height} y2={volumePlot.top + volumePlot.height} />
+        </>
+      ) : null}
       {points.map((entry, index) => {
         const x = (xScale(entry.category) ?? plot.left) + xScale.bandwidth() * 0.5;
         const previousClose = index > 0 ? points[index - 1]?.close ?? entry.close : entry.close;
-        const isUp = (entry.close ?? 0) >= previousClose;
-        const stroke = isUp ? (chartSeriesColor(chart, closeIndex) ?? "#2f7d4d") : (chartSeriesColor(chart, lowIndex) ?? "#b03a2e");
+        const isUp = entry.open != null
+          ? entry.close >= entry.open
+          : entry.close >= previousClose;
+        const stroke = isUp ? upColor : downColor;
+        const candleWidth = Math.max(5, xScale.bandwidth() * 0.56);
+        const bodyLeft = x - candleWidth / 2;
+        const openY = entry.open != null ? yScale(entry.open) : null;
+        const closeY = yScale(entry.close);
+        const highY = yScale(entry.high);
+        const lowY = yScale(entry.low);
         return (
           <g key={`stock-point-${index}`}>
-            <line stroke={stroke} strokeWidth={1.8} x1={x} x2={x} y1={yScale(entry.high ?? 0)} y2={yScale(entry.low ?? 0)} />
-            <line stroke={stroke} strokeWidth={1.8} x1={x} x2={x + 7} y1={yScale(entry.close ?? 0)} y2={yScale(entry.close ?? 0)} />
+            <line stroke={stroke} strokeWidth={1.6} x1={x} x2={x} y1={highY} y2={lowY} />
+            {entry.open != null && openY != null ? (
+              Math.abs(openY - closeY) >= 1 ? (
+                <rect
+                  fill={isUp ? "#ffffff" : stroke}
+                  height={Math.max(1.4, Math.abs(closeY - openY))}
+                  stroke={stroke}
+                  strokeWidth={1.3}
+                  width={candleWidth}
+                  x={bodyLeft}
+                  y={Math.min(openY, closeY)}
+                />
+              ) : (
+                <line stroke={stroke} strokeWidth={1.6} x1={bodyLeft} x2={bodyLeft + candleWidth} y1={closeY} y2={closeY} />
+              )
+            ) : (
+              <line stroke={closeTickColor} strokeWidth={1.8} x1={x} x2={x + 7} y1={closeY} y2={closeY} />
+            )}
+            {entry.open != null && openY != null ? (
+              <line stroke={openTickColor} strokeWidth={1.8} x1={x - 7} x2={x} y1={openY} y2={openY} />
+            ) : null}
+            {volumePlot && volumeScale && entry.volume != null ? (
+              <rect
+                fill={isUp ? lightenColor(upColor, 0.18) : lightenColor(downColor, 0.08)}
+                height={Math.max(1, volumePlot.top + volumePlot.height - volumeScale(entry.volume))}
+                opacity={0.9}
+                stroke="none"
+                width={Math.max(3, xScale.bandwidth() * 0.64)}
+                x={x - Math.max(3, xScale.bandwidth() * 0.64) / 2}
+                y={volumeScale(entry.volume)}
+              />
+            ) : null}
           </g>
         );
       })}
@@ -3363,6 +3917,26 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, r
   const normalizedBorderColor = borderColor.trim().toLowerCase();
   const hideBackgroundRect = normalizedBackground === "transparent" && normalizedBorderColor === "transparent";
   const fontFamily = buildChartFontFamily(chart.fontFamily);
+
+  if (renderChartType === "Surface") {
+    return (
+      <MemoSurfaceChartComposite
+        background={background}
+        borderColor={borderColor}
+        chart={chart}
+        fallback={renderSurfaceChart(chart, palette, layout)}
+        fontFamily={fontFamily}
+        layout={layout}
+        overlay={
+          <>
+            {renderTitle(chart, layout, palette)}
+            {renderLegend(chart, layout, palette)}
+          </>
+        }
+        palette={palette}
+      />
+    );
+  }
 
   return (
     <svg
