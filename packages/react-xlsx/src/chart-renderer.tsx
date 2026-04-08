@@ -3073,12 +3073,6 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     return shouldReverseCategories ? values.reverse() : values;
   });
   const rawMatrix = matrix.map((row) => row.slice());
-  const positiveTotals = Array.from({ length: categoryCount }, (_, categoryIndex) => (
-    matrix.reduce((sum, row) => sum + Math.max(0, row[categoryIndex] ?? 0), 0)
-  ));
-  const negativeTotals = Array.from({ length: categoryCount }, (_, categoryIndex) => (
-    Math.abs(matrix.reduce((sum, row) => sum + Math.min(0, row[categoryIndex] ?? 0), 0))
-  ));
 
   if (isPercentStacked) {
     for (let categoryIndex = 0; categoryIndex < categoryCount; categoryIndex += 1) {
@@ -3088,6 +3082,13 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       }
     }
   }
+
+  const positiveTotals = Array.from({ length: categoryCount }, (_, categoryIndex) => (
+    matrix.reduce((sum, row) => sum + Math.max(0, row[categoryIndex] ?? 0), 0)
+  ));
+  const negativeTotals = Array.from({ length: categoryCount }, (_, categoryIndex) => (
+    Math.abs(matrix.reduce((sum, row) => sum + Math.min(0, row[categoryIndex] ?? 0), 0))
+  ));
 
   let minValue = Number.POSITIVE_INFINITY;
   let maxValue = Number.NEGATIVE_INFINITY;
@@ -3254,7 +3255,7 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         const scaleAt = (ratio: number) => {
           const clampedRatio = clamp(ratio, 0, 1);
           const taperedRatio = normalized3dShape === "cone"
-            ? Math.pow(clampedRatio, isHorizontal ? 1.2 : 1.08)
+            ? Math.pow(clampedRatio, isHorizontal ? 1.85 : 1.08)
             : clampedRatio;
           return clamp(1 - (taperedRatio * shapeTaper), normalized3dShape === "cone" ? 0 : 0.04, 1);
         };
