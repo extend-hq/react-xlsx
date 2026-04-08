@@ -12,5 +12,7 @@ tmp/spreadsheets/generate_aspose_chart_zoo.class
 tmp/spreadsheets/render/crazy-chart-zoo-modern/
 tmp/spreadsheets/render/crazy-chart-zoo-subtypes/
 tmp/crazy-chart-zoo.xlsx
+tmp/*-unzip/
+tmp/*.xlsx
 hs_err_pid*.log
 .tmp-fixtures/
