@@ -149,6 +149,18 @@ function resolveDefaultZoomScale(activeTab: XlsxWorkbookTab | null, activeSheet:
   return clampZoomScale(activeSheet?.zoomScale ?? DEFAULT_ZOOM_SCALE);
 }
 
+function resolveWorksheetZoomScale(
+  worksheet: ReturnType<Workbook["getSheet"]>,
+  sheetState?: Record<string, unknown> | null
+) {
+  const candidates = [
+    typeof sheetState?.zoomScale === "number" ? sheetState.zoomScale : undefined,
+    typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined
+  ];
+  const value = candidates.find((entry): entry is number => typeof entry === "number" && Number.isFinite(entry) && entry > 0);
+  return clampZoomScale(value ?? DEFAULT_ZOOM_SCALE);
+}
+
 function resolveNextZoomScale(currentZoomScale: number, direction: 1 | -1) {
   if (direction > 0) {
     return Math.min(
@@ -545,7 +557,7 @@ function buildSheetList(
         showGridLines: sheetState?.showGridLines ?? true,
         themePalette: themePalette ?? { colorsByIndex: {} },
         workbookSheetIndex: index,
-        zoomScale: typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined
+        zoomScale: resolveWorksheetZoomScale(worksheet, sheetState)
       });
       continue;
     }
@@ -634,7 +646,7 @@ function buildSheetList(
       tableStyleByName: tableStyleByName ?? {},
       themePalette: themePalette ?? { colorsByIndex: {} },
       workbookSheetIndex: index,
-      zoomScale: typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined,
+      zoomScale: resolveWorksheetZoomScale(worksheet, sheetState),
       get rowCount() {
         return getVisibleRows().length;
       },

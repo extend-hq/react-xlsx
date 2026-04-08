@@ -53,6 +53,11 @@ type SurfaceVertex = {
   value: number;
 };
 
+type SolidSurfaceTriangle = {
+  color: string;
+  points: [SurfacePoint3D, SurfacePoint3D, SurfacePoint3D];
+};
+
 type SurfaceScene = {
   fillColors: Float32Array;
   fillPositions: Float32Array;
@@ -123,10 +128,95 @@ function resolveSurfaceBaseColor(chart: XlsxChart, palette: SurfacePalette) {
     ?? palette.text;
 }
 
+function normalizeBuiltinSurfaceStyleId(styleId: number | undefined) {
+  if (typeof styleId !== "number" || !Number.isFinite(styleId)) {
+    return null;
+  }
+  return styleId >= 100 ? styleId - 100 : styleId;
+}
+
+function normalizeSurfaceRendererHexColor(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = trimmed.startsWith("#") ? trimmed.slice(1) : trimmed;
+  return /^[0-9a-f]{6}$/i.test(normalized) ? `#${normalized.toLowerCase()}` : null;
+}
+
+function hasExplicitSurfaceBaseColor(chart: XlsxChart) {
+  const primarySeriesColor = normalizeSurfaceRendererHexColor(chart.series[0]?.color ?? chart.series[0]?.lineColor);
+  if (!primarySeriesColor) {
+    return null;
+  }
+  const paletteColor = normalizeSurfaceRendererHexColor(chart.chartColorPalette?.[0]);
+  return paletteColor && paletteColor === primarySeriesColor ? null : primarySeriesColor;
+}
+
+function buildMonochromeSurfacePalette(baseColor: string, count: number) {
+  if (count <= 3) {
+    return [
+      lightenColor(baseColor, 0.58),
+      lightenColor(baseColor, 0.18),
+      darkenColor(baseColor, 0.12)
+    ];
+  }
+  return [
+    lightenColor(baseColor, 0.62),
+    lightenColor(baseColor, 0.34),
+    baseColor,
+    darkenColor(baseColor, 0.12),
+    darkenColor(baseColor, 0.24)
+  ];
+}
+
+function getBuiltinSurfacePalette(chart: XlsxChart) {
+  const normalized = normalizeBuiltinSurfaceStyleId(chart.chartStyleId);
+  const explicitBaseColor = hasExplicitSurfaceBaseColor(chart);
+  if (normalized === 26) {
+    return buildMonochromeSurfacePalette(explicitBaseColor ?? "#ff006e", 3);
+  }
+  if (normalized === 34 && explicitBaseColor) {
+    return buildMonochromeSurfacePalette(explicitBaseColor, 3);
+  }
+  if (normalized === 34 || (chart.wireframe === true && normalized == null)) {
+    return ["#5b9bd5", "#ed7d31", "#a5a5a5"];
+  }
+  if (normalized === 35 || normalized === 36 || (chart.wireframe !== true && normalized == null)) {
+    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#b4c7e7"];
+  }
+  return null;
+}
+
+function getSurfaceBandCount(chart: XlsxChart) {
+  const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
+  const explicitBandCount = typeof raw?.bandFormatCount === "number" && Number.isFinite(raw.bandFormatCount)
+    ? raw.bandFormatCount
+    : null;
+  if (explicitBandCount != null && explicitBandCount > 0) {
+    return explicitBandCount;
+  }
+  const builtinPalette = getBuiltinSurfacePalette(chart);
+  if (builtinPalette && builtinPalette.length > 0) {
+    return builtinPalette.length;
+  }
+  if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
+    return chart.chartColorPalette.length;
+  }
+  return chart.wireframe ? 3 : 5;
+}
+
 function getSurfaceColorStops(chart: XlsxChart, palette: SurfacePalette) {
   const explicitStops = (chart.chartColorPalette ?? []).filter((value): value is string => typeof value === "string" && value.length > 0);
   if (explicitStops.length >= 2) {
     return explicitStops;
+  }
+  const builtinPalette = getBuiltinSurfacePalette(chart);
+  if (builtinPalette && builtinPalette.length >= 2) {
+    return builtinPalette;
   }
   const baseColor = resolveSurfaceBaseColor(chart, palette);
   return [
@@ -148,28 +238,30 @@ function getSurfaceDomain(chart: XlsxChart): SurfaceDomain | null {
   if (numericValues.length === 0) {
     return null;
   }
-  const minValue = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)
+  const explicitMin = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)
     ? chart.valueAxis.min
-    : Math.min(...numericValues);
-  const maxValue = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)
+    : null;
+  const explicitMax = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)
     ? chart.valueAxis.max
-    : Math.max(...numericValues);
-  const safeMax = maxValue <= minValue ? minValue + 1 : maxValue;
-  const span = safeMax - minValue;
-  const roughStep = span / 5;
+    : null;
+  const rawMin = Math.min(...numericValues);
+  const rawMax = Math.max(...numericValues);
+  const bandCount = Math.max(1, getSurfaceBandCount(chart));
+  const spanBase = Math.max(1e-6, rawMax - Math.min(0, rawMin));
+  const roughStep = spanBase / bandCount;
   const magnitude = Math.pow(10, Math.floor(Math.log10(Math.max(roughStep, 1e-6))));
   const normalized = roughStep / magnitude;
   const niceStep = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-  const step = niceStep * magnitude;
-  const ticks: number[] = [minValue];
-  let nextTick = Math.ceil(minValue / step) * step;
-  while (nextTick < safeMax) {
-    if (nextTick > minValue) {
-      ticks.push(nextTick);
-    }
-    nextTick += step;
+  const step = typeof chart.valueAxis?.majorUnit === "number" && chart.valueAxis.majorUnit > 0
+    ? chart.valueAxis.majorUnit
+    : niceStep * magnitude;
+  const minValue = explicitMin ?? (rawMin >= 0 ? 0 : Math.floor(rawMin / step) * step);
+  const maxValue = explicitMax ?? Math.ceil(rawMax / step) * step;
+  const safeMax = maxValue <= minValue ? minValue + step : maxValue;
+  const ticks: number[] = [];
+  for (let current = minValue; current <= safeMax + step * 0.001; current += step) {
+    ticks.push(Number(current.toFixed(8)));
   }
-  ticks.push(safeMax);
   return {
     maxValue,
     minValue,
@@ -307,6 +399,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const isContour = rawChartType === "surfaceChart";
   const isWireframe = chart.wireframe === true;
   const fillVertices: SurfaceVertex[] = [];
+  const solidTriangles: SolidSurfaceTriangle[] = [];
   const contourLines: Array<{ color: string; from: { x: number; y: number }; to: { x: number; y: number } }> = [];
   const meshLines: Array<{ color: string; from: SurfacePoint3D; to: SurfacePoint3D }> = [];
   const stepsPerCell = isContour ? 12 : 8;
@@ -315,6 +408,11 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const usePerspective = !isContour && chart.view3d?.rAngAx === false;
   const perspectiveStrength = clamp((chart.view3d?.perspective ?? (usePerspective ? 30 : 0)) / 100, 0, 1);
   const depthScale = isContour ? 1 : clamp((chart.view3d?.depthPercent ?? 100) / 100, 0.2, 4);
+  const usesFlatMaterial = chart.surfaceMaterial === "flat";
+  const wallLineColor = chart.backWall?.lineColor ?? chart.sideWall?.lineColor ?? chart.floor?.lineColor ?? chart.axisLineColor ?? "#a6a6a6";
+  const backWallFill = chart.backWall?.fillColor ?? "#d9d9df";
+  const sideWallFill = chart.sideWall?.fillColor ?? "#d5d7dc";
+  const floorFill = chart.floor?.fillColor ?? "#d0d2d8";
   const projectPoint = (column: number, row: number, value: number): SurfacePoint3D => {
     const worldX = normalizeSurfaceX(column, cols);
     const worldY = normalizeSurfaceY(row, rows);
@@ -338,6 +436,15 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
       x: projected.x,
       y: projected.y
     };
+  };
+  const addSolidQuad = (a: SurfacePoint3D, b: SurfacePoint3D, c: SurfacePoint3D, d: SurfacePoint3D, color: string) => {
+    solidTriangles.push(
+      { color, points: [a, b, c] },
+      { color, points: [a, c, d] }
+    );
+  };
+  const addMeshLine = (from: SurfacePoint3D, to: SurfacePoint3D, color: string) => {
+    meshLines.push({ color, from, to });
   };
 
   for (let rowIndex = 0; rowIndex < rows - 1; rowIndex += 1) {
@@ -437,14 +544,73 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     }
   }
 
+  const columnSkip = Math.max(1, chart.categoryAxis?.tickMarkSkip ?? 1);
+  const rowSkip = Math.max(1, chart.seriesAxis?.tickMarkSkip ?? 1);
+  if (isContour) {
+    const topLeft = projectPoint(0, 0, domain.minValue);
+    const topRight = projectPoint(cols - 1, 0, domain.minValue);
+    const bottomRight = projectPoint(cols - 1, rows - 1, domain.minValue);
+    const bottomLeft = projectPoint(0, rows - 1, domain.minValue);
+    addSolidQuad(topLeft, topRight, bottomRight, bottomLeft, backWallFill);
+    for (let columnIndex = 0; columnIndex < cols; columnIndex += columnSkip) {
+      addMeshLine(
+        projectPoint(columnIndex, 0, domain.minValue),
+        projectPoint(columnIndex, rows - 1, domain.minValue),
+        wallLineColor
+      );
+    }
+    for (let rowIndex = 0; rowIndex < rows; rowIndex += rowSkip) {
+      addMeshLine(
+        projectPoint(0, rowIndex, domain.minValue),
+        projectPoint(cols - 1, rowIndex, domain.minValue),
+        wallLineColor
+      );
+    }
+  } else {
+    const minPlaneValue = domain.minValue;
+    addSolidQuad(
+      projectPoint(0, 0, minPlaneValue),
+      projectPoint(cols - 1, 0, minPlaneValue),
+      projectPoint(cols - 1, rows - 1, minPlaneValue),
+      projectPoint(0, rows - 1, minPlaneValue),
+      floorFill
+    );
+    addSolidQuad(
+      projectPoint(0, 0, domain.safeMax),
+      projectPoint(cols - 1, 0, domain.safeMax),
+      projectPoint(cols - 1, 0, minPlaneValue),
+      projectPoint(0, 0, minPlaneValue),
+      backWallFill
+    );
+    addSolidQuad(
+      projectPoint(cols - 1, 0, domain.safeMax),
+      projectPoint(cols - 1, rows - 1, domain.safeMax),
+      projectPoint(cols - 1, rows - 1, minPlaneValue),
+      projectPoint(cols - 1, 0, minPlaneValue),
+      sideWallFill
+    );
+    for (const tick of domain.ticks) {
+      addMeshLine(projectPoint(0, 0, tick), projectPoint(cols - 1, 0, tick), wallLineColor);
+      addMeshLine(projectPoint(cols - 1, 0, tick), projectPoint(cols - 1, rows - 1, tick), wallLineColor);
+    }
+    for (let columnIndex = 0; columnIndex < cols; columnIndex += columnSkip) {
+      addMeshLine(projectPoint(columnIndex, 0, minPlaneValue), projectPoint(columnIndex, rows - 1, minPlaneValue), wallLineColor);
+      addMeshLine(projectPoint(columnIndex, 0, minPlaneValue), projectPoint(columnIndex, 0, domain.safeMax), wallLineColor);
+    }
+    for (let rowIndex = 0; rowIndex < rows; rowIndex += rowSkip) {
+      addMeshLine(projectPoint(0, rowIndex, minPlaneValue), projectPoint(cols - 1, rowIndex, minPlaneValue), wallLineColor);
+      addMeshLine(projectPoint(cols - 1, rowIndex, minPlaneValue), projectPoint(cols - 1, rowIndex, domain.safeMax), wallLineColor);
+    }
+  }
+
   if (!isContour && isWireframe) {
     const lineColor = chart.axisLineColor ?? darkenColor(resolveSurfaceBaseColor(chart, palette), 0.1);
-    const addMeshLine = (fromColumn: number, fromRow: number, toColumn: number, toRow: number, fromValue: number, toValue: number) => {
-      meshLines.push({
-        color: lineColor,
-        from: projectPoint(fromColumn, fromRow, fromValue),
-        to: projectPoint(toColumn, toRow, toValue)
-      });
+    const addWireMeshLine = (fromColumn: number, fromRow: number, toColumn: number, toRow: number, fromValue: number, toValue: number) => {
+      addMeshLine(
+        projectPoint(fromColumn, fromRow, fromValue),
+        projectPoint(toColumn, toRow, toValue),
+        lineColor
+      );
     };
     for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
       for (let columnIndex = 0; columnIndex < cols - 1; columnIndex += 1) {
@@ -460,7 +626,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
           const toColumn = columnIndex + u1;
           const fromValue = left + (right - left) * u0;
           const toValue = left + (right - left) * u1;
-          addMeshLine(fromColumn, rowIndex, toColumn, rowIndex, fromValue, toValue);
+          addWireMeshLine(fromColumn, rowIndex, toColumn, rowIndex, fromValue, toValue);
         }
       }
     }
@@ -478,7 +644,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
           const toRow = rowIndex + v1;
           const fromValue = top + (bottom - top) * v0;
           const toValue = top + (bottom - top) * v1;
-          addMeshLine(columnIndex, fromRow, columnIndex, toRow, fromValue, toValue);
+          addWireMeshLine(columnIndex, fromRow, columnIndex, toRow, fromValue, toValue);
         }
       }
     }
@@ -524,6 +690,14 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
 
   const fillPositions: number[] = [];
   const fillColors: number[] = [];
+  for (const triangle of solidTriangles) {
+    const rgba = colorToRgba(triangle.color, 1);
+    for (const point of triangle.points) {
+      const clip = toClipPoint(point);
+      fillPositions.push(clip.x, clip.y, clip.z);
+      fillColors.push(rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
+  }
   for (let index = 0; index < fillVertices.length; index += 3) {
     const left = fillVertices[index];
     const middle = fillVertices[index + 1];
@@ -534,7 +708,9 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     const normal = computeNormal(left.point, middle.point, right.point);
     const lightDirection = { x: -0.32, y: 0.84, z: 0.44 };
     const rawLight = normal.x * lightDirection.x + normal.y * lightDirection.y + normal.z * lightDirection.z;
-    const shaded = shadeSurfaceColor(left.bandColor, clamp(0.72 + rawLight * 0.35, 0.4, 1.18));
+    const shaded = usesFlatMaterial
+      ? colorToRgba(left.bandColor, 1)
+      : shadeSurfaceColor(left.bandColor, clamp(0.72 + rawLight * 0.35, 0.4, 1.18));
     [left, middle, right].forEach((vertex) => {
       const clip = toClipPoint(vertex.point);
       fillPositions.push(clip.x, clip.y, clip.z);

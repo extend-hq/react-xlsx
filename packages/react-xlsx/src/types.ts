@@ -350,9 +350,11 @@ export interface XlsxChartLegend {
 }
 
 export interface XlsxChartAxis {
+  crossId?: number;
   crosses?: string;
   crossBetween?: string;
   delete?: boolean;
+  id?: number;
   labelPosition?: string;
   logBase?: number;
   orientation?: string;
@@ -371,6 +373,8 @@ export interface XlsxChartAxis {
   position?: string;
   raw?: Record<string, unknown>;
   shapeProperties?: Record<string, unknown>;
+  tickLabelSkip?: number;
+  tickMarkSkip?: number;
 }
 
 export interface XlsxChartPointStyle {
@@ -409,6 +413,25 @@ export interface XlsxChartSeries {
   valuesRef?: XlsxChartReference | null;
 }
 
+export interface XlsxChartTypeGroup {
+  axisIds?: number[];
+  chartType: string;
+  dataLabels?: XlsxChartDataLabels | null;
+  gapWidth?: number;
+  is3d?: boolean;
+  overlap?: number;
+  raw?: Record<string, unknown>;
+  series: XlsxChartSeries[];
+  varyColors?: boolean;
+}
+
+export interface XlsxChartWall {
+  fillColor?: string;
+  hidden?: boolean;
+  lineColor?: string;
+  thickness?: number;
+}
+
 export interface XlsxChart {
   anchor: XlsxImageAnchor;
   autoTitleDeleted?: boolean;
@@ -441,16 +464,22 @@ export interface XlsxChart {
   radarStyle?: string;
   scatterStyle?: string;
   roundedCorners?: boolean;
+  shape3d?: string;
+  seriesAxis?: XlsxChartAxis | null;
   series: XlsxChartSeries[];
   sheetIndex: number;
   showDlblsOverMax?: boolean;
+  sideWall?: XlsxChartWall | null;
+  backWall?: XlsxChartWall | null;
   bubbleScale?: number;
   bubble3d?: boolean;
+  floor?: XlsxChartWall | null;
+  surfaceMaterial?: string;
   textColor?: string;
   title?: string;
   titleColor?: string;
   titleFontFamily?: string;
-  typeGroups?: unknown[];
+  typeGroups?: XlsxChartTypeGroup[];
   valueAxis?: XlsxChartAxis | null;
   varyColors?: boolean;
   view3d?: {

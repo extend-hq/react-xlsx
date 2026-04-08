@@ -19,6 +19,7 @@ import type {
 
 const DEFAULT_ROW_HEIGHT = 24;
 const DEFAULT_COL_WIDTH = 80;
+const DEFAULT_ZOOM_SCALE = 100;
 const FORMULA_COUNT_THRESHOLD = 1000;
 const FAST_STRUCTURE_PARSE_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
@@ -204,6 +205,18 @@ function parseWorksheetDataValidations(worksheet: ReturnType<Workbook["getSheet"
   });
 }
 
+function resolveWorksheetZoomScale(
+  worksheet: ReturnType<Workbook["getSheet"]>,
+  sheetState?: WorkbookStructureAssets["sheetStatesByWorkbookSheetIndex"][number] | null
+) {
+  const candidates = [
+    sheetState?.zoomScale,
+    typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined
+  ];
+  const value = candidates.find((entry): entry is number => typeof entry === "number" && Number.isFinite(entry) && entry > 0);
+  return value ?? DEFAULT_ZOOM_SCALE;
+}
+
 function buildSheetList(
   nextWorkbook: Workbook,
   structureAssets?: WorkbookStructureAssets | null
@@ -270,7 +283,7 @@ function buildSheetList(
         visibleCols: [],
         visibleRows: [],
         workbookSheetIndex: index,
-        zoomScale: typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined
+        zoomScale: resolveWorksheetZoomScale(worksheet, sheetState)
       });
       continue;
     }
@@ -312,7 +325,7 @@ function buildSheetList(
       visibleCols: [],
       visibleRows: [],
       workbookSheetIndex: index,
-      zoomScale: typeof worksheet.zoomScale === "number" ? worksheet.zoomScale : undefined
+      zoomScale: resolveWorksheetZoomScale(worksheet, sheetState)
     });
   }
 

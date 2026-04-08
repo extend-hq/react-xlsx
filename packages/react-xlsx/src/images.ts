@@ -131,6 +131,7 @@ type WorkbookSheetState = {
   rowStyleIds: Record<number, number>;
   showGridLines: boolean;
   sparklines: XlsxSparkline[];
+  zoomScale: number;
 };
 
 type ParseWorkbookStructureOptions = {
@@ -1524,6 +1525,14 @@ function parseSheetState(
     ?? sheetFormatNode?.getAttribute("baseColWidth")
     ?? 8.43
   );
+  const rawZoomScale = Number(
+    sheetViewNode?.getAttribute("zoomScale")
+    ?? sheetViewNode?.getAttribute("zoomScaleNormal")
+    ?? Number.NaN
+  );
+  const zoomScale = Number.isFinite(rawZoomScale) && rawZoomScale > 0
+    ? rawZoomScale
+    : 100;
 
   getLocalElements(document, "row").forEach((rowNode) => {
     const rowIndex = Number(rowNode.getAttribute("r") ?? 0) - 1;
@@ -1614,7 +1623,8 @@ function parseSheetState(
     rowHeightOverridesPx,
     rowStyleIds,
     showGridLines: (sheetViewNode?.getAttribute("showGridLines") ?? "1") !== "0",
-    sparklines
+    sparklines,
+    zoomScale
   };
 }
 

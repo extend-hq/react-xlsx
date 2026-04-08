@@ -20,7 +20,7 @@ import {
 import type { CurveFactory } from "d3-shape";
 import { MemoSurfaceChartComposite } from "./surface-regl";
 import type { HierarchyNode, HierarchyRectangularNode } from "d3-hierarchy";
-import type { XlsxChart, XlsxImageRect } from "./types";
+import type { XlsxChart, XlsxChartAxis, XlsxChartSeries, XlsxChartTypeGroup, XlsxImageRect } from "./types";
 
 type ChartRendererPalette = {
   border: string;
@@ -58,6 +58,7 @@ type ChartLayout = {
 
 type BarRect = {
   categoryIndex: number;
+  bottomScale?: number;
   color: string;
   gradientId?: string;
   height: number;
@@ -65,9 +66,11 @@ type BarRect = {
   isHorizontal: boolean;
   key: string;
   left: number;
+  shape3d?: string;
   seriesIndex: number;
   stroke: string;
   strokeWidth: number;
+  topScale?: number;
   value: number;
   width: number;
   top: number;
@@ -78,6 +81,17 @@ type ChartHierarchyDatum = {
   colorIndex?: number;
   name: string;
   value?: number;
+};
+
+type ComboRenderableGroup = {
+  axisIds: number[];
+  categoryAxis: XlsxChartAxis | null;
+  chartType: string;
+  gapWidth?: number;
+  is3d?: boolean;
+  raw?: Record<string, unknown>;
+  series: XlsxChartSeries[];
+  valueAxis: XlsxChartAxis | null;
 };
 
 type ChartStage = {
@@ -250,6 +264,47 @@ function chartPointColor(chart: XlsxChart, pointIndex: number, seriesIndex = 0) 
     return palette[(pointIndex + offset) % palette.length] ?? palette[pointIndex % palette.length];
   }
   return chartSeriesColor(chart, seriesIndex);
+}
+
+function normalizeBuiltinPieStyleId(styleId: number | undefined) {
+  if (typeof styleId !== "number" || !Number.isFinite(styleId)) {
+    return null;
+  }
+  return styleId >= 100 ? styleId - 100 : styleId;
+}
+
+function getBuiltinPiePalette(chart: XlsxChart, seriesIndex: number) {
+  const normalized = normalizeBuiltinPieStyleId(chart.chartStyleId);
+  if (normalized !== 32) {
+    return null;
+  }
+  const baseColor = chart.series[seriesIndex]?.color
+    ?? chart.series[seriesIndex]?.lineColor
+    ?? chart.chartColorPalette?.[0]
+    ?? null;
+  if (!baseColor) {
+    return null;
+  }
+  return [
+    lightenColor(baseColor, 0.16),
+    darkenColor(baseColor, 0.42),
+    baseColor,
+    darkenColor(baseColor, 0.18),
+    lightenColor(baseColor, 0.08),
+    darkenColor(baseColor, 0.3)
+  ];
+}
+
+function resolvePiePointColor(chart: XlsxChart, pointIndex: number, seriesIndex = 0) {
+  const pointStyle = chart.series[seriesIndex]?.dataPointStyles?.find((entry) => entry.index === pointIndex);
+  if (pointStyle?.color) {
+    return pointStyle.color;
+  }
+  const builtinPalette = getBuiltinPiePalette(chart, seriesIndex);
+  if (builtinPalette && builtinPalette.length > 0) {
+    return builtinPalette[pointIndex % builtinPalette.length] ?? builtinPalette[0];
+  }
+  return chartPointColor(chart, pointIndex, seriesIndex);
 }
 
 function selectPrimaryPieSeriesIndex(chart: XlsxChart) {
@@ -449,6 +504,57 @@ function getCategoryLabels(chart: XlsxChart) {
   });
 }
 
+function isComboChart(chart: XlsxChart) {
+  const typeGroups = chart.typeGroups ?? [];
+  if (typeGroups.length < 2) {
+    return false;
+  }
+  const distinctChartTypes = new Set(typeGroups.map((group) => group.chartType));
+  return distinctChartTypes.size > 1;
+}
+
+function getComboLegendSeries(chart: XlsxChart) {
+  if (!isComboChart(chart)) {
+    return chart.series.map((series, index) => ({
+      color: chartSeriesColor(chart, index),
+      label: series.name ?? `Series ${index + 1}`
+    }));
+  }
+  return (chart.typeGroups ?? []).flatMap((group) => (
+    group.series.map((series, seriesIndex) => ({
+      color: series.lineColor ?? series.markerColor ?? series.color ?? chartSeriesColor(chart, seriesIndex),
+      label: series.name ?? `Series ${seriesIndex + 1}`
+    }))
+  ));
+}
+
+function findAxisForGroup(chart: XlsxChart, axisIds: number[], positionMatcher: (position: string | undefined) => boolean) {
+  return chart.axes.find((axis) => axis.id != null && axisIds.includes(axis.id) && positionMatcher(axis.position))
+    ?? null;
+}
+
+function buildComboGroups(chart: XlsxChart): ComboRenderableGroup[] {
+  return (chart.typeGroups ?? []).map((group) => {
+    const axisIds = group.axisIds ?? [];
+    const categoryAxis = findAxisForGroup(chart, axisIds, (position) => position === "b" || position === "t")
+      ?? chart.categoryAxis
+      ?? null;
+    const valueAxis = findAxisForGroup(chart, axisIds, (position) => position === "l" || position === "r")
+      ?? chart.valueAxis
+      ?? null;
+    return {
+      axisIds,
+      categoryAxis,
+      chartType: group.chartType,
+      gapWidth: group.gapWidth,
+      is3d: group.is3d,
+      raw: group.raw,
+      series: group.series,
+      valueAxis
+    };
+  }).filter((group) => group.series.length > 0);
+}
+
 function resolveRenderableSeriesValue(rawValue: unknown, displayBlanksAs: string | undefined) {
   const numeric = safeNumber(rawValue);
   if (numeric != null) {
@@ -497,7 +603,7 @@ function buildPieEntries(chart: XlsxChart, seriesIndex = selectPrimaryPieSeriesI
   const values = chart.series[seriesIndex]?.values ?? [];
   return values
     .map((rawValue, index) => ({
-      color: chartPointColor(chart, index, seriesIndex),
+      color: resolvePiePointColor(chart, index, seriesIndex),
       index,
       label: normalizeCategoryLabel(categories[index]),
       value: Math.max(0, safeNumber(rawValue) ?? 0)
@@ -621,10 +727,83 @@ function resolveSurfaceBaseColor(chart: XlsxChart, palette: ChartRendererPalette
     ?? palette.text;
 }
 
+function normalizeBuiltinSurfaceStyleId(styleId: number | undefined) {
+  if (typeof styleId !== "number" || !Number.isFinite(styleId)) {
+    return null;
+  }
+  return styleId >= 100 ? styleId - 100 : styleId;
+}
+
+function hasExplicitSurfaceBaseColor(chart: XlsxChart) {
+  const primarySeriesColor = normalizeRendererHexColor(chart.series[0]?.color ?? chart.series[0]?.lineColor);
+  if (!primarySeriesColor) {
+    return null;
+  }
+  const paletteColor = normalizeRendererHexColor(chart.chartColorPalette?.[0]);
+  return paletteColor && paletteColor === primarySeriesColor ? null : primarySeriesColor;
+}
+
+function buildMonochromeSurfacePalette(baseColor: string, count: number) {
+  if (count <= 3) {
+    return [
+      lightenColor(baseColor, 0.58),
+      lightenColor(baseColor, 0.18),
+      darkenColor(baseColor, 0.12)
+    ];
+  }
+  return [
+    lightenColor(baseColor, 0.62),
+    lightenColor(baseColor, 0.34),
+    baseColor,
+    darkenColor(baseColor, 0.12),
+    darkenColor(baseColor, 0.24)
+  ];
+}
+
+function getBuiltinSurfacePalette(chart: XlsxChart) {
+  const normalized = normalizeBuiltinSurfaceStyleId(chart.chartStyleId);
+  const explicitBaseColor = hasExplicitSurfaceBaseColor(chart);
+  if (normalized === 26) {
+    return buildMonochromeSurfacePalette(explicitBaseColor ?? "#ff006e", 3);
+  }
+  if (normalized === 34 && explicitBaseColor) {
+    return buildMonochromeSurfacePalette(explicitBaseColor, 3);
+  }
+  if (normalized === 34 || (chart.wireframe === true && normalized == null)) {
+    return ["#5b9bd5", "#ed7d31", "#a5a5a5"];
+  }
+  if (normalized === 35 || normalized === 36 || (chart.wireframe !== true && normalized == null)) {
+    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#b4c7e7"];
+  }
+  return null;
+}
+
+function getSurfaceBandCount(chart: XlsxChart) {
+  const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
+  const explicitBandCount = typeof raw?.bandFormatCount === "number" && Number.isFinite(raw.bandFormatCount)
+    ? raw.bandFormatCount
+    : null;
+  if (explicitBandCount != null && explicitBandCount > 0) {
+    return explicitBandCount;
+  }
+  const builtinPalette = getBuiltinSurfacePalette(chart);
+  if (builtinPalette && builtinPalette.length > 0) {
+    return builtinPalette.length;
+  }
+  if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
+    return chart.chartColorPalette.length;
+  }
+  return chart.wireframe ? 3 : 5;
+}
+
 function getSurfaceColorStops(chart: XlsxChart, palette: ChartRendererPalette) {
   const explicitStops = (chart.chartColorPalette ?? []).filter((value): value is string => typeof value === "string" && value.length > 0);
   if (explicitStops.length >= 2) {
     return explicitStops;
+  }
+  const builtinPalette = getBuiltinSurfacePalette(chart);
+  if (builtinPalette && builtinPalette.length >= 2) {
+    return builtinPalette;
   }
   const baseColor = resolveSurfaceBaseColor(chart, palette);
   return [
@@ -646,19 +825,30 @@ function getSurfaceDomain(chart: XlsxChart): SurfaceDomain | null {
   if (numericValues.length === 0) {
     return null;
   }
-  const minValue = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)
+  const explicitMin = typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)
     ? chart.valueAxis.min
-    : Math.min(...numericValues);
-  const maxValue = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)
+    : null;
+  const explicitMax = typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)
     ? chart.valueAxis.max
-    : Math.max(...numericValues);
-  const safeMax = maxValue <= minValue ? minValue + 1 : maxValue;
-  const rawTicks = buildNumericTickValues(minValue, safeMax, chart.valueAxis?.majorUnit);
-  const ticks = [...new Set([
-    minValue,
-    ...rawTicks.filter((value) => value > minValue && value < safeMax),
-    safeMax
-  ])].sort((left, right) => left - right);
+    : null;
+  const rawMin = Math.min(...numericValues);
+  const rawMax = Math.max(...numericValues);
+  const bandCount = Math.max(1, getSurfaceBandCount(chart));
+  const spanBase = Math.max(1e-6, rawMax - Math.min(0, rawMin));
+  const roughStep = spanBase / bandCount;
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(roughStep, 1e-6)));
+  const normalized = roughStep / magnitude;
+  const niceNormalized = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  const step = typeof chart.valueAxis?.majorUnit === "number" && chart.valueAxis.majorUnit > 0
+    ? chart.valueAxis.majorUnit
+    : niceNormalized * magnitude;
+  const minValue = explicitMin ?? (rawMin >= 0 ? 0 : Math.floor(rawMin / step) * step);
+  const maxValue = explicitMax ?? Math.ceil(rawMax / step) * step;
+  const safeMax = maxValue <= minValue ? minValue + step : maxValue;
+  const ticks: number[] = [];
+  for (let current = minValue; current <= safeMax + step * 0.001; current += step) {
+    ticks.push(Number(current.toFixed(8)));
+  }
   return {
     maxValue,
     minValue,
@@ -701,9 +891,149 @@ function buildSurfaceLegendItems(chart: XlsxChart, palette: ChartRendererPalette
   return items.reverse();
 }
 
+function renderSurfaceAxes(chart: XlsxChart, layout: ChartLayout) {
+  const categories = getCategoryLabels(chart);
+  const seriesLabels = chart.series.map((series, index) => normalizeCategoryLabel(series.name) || `Q${index + 1}`);
+  const labelColor = resolveChartAxisTextColor(chart);
+  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? "#888888";
+  const rowCount = Math.max(1, seriesLabels.length);
+  const columnCount = Math.max(1, categories.length);
+  const columnPositions = categories.map((_, index) => (
+    layout.plot.left + (columnCount <= 1 ? layout.plot.width / 2 : (index / (columnCount - 1)) * layout.plot.width)
+  ));
+  const rowPositions = seriesLabels.map((_, index) => (
+    layout.plot.top + layout.plot.height - (rowCount <= 1 ? layout.plot.height / 2 : (index / (rowCount - 1)) * layout.plot.height)
+  ));
+
+  return (
+    <g>
+      <rect
+        fill="none"
+        height={layout.plot.height}
+        stroke={lightenColor(axisColor, 0.18)}
+        strokeWidth={0.8}
+        width={layout.plot.width}
+        x={layout.plot.left}
+        y={layout.plot.top}
+      />
+      {categories.map((label, index) => (
+        <text
+          key={`surface-x-label-${index}`}
+          fill={labelColor}
+          fontSize={10}
+          textAnchor="middle"
+          x={columnPositions[index] ?? layout.plot.left}
+          y={layout.plot.top + layout.plot.height + 14}
+        >
+          {label}
+        </text>
+      ))}
+      {seriesLabels.map((label, index) => (
+        <text
+          key={`surface-y-label-${index}`}
+          fill={labelColor}
+          fontSize={10}
+          textAnchor="start"
+          x={layout.plot.left + layout.plot.width + 8}
+          y={(rowPositions[index] ?? layout.plot.top) + 3}
+        >
+          {label}
+        </text>
+      ))}
+    </g>
+  );
+}
+
+function normalizeRendererHexColor(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = trimmed.startsWith("#") ? trimmed.slice(1) : trimmed;
+  return /^[0-9a-f]{6}$/i.test(normalized) ? `#${normalized.toLowerCase()}` : null;
+}
+
+function resolveStockRoleIndices(chart: XlsxChart) {
+  const roles = {
+    close: indexByName(chart.series, /close|last|end/),
+    high: indexByName(chart.series, /high|max|top/),
+    low: indexByName(chart.series, /low|min|bottom/),
+    open: indexByName(chart.series, /open|start/),
+    volume: indexByName(chart.series, /volume|vol/)
+  };
+  const usedIndices = new Set<number>(Object.values(roles).filter((value): value is number => value != null));
+  const remainingIndices = chart.series.map((_, index) => index).filter((index) => !usedIndices.has(index));
+  const canonicalOrder = chart.series.length >= 4
+    ? (["open", "high", "low", "close"] as const)
+    : (["high", "low", "close"] as const);
+  canonicalOrder.forEach((role) => {
+    if (roles[role] == null) {
+      const nextIndex = remainingIndices.shift();
+      if (nextIndex != null) {
+        roles[role] = nextIndex;
+      }
+    }
+  });
+  return roles;
+}
+
+function resolveStockPalette(chart: XlsxChart, axisColor: string) {
+  const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
+  const highLowLines = raw?.highLowLines && typeof raw.highLowLines === "object"
+    ? raw.highLowLines as Record<string, unknown>
+    : null;
+  const shapeProperties = highLowLines?.shapeProperties && typeof highLowLines.shapeProperties === "object"
+    ? highLowLines.shapeProperties as Record<string, unknown>
+    : null;
+  const lineColor = normalizeRendererHexColor(shapeProperties?.lineColorHex) ?? axisColor ?? "#333333";
+  const chartStyleId = typeof chart.chartStyleId === "number" ? chart.chartStyleId : null;
+  const closeAccent = chartStyleId != null && chartStyleId >= 128 ? "#c0504d" : lineColor;
+  const lowAccent = chartStyleId != null && chartStyleId >= 128 ? "#d9a3a0" : lightenColor(lineColor, 0.45);
+  return {
+    closeAccent,
+    downFill: lightenColor(lineColor, 0.4),
+    lineColor,
+    lowAccent,
+    openAccent: lightenColor(lineColor, 0.22),
+    upFill: "#ffffff",
+    volumeFill: lightenColor(lineColor, 0.26)
+  };
+}
+
+function buildStockLegendItems(chart: XlsxChart, palette: ChartRendererPalette): LegendItem[] {
+  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const roles = resolveStockRoleIndices(chart);
+  const stockPalette = resolveStockPalette(chart, axisColor);
+  return chart.series.map((series, index) => {
+    let color = stockPalette.lineColor;
+    if (roles.volume === index) {
+      color = stockPalette.volumeFill;
+    } else if (roles.open === index) {
+      color = stockPalette.openAccent;
+    } else if (roles.low === index) {
+      color = stockPalette.lowAccent;
+    } else if (roles.close === index) {
+      color = stockPalette.closeAccent;
+    }
+    return {
+      color,
+      label: series.name ?? `Series ${index + 1}`
+    };
+  });
+}
+
 function getLegendItems(chart: XlsxChart, chartType: string, palette: ChartRendererPalette): LegendItem[] {
   if (!chart.legend) {
     return [];
+  }
+  if (isComboChart(chart)) {
+    return getComboLegendSeries(chart);
+  }
+  if (chartType === "Stock") {
+    return buildStockLegendItems(chart, palette);
   }
   if (chartType === "Surface") {
     return buildSurfaceLegendItems(chart, palette);
@@ -818,6 +1148,38 @@ function buildNumericTickValues(minValue: number, maxValue: number, majorUnit?: 
     }
   }
   return values;
+}
+
+function resolveNumericAxisDomain(minValue: number, maxValue: number, majorUnit?: number, includeZero = false) {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) {
+    return {
+      max: 1,
+      min: 0,
+      ticks: [0, 1]
+    };
+  }
+  let domainMin = includeZero ? Math.min(0, minValue) : minValue;
+  let domainMax = includeZero ? Math.max(0, maxValue) : maxValue;
+  if (domainMax <= domainMin) {
+    domainMax = domainMin + 1;
+  }
+  const step = typeof majorUnit === "number" && majorUnit > 0
+    ? majorUnit
+    : buildNiceStep(domainMin, domainMax, 5);
+  const roundedMin = typeof majorUnit === "number" && majorUnit > 0
+    ? domainMin
+    : Math.floor(domainMin / step) * step;
+  const roundedMax = typeof majorUnit === "number" && majorUnit > 0
+    ? domainMax
+    : Math.ceil(domainMax / step) * step;
+  const finalMin = includeZero ? Math.min(0, roundedMin) : roundedMin;
+  const finalMax = roundedMax <= finalMin ? finalMin + step : roundedMax;
+  const ticks = buildNumericTickValues(finalMin, finalMax, step);
+  return {
+    max: finalMax,
+    min: finalMin,
+    ticks: ticks.length > 0 ? ticks : [finalMin, finalMax]
+  };
 }
 
 function formatTickValue(value: number) {
@@ -1260,6 +1622,20 @@ function renderCartesianAxes(
 }
 
 function renderExtrudedRect(bar: BarRect) {
+  const normalizedShape = (() => {
+    switch (bar.shape3d) {
+      case "cone":
+      case "coneToMax":
+        return "cone";
+      case "cylinder":
+        return "cylinder";
+      case "pyramid":
+      case "pyramidToMax":
+        return "pyramid";
+      default:
+        return "box";
+    }
+  })();
   const depthX = bar.isHorizontal ? 10 : 9;
   const depthY = -7;
   const frontX = bar.left;
@@ -1271,6 +1647,15 @@ function renderExtrudedRect(bar: BarRect) {
 
   const sideAnchorX = frontX2;
   const sideDepthX = depthX;
+  const centerX = frontX + frontW / 2;
+  const bottomScale = clamp(bar.bottomScale ?? 1, 0.04, 1);
+  const topScale = clamp(bar.topScale ?? 1, 0.04, 1);
+  const bottomHalfWidth = (frontW * bottomScale) / 2;
+  const topHalfWidth = (frontW * topScale) / 2;
+  const bottomLeft = centerX - bottomHalfWidth;
+  const bottomRight = centerX + bottomHalfWidth;
+  const topLeft = centerX - topHalfWidth;
+  const topRight = centerX + topHalfWidth;
 
   const topFace = `${frontX},${frontY} ${frontX2},${frontY} ${frontX2 + sideDepthX},${frontY + depthY} ${frontX + sideDepthX},${frontY + depthY}`;
   const sideFace = `${sideAnchorX},${frontY} ${sideAnchorX},${frontY2} ${sideAnchorX + sideDepthX},${frontY2 + depthY} ${sideAnchorX + sideDepthX},${frontY + depthY}`;
@@ -1278,11 +1663,80 @@ function renderExtrudedRect(bar: BarRect) {
   const sideFill = bar.invertedNegative ? bar.color : darkenColor(bar.color, 0.22);
   const topFill = bar.invertedNegative ? lightenColor(bar.color, 0.04) : lightenColor(bar.color, 0.24);
 
+  if (bar.isHorizontal || normalizedShape === "box") {
+    return (
+      <g key={`${bar.key}-3d`}>
+        <polygon fill={sideFill} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+        <polygon fill={topFill} points={topFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+        <rect fill={frontFill} height={frontH} stroke={bar.stroke} strokeWidth={bar.strokeWidth} width={frontW} x={frontX} y={frontY} />
+      </g>
+    );
+  }
+
+  if (normalizedShape === "cylinder") {
+    const capRy = Math.max(2, Math.min(8, frontW * 0.18));
+    const bodyPath = [
+      `M ${toSvgNumber(frontX)} ${toSvgNumber(frontY + capRy)}`,
+      `Q ${toSvgNumber(centerX)} ${toSvgNumber(frontY - capRy * 0.7)} ${toSvgNumber(frontX2)} ${toSvgNumber(frontY + capRy)}`,
+      `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY2 - capRy)}`,
+      `Q ${toSvgNumber(centerX)} ${toSvgNumber(frontY2 + capRy * 0.7)} ${toSvgNumber(frontX)} ${toSvgNumber(frontY2 - capRy)}`,
+      "Z"
+    ].join(" ");
+    const cylinderSide = [
+      `M ${toSvgNumber(frontX2)} ${toSvgNumber(frontY + capRy)}`,
+      `L ${toSvgNumber(frontX2)} ${toSvgNumber(frontY2 - capRy)}`,
+      `L ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(frontY2 + depthY - capRy)}`,
+      `L ${toSvgNumber(frontX2 + sideDepthX)} ${toSvgNumber(frontY + depthY + capRy)}`,
+      "Z"
+    ].join(" ");
+
+    return (
+      <g key={`${bar.key}-3d-cylinder`}>
+        <path d={cylinderSide} fill={sideFill} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+        <ellipse
+          cx={frontX2 + sideDepthX * 0.5}
+          cy={frontY + depthY + capRy}
+          fill={topFill}
+          rx={Math.max(1.5, frontW * 0.5)}
+          ry={capRy}
+          stroke={bar.stroke}
+          strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)}
+        />
+        <path d={bodyPath} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
+        <ellipse
+          cx={centerX}
+          cy={frontY + capRy}
+          fill={topFill}
+          rx={Math.max(1.5, frontW * 0.5)}
+          ry={capRy}
+          stroke={bar.stroke}
+          strokeWidth={Math.max(0.6, bar.strokeWidth * 0.75)}
+        />
+      </g>
+    );
+  }
+
+  const taperedTopFace = `${topLeft},${frontY} ${topRight},${frontY} ${topRight + sideDepthX},${frontY + depthY} ${topLeft + sideDepthX},${frontY + depthY}`;
+  const taperedSideFace = `${topRight},${frontY} ${bottomRight},${frontY2} ${bottomRight + sideDepthX},${frontY2 + depthY} ${topRight + sideDepthX},${frontY + depthY}`;
+  const pyramidFrontFace = `${topLeft},${frontY} ${topRight},${frontY} ${bottomRight},${frontY2} ${bottomLeft},${frontY2}`;
+  const coneFrontFace = [
+    `M ${toSvgNumber(topLeft)} ${toSvgNumber(frontY)}`,
+    `L ${toSvgNumber(topRight)} ${toSvgNumber(frontY)}`,
+    `C ${toSvgNumber(topRight + (bottomRight - topRight) * 0.18)} ${toSvgNumber(frontY + frontH * 0.32)} ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY + frontH * 0.72)} ${toSvgNumber(bottomRight)} ${toSvgNumber(frontY2)}`,
+    `L ${toSvgNumber(bottomLeft)} ${toSvgNumber(frontY2)}`,
+    `C ${toSvgNumber(bottomLeft)} ${toSvgNumber(frontY + frontH * 0.72)} ${toSvgNumber(topLeft - (topLeft - bottomLeft) * 0.18)} ${toSvgNumber(frontY + frontH * 0.32)} ${toSvgNumber(topLeft)} ${toSvgNumber(frontY)}`,
+    "Z"
+  ].join(" ");
+
   return (
-    <g key={`${bar.key}-3d`}>
-      <polygon fill={sideFill} points={sideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-      <polygon fill={topFill} points={topFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
-      <rect fill={frontFill} height={frontH} stroke={bar.stroke} strokeWidth={bar.strokeWidth} width={frontW} x={frontX} y={frontY} />
+    <g key={`${bar.key}-3d-${normalizedShape}`}>
+      <polygon fill={sideFill} points={taperedSideFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      <polygon fill={topFill} points={taperedTopFace} stroke={bar.stroke} strokeWidth={Math.max(0.6, bar.strokeWidth * 0.65)} />
+      {normalizedShape === "cone" ? (
+        <path d={coneFrontFace} fill={frontFill} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
+      ) : (
+        <polygon fill={frontFill} points={pyramidFrontFace} stroke={bar.stroke} strokeWidth={bar.strokeWidth} />
+      )}
     </g>
   );
 }
@@ -1344,8 +1798,10 @@ function renderLineOrAreaChart3d(
   const valueSpan = Math.max(1e-6, maxValue - minValue);
   const seriesCount = Math.max(1, chart.series.length);
   const categoryCount = Math.max(1, categories.length);
-  const frontZ = seriesCount <= 1 ? 0.7 : 0.9;
-  const backZ = seriesCount <= 1 ? -0.7 : -0.9;
+  const depthScale = clamp((chart.view3d?.depthPercent ?? 100) / 100, 0.5, 4);
+  const halfDepth = (seriesCount <= 1 ? 0.7 : 0.9) * depthScale;
+  const frontZ = halfDepth;
+  const backZ = -halfDepth;
   const baseValue = isAreaChart ? Math.max(minValue, Math.min(maxValue, 0)) : minValue;
   const rotXRad = clamp(chart.view3d?.rotX ?? 18, -80, 80) * (Math.PI / 180);
   const rotYRad = clamp(chart.view3d?.rotY ?? 24, -80, 80) * (Math.PI / 180);
@@ -1360,7 +1816,7 @@ function renderLineOrAreaChart3d(
   );
   const normalizeZ = (seriesIndex: number) => (
     seriesCount <= 1 || (isAreaChart && isStackedSeries)
-      ? 0
+      ? frontZ * 0.94
       : (((seriesIndex / (seriesCount - 1)) - 0.5) * (frontZ - backZ))
   );
 
@@ -1629,6 +2085,20 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       : "series";
   const categoryCount = categories.length;
   const seriesCount = chart.series.length;
+  const normalized3dShape = (() => {
+    switch (chart.shape3d) {
+      case "cone":
+      case "coneToMax":
+        return "cone";
+      case "cylinder":
+        return "cylinder";
+      case "pyramid":
+      case "pyramidToMax":
+        return "pyramid";
+      default:
+        return "box";
+    }
+  })();
   const plot = chart.is3d
     ? {
         ...layout.plot,
@@ -1645,6 +2115,12 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     return shouldReverseCategories ? values.reverse() : values;
   });
   const rawMatrix = matrix.map((row) => row.slice());
+  const positiveTotals = Array.from({ length: categoryCount }, (_, categoryIndex) => (
+    matrix.reduce((sum, row) => sum + Math.max(0, row[categoryIndex] ?? 0), 0)
+  ));
+  const negativeTotals = Array.from({ length: categoryCount }, (_, categoryIndex) => (
+    Math.abs(matrix.reduce((sum, row) => sum + Math.min(0, row[categoryIndex] ?? 0), 0))
+  ));
 
   if (isPercentStacked) {
     for (let categoryIndex = 0; categoryIndex < categoryCount; categoryIndex += 1) {
@@ -1772,20 +2248,42 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       const categoryStart = categoryScale(category) ?? 0;
       const barThickness = isStacked ? categoryScale.bandwidth() : seriesScale.bandwidth();
       const barOffset = isStacked ? 0 : (seriesScale(String(seriesIndex)) ?? 0);
+      const shapeTaper = normalized3dShape === "pyramid"
+        ? 0.94
+        : normalized3dShape === "cone"
+          ? 0.88
+          : 0;
+      let topScale = 1;
+      let bottomScale = 1;
+      if (chart.is3d && !isHorizontal && shapeTaper > 0) {
+        const scaleAt = (ratio: number) => clamp(1 - clamp(ratio, 0, 1) * shapeTaper, 0.04, 1);
+        if (rawValue >= 0) {
+          const total = Math.max(1e-6, isStacked ? positiveTotals[categoryIndex] : Math.abs(rawValue));
+          bottomScale = scaleAt(isStacked ? start / total : 0);
+          topScale = scaleAt(isStacked ? end / total : 1);
+        } else {
+          const total = Math.max(1e-6, isStacked ? negativeTotals[categoryIndex] : Math.abs(rawValue));
+          topScale = scaleAt(isStacked ? Math.abs(start) / total : 0);
+          bottomScale = scaleAt(isStacked ? Math.abs(end) / total : 1);
+        }
+      }
 
       if (isHorizontal) {
         const x1 = valueScale(start);
         const x2 = valueScale(end);
         bars.push({
+          bottomScale,
           categoryIndex,
           color: colors.fill,
           height: Math.max(1, barThickness),
           isHorizontal: true,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: Math.min(x1, x2),
+          shape3d: normalized3dShape,
           seriesIndex,
           stroke: colors.stroke,
           strokeWidth: colors.strokeWidth,
+          topScale,
           top: categoryStart + barOffset,
           invertedNegative: isInvertedNegative,
           value: rawValue,
@@ -1795,15 +2293,18 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         const y1 = valueScale(start);
         const y2 = valueScale(end);
         bars.push({
+          bottomScale,
           categoryIndex,
           color: colors.fill,
           height: Math.max(1, Math.abs(y2 - y1)),
           isHorizontal: false,
           key: `bar-${seriesIndex}-${categoryIndex}`,
           left: categoryStart + barOffset,
+          shape3d: normalized3dShape,
           seriesIndex,
           stroke: colors.stroke,
           strokeWidth: colors.strokeWidth,
+          topScale,
           top: Math.min(y1, y2),
           invertedNegative: isInvertedNegative,
           value: rawValue,
@@ -2033,6 +2534,23 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
 
   const curve: CurveFactory = curveLinear;
   const areaBaseline = yScale(Math.max(minValue, 0));
+  const plotPointsBySeries = chart.series.map((_, seriesIndex) => (
+    categories.map((category, categoryIndex) => {
+      const point = stackedPointsBySeries[seriesIndex]?.[categoryIndex] ?? {
+        defined: false,
+        y: null,
+        y0: null,
+        y1: null
+      };
+      return {
+        defined: point.defined,
+        x: xScale(category) ?? plot.left,
+        y: point.y,
+        y0: point.y0,
+        y1: point.y1
+      };
+    })
+  ));
 
   if (chart.is3d) {
     return renderLineOrAreaChart3d(
@@ -2048,6 +2566,32 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
     );
   }
 
+  const rawRecord = chart.raw && typeof chart.raw === "object"
+    ? chart.raw as Record<string, unknown>
+    : null;
+  const dropLinesRecord = rawRecord?.dropLines && typeof rawRecord.dropLines === "object"
+    ? rawRecord.dropLines as Record<string, unknown>
+    : null;
+  const highLowLinesRecord = rawRecord?.highLowLines && typeof rawRecord.highLowLines === "object"
+    ? rawRecord.highLowLines as Record<string, unknown>
+    : null;
+  const upDownBarsRecord = rawRecord?.upDownBars && typeof rawRecord.upDownBars === "object"
+    ? rawRecord.upDownBars as Record<string, unknown>
+    : null;
+  const dropLineColor = normalizeRendererHexColor((dropLinesRecord?.shapeProperties as Record<string, unknown> | undefined)?.lineColorHex)
+    ?? lightenColor(chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border, 0.45);
+  const highLowLineColor = normalizeRendererHexColor((highLowLinesRecord?.shapeProperties as Record<string, unknown> | undefined)?.lineColorHex)
+    ?? chart.axisLineColor
+    ?? chart.chartAreaBorderColor
+    ?? palette.border;
+  const upDownGapWidth = typeof upDownBarsRecord?.gapWidth === "number" && Number.isFinite(upDownBarsRecord.gapWidth)
+    ? upDownBarsRecord.gapWidth
+    : 150;
+  const categoryStep = categoryPositions.length >= 2
+    ? Math.min(...categoryPositions.slice(1).map((position, index) => Math.abs(position - (categoryPositions[index] ?? 0))).filter((value) => value > 0))
+    : plot.width;
+  const upDownBarWidth = clamp(categoryStep * (1 - resolveCategoryBandPadding(upDownGapWidth).inner) * 0.82, 3, 28);
+
   return (
     <g>
       {renderCartesianAxes(
@@ -2060,27 +2604,64 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
         ticks,
         (value) => yScale(value)
       )}
+      {!isAreaChart && !isStackedSeries && highLowLinesRecord
+        ? categories.map((_, categoryIndex) => {
+            const yValues = plotPointsBySeries
+              .map((seriesPoints) => seriesPoints[categoryIndex]?.y)
+              .filter((value): value is number => value != null && Number.isFinite(value));
+            if (yValues.length < 2) {
+              return null;
+            }
+            const x = categoryPositions[categoryIndex] ?? plot.left;
+            return (
+              <line
+                key={`high-low-${categoryIndex}`}
+                stroke={highLowLineColor}
+                strokeWidth={1}
+                x1={x}
+                x2={x}
+                y1={yScale(Math.min(...yValues))}
+                y2={yScale(Math.max(...yValues))}
+              />
+            );
+          })
+        : null}
+      {!isAreaChart && !isStackedSeries && upDownBarsRecord && plotPointsBySeries.length >= 2
+        ? categories.map((_, categoryIndex) => {
+            const first = plotPointsBySeries[0]?.[categoryIndex];
+            const second = plotPointsBySeries[1]?.[categoryIndex];
+            if (!first || !second || first.y == null || second.y == null) {
+              return null;
+            }
+            const top = yScale(Math.max(first.y, second.y));
+            const bottom = yScale(Math.min(first.y, second.y));
+            const isUpBar = second.y >= first.y;
+            const fill = isUpBar ? darkenColor(highLowLineColor, 0.12) : "#c0504d";
+            return (
+              <rect
+                key={`up-down-${categoryIndex}`}
+                fill={fill}
+                fillOpacity={0.92}
+                height={Math.max(1, bottom - top)}
+                stroke={darkenColor(fill, 0.18)}
+                strokeWidth={1}
+                width={upDownBarWidth}
+                x={(categoryPositions[categoryIndex] ?? plot.left) - upDownBarWidth / 2}
+                y={top}
+              />
+            );
+          })
+        : null}
       {chart.series.map((series, seriesIndex) => {
-        const points = categories.map((category, categoryIndex) => {
-          const point = stackedPointsBySeries[seriesIndex]?.[categoryIndex] ?? {
-            defined: false,
-            y: null,
-            y0: null,
-            y1: null
-          };
-          return {
-            defined: point.defined,
-            x: xScale(category) ?? plot.left,
-            y: point.y,
-            y0: point.y0,
-            y1: point.y1
-          };
-        });
+        const points = plotPointsBySeries[seriesIndex] ?? [];
+        const lineStrokePoints = displayBlanksAs === "span"
+          ? points.filter((point) => point.y != null)
+          : points;
         const linePath = d3Line<{ x: number; y: number | null }>()
           .defined((point) => point.y != null)
           .x((point) => point.x)
           .y((point) => yScale(point.y ?? 0))
-          .curve(curve)(points) ?? "";
+          .curve(curve)(lineStrokePoints) ?? "";
 
         const areaPath = isAreaChart
           ? d3Area<{ x: number; y: number | null; y0: number | null; y1: number | null }>()
@@ -2104,6 +2685,21 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
           : chartSeriesColor(chart, seriesIndex);
         return (
           <g key={`line-series-${seriesIndex}`}>
+            {!isAreaChart && !isStackedSeries && dropLinesRecord
+              ? points.map((point, pointIndex) => (
+                  point.y == null ? null : (
+                    <line
+                      key={`drop-line-${seriesIndex}-${pointIndex}`}
+                      stroke={dropLineColor}
+                      strokeWidth={1}
+                      x1={point.x}
+                      x2={point.x}
+                      y1={yScale(point.y)}
+                      y2={areaBaseline}
+                    />
+                  )
+                ))
+              : null}
             {isAreaChart ? (
               <path
                 d={areaPath}
@@ -2130,6 +2726,176 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
                   r={Math.max(2, (series.markerSize ?? 6) * 0.25)}
                   stroke={series.markerLineColor ?? chart.chartAreaFillColor ?? chartSeriesStrokeColor(chart, seriesIndex)}
                   strokeWidth={1}
+                />
+              )
+            ))}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const groups = buildComboGroups(chart);
+  const columnGroup = groups.find((group) => group.chartType.startsWith("Column"));
+  const lineGroup = groups.find((group) => group.chartType.startsWith("Line"));
+  if (!columnGroup || !lineGroup) {
+    return null;
+  }
+
+  const primaryChart: XlsxChart = {
+    ...chart,
+    categoryAxis: columnGroup.categoryAxis ?? chart.categoryAxis,
+    chartType: columnGroup.chartType,
+    dataLabels: undefined,
+    is3d: columnGroup.is3d ?? false,
+    series: columnGroup.series,
+    valueAxis: columnGroup.valueAxis ?? chart.valueAxis
+  };
+  const categories = getCategoryLabels(primaryChart);
+  if (categories.length === 0) {
+    return null;
+  }
+
+  const plot = layout.plot;
+  const groupGapWidth = typeof columnGroup.raw?.gapWidth === "number" && Number.isFinite(columnGroup.raw.gapWidth)
+    ? columnGroup.raw.gapWidth
+    : columnGroup.gapWidth ?? chart.gapWidth;
+  const categoryBandPadding = resolveCategoryBandPadding(groupGapWidth);
+  const categoryScale = scaleBand<string>()
+    .domain(categories)
+    .range([plot.left, plot.left + plot.width])
+    .paddingInner(categoryBandPadding.inner)
+    .paddingOuter(categoryBandPadding.outer);
+  const seriesScale = scaleBand<string>()
+    .domain(Array.from({ length: columnGroup.series.length }, (_, index) => String(index)))
+    .range([0, categoryScale.bandwidth()])
+    .paddingInner(0.16)
+    .paddingOuter(0.08);
+  const categoryPositions = categories.map((category) => (
+    (categoryScale(category) ?? plot.left) + categoryScale.bandwidth() / 2
+  ));
+
+  const primaryValues = columnGroup.series.flatMap((series) => (
+    series.values.map((value) => safeNumber(value)).filter((value): value is number => value != null)
+  ));
+  const secondaryValues = lineGroup.series.flatMap((series) => (
+    series.values.map((value) => safeNumber(value)).filter((value): value is number => value != null)
+  ));
+  if (primaryValues.length === 0 || secondaryValues.length === 0) {
+    return null;
+  }
+
+  const primaryDomain = resolveNumericAxisDomain(
+    typeof columnGroup.valueAxis?.min === "number" ? columnGroup.valueAxis.min : Math.min(...primaryValues),
+    typeof columnGroup.valueAxis?.max === "number" ? columnGroup.valueAxis.max : Math.max(...primaryValues),
+    columnGroup.valueAxis?.majorUnit,
+    true
+  );
+  const secondaryDomain = resolveNumericAxisDomain(
+    typeof lineGroup.valueAxis?.min === "number" ? lineGroup.valueAxis.min : Math.min(...secondaryValues),
+    typeof lineGroup.valueAxis?.max === "number" ? lineGroup.valueAxis.max : Math.max(...secondaryValues),
+    lineGroup.valueAxis?.majorUnit,
+    false
+  );
+  const primaryScale = scaleLinear()
+    .domain([primaryDomain.min, primaryDomain.max])
+    .range([plot.top + plot.height, plot.top]);
+  const secondaryScale = scaleLinear()
+    .domain([secondaryDomain.min, secondaryDomain.max])
+    .range([plot.top + plot.height, plot.top]);
+  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const labelColor = resolveChartAxisTextColor(chart);
+
+  return (
+    <g>
+      {renderCartesianAxes(
+        primaryChart,
+        palette,
+        plot,
+        false,
+        categories,
+        categoryPositions,
+        primaryDomain.ticks,
+        (value) => primaryScale(value)
+      )}
+      {secondaryDomain.ticks.map((tick) => {
+        const y = secondaryScale(tick);
+        return (
+          <text
+            key={`combo-secondary-tick-${tick}`}
+            fill={labelColor}
+            fontSize={10}
+            textAnchor="start"
+            x={plot.left + plot.width + 6}
+            y={y + 3}
+          >
+            {formatTickValue(tick)}
+          </text>
+        );
+      })}
+      <line
+        stroke={axisColor}
+        strokeWidth={1.2}
+        x1={plot.left + plot.width}
+        x2={plot.left + plot.width}
+        y1={plot.top}
+        y2={plot.top + plot.height}
+      />
+      {columnGroup.series.flatMap((series, seriesIndex) => categories.map((category, categoryIndex) => {
+        const value = safeNumber(series.values[categoryIndex]) ?? 0;
+        const categoryStart = categoryScale(category) ?? plot.left;
+        const barWidth = Math.max(1, seriesScale.bandwidth());
+        const x = categoryStart + (seriesScale(String(seriesIndex)) ?? 0);
+        const y = primaryScale(Math.max(0, value));
+        const zeroY = primaryScale(0);
+        const height = Math.max(1, Math.abs(zeroY - primaryScale(value)));
+        return (
+          <rect
+            key={`combo-bar-${seriesIndex}-${categoryIndex}`}
+            fill={series.color ?? series.lineColor ?? chartSeriesColor(primaryChart, seriesIndex)}
+            height={height}
+            stroke={series.lineColor ?? series.color ?? chartSeriesStrokeColor(primaryChart, seriesIndex)}
+            strokeWidth={1}
+            width={barWidth}
+            x={x}
+            y={Math.min(y, zeroY)}
+          />
+        );
+      }))}
+      {lineGroup.series.map((series, seriesIndex) => {
+        const points = categories.map((category, categoryIndex) => ({
+          x: (categoryScale(category) ?? plot.left) + categoryScale.bandwidth() / 2,
+          y: safeNumber(series.values[categoryIndex])
+        }));
+        const lineStrokePoints = chart.displayBlanksAs === "span"
+          ? points.filter((point) => point.y != null)
+          : points;
+        const path = d3Line<{ x: number; y: number | null }>()
+          .defined((point) => point.y != null)
+          .x((point) => point.x)
+          .y((point) => secondaryScale(point.y ?? 0))
+          .curve(curveLinear)(lineStrokePoints) ?? "";
+        return (
+          <g key={`combo-line-${seriesIndex}`}>
+            <path
+              d={path}
+              fill="none"
+              stroke={series.lineColor ?? series.color ?? chartSeriesStrokeColor(chart, columnGroup.series.length + seriesIndex)}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={Math.max(1.5, series.lineWidthPx ?? 2)}
+            />
+            {points.map((point, pointIndex) => (
+              point.y == null ? null : (
+                <path
+                  d={markerSymbolPath(normalizeChartMarkerSymbol(series.markerSymbol), Math.max(4, series.markerSize ?? 7)) || markerSymbolPath("circle", 7)}
+                  fill={series.markerColor ?? series.color ?? series.lineColor ?? chartSeriesColor(chart, columnGroup.series.length + seriesIndex)}
+                  key={`combo-line-marker-${seriesIndex}-${pointIndex}`}
+                  stroke={series.markerLineColor ?? chart.chartAreaFillColor ?? "#ffffff"}
+                  strokeWidth={1}
+                  transform={`translate(${point.x}, ${secondaryScale(point.y)})`}
                 />
               )
             ))}
@@ -3128,6 +3894,10 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   if (!domain) {
     return null;
   }
+  const rawChartType = chart.raw && typeof chart.raw === "object" && typeof (chart.raw as Record<string, unknown>).xmlChartType === "string"
+    ? (chart.raw as Record<string, unknown>).xmlChartType
+    : "";
+  const isContour = rawChartType === "surfaceChart";
   const minValue = domain.minValue;
   const safeMax = domain.safeMax;
   const rotX = clamp(chart.view3d?.rotX ?? (chart.wireframe ? 90 : 25), -88, 88) * (Math.PI / 180);
@@ -3193,6 +3963,8 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
 
   const baseColor = resolveSurfaceBaseColor(chart, palette);
   const axisColor = chart.axisLineColor ?? lightenColor(baseColor, 0.4);
+  const wallFill = chart.backWall?.fillColor ?? "#d9d9df";
+  const wallLineColor = chart.backWall?.lineColor ?? chart.sideWall?.lineColor ?? chart.floor?.lineColor ?? axisColor;
 
   type Quad = {
     color: string;
@@ -3251,6 +4023,47 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
 
   return (
     <g>
+      {isContour ? (
+        <>
+          <rect
+            fill={wallFill}
+            height={layout.plot.height}
+            stroke={lightenColor(axisColor, 0.18)}
+            strokeWidth={0.8}
+            width={layout.plot.width}
+            x={layout.plot.left}
+            y={layout.plot.top}
+          />
+          {Array.from({ length: cols }, (_, columnIndex) => {
+            const x = layout.plot.left + (cols <= 1 ? layout.plot.width / 2 : (columnIndex / (cols - 1)) * layout.plot.width);
+            return (
+              <line
+                key={`surface-fallback-column-grid-${columnIndex}`}
+                stroke={lightenColor(wallLineColor, 0.12)}
+                strokeWidth={0.8}
+                x1={x}
+                x2={x}
+                y1={layout.plot.top}
+                y2={layout.plot.top + layout.plot.height}
+              />
+            );
+          })}
+          {Array.from({ length: rows }, (_, rowIndex) => {
+            const y = layout.plot.top + layout.plot.height - (rows <= 1 ? layout.plot.height / 2 : (rowIndex / (rows - 1)) * layout.plot.height);
+            return (
+              <line
+                key={`surface-fallback-row-grid-${rowIndex}`}
+                stroke={lightenColor(wallLineColor, 0.12)}
+                strokeWidth={0.8}
+                x1={layout.plot.left}
+                x2={layout.plot.left + layout.plot.width}
+                y1={y}
+                y2={y}
+              />
+            );
+          })}
+        </>
+      ) : null}
       {chart.wireframe ? null : quads.map((quad) => (
         <polygon
           key={quad.key}
@@ -3303,33 +4116,13 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
     return null;
   }
 
-  const explicitRoles = {
-    close: indexByName(chart.series, /close|last|end/),
-    high: indexByName(chart.series, /high|max|top/),
-    low: indexByName(chart.series, /low|min|bottom/),
-    open: indexByName(chart.series, /open|start/),
-    volume: indexByName(chart.series, /volume|vol/)
-  };
-  const usedIndices = new Set<number>(Object.values(explicitRoles).filter((value): value is number => value != null));
-  const remainingIndices = chart.series.map((_, index) => index).filter((index) => !usedIndices.has(index));
-  const canonicalOrder = chart.series.length >= 4
-    ? (["open", "high", "low", "close"] as const)
-    : (["high", "low", "close"] as const);
-  canonicalOrder.forEach((role) => {
-    if (explicitRoles[role] == null) {
-      const nextIndex = remainingIndices.shift();
-      if (nextIndex != null) {
-        explicitRoles[role] = nextIndex;
-      }
-    }
-  });
-
-  const highIndex = explicitRoles.high ?? 0;
-  const lowIndex = explicitRoles.low ?? Math.min(1, chart.series.length - 1);
-  const closeIndex = explicitRoles.close ?? Math.min(2, chart.series.length - 1);
-  const openIndex = explicitRoles.open;
-  const volumeIndex = explicitRoles.volume != null && ![highIndex, lowIndex, closeIndex, openIndex].includes(explicitRoles.volume)
-    ? explicitRoles.volume
+  const roles = resolveStockRoleIndices(chart);
+  const highIndex = roles.high ?? 0;
+  const lowIndex = roles.low ?? Math.min(1, chart.series.length - 1);
+  const closeIndex = roles.close ?? Math.min(2, chart.series.length - 1);
+  const openIndex = roles.open;
+  const volumeIndex = roles.volume != null && ![highIndex, lowIndex, closeIndex, openIndex].includes(roles.volume)
+    ? roles.volume
     : null;
   const high = chart.series[highIndex];
   const low = chart.series[lowIndex];
@@ -3363,53 +4156,34 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
 
   const plot = layout.plot;
   const hasVolume = volume != null && points.some((entry) => (entry.volume ?? 0) > 0);
-  const pricePlot = hasVolume
-    ? {
-        ...plot,
-        height: Math.max(40, plot.height * 0.68)
-      }
-    : plot;
-  const volumePlot = hasVolume
-    ? {
-        height: Math.max(28, plot.height - pricePlot.height - 18),
-        left: plot.left,
-        top: pricePlot.top + pricePlot.height + 18,
-        width: plot.width
-      }
-    : null;
-  let minValue = Math.min(...points.map((entry) => entry.low));
-  let maxValue = Math.max(...points.map((entry) => entry.high));
-  if (typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min)) {
-    minValue = chart.valueAxis.min;
-  }
-  if (typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max)) {
-    maxValue = chart.valueAxis.max;
-  }
-  if (maxValue <= minValue) {
-    maxValue = minValue + 1;
-  }
+  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const stockPalette = resolveStockPalette(chart, axisColor);
+  const rawMinValue = hasVolume
+    ? Math.min(0, ...points.flatMap((entry) => [entry.low, entry.close, entry.open ?? entry.close, entry.volume ?? 0]))
+    : Math.min(...points.map((entry) => entry.low));
+  const rawMaxValue = hasVolume
+    ? Math.max(...points.flatMap((entry) => [entry.high, entry.close, entry.open ?? entry.close, entry.volume ?? 0]))
+    : Math.max(...points.map((entry) => entry.high));
+  const resolvedDomain = resolveNumericAxisDomain(
+    typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min) ? chart.valueAxis.min : rawMinValue,
+    typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max) ? chart.valueAxis.max : rawMaxValue,
+    chart.valueAxis?.majorUnit,
+    hasVolume
+  );
   const yScale = scaleLinear()
-    .domain([minValue, maxValue])
-    .range([pricePlot.top + pricePlot.height, pricePlot.top]);
+    .domain([resolvedDomain.min, resolvedDomain.max])
+    .range([plot.top + plot.height, plot.top]);
   const xScale = scaleBand<string>()
     .domain(categories)
     .range([plot.left, plot.left + plot.width])
     .paddingInner(0.28)
     .paddingOuter(0.18);
-  const ticks = buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit);
-  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
+  const ticks = resolvedDomain.ticks;
   const labelColor = resolveChartAxisTextColor(chart);
-  const upColor = chartSeriesColor(chart, closeIndex);
-  const downColor = chartSeriesColor(chart, lowIndex);
-  const openTickColor = openIndex != null ? chartSeriesColor(chart, openIndex) : axisColor;
-  const closeTickColor = chartSeriesColor(chart, closeIndex);
-  const volumeMax = hasVolume
-    ? Math.max(1, ...points.map((entry) => entry.volume ?? 0))
-    : 1;
-  const volumeScale = volumePlot
-    ? scaleLinear().domain([0, volumeMax]).range([volumePlot.top + volumePlot.height, volumePlot.top])
-    : null;
+  const openTickColor = stockPalette.openAccent;
+  const closeTickColor = openIndex != null ? stockPalette.lineColor : stockPalette.closeAccent;
   const labelStep = Math.max(1, Math.ceil(categories.length / Math.max(4, Math.floor(plot.width / 68))));
+  const zeroY = yScale(Math.max(resolvedDomain.min, 0));
 
   return (
     <g>
@@ -3418,12 +4192,12 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
           <line
             stroke={lightenColor(axisColor, 0.72)}
             strokeWidth={1}
-            x1={pricePlot.left}
-            x2={pricePlot.left + pricePlot.width}
+            x1={plot.left}
+            x2={plot.left + plot.width}
             y1={yScale(tick)}
             y2={yScale(tick)}
           />
-          <text fill={labelColor} fontSize={10} textAnchor="end" x={pricePlot.left - 6} y={yScale(tick) + 3}>
+          <text fill={labelColor} fontSize={10} textAnchor="end" x={plot.left - 6} y={yScale(tick) + 3}>
             {formatTickValue(tick)}
           </text>
         </g>
@@ -3440,27 +4214,21 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
             fontSize={10}
             textAnchor="middle"
             x={x}
-            y={volumePlot ? (volumePlot.top + volumePlot.height + 14) : (pricePlot.top + pricePlot.height + 14)}
+            y={plot.top + plot.height + 14}
           >
             {category}
           </text>
         );
       })}
-      <line stroke={axisColor} strokeWidth={1.2} x1={pricePlot.left} x2={pricePlot.left} y1={pricePlot.top} y2={pricePlot.top + pricePlot.height} />
-      <line stroke={axisColor} strokeWidth={1.2} x1={pricePlot.left} x2={pricePlot.left + pricePlot.width} y1={pricePlot.top + pricePlot.height} y2={pricePlot.top + pricePlot.height} />
-      {volumePlot ? (
-        <>
-          <line stroke={axisColor} strokeWidth={1.1} x1={volumePlot.left} x2={volumePlot.left} y1={volumePlot.top} y2={volumePlot.top + volumePlot.height} />
-          <line stroke={axisColor} strokeWidth={1.1} x1={volumePlot.left} x2={volumePlot.left + volumePlot.width} y1={volumePlot.top + volumePlot.height} y2={volumePlot.top + volumePlot.height} />
-        </>
-      ) : null}
+      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left} y1={plot.top} y2={plot.top + plot.height} />
+      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left + plot.width} y1={plot.top + plot.height} y2={plot.top + plot.height} />
       {points.map((entry, index) => {
         const x = (xScale(entry.category) ?? plot.left) + xScale.bandwidth() * 0.5;
         const previousClose = index > 0 ? points[index - 1]?.close ?? entry.close : entry.close;
         const isUp = entry.open != null
           ? entry.close >= entry.open
           : entry.close >= previousClose;
-        const stroke = isUp ? upColor : downColor;
+        const stroke = stockPalette.lineColor;
         const candleWidth = Math.max(5, xScale.bandwidth() * 0.56);
         const bodyLeft = x - candleWidth / 2;
         const openY = entry.open != null ? yScale(entry.open) : null;
@@ -3469,11 +4237,22 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         const lowY = yScale(entry.low);
         return (
           <g key={`stock-point-${index}`}>
+            {hasVolume && entry.volume != null ? (
+              <rect
+                fill={stockPalette.volumeFill}
+                height={Math.max(1, zeroY - yScale(entry.volume))}
+                opacity={0.94}
+                stroke="none"
+                width={Math.max(3, xScale.bandwidth() * 0.64)}
+                x={x - Math.max(3, xScale.bandwidth() * 0.64) / 2}
+                y={yScale(entry.volume)}
+              />
+            ) : null}
             <line stroke={stroke} strokeWidth={1.6} x1={x} x2={x} y1={highY} y2={lowY} />
             {entry.open != null && openY != null ? (
               Math.abs(openY - closeY) >= 1 ? (
                 <rect
-                  fill={isUp ? "#ffffff" : stroke}
+                  fill={isUp ? stockPalette.upFill : stockPalette.downFill}
                   height={Math.max(1.4, Math.abs(closeY - openY))}
                   stroke={stroke}
                   strokeWidth={1.3}
@@ -3489,17 +4268,6 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
             )}
             {entry.open != null && openY != null ? (
               <line stroke={openTickColor} strokeWidth={1.8} x1={x - 7} x2={x} y1={openY} y2={openY} />
-            ) : null}
-            {volumePlot && volumeScale && entry.volume != null ? (
-              <rect
-                fill={isUp ? lightenColor(upColor, 0.18) : lightenColor(downColor, 0.08)}
-                height={Math.max(1, volumePlot.top + volumePlot.height - volumeScale(entry.volume))}
-                opacity={0.9}
-                stroke="none"
-                width={Math.max(3, xScale.bandwidth() * 0.64)}
-                x={x - Math.max(3, xScale.bandwidth() * 0.64) / 2}
-                y={volumeScale(entry.volume)}
-              />
             ) : null}
           </g>
         );
@@ -3843,6 +4611,9 @@ function renderUnsupported(chart: XlsxChart, palette: ChartRendererPalette, layo
 }
 
 function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
+  if (isComboChart(chart)) {
+    return renderComboChart(chart, palette, layout) ?? renderUnsupported(chart, palette, layout, "Combo");
+  }
   if (
     chartType === "ColumnClustered"
     || chartType === "ColumnStacked"
@@ -3929,6 +4700,7 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, r
         layout={layout}
         overlay={
           <>
+            {renderSurfaceAxes(chart, layout)}
             {renderTitle(chart, layout, palette)}
             {renderLegend(chart, layout, palette)}
           </>
