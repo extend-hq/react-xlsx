@@ -510,6 +510,18 @@ function resolveRegionMapValueColors(series: XlsxChartSeries | null | undefined)
   return colors.length >= 2 ? colors : null;
 }
 
+function resolveRegionMapColorStrings(series: XlsxChartSeries | null | undefined) {
+  const raw = series?.raw && typeof series.raw === "object"
+    ? series.raw as Record<string, unknown>
+    : null;
+  const values = Array.isArray(raw?.chartExColorStrings)
+    ? raw.chartExColorStrings
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter((value): value is string => value.length > 0)
+    : [];
+  return values.length > 0 ? values : null;
+}
+
 function resolveRegionMapLayoutProperties(series: XlsxChartSeries | null | undefined) {
   const raw = series?.raw && typeof series.raw === "object"
     ? series.raw as Record<string, unknown>
@@ -570,6 +582,14 @@ function resolveRegionMapNoDataColor(chart: XlsxChart, seriesIndex: number) {
 
 function buildRegionMapLegendItems(chart: XlsxChart): LegendItem[] {
   const primarySeriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
+  const categoricalValues = resolveRegionMapColorStrings(chart.series[primarySeriesIndex] ?? null);
+  if (categoricalValues) {
+    const uniqueValues = Array.from(new Set(categoricalValues));
+    return uniqueValues.map((value, index) => ({
+      color: chartPointColor(chart, index, primarySeriesIndex),
+      label: value
+    }));
+  }
   const values = (chart.series[primarySeriesIndex]?.values ?? [])
     .map((value) => safeNumber(value))
     .filter((value): value is number => value != null);
@@ -6093,20 +6113,32 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
       ? geoMercator()
       : geoNaturalEarth1();
   const availableFeatures = getRegionMapBaseFeatures(featureSet);
+  const categoricalValues = resolveRegionMapColorStrings(primarySeries);
+  const categoricalColorByLabel = categoricalValues
+    ? new Map(
+        Array.from(new Set(categoricalValues)).map((value, index) => [
+          value,
+          chartPointColor(chart, index, primarySeriesIndex)
+        ])
+      )
+    : null;
   const entries = labels.map((label, index) => {
     const feature = resolveRegionMapFeature(label, featureSet);
     const value = safeNumber(primarySeries.values[index]);
+    const colorLabel = categoricalValues?.[index] ?? null;
     return {
+      colorLabel,
       feature,
       key: normalizeCategoryLabel(label),
       label: normalizeCategoryLabel(label),
       value
     };
-  }).filter((entry) => entry.feature != null && entry.value != null) as Array<{
+  }).filter((entry) => entry.feature != null && (entry.value != null || entry.colorLabel != null)) as Array<{
+    colorLabel: string | null;
     feature: RegionMapFeature;
     key: string;
     label: string;
-    value: number;
+    value: number | null;
   }>;
   const fitToMatchedData = entries.length > 0 && (viewedRegionType === "dataOnly" || entries.length === 1);
   const fitFeatures = fitToMatchedData
@@ -6157,8 +6189,12 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
         if (!d) {
           return null;
         }
-        const ratio = maxValue <= minValue ? 1 : (entry.value - minValue) / Math.max(1e-6, maxValue - minValue);
-        const fill = resolveRegionMapValueColor(chart, primarySeriesIndex, ratio);
+        const fill = entry.value != null
+          ? (() => {
+              const ratio = maxValue <= minValue ? 1 : (entry.value - minValue) / Math.max(1e-6, maxValue - minValue);
+              return resolveRegionMapValueColor(chart, primarySeriesIndex, ratio);
+            })()
+          : categoricalColorByLabel?.get(entry.colorLabel ?? "") ?? resolveRegionMapDataColor(chart, primarySeriesIndex);
         return (
           <path
             d={d}

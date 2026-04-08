@@ -453,7 +453,9 @@ async function loadWorkbook(buffer: ArrayBuffer) {
   const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
   const hasCharts = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) => {
     const worksheet = nextWorkbook.getSheet(workbookSheetIndex);
-    return Array.isArray(worksheet.charts) && worksheet.charts.length > 0;
+    const hasClassicCharts = Array.isArray(worksheet.charts) && worksheet.charts.length > 0;
+    const hasModernCharts = Array.isArray(worksheet.chartsEx) && worksheet.chartsEx.length > 0;
+    return hasClassicCharts || hasModernCharts;
   }).some(Boolean);
   const chartStyleAssets = hasCharts ? parseWorkbookChartStyleAssets(bytes) : null;
   const chartAssets = loadWorkbookChartAssets(nextWorkbook, chartStyleAssets, visibleSheetIndexByWorkbookSheetIndex);

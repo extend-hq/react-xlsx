@@ -23,6 +23,7 @@ const DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const DRAWING_SPREADSHEET_NS = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
 const PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
 const CHART_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
+const CHART_EX_REL_TYPE = "http://schemas.microsoft.com/office/2014/relationships/chartEx";
 const CHART_STYLE_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/chartStyle";
 const CHART_COLOR_STYLE_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/chartColorStyle";
 const SERIES_COLORS = [
@@ -1430,7 +1431,7 @@ function applyChartStyleFromXml(
       }
     }
 
-    const modernSeriesNodes = getLocalElements(modernPlotAreaNode, "series");
+    const modernSeriesNodes = getLocalDescendants(modernPlotAreaNode, "series");
     if (modernSeriesNodes.length === 0) {
       return;
     }
@@ -1442,7 +1443,8 @@ function applyChartStyleFromXml(
       }
       const valueColorsNode = getFirstLocalChild(modernSeriesNode, "valueColors");
       const valueColors = valueColorsNode
-        ? getLocalElements(valueColorsNode)
+        ? Array.from(valueColorsNode.childNodes)
+          .filter((node): node is Element => node.nodeType === Node.ELEMENT_NODE)
           .map((node) => resolveChartColorNode(findFirstChartColorElement(node) ?? node, themePalette))
           .filter((value): value is string => typeof value === "string" && value.length > 0)
         : [];
@@ -2622,9 +2624,22 @@ function normalizeChartExSeries(
         formula: valueDimensionFormula
       })
     : null;
-  const values = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value").map((value) => (
+  const resolvedValueCells = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value");
+  const values = resolvedValueCells.map((value) => (
     typeof value === "number" && Number.isFinite(value) ? value : null
   ));
+  const colorStrings = chartType === "RegionMap" && valueDimension?.dimType === "colorStr"
+    ? resolvedValueCells.map((value) => {
+        if (typeof value === "string") {
+          const trimmed = value.trim();
+          return trimmed.length > 0 ? trimmed : null;
+        }
+        if (typeof value === "number" && Number.isFinite(value)) {
+          return String(value);
+        }
+        return null;
+      })
+    : [];
   const categories = resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category");
   const hierarchyCategories = (
     chartType === "Sunburst" || chartType === "Treemap"
@@ -2672,6 +2687,7 @@ function normalizeChartExSeries(
     negativeLineColor: undefined,
     raw: {
       ...series,
+      chartExColorStrings: colorStrings,
       chartExHierarchyCategories: hierarchyCategories,
       data: dataEntry,
       dimType: typeof valueDimension?.dimType === "string" ? valueDimension.dimType : undefined
@@ -3522,7 +3538,7 @@ function collectChartOriginsForSheet(
 
     let chartAnchorIndex = 0;
     for (const anchorNode of anchorNodes) {
-      const graphicFrame = getFirstLocalChild(anchorNode, "graphicFrame");
+      const graphicFrame = getFirstLocalDescendant(anchorNode, "graphicFrame");
       const chartNode = graphicFrame ? getFirstLocalDescendant(graphicFrame, "chart") : null;
       const relationshipId = chartNode?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id")
         ?? chartNode?.getAttribute("r:id")
@@ -3531,7 +3547,7 @@ function collectChartOriginsForSheet(
         continue;
       }
       const relationship = relationships.get(relationshipId);
-      if (!relationship || relationship.type !== CHART_REL_TYPE) {
+      if (!relationship || (relationship.type !== CHART_REL_TYPE && relationship.type !== CHART_EX_REL_TYPE)) {
         continue;
       }
 
