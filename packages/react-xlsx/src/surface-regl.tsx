@@ -193,6 +193,17 @@ function getBuiltinSurfacePalette(chart: XlsxChart) {
   return null;
 }
 
+function shouldPreferBuiltinSurfacePalette(chart: XlsxChart) {
+  const normalized = normalizeBuiltinSurfaceStyleId(chart.chartStyleId);
+  const rawChartType = chart.raw && typeof chart.raw === "object" && typeof (chart.raw as Record<string, unknown>).xmlChartType === "string"
+    ? String((chart.raw as Record<string, unknown>).xmlChartType)
+    : "";
+  return (
+    (rawChartType === "surfaceChart" || rawChartType === "surface3DChart")
+    && (normalized === 26 || normalized === 34 || normalized === 35 || normalized === 36)
+  );
+}
+
 function getSurfaceBandCount(chart: XlsxChart) {
   const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
   const explicitBandCount = typeof raw?.bandFormatCount === "number" && Number.isFinite(raw.bandFormatCount)
@@ -201,10 +212,13 @@ function getSurfaceBandCount(chart: XlsxChart) {
   if (explicitBandCount != null && explicitBandCount > 0) {
     return explicitBandCount;
   }
+  const builtinPalette = getBuiltinSurfacePalette(chart);
+  if (shouldPreferBuiltinSurfacePalette(chart) && builtinPalette && builtinPalette.length > 0) {
+    return builtinPalette.length;
+  }
   if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
     return chart.chartColorPalette.length;
   }
-  const builtinPalette = getBuiltinSurfacePalette(chart);
   if (builtinPalette && builtinPalette.length > 0) {
     return builtinPalette.length;
   }
@@ -212,11 +226,14 @@ function getSurfaceBandCount(chart: XlsxChart) {
 }
 
 function getSurfaceColorStops(chart: XlsxChart, palette: SurfacePalette) {
+  const builtinPalette = getBuiltinSurfacePalette(chart);
+  if (shouldPreferBuiltinSurfacePalette(chart) && builtinPalette && builtinPalette.length >= 2) {
+    return builtinPalette;
+  }
   const explicitStops = (chart.chartColorPalette ?? []).filter((value): value is string => typeof value === "string" && value.length > 0);
   if (explicitStops.length >= 2) {
     return explicitStops;
   }
-  const builtinPalette = getBuiltinSurfacePalette(chart);
   if (builtinPalette && builtinPalette.length >= 2) {
     return builtinPalette;
   }

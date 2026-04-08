@@ -1401,6 +1401,23 @@ function applyChartStyleFromXml(
       return;
     }
 
+    const parseModernBinning = (seriesNode: Element) => {
+      const layoutPrNode = getFirstLocalChild(seriesNode, "layoutPr");
+      const binningNode = layoutPrNode ? getFirstLocalChild(layoutPrNode, "binning") : null;
+      if (!binningNode) {
+        return null;
+      }
+      const binning: Record<string, unknown> = {};
+      for (const attribute of Array.from(binningNode.attributes)) {
+        const rawValue = attribute.value;
+        const numeric = Number(rawValue);
+        binning[attribute.localName || attribute.name] = Number.isFinite(numeric) && rawValue.trim() !== ""
+          ? numeric
+          : rawValue;
+      }
+      return Object.keys(binning).length > 0 ? binning : {};
+    };
+
     const plotAreaShapeProperties = getFirstLocalChild(modernPlotAreaNode, "spPr");
     if (plotAreaShapeProperties) {
       const plotAreaFillColor = resolveChartFillColor(plotAreaShapeProperties, themePalette);
@@ -1423,19 +1440,30 @@ function applyChartStyleFromXml(
       if (!modernSeriesNode) {
         return series;
       }
-      const seriesShapeProperties = getFirstLocalChild(modernSeriesNode, "spPr");
-      if (!seriesShapeProperties) {
-        return series;
-      }
-      const fillColor = resolveChartFillColor(seriesShapeProperties, themePalette);
-      const lineStyle = resolveChartLineStyle(seriesShapeProperties, themePalette);
-      const fallbackColor = fillColor ?? lineStyle.color ?? undefined;
       const valueColorsNode = getFirstLocalChild(modernSeriesNode, "valueColors");
       const valueColors = valueColorsNode
         ? getLocalElements(valueColorsNode)
           .map((node) => resolveChartColorNode(findFirstChartColorElement(node) ?? node, themePalette))
           .filter((value): value is string => typeof value === "string" && value.length > 0)
         : [];
+      const nextRaw = valueColors.length > 0
+        ? {
+            ...(series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : {}),
+            valueColors
+          }
+        : series.raw;
+      const seriesShapeProperties = getFirstLocalChild(modernSeriesNode, "spPr");
+      if (!seriesShapeProperties) {
+        return nextRaw === series.raw
+          ? series
+          : {
+              ...series,
+              raw: nextRaw
+            };
+      }
+      const fillColor = resolveChartFillColor(seriesShapeProperties, themePalette);
+      const lineStyle = resolveChartLineStyle(seriesShapeProperties, themePalette);
+      const fallbackColor = fillColor ?? lineStyle.color ?? undefined;
       return {
         ...series,
         color: series.color ?? fallbackColor,
@@ -1443,14 +1471,77 @@ function applyChartStyleFromXml(
         lineWidthPx: series.lineWidthPx ?? (typeof lineStyle.widthPx === "number" ? lineStyle.widthPx : undefined),
         markerColor: series.markerColor ?? fallbackColor ?? series.color,
         markerLineColor: series.markerLineColor ?? lineStyle.color ?? fallbackColor ?? series.lineColor,
-        raw: valueColors.length > 0
-          ? {
-              ...(series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : {}),
-              valueColors
-            }
-          : series.raw
+        raw: nextRaw
       };
     });
+
+    const seriesLayouts = modernSeriesNodes.map((node) => node.getAttribute("layoutId") ?? node.getAttribute("layout"));
+    const clusteredColumnIndex = seriesLayouts.findIndex((layout) => layout === "clusteredColumn");
+    if (clusteredColumnIndex >= 0) {
+      const clusteredNode = modernSeriesNodes[clusteredColumnIndex] ?? null;
+      const parsedBinning = clusteredNode ? parseModernBinning(clusteredNode) : null;
+      if (parsedBinning) {
+        const syntheticRawSeries: Record<string, unknown> = {
+          layoutId: "clusteredColumn",
+          layoutPr: {
+            binning: parsedBinning
+          }
+        };
+        const hasParetoLine = seriesLayouts.includes("paretoLine");
+        const replaceColumnSeries = (series: XlsxChartSeries | null | undefined) => (
+          series ? buildChartExHistogramSeries(series, syntheticRawSeries, hasParetoLine) : null
+        );
+
+        if (chart.typeGroups && chart.typeGroups.length > 0) {
+          const nextTypeGroups = chart.typeGroups.map((group) => ({ ...group, series: [...group.series] }));
+          const columnGroupIndex = nextTypeGroups.findIndex((group) => group.chartType === "ColumnClustered");
+          if (columnGroupIndex >= 0) {
+            const originalColumnSeries = nextTypeGroups[columnGroupIndex]?.series[0] ?? null;
+            const binnedColumnSeries = replaceColumnSeries(originalColumnSeries);
+            if (binnedColumnSeries) {
+              nextTypeGroups[columnGroupIndex].series = [binnedColumnSeries];
+              const lineGroupIndex = nextTypeGroups.findIndex((group) => group.chartType === "Line");
+              if (lineGroupIndex >= 0 && nextTypeGroups[lineGroupIndex]?.series[0]) {
+                const originalLineSeries = nextTypeGroups[lineGroupIndex].series[0];
+                const recomputedLine = buildChartExParetoLineSeries(
+                  binnedColumnSeries,
+                  {
+                    text: originalLineSeries.name,
+                    ...(originalLineSeries.raw && typeof originalLineSeries.raw === "object"
+                      ? originalLineSeries.raw as Record<string, unknown>
+                      : {})
+                  },
+                  0
+                );
+                nextTypeGroups[lineGroupIndex].series = [
+                  {
+                    ...originalLineSeries,
+                    categories: recomputedLine.categories,
+                    categoriesRef: recomputedLine.categoriesRef,
+                    raw: recomputedLine.raw,
+                    values: recomputedLine.values
+                  }
+                ];
+                chart.series = [binnedColumnSeries, nextTypeGroups[lineGroupIndex].series[0]];
+              } else {
+                chart.series = [binnedColumnSeries];
+              }
+              chart.typeGroups = nextTypeGroups;
+            }
+          } else if (chart.series[0]) {
+            const binnedSeries = replaceColumnSeries(chart.series[0]);
+            if (binnedSeries) {
+              chart.series = [binnedSeries];
+            }
+          }
+        } else if (chart.series[0]) {
+          const binnedSeries = replaceColumnSeries(chart.series[0]);
+          if (binnedSeries) {
+            chart.series = [binnedSeries];
+          }
+        }
+      }
+    }
   };
 
   const chartDocument = parseXml(chartXml);

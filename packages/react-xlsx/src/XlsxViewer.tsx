@@ -4300,7 +4300,6 @@ function XlsxGrid({
   const selectedImageIdRef = React.useRef<string | null>(selectedImageId);
   const pendingSelectionCommitRef = React.useRef<XlsxCellRange | null>(null);
   const selectionCommitFrameRef = React.useRef<number | null>(null);
-  const selectionInteractionEpochRef = React.useRef(0);
   const selectionRef = React.useRef<XlsxCellRange | null>(null);
   const editingCellRef = React.useRef<XlsxCellAddress | null>(null);
   const readOnlyRef = React.useRef(readOnly);
@@ -4339,6 +4338,7 @@ function XlsxGrid({
         committedOnPointerDown: boolean;
         didDrag: boolean;
         originCell: XlsxCellAddress;
+        originOverlayRect: { height: number; left: number; top: number; width: number } | null;
         originContentX: number;
         originContentY: number;
         previewRange: XlsxCellRange;
@@ -5129,7 +5129,7 @@ function XlsxGrid({
     };
   }, [openTableMenu]);
 
-  const resolvePointerCellFromClient = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
+  const resolvePointerCellFromGeometry = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
     const wrapper = wrapperRef.current;
     const scroller = scrollRef.current;
     const visibleRowsCurrent = visibleRowsRef.current;
@@ -5151,39 +5151,6 @@ function XlsxGrid({
       return null;
     }
 
-    const resolveCellFromHitTest = () => {
-      const elementsAtPoint = typeof document.elementsFromPoint === "function"
-        ? document.elementsFromPoint(clientX, clientY)
-        : [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => Boolean(element));
-      for (const element of elementsAtPoint) {
-        if (!(element instanceof HTMLElement)) {
-          continue;
-        }
-
-        const cell = parseCellAddressAttribute(element.closest<HTMLElement>("[data-xlsx-cell]")?.getAttribute("data-xlsx-cell") ?? null);
-        if (cell) {
-          return cell;
-        }
-
-        const colHeader = element.closest<HTMLElement>("[data-xlsx-col-header]");
-        if (colHeader && firstVisibleRowRef.current !== undefined) {
-          const actualCol = Number(colHeader.getAttribute("data-xlsx-col-header"));
-          if (Number.isInteger(actualCol) && actualCol >= 0) {
-            return { row: firstVisibleRowRef.current, col: actualCol };
-          }
-        }
-
-        const rowElement = element.closest<HTMLTableRowElement>("tr[data-xlsx-row]");
-        if (rowElement && firstVisibleColRef.current !== undefined) {
-          const actualRow = Number(rowElement.getAttribute("data-xlsx-row"));
-          if (Number.isInteger(actualRow) && actualRow >= 0) {
-            return { row: actualRow, col: firstVisibleColRef.current };
-          }
-        }
-      }
-
-      return null;
-    };
     const pointerOffsetX = clientX - scrollerRect.left;
     const pointerOffsetY = clientY - scrollerRect.top;
     const localX =
@@ -5218,12 +5185,8 @@ function XlsxGrid({
       }
     }
 
-    if (geometryCell && !worksheet?.isMergedSecondary(geometryCell.row, geometryCell.col)) {
-      return geometryCell;
-    }
-
-    return resolveCellFromHitTest() ?? geometryCell;
-  }, [frozenPaneBottom, frozenPaneRight, worksheet, zoomFactor]);
+    return geometryCell;
+  }, [frozenPaneBottom, frozenPaneRight, zoomFactor]);
 
   const resolvePointerCellFromHitTest = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
     const elementsAtPoint = typeof document.elementsFromPoint === "function"
@@ -5259,6 +5222,15 @@ function XlsxGrid({
     return null;
   }, []);
 
+  const resolvePointerCellFromClient = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
+    const geometryCell = resolvePointerCellFromGeometry(clientX, clientY);
+    if (geometryCell && !worksheet?.isMergedSecondary(geometryCell.row, geometryCell.col)) {
+      return geometryCell;
+    }
+
+    return resolvePointerCellFromHitTest(clientX, clientY) ?? geometryCell;
+  }, [resolvePointerCellFromGeometry, resolvePointerCellFromHitTest, worksheet]);
+
   const resolveDraggedSelectionCell = React.useCallback((
     dragState: {
       axis: "cell" | "column" | "row";
@@ -5273,51 +5245,31 @@ function XlsxGrid({
     clientX: number,
     clientY: number
   ): XlsxCellAddress | null => {
-    const visibleRowsCurrent = visibleRowsRef.current;
-    const visibleColsCurrent = visibleColsRef.current;
-    const rowPrefixSumsCurrent = rowPrefixSumsRef.current;
-    const colPrefixSumsCurrent = colPrefixSumsRef.current;
-    if (visibleRowsCurrent.length === 0 || visibleColsCurrent.length === 0) {
-      return null;
-    }
-
-    const maxContentY = rowPrefixSumsCurrent[rowPrefixSumsCurrent.length - 1] ?? 0;
-    const maxContentX = colPrefixSumsCurrent[colPrefixSumsCurrent.length - 1] ?? 0;
-    const currentContentX = clampContentOffset(
-      dragState.originContentX + ((clientX - dragState.startClientX) / dragState.contentScaleX),
-      maxContentX
-    );
-    const currentContentY = clampContentOffset(
-      dragState.originContentY + ((clientY - dragState.startClientY) / dragState.contentScaleY),
-      maxContentY
-    );
-
-    if (dragState.axis === "row") {
-      const rowIndex = findIndexForOffsetPrefix(rowPrefixSumsCurrent, currentContentY);
-      const actualRow = visibleRowsCurrent[rowIndex];
-      return actualRow !== undefined ? { row: actualRow, col: dragState.originCell.col } : null;
-    }
-
-    if (dragState.axis === "column") {
-      const colIndex = findIndexForOffsetPrefix(colPrefixSumsCurrent, currentContentX);
-      const actualCol = visibleColsCurrent[colIndex];
-      return actualCol !== undefined ? { row: dragState.originCell.row, col: actualCol } : null;
-    }
-
-    const rowIndex = findIndexForOffsetPrefix(rowPrefixSumsCurrent, currentContentY);
-    const colIndex = findIndexForOffsetPrefix(colPrefixSumsCurrent, currentContentX);
-    const actualRow = visibleRowsCurrent[rowIndex];
-    const actualCol = visibleColsCurrent[colIndex];
+    const geometryCell = resolvePointerCellFromGeometry(clientX, clientY);
+    const hitCell = resolvePointerCellFromHitTest(clientX, clientY);
+    const actualRow =
+      hitCell && rowIndexByActual.has(hitCell.row)
+        ? hitCell.row
+        : geometryCell?.row;
+    const actualCol = geometryCell?.col ?? hitCell?.col;
     if (actualRow === undefined || actualCol === undefined) {
       return null;
     }
 
+    if (dragState.axis === "row") {
+      return { row: actualRow, col: dragState.originCell.col };
+    }
+
+    if (dragState.axis === "column") {
+      return { row: dragState.originCell.row, col: actualCol };
+    }
+
     if (worksheet?.isMergedSecondary(actualRow, actualCol)) {
-      return resolvePointerCellFromHitTest(clientX, clientY) ?? { row: actualRow, col: actualCol };
+      return hitCell ?? geometryCell;
     }
 
     return { row: actualRow, col: actualCol };
-  }, [resolvePointerCellFromHitTest, worksheet]);
+  }, [resolvePointerCellFromGeometry, resolvePointerCellFromHitTest, rowIndexByActual, worksheet]);
 
   const resolveCellPointerOrigin = React.useCallback((
     cell: XlsxCellAddress,
@@ -6075,6 +6027,43 @@ function XlsxGrid({
     };
   }, [colIndexByActual, colPrefixSums, effectiveColWidths, effectiveRowHeights, rowIndexByActual, rowPrefixSums]);
 
+  const resolveDragPreviewRect = React.useCallback((range: XlsxCellRange) => {
+    const dragState = selectionDragRef.current;
+    if (!dragState || !dragState.didDrag || dragState.axis !== "cell" || !dragState.originOverlayRect) {
+      return null;
+    }
+
+    const geometryRect = resolveGeometryOverlayRect(range);
+    if (!geometryRect) {
+      return null;
+    }
+
+    const originRect = dragState.originOverlayRect;
+    const normalized = normalizeRange(range);
+    if (rangesEqual(normalized, { start: dragState.originCell, end: dragState.originCell })) {
+      return originRect;
+    }
+
+    const originCell = dragState.originCell;
+    const originOnLeft = originCell.col === normalized.start.col;
+    const originOnTop = originCell.row === normalized.start.row;
+    const geometryRight = geometryRect.left + geometryRect.width;
+    const geometryBottom = geometryRect.top + geometryRect.height;
+    const originRight = originRect.left + originRect.width;
+    const originBottom = originRect.top + originRect.height;
+    const left = originOnLeft ? originRect.left : Math.min(originRect.left, geometryRect.left);
+    const top = originOnTop ? originRect.top : Math.min(originRect.top, geometryRect.top);
+    const right = originOnLeft ? Math.max(originRight, geometryRight) : originRight;
+    const bottom = originOnTop ? Math.max(originBottom, geometryBottom) : originBottom;
+
+    return {
+      height: Math.max(originRect.height, bottom - top),
+      left,
+      top,
+      width: Math.max(originRect.width, right - left)
+    };
+  }, [resolveGeometryOverlayRect]);
+
   const resolveOverlayRect = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
     if (normalized.start.row === normalized.end.row && normalized.start.col === normalized.end.col) {
@@ -6191,7 +6180,7 @@ function XlsxGrid({
 
     const nextRect =
       selectionDragRef.current?.didDrag || fillDragRef.current
-        ? resolveGeometryOverlayRect(range) ?? resolveOverlayRect(range)
+        ? resolveDragPreviewRect(range) ?? resolveGeometryOverlayRect(range) ?? resolveOverlayRect(range)
         : resolveOverlayRect(range);
     if (!nextRect) {
       applyHeaderSelection(range);
@@ -6210,7 +6199,7 @@ function XlsxGrid({
       fillHandle.style.top = `${nextRect.top + nextRect.height - 4}px`;
     }
     applyHeaderSelection(range);
-  }, [applyHeaderSelection, resolveGeometryOverlayRect, resolveOverlayRect]);
+  }, [applyHeaderSelection, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect]);
 
   const applyPreviewOverlayFromElement = React.useCallback((element: HTMLElement, range: XlsxCellRange) => {
     const overlay = selectionOverlayRef.current;
@@ -6275,7 +6264,6 @@ function XlsxGrid({
       return;
     }
 
-    const interactionEpoch = selectionInteractionEpochRef.current;
     pendingSelectionCommitRef.current = normalized;
     if (selectionCommitFrameRef.current !== null) {
       return;
@@ -6286,9 +6274,6 @@ function XlsxGrid({
       const pendingRange = pendingSelectionCommitRef.current;
       pendingSelectionCommitRef.current = null;
       if (!pendingRange) {
-        return;
-      }
-      if (interactionEpoch !== selectionInteractionEpochRef.current) {
         return;
       }
 
@@ -6651,6 +6636,7 @@ function XlsxGrid({
     const isActive = isSameCell(activeCellRef.current, cell);
     const committedOnPointerDown = !isActive || !editingCellRef.current;
     const pointerOrigin = resolveCellPointerOrigin(cell, event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
+    const originOverlayRect = resolveMountedCellOverlayRect(event.currentTarget);
     if (!pointerOrigin) {
       return;
     }
@@ -6661,6 +6647,7 @@ function XlsxGrid({
       "cell",
       cell,
       pointerOrigin,
+      originOverlayRect,
       committedOnPointerDown,
       initialRange,
       event.clientX,
@@ -6670,7 +6657,7 @@ function XlsxGrid({
     if (committedOnPointerDown) {
       commitSelectionRange(initialRange);
     }
-  }, [applyPreviewOverlayFromElement, commitSelectionRange, focusGrid, resolveCellPointerOrigin]);
+  }, [applyPreviewOverlayFromElement, commitSelectionRange, focusGrid, resolveCellPointerOrigin, resolveMountedCellOverlayRect]);
 
   const handleRowPointerDown = React.useCallback((
     event: React.PointerEvent<HTMLTableCellElement>,
@@ -6699,6 +6686,7 @@ function XlsxGrid({
       "row",
       { row: actualRow, col: firstVisibleCol },
       pointerOrigin,
+      null,
       true,
       initialRange,
       event.clientX,
@@ -6735,6 +6723,7 @@ function XlsxGrid({
       "column",
       { row: firstVisibleRow, col: actualCol },
       pointerOrigin,
+      null,
       true,
       initialRange,
       event.clientX,
@@ -7645,17 +7634,12 @@ function XlsxGrid({
       originContentX: number;
       originContentY: number;
     },
+    originOverlayRect: { height: number; left: number; top: number; width: number } | null,
     committedOnPointerDown: boolean,
     initialRange: XlsxCellRange,
     startClientX: number,
     startClientY: number
   ) {
-    selectionInteractionEpochRef.current += 1;
-    pendingSelectionCommitRef.current = null;
-    if (selectionCommitFrameRef.current !== null) {
-      window.cancelAnimationFrame(selectionCommitFrameRef.current);
-      selectionCommitFrameRef.current = null;
-    }
     cachedScrollerRectRef.current = scrollRef.current?.getBoundingClientRect() ?? null;
     selectionDragRef.current = {
       anchor,
@@ -7665,6 +7649,7 @@ function XlsxGrid({
       committedOnPointerDown,
       didDrag: false,
       originCell,
+      originOverlayRect,
       originContentX: pointerOrigin.originContentX,
       originContentY: pointerOrigin.originContentY,
       pointerId,
