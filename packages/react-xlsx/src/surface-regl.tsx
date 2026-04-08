@@ -380,6 +380,13 @@ function computeNormal(left: SurfacePoint3D, middle: SurfacePoint3D, right: Surf
   };
 }
 
+function withProjectedDepth(point: SurfacePoint3D, depth: number): SurfacePoint3D {
+  return {
+    ...point,
+    depth
+  };
+}
+
 function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: SurfaceLayout): SurfaceScene | null {
   const rows = chart.series.length;
   const cols = chart.series.reduce((max, series) => Math.max(max, series.values.length), 0);
@@ -466,7 +473,9 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
             const value = bilinearInterpolate(p00, p10, p01, p11, u, v);
             return {
               bandColor: resolveSurfaceBandColor(chart, palette, domain, value),
-              point: projectPoint(columnIndex + u, rowIndex + v, value),
+              point: isContour
+                ? withProjectedDepth(projectPoint(columnIndex + u, rowIndex + v, value), isWireframe ? 0.12 : 0.08)
+                : projectPoint(columnIndex + u, rowIndex + v, value),
               value
             };
           };
@@ -547,22 +556,22 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const columnSkip = Math.max(1, chart.categoryAxis?.tickMarkSkip ?? 1);
   const rowSkip = Math.max(1, chart.seriesAxis?.tickMarkSkip ?? 1);
   if (isContour) {
-    const topLeft = projectPoint(0, 0, domain.minValue);
-    const topRight = projectPoint(cols - 1, 0, domain.minValue);
-    const bottomRight = projectPoint(cols - 1, rows - 1, domain.minValue);
-    const bottomLeft = projectPoint(0, rows - 1, domain.minValue);
+    const topLeft = withProjectedDepth(projectPoint(0, 0, domain.minValue), -0.12);
+    const topRight = withProjectedDepth(projectPoint(cols - 1, 0, domain.minValue), -0.12);
+    const bottomRight = withProjectedDepth(projectPoint(cols - 1, rows - 1, domain.minValue), -0.12);
+    const bottomLeft = withProjectedDepth(projectPoint(0, rows - 1, domain.minValue), -0.12);
     addSolidQuad(topLeft, topRight, bottomRight, bottomLeft, backWallFill);
     for (let columnIndex = 0; columnIndex < cols; columnIndex += columnSkip) {
       addMeshLine(
-        projectPoint(columnIndex, 0, domain.minValue),
-        projectPoint(columnIndex, rows - 1, domain.minValue),
+        withProjectedDepth(projectPoint(columnIndex, 0, domain.minValue), 0.04),
+        withProjectedDepth(projectPoint(columnIndex, rows - 1, domain.minValue), 0.04),
         wallLineColor
       );
     }
     for (let rowIndex = 0; rowIndex < rows; rowIndex += rowSkip) {
       addMeshLine(
-        projectPoint(0, rowIndex, domain.minValue),
-        projectPoint(cols - 1, rowIndex, domain.minValue),
+        withProjectedDepth(projectPoint(0, rowIndex, domain.minValue), 0.04),
+        withProjectedDepth(projectPoint(cols - 1, rowIndex, domain.minValue), 0.04),
         wallLineColor
       );
     }
@@ -654,8 +663,8 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     ...fillVertices.map((vertex) => vertex.point),
     ...meshLines.flatMap((line) => [line.from, line.to]),
     ...contourLines.flatMap((line) => [
-      { depth: 0, worldX: 0, worldY: 0, worldZ: 0, x: normalizeSurfaceX(line.from.x, cols), y: normalizeSurfaceY(line.from.y, rows) },
-      { depth: 0, worldX: 0, worldY: 0, worldZ: 0, x: normalizeSurfaceX(line.to.x, cols), y: normalizeSurfaceY(line.to.y, rows) }
+      { depth: 0.18, worldX: 0, worldY: 0, worldZ: 0, x: normalizeSurfaceX(line.from.x, cols), y: normalizeSurfaceY(line.from.y, rows) },
+      { depth: 0.18, worldX: 0, worldY: 0, worldZ: 0, x: normalizeSurfaceX(line.to.x, cols), y: normalizeSurfaceY(line.to.y, rows) }
     ])
   ];
   if (allPoints.length === 0) {
@@ -729,7 +738,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   });
   contourLines.forEach((line) => {
     const fromPoint: SurfacePoint3D = {
-      depth: 0,
+      depth: 0.18,
       worldX: 0,
       worldY: 0,
       worldZ: 0,
@@ -737,7 +746,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
       y: normalizeSurfaceY(line.from.y, rows)
     };
     const toPoint: SurfacePoint3D = {
-      depth: 0,
+      depth: 0.18,
       worldX: 0,
       worldY: 0,
       worldZ: 0,
@@ -747,7 +756,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     const from = toClipPoint(fromPoint);
     const to = toClipPoint(toPoint);
     const rgba = colorToRgba(line.color, 1);
-    linePositions.push(from.x, from.y, 0, to.x, to.y, 0);
+    linePositions.push(from.x, from.y, from.z, to.x, to.y, to.z);
     lineColors.push(rgba[0], rgba[1], rgba[2], rgba[3], rgba[0], rgba[1], rgba[2], rgba[3]);
   });
 
