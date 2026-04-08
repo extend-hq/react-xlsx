@@ -3808,7 +3808,6 @@ type RenderedColumn = {
 };
 
 type GridRowProps = {
-  activeCell: XlsxCellAddress | null;
   actualRow: number;
   editingCell: XlsxCellAddress | null;
   editingValue: string;
@@ -3816,17 +3815,17 @@ type GridRowProps = {
   leadingSpacerWidth: number;
   onCellDoubleClick: (cell: XlsxCellAddress) => void;
   onCellClick: (cell: XlsxCellAddress, cellData: CellRenderData) => void;
-  onCellPointerDown: (event: React.PointerEvent<HTMLTableCellElement>, cell: XlsxCellAddress, isActive: boolean) => void;
+  onCellPointerDown: (event: React.PointerEvent<HTMLTableCellElement>, cell: XlsxCellAddress) => void;
   onEditingCancel: () => void;
   onEditingCommit: () => void;
   onEditingValueChange: (value: string) => void;
+  onRowHeaderRef: (actualRow: number, element: HTMLTableCellElement | null) => void;
   onRowPointerDown: (event: React.PointerEvent<HTMLTableCellElement>, actualRow: number) => void;
   onRowResizePointerDown: (event: React.PointerEvent<HTMLDivElement>, actualRow: number, rowHeight: number) => void;
   palette: ViewerPalette;
   readOnly: boolean;
   renderCellAdornment?: (cell: XlsxCellAddress) => React.ReactNode;
   rowHeight: number;
-  rowSelected: boolean;
   stickyLeftByCol: Map<number, number>;
   stickyTop?: number;
   trailingSpacerWidth: number;
@@ -3834,7 +3833,6 @@ type GridRowProps = {
 };
 
 function GridRow({
-  activeCell,
   actualRow,
   editingCell,
   editingValue,
@@ -3846,13 +3844,13 @@ function GridRow({
   onEditingCancel,
   onEditingCommit,
   onEditingValueChange,
+  onRowHeaderRef,
   onRowPointerDown,
   onRowResizePointerDown,
   palette,
   readOnly,
   renderCellAdornment,
   rowHeight,
-  rowSelected,
   stickyLeftByCol,
   stickyTop,
   trailingSpacerWidth,
@@ -3863,9 +3861,10 @@ function GridRow({
   return (
     <tr data-xlsx-row={actualRow} style={{ height: rowHeight }}>
       <td
+        ref={(element) => onRowHeaderRef(actualRow, element)}
         onPointerDown={(event) => onRowPointerDown(event, actualRow)}
         style={{
-          backgroundColor: rowSelected ? "var(--xlsx-selection-header)" : palette.rowHeaderSurface,
+          backgroundColor: palette.rowHeaderSurface,
           borderBottom: "none",
           borderRight: "none",
           boxSizing: "border-box",
@@ -3920,19 +3919,12 @@ function GridRow({
         }
 
         const cell = { row: actualRow, col: actualCol };
-        const isActive = isSameCell(activeCell, cell);
         const isEditing = isSameCell(editingCell, cell);
         const isSpilling = Boolean(cellData.spillWidth && cellData.spillWidth > 0);
         const adornment = renderCellAdornment ? renderCellAdornment(cell) : null;
         const stickyLeft = stickyLeftByCol.get(actualCol);
-        const showValidationDropdown = Boolean(
-          isActive &&
-          !isEditing &&
-          cellData.validation?.validationType === "list" &&
-          cellData.validation.showDropdown
-        );
         const validationRight = adornment ? 24 : 4;
-        const conditionalIconRight = validationRight + (showValidationDropdown ? 16 : 0);
+        const conditionalIconRight = validationRight;
         const cellStyle: React.CSSProperties = {
           ...cellData.style,
           boxSizing: "border-box",
@@ -3944,9 +3936,9 @@ function GridRow({
           cellStyle.maxHeight = rowHeight;
         }
 
-        if (isActive || isSpilling) {
+        if (isSpilling) {
           cellStyle.position = "relative";
-          cellStyle.zIndex = isActive ? 3 : 2;
+          cellStyle.zIndex = 2;
         }
         if (cellData.conditionalColorScale) {
           cellStyle.backgroundColor = cellData.conditionalColorScale.color;
@@ -3996,7 +3988,7 @@ function GridRow({
           width: "100%",
           wordBreak: "inherit"
         };
-        const trailingInset = (adornment ? 20 : 0) + (cellData.conditionalIcon ? 18 : 0) + (showValidationDropdown ? 18 : 0);
+        const trailingInset = (adornment ? 20 : 0) + (cellData.conditionalIcon ? 18 : 0);
         if (cellData.conditionalDataBar) {
           cellContentStyle.position = "relative";
           cellContentStyle.zIndex = 1;
@@ -4004,7 +3996,7 @@ function GridRow({
         if (trailingInset > 0) {
           cellContentStyle.paddingRight = trailingInset + 4;
         }
-        if (cellData.conditionalIcon || showValidationDropdown) {
+        if (cellData.conditionalIcon) {
           cellContentStyle.position = "relative";
           cellContentStyle.zIndex = 1;
         }
@@ -4030,7 +4022,7 @@ function GridRow({
               onCellDoubleClick(cell);
             }}
             onClick={() => onCellClick(cell, cellData)}
-            onPointerDown={(event) => onCellPointerDown(event, cell, isActive)}
+            onPointerDown={(event) => onCellPointerDown(event, cell)}
             style={cellStyle}
             title={title}
           >
@@ -4082,27 +4074,6 @@ function GridRow({
                 }}
               >
                 {renderConditionalIcon(cellData.conditionalIcon)}
-              </div>
-            ) : null}
-            {showValidationDropdown ? (
-              <div
-                aria-hidden="true"
-                style={{
-                  alignItems: "center",
-                  color: palette.mutedText,
-                  display: "inline-flex",
-                  fontSize: 10,
-                  fontWeight: 700,
-                  justifyContent: "center",
-                  pointerEvents: "none",
-                  position: "absolute",
-                  right: validationRight,
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  zIndex: 2
-                }}
-              >
-                ▾
               </div>
             ) : null}
             {isEditing ? (
@@ -4200,7 +4171,6 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
   if (
     prev.actualRow !== next.actualRow ||
     prev.rowHeight !== next.rowHeight ||
-    prev.rowSelected !== next.rowSelected ||
     prev.palette !== next.palette ||
     prev.readOnly !== next.readOnly ||
     prev.visibleCols !== next.visibleCols ||
@@ -4215,16 +4185,11 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
     prev.onEditingCancel !== next.onEditingCancel ||
     prev.onEditingCommit !== next.onEditingCommit ||
     prev.onEditingValueChange !== next.onEditingValueChange ||
+    prev.onRowHeaderRef !== next.onRowHeaderRef ||
     prev.onRowPointerDown !== next.onRowPointerDown ||
     prev.onRowResizePointerDown !== next.onRowResizePointerDown ||
     prev.renderCellAdornment !== next.renderCellAdornment
   ) {
-    return false;
-  }
-
-  const prevActiveCol = prev.activeCell?.row === prev.actualRow ? prev.activeCell.col : -1;
-  const nextActiveCol = next.activeCell?.row === next.actualRow ? next.activeCell.col : -1;
-  if (prevActiveCol !== nextActiveCol) {
     return false;
   }
 
@@ -4321,10 +4286,13 @@ function XlsxGrid({
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const tableRef = React.useRef<HTMLTableElement>(null);
   const selectionOverlayRef = React.useRef<HTMLDivElement>(null);
+  const activeValidationOverlayRef = React.useRef<HTMLDivElement>(null);
   const fillHandleRef = React.useRef<HTMLDivElement>(null);
   const tableMenuRef = React.useRef<HTMLDivElement>(null);
   const colElementRefs = React.useRef(new Map<number, HTMLTableColElement>());
+  const colHeaderCellRefs = React.useRef(new Map<number, HTMLTableCellElement>());
   const rowElementRefs = React.useRef(new Map<number, HTMLTableRowElement>());
+  const rowHeaderCellRefs = React.useRef(new Map<number, HTMLTableCellElement>());
   const columnPreviewRef = React.useRef<{ actualIndex: number; size: number } | null>(null);
   const rowPreviewRef = React.useRef<{ actualIndex: number; size: number } | null>(null);
   const activeCellRef = React.useRef<XlsxCellAddress | null>(activeCell);
@@ -6080,14 +6048,58 @@ function XlsxGrid({
     };
   }, [effectiveTables, openTableMenu]);
 
+  const applyHeaderSelection = React.useCallback((range: XlsxCellRange | null) => {
+    const normalized = range ? normalizeRange(range) : null;
+
+    rowHeaderCellRefs.current.forEach((element, actualRow) => {
+      element.style.backgroundColor = normalized && actualRow >= normalized.start.row && actualRow <= normalized.end.row
+        ? "var(--xlsx-selection-header)"
+        : palette.rowHeaderSurface;
+    });
+
+    colHeaderCellRefs.current.forEach((element, actualCol) => {
+      element.style.backgroundColor = normalized && actualCol >= normalized.start.col && actualCol <= normalized.end.col
+        ? "var(--xlsx-selection-header)"
+        : palette.headerSurface;
+    });
+  }, [palette.headerSurface, palette.rowHeaderSurface]);
+
+  const setRowHeaderRef = React.useCallback((actualRow: number, element: HTMLTableCellElement | null) => {
+    if (element) {
+      rowHeaderCellRefs.current.set(actualRow, element);
+      const range = selectionPreviewRangeRef.current ?? displayedSelectionRef.current;
+      element.style.backgroundColor = range && actualRow >= range.start.row && actualRow <= range.end.row
+        ? "var(--xlsx-selection-header)"
+        : palette.rowHeaderSurface;
+      return;
+    }
+
+    rowHeaderCellRefs.current.delete(actualRow);
+  }, [palette.rowHeaderSurface]);
+
+  const setColHeaderRef = React.useCallback((actualCol: number, element: HTMLTableCellElement | null) => {
+    if (element) {
+      colHeaderCellRefs.current.set(actualCol, element);
+      const range = selectionPreviewRangeRef.current ?? displayedSelectionRef.current;
+      element.style.backgroundColor = range && actualCol >= range.start.col && actualCol <= range.end.col
+        ? "var(--xlsx-selection-header)"
+        : palette.headerSurface;
+      return;
+    }
+
+    colHeaderCellRefs.current.delete(actualCol);
+  }, [palette.headerSurface]);
+
   const applyPreviewOverlay = React.useCallback((range: XlsxCellRange | null) => {
     const overlay = selectionOverlayRef.current;
     if (!overlay || !range) {
+      applyHeaderSelection(range);
       return;
     }
 
     const nextRect = resolveOverlayRect(range);
     if (!nextRect) {
+      applyHeaderSelection(range);
       return;
     }
 
@@ -6102,7 +6114,8 @@ function XlsxGrid({
       fillHandle.style.left = `${nextRect.left + nextRect.width - 4}px`;
       fillHandle.style.top = `${nextRect.top + nextRect.height - 4}px`;
     }
-  }, [resolveOverlayRect]);
+    applyHeaderSelection(range);
+  }, [applyHeaderSelection, resolveOverlayRect]);
 
   const applyPreviewOverlayForCell = React.useCallback((cell: XlsxCellAddress) => {
     const rowIndex = rowIndexByActual.get(cell.row);
@@ -6134,7 +6147,33 @@ function XlsxGrid({
       fillHandle.style.left = `${nextRect.left + nextRect.width - 4}px`;
       fillHandle.style.top = `${nextRect.top + nextRect.height - 4}px`;
     }
-  }, [colIndexByActual, colPrefixSums, effectiveColWidths, effectiveRowHeights, rowIndexByActual, rowPrefixSums]);
+    applyHeaderSelection({ start: cell, end: cell });
+  }, [applyHeaderSelection, colIndexByActual, colPrefixSums, effectiveColWidths, effectiveRowHeights, rowIndexByActual, rowPrefixSums]);
+
+  const syncActiveValidationOverlay = React.useCallback((cell: XlsxCellAddress | null) => {
+    const overlay = activeValidationOverlayRef.current;
+    if (!overlay || !cell || editingCellRef.current || selectionDragRef.current || fillDragRef.current) {
+      if (overlay) {
+        overlay.style.opacity = "0";
+        overlay.style.visibility = "hidden";
+      }
+      return;
+    }
+
+    const cellData = getCellData(cell.row, cell.col);
+    const shouldShow = cellData.validation?.validationType === "list" && cellData.validation.showDropdown;
+    const rect = shouldShow ? resolveOverlayRect({ start: cell, end: cell }) : null;
+    if (!rect) {
+      overlay.style.opacity = "0";
+      overlay.style.visibility = "hidden";
+      return;
+    }
+
+    overlay.style.left = `${rect.left + rect.width - 16}px`;
+    overlay.style.top = `${rect.top + (rect.height / 2)}px`;
+    overlay.style.opacity = "1";
+    overlay.style.visibility = "visible";
+  }, [getCellData, resolveOverlayRect]);
 
   const commitSelectionRange = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
@@ -6453,6 +6492,7 @@ function XlsxGrid({
   React.useLayoutEffect(() => {
     const overlayRange = selectionPreviewRangeRef.current ?? displayedSelection;
     if (!overlayRange || !wrapperRef.current) {
+      applyHeaderSelection(null);
       if (selectionOverlayRef.current) {
         selectionOverlayRef.current.style.opacity = "0";
         selectionOverlayRef.current.style.visibility = "hidden";
@@ -6461,7 +6501,11 @@ function XlsxGrid({
     }
 
     applyPreviewOverlay(overlayRange);
-  }, [applyPreviewOverlay, displayedSelection, revision]);
+  }, [applyHeaderSelection, applyPreviewOverlay, displayedSelection, revision]);
+
+  React.useLayoutEffect(() => {
+    syncActiveValidationOverlay(activeCell);
+  }, [activeCell, editingCell, revision, syncActiveValidationOverlay]);
 
   const handleCellDoubleClick = React.useCallback((cell: XlsxCellAddress) => {
     startEditing(cell);
@@ -6477,8 +6521,7 @@ function XlsxGrid({
 
   const handleCellPointerDown = React.useCallback((
     event: React.PointerEvent<HTMLTableCellElement>,
-    cell: XlsxCellAddress,
-    isActive: boolean
+    cell: XlsxCellAddress
   ) => {
     if (event.button !== 0) {
       return;
@@ -6488,6 +6531,7 @@ function XlsxGrid({
     focusGrid();
     const anchor = event.shiftKey && selectionRef.current ? selectionRef.current.start : cell;
     const initialRange = normalizeRange({ start: anchor, end: cell });
+    const isActive = isSameCell(activeCellRef.current, cell);
     const committedOnPointerDown = !isActive || !editingCellRef.current;
     const pointerOrigin = resolveCellPointerOrigin(cell, event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
     if (!pointerOrigin) {
@@ -7999,16 +8043,11 @@ function XlsxGrid({
                     <th
                       data-xlsx-col-header={column.actualCol}
                       key={column.key}
+                      ref={(element) => setColHeaderRef(column.actualCol, element)}
                       onPointerDown={(event) => handleColumnPointerDown(event, column.actualCol)}
                       style={{
                         ...headerCellStyle,
                         left: stickyLeftByCol.get(column.actualCol),
-                        backgroundColor:
-                          displayedSelection &&
-                          column.actualCol >= displayedSelection.start.col &&
-                          column.actualCol <= displayedSelection.end.col
-                            ? selectionHeaderSurface
-                            : headerCellStyle.backgroundColor,
                         zIndex: stickyLeftByCol.has(column.actualCol) ? 55 : headerCellStyle.zIndex
                       }}
                     >
@@ -8057,7 +8096,6 @@ function XlsxGrid({
                         </tr>
                       ) : null}
                       <MemoGridRow
-                        activeCell={activeCell}
                         actualRow={actualRow}
                         editingCell={editingCell}
                         editingValue={editingValue}
@@ -8070,17 +8108,13 @@ function XlsxGrid({
                         onEditingCancel={cancelEditing}
                         onEditingCommit={commitEditing}
                         onEditingValueChange={setEditingValue}
+                        onRowHeaderRef={setRowHeaderRef}
                         onRowPointerDown={handleRowPointerDown}
                         onRowResizePointerDown={handleRowResizePointerDown}
                         palette={palette}
                         readOnly={readOnly}
                         renderCellAdornment={renderCellAdornment}
                         rowHeight={virtualRow.size}
-                        rowSelected={Boolean(
-                          displayedSelection &&
-                            actualRow >= displayedSelection.start.row &&
-                            actualRow <= displayedSelection.end.row
-                        )}
                         stickyLeftByCol={stickyLeftByCol}
                         stickyTop={stickyTopByRow.get(actualRow)}
                         trailingSpacerWidth={trailingColumnSpacerWidth}
@@ -8118,6 +8152,28 @@ function XlsxGrid({
                 zIndex: 24
               }}
             />
+            <div
+              ref={activeValidationOverlayRef}
+              aria-hidden="true"
+              style={{
+                alignItems: "center",
+                color: palette.mutedText,
+                display: "inline-flex",
+                fontSize: 10,
+                fontWeight: 700,
+                height: 16,
+                justifyContent: "center",
+                opacity: 0,
+                pointerEvents: "none",
+                position: "absolute",
+                transform: "translateY(-50%)",
+                visibility: "hidden",
+                width: 12,
+                zIndex: 26
+              }}
+            >
+              ▾
+            </div>
             <div
               ref={fillHandleRef}
               onPointerDown={(event) => {

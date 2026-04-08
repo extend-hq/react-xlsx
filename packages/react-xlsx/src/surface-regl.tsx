@@ -387,6 +387,26 @@ function withProjectedDepth(point: SurfacePoint3D, depth: number): SurfacePoint3
   };
 }
 
+function nudgeProjectedDepth(point: SurfacePoint3D, delta: number): SurfacePoint3D {
+  return {
+    ...point,
+    depth: point.depth + delta
+  };
+}
+
+function isContourSurfaceChart(chart: XlsxChart) {
+  const rawChartType = chart.raw && typeof chart.raw === "object" && typeof chart.raw.xmlChartType === "string"
+    ? chart.raw.xmlChartType
+    : "";
+  if (rawChartType === "surfaceChart") {
+    return true;
+  }
+  if (rawChartType === "surface3DChart") {
+    return false;
+  }
+  return chart.chartType === "Surface" && chart.is3d !== true;
+}
+
 function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: SurfaceLayout): SurfaceScene | null {
   const rows = chart.series.length;
   const cols = chart.series.reduce((max, series) => Math.max(max, series.values.length), 0);
@@ -400,10 +420,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   if (!domain) {
     return null;
   }
-  const rawChartType = chart.raw && typeof chart.raw === "object" && typeof chart.raw.xmlChartType === "string"
-    ? chart.raw.xmlChartType
-    : "";
-  const isContour = rawChartType === "surfaceChart";
+  const isContour = isContourSurfaceChart(chart);
   const isWireframe = chart.wireframe === true;
   const fillVertices: SurfaceVertex[] = [];
   const solidTriangles: SolidSurfaceTriangle[] = [];
@@ -577,38 +594,39 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     }
   } else {
     const minPlaneValue = domain.minValue;
+    const wallDepthOffset = -0.2;
     addSolidQuad(
-      projectPoint(0, 0, minPlaneValue),
-      projectPoint(cols - 1, 0, minPlaneValue),
-      projectPoint(cols - 1, rows - 1, minPlaneValue),
-      projectPoint(0, rows - 1, minPlaneValue),
+      nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, minPlaneValue), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(0, rows - 1, minPlaneValue), wallDepthOffset),
       floorFill
     );
     addSolidQuad(
-      projectPoint(0, 0, domain.safeMax),
-      projectPoint(cols - 1, 0, domain.safeMax),
-      projectPoint(cols - 1, 0, minPlaneValue),
-      projectPoint(0, 0, minPlaneValue),
+      nudgeProjectedDepth(projectPoint(0, 0, domain.safeMax), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
       backWallFill
     );
     addSolidQuad(
-      projectPoint(cols - 1, 0, domain.safeMax),
-      projectPoint(cols - 1, rows - 1, domain.safeMax),
-      projectPoint(cols - 1, rows - 1, minPlaneValue),
-      projectPoint(cols - 1, 0, minPlaneValue),
+      nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, domain.safeMax), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, minPlaneValue), wallDepthOffset),
+      nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
       sideWallFill
     );
     for (const tick of domain.ticks) {
-      addMeshLine(projectPoint(0, 0, tick), projectPoint(cols - 1, 0, tick), wallLineColor);
-      addMeshLine(projectPoint(cols - 1, 0, tick), projectPoint(cols - 1, rows - 1, tick), wallLineColor);
+      addMeshLine(nudgeProjectedDepth(projectPoint(0, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), wallLineColor);
+      addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, tick), wallDepthOffset * 0.75), wallLineColor);
     }
     for (let columnIndex = 0; columnIndex < cols; columnIndex += columnSkip) {
-      addMeshLine(projectPoint(columnIndex, 0, minPlaneValue), projectPoint(columnIndex, rows - 1, minPlaneValue), wallLineColor);
-      addMeshLine(projectPoint(columnIndex, 0, minPlaneValue), projectPoint(columnIndex, 0, domain.safeMax), wallLineColor);
+      addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, rows - 1, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
+      addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, 0, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
     }
     for (let rowIndex = 0; rowIndex < rows; rowIndex += rowSkip) {
-      addMeshLine(projectPoint(0, rowIndex, minPlaneValue), projectPoint(cols - 1, rowIndex, minPlaneValue), wallLineColor);
-      addMeshLine(projectPoint(cols - 1, rowIndex, minPlaneValue), projectPoint(cols - 1, rowIndex, domain.safeMax), wallLineColor);
+      addMeshLine(nudgeProjectedDepth(projectPoint(0, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
+      addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
     }
   }
 
@@ -781,8 +799,14 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const [ready, setReady] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
+  const isContour = isContourSurfaceChart(chart);
 
   React.useEffect(() => {
+    if (isContour) {
+      setReady(false);
+      setFailed(false);
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) {
       return;
@@ -917,11 +941,12 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
     };
   }, [
     chart,
+    isContour,
     layout,
     palette
   ]);
 
-  const shouldRenderFallback = failed || !ready;
+  const shouldRenderFallback = isContour || failed || !ready;
 
   return (
     <div

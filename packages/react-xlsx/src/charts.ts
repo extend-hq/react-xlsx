@@ -2048,6 +2048,8 @@ function resolveChartExLayoutChartType(layout: string | undefined) {
   switch (layout) {
     case "funnel":
       return "Funnel";
+    case "regionMap":
+      return "RegionMap";
     case "sunburst":
       return "Sunburst";
     case "treemap":
@@ -2057,6 +2059,46 @@ function resolveChartExLayoutChartType(layout: string | undefined) {
     default:
       return layout ? `Unsupported(cx:${layout})` : "ColumnClustered";
   }
+}
+
+function resolveChartExTextFormula(raw: unknown) {
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw;
+  }
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.formula === "string" && record.formula.length > 0) {
+    return record.formula;
+  }
+  if (typeof record.text === "string" && record.text.length > 0) {
+    return record.text;
+  }
+  if (typeof record.value === "string" && record.value.length > 0) {
+    return record.value;
+  }
+  return undefined;
+}
+
+function resolveChartExTitleText(raw: unknown) {
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw;
+  }
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.text === "string" && record.text.length > 0) {
+    return record.text;
+  }
+  const nestedText = record.text && typeof record.text === "object"
+    ? resolveChartExTextFormula(record.text)
+    : undefined;
+  if (nestedText) {
+    return nestedText;
+  }
+  return typeof record.value === "string" && record.value.length > 0 ? record.value : undefined;
 }
 
 function normalizeChartExSeries(
@@ -2073,22 +2115,39 @@ function normalizeChartExSeries(
   const dimensions = Array.isArray(dataEntry?.dimensions)
     ? dataEntry.dimensions.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === "object"))
     : [];
-  const primaryDimension = dimensions[0] ?? null;
-  const valuesRef = primaryDimension
+  const categoryDimension = dimensions.find((dimension) => dimension.dimType === "cat")
+    ?? dimensions.find((dimension) => dimension.dimType === "name")
+    ?? dimensions[0]
+    ?? null;
+  const valueDimension = dimensions.find((dimension) => (
+    dimension.dimType === "val"
+    || dimension.dimType === "y"
+    || dimension.dimType === "colorVal"
+    || dimension.dimType === "size"
+  ))
+    ?? dimensions.find((dimension) => dimension !== categoryDimension)
+    ?? categoryDimension;
+  const categoriesRef = categoryDimension
     ? normalizeChartReference({
-        formula: typeof primaryDimension.formula === "string" ? primaryDimension.formula : undefined
+        formula: typeof categoryDimension.formula === "string" ? categoryDimension.formula : undefined
+      })
+    : null;
+  const valuesRef = valueDimension
+    ? normalizeChartReference({
+        formula: typeof valueDimension.formula === "string" ? valueDimension.formula : undefined
       })
     : null;
   const values = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value").map((value) => (
     typeof value === "number" && Number.isFinite(value) ? value : null
   ));
-  const categories = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "category");
+  const categories = resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category");
+  const seriesTextFormula = resolveChartExTextFormula(series.text);
 
   return {
     bubbleSizeRef: null,
     bubbleSizes: [],
     categories,
-    categoriesRef: valuesRef,
+    categoriesRef,
     color: undefined,
     dataPoints: Array.isArray(series.dataPoints) ? series.dataPoints : [],
     dataPointStyles: undefined,
@@ -2105,13 +2164,15 @@ function normalizeChartExSeries(
     markerSymbol: undefined,
     name: typeof series.text === "string"
       ? series.text
+      : seriesTextFormula
+        ? resolveSeriesName(workbook, workbookSheetIndex, seriesTextFormula)
       : resolveChartReferenceLabel(workbook, workbookSheetIndex, valuesRef, `Series ${index + 1}`),
     negativeColor: undefined,
     negativeLineColor: undefined,
     raw: {
       ...series,
       data: dataEntry,
-      dimType: typeof primaryDimension?.dimType === "string" ? primaryDimension.dimType : undefined
+      dimType: typeof valueDimension?.dimType === "string" ? valueDimension.dimType : undefined
     },
     shapeProperties: series.shapeProperties && typeof series.shapeProperties === "object"
       ? series.shapeProperties as Record<string, unknown>
@@ -2171,6 +2232,7 @@ function normalizeChartExChart(
     ? plotArea.axes.map(normalizeChartExAxis).filter((value): value is XlsxChartAxis => Boolean(value))
     : [];
   const fallbackTitle = humanizeChartExLayoutLabel(typeof chart.layout === "string" ? chart.layout : undefined);
+  const chartTitle = resolveChartExTitleText(chart.title) ?? fallbackTitle;
   const chartType = resolveChartExLayoutChartType(typeof chart.layout === "string" ? chart.layout : undefined);
   const normalizedSeries = rawSeries.map((entry, seriesIndex) => (
     normalizeChartExSeries(workbook, workbookSheetIndex, `chart-ex-${workbookSheetIndex}-${index}`, entry, dataById, seriesIndex)
@@ -2202,7 +2264,7 @@ function normalizeChartExChart(
     id: `chart-ex-${workbookSheetIndex}-${index}`,
     is3d: undefined,
     legend: normalizeChartExLegend(chart.legend),
-    name: typeof chart.title === "string" ? chart.title : fallbackTitle,
+    name: chartTitle,
     overlap: undefined,
     plotVisibleOnly: undefined,
     raw: chart,
@@ -2221,7 +2283,7 @@ function normalizeChartExChart(
     floor: null,
     surfaceMaterial: undefined,
     textColor: undefined,
-    title: typeof chart.title === "string" ? chart.title : fallbackTitle,
+    title: chartTitle,
     titleColor: undefined,
     titleFontFamily: undefined,
     typeGroups: [],
