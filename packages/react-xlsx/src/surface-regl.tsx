@@ -161,17 +161,17 @@ function hasExplicitSurfaceBaseColor(chart: XlsxChart) {
 function buildMonochromeSurfacePalette(baseColor: string, count: number) {
   if (count <= 3) {
     return [
-      lightenColor(baseColor, 0.58),
-      lightenColor(baseColor, 0.18),
-      darkenColor(baseColor, 0.12)
+      lightenColor(baseColor, 0.22),
+      baseColor,
+      darkenColor(baseColor, 0.2)
     ];
   }
   return [
-    lightenColor(baseColor, 0.62),
-    lightenColor(baseColor, 0.34),
+    lightenColor(baseColor, 0.3),
+    lightenColor(baseColor, 0.14),
     baseColor,
-    darkenColor(baseColor, 0.12),
-    darkenColor(baseColor, 0.24)
+    darkenColor(baseColor, 0.1),
+    darkenColor(baseColor, 0.22)
   ];
 }
 
@@ -188,7 +188,7 @@ function getBuiltinSurfacePalette(chart: XlsxChart) {
     return ["#5b9bd5", "#ed7d31", "#a5a5a5"];
   }
   if (normalized === 35 || normalized === 36 || (chart.wireframe !== true && normalized == null)) {
-    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#b4c7e7"];
+    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#d9e2f3"];
   }
   return null;
 }
@@ -201,12 +201,12 @@ function getSurfaceBandCount(chart: XlsxChart) {
   if (explicitBandCount != null && explicitBandCount > 0) {
     return explicitBandCount;
   }
+  if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
+    return chart.chartColorPalette.length;
+  }
   const builtinPalette = getBuiltinSurfacePalette(chart);
   if (builtinPalette && builtinPalette.length > 0) {
     return builtinPalette.length;
-  }
-  if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
-    return chart.chartColorPalette.length;
   }
   return chart.wireframe ? 3 : 5;
 }
@@ -334,7 +334,7 @@ function normalizeSurfaceY(row: number, rows: number) {
 }
 
 function normalizeSurfaceZ(value: number, domain: SurfaceDomain, depthScale: number) {
-  return ((((value - domain.minValue) / (domain.safeMax - domain.minValue)) - 0.5) * 1.8) * depthScale;
+  return -((((value - domain.minValue) / (domain.safeMax - domain.minValue)) - 0.5) * 1.8) * depthScale;
 }
 
 function projectCartesian3dPoint(

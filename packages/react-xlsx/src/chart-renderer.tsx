@@ -1,5 +1,5 @@
 import { hierarchy as d3Hierarchy, partition as d3Partition, treemap as d3Treemap, treemapBinary, treemapDice, treemapSquarify } from "d3-hierarchy";
-import { geoMiller, geoNaturalEarth1, geoPath } from "d3-geo";
+import { geoIdentity, geoMercator, geoNaturalEarth1, geoPath } from "d3-geo";
 import * as React from "react";
 import { scaleBand, scaleLinear, scalePoint } from "d3-scale";
 import {
@@ -20,7 +20,8 @@ import {
 } from "d3-shape";
 import type { CurveFactory } from "d3-shape";
 import { feature as topojsonFeature } from "topojson-client";
-import countries110m from "world-atlas/countries-110m.json";
+import countiesAlbers10m from "us-atlas/counties-albers-10m.json";
+import countries50m from "world-atlas/countries-50m.json";
 import { MemoSurfaceChartComposite } from "./surface-regl";
 import type { HierarchyNode, HierarchyRectangularNode } from "d3-hierarchy";
 import type { Feature, FeatureCollection, Geometry } from "geojson";
@@ -133,12 +134,83 @@ type SurfaceDomain = {
   ticks: number[];
 };
 
-type RegionMapFeature = Feature<Geometry, { name?: string }>;
+type RegionMapFeature = Feature<Geometry, { name?: string; regionSet?: "country" | "us-state"; stateCode?: string }>;
 
 const WORLD_COUNTRY_FEATURES = ((topojsonFeature(
-  countries110m as unknown as Parameters<typeof topojsonFeature>[0],
-  (countries110m as { objects: { countries: unknown } }).objects.countries as Parameters<typeof topojsonFeature>[1]
+  countries50m as unknown as Parameters<typeof topojsonFeature>[0],
+  (countries50m as { objects: { countries: unknown } }).objects.countries as Parameters<typeof topojsonFeature>[1]
 ) as unknown) as FeatureCollection<Geometry, { name?: string }>).features as RegionMapFeature[];
+
+const US_STATE_NAME_BY_ID: Record<string, { code: string; name: string }> = {
+  "01": { code: "AL", name: "Alabama" },
+  "02": { code: "AK", name: "Alaska" },
+  "04": { code: "AZ", name: "Arizona" },
+  "05": { code: "AR", name: "Arkansas" },
+  "06": { code: "CA", name: "California" },
+  "08": { code: "CO", name: "Colorado" },
+  "09": { code: "CT", name: "Connecticut" },
+  "10": { code: "DE", name: "Delaware" },
+  "11": { code: "DC", name: "District of Columbia" },
+  "12": { code: "FL", name: "Florida" },
+  "13": { code: "GA", name: "Georgia" },
+  "15": { code: "HI", name: "Hawaii" },
+  "16": { code: "ID", name: "Idaho" },
+  "17": { code: "IL", name: "Illinois" },
+  "18": { code: "IN", name: "Indiana" },
+  "19": { code: "IA", name: "Iowa" },
+  "20": { code: "KS", name: "Kansas" },
+  "21": { code: "KY", name: "Kentucky" },
+  "22": { code: "LA", name: "Louisiana" },
+  "23": { code: "ME", name: "Maine" },
+  "24": { code: "MD", name: "Maryland" },
+  "25": { code: "MA", name: "Massachusetts" },
+  "26": { code: "MI", name: "Michigan" },
+  "27": { code: "MN", name: "Minnesota" },
+  "28": { code: "MS", name: "Mississippi" },
+  "29": { code: "MO", name: "Missouri" },
+  "30": { code: "MT", name: "Montana" },
+  "31": { code: "NE", name: "Nebraska" },
+  "32": { code: "NV", name: "Nevada" },
+  "33": { code: "NH", name: "New Hampshire" },
+  "34": { code: "NJ", name: "New Jersey" },
+  "35": { code: "NM", name: "New Mexico" },
+  "36": { code: "NY", name: "New York" },
+  "37": { code: "NC", name: "North Carolina" },
+  "38": { code: "ND", name: "North Dakota" },
+  "39": { code: "OH", name: "Ohio" },
+  "40": { code: "OK", name: "Oklahoma" },
+  "41": { code: "OR", name: "Oregon" },
+  "42": { code: "PA", name: "Pennsylvania" },
+  "44": { code: "RI", name: "Rhode Island" },
+  "45": { code: "SC", name: "South Carolina" },
+  "46": { code: "SD", name: "South Dakota" },
+  "47": { code: "TN", name: "Tennessee" },
+  "48": { code: "TX", name: "Texas" },
+  "49": { code: "UT", name: "Utah" },
+  "50": { code: "VT", name: "Vermont" },
+  "51": { code: "VA", name: "Virginia" },
+  "53": { code: "WA", name: "Washington" },
+  "54": { code: "WV", name: "West Virginia" },
+  "55": { code: "WI", name: "Wisconsin" },
+  "56": { code: "WY", name: "Wyoming" }
+};
+
+const US_STATE_FEATURES = ((topojsonFeature(
+  countiesAlbers10m as unknown as Parameters<typeof topojsonFeature>[0],
+  (countiesAlbers10m as { objects: { states: unknown } }).objects.states as Parameters<typeof topojsonFeature>[1]
+) as unknown) as FeatureCollection<Geometry, { name?: string }>).features.map((feature) => {
+  const id = typeof feature.id === "string" ? feature.id : String(feature.id ?? "");
+  const state = US_STATE_NAME_BY_ID[id];
+  return {
+    ...feature,
+    properties: {
+      ...(feature.properties ?? {}),
+      name: state?.name,
+      regionSet: "us-state" as const,
+      stateCode: state?.code
+    }
+  };
+}) as RegionMapFeature[];
 
 const REGION_MAP_COUNTRY_ALIASES = new Map<string, string>([
   ["us", "united states of america"],
@@ -160,6 +232,14 @@ const REGION_MAP_COUNTRY_ALIASES = new Map<string, string>([
   ["côte divoire", "cote d'ivoire"]
 ]);
 
+const REGION_MAP_US_STATE_ALIASES = new Map<string, string>([
+  ["district of columbia", "district of columbia"],
+  ["washington dc", "district of columbia"],
+  ["washington d c", "district of columbia"],
+  ["dc", "district of columbia"],
+  ["d c", "district of columbia"]
+]);
+
 const REGION_MAP_FEATURES_BY_KEY = (() => {
   const byKey = new Map<string, RegionMapFeature>();
   WORLD_COUNTRY_FEATURES.forEach((feature) => {
@@ -167,6 +247,28 @@ const REGION_MAP_FEATURES_BY_KEY = (() => {
     const key = normalizeRegionMapKey(name);
     if (key.length > 0) {
       byKey.set(key, feature);
+    }
+  });
+  return byKey;
+})();
+
+const REGION_MAP_US_STATE_FEATURES_BY_KEY = (() => {
+  const byKey = new Map<string, RegionMapFeature>();
+  US_STATE_FEATURES.forEach((feature) => {
+    const name = typeof feature.properties?.name === "string" ? feature.properties.name : "";
+    const key = normalizeRegionMapKey(name);
+    if (key.length > 0) {
+      byKey.set(key, feature);
+    }
+    const stateCode = normalizeRegionMapKey(feature.properties?.stateCode);
+    if (stateCode.length > 0) {
+      byKey.set(stateCode, feature);
+    }
+  });
+  REGION_MAP_US_STATE_ALIASES.forEach((value, key) => {
+    const feature = byKey.get(normalizeRegionMapKey(value));
+    if (feature) {
+      byKey.set(normalizeRegionMapKey(key), feature);
     }
   });
   return byKey;
@@ -355,10 +457,14 @@ function isHistogramLikeChart(chart: XlsxChart) {
   return chart.series.some((series) => isHistogramLikeSeries(series));
 }
 
-function resolveRegionMapFeature(value: unknown) {
+function resolveRegionMapFeature(value: unknown, featureSet: "country" | "us-state" = "country") {
   const rawKey = normalizeRegionMapKey(value);
   if (!rawKey) {
     return null;
+  }
+  if (featureSet === "us-state") {
+    const canonicalKey = REGION_MAP_US_STATE_ALIASES.get(rawKey) ?? rawKey;
+    return REGION_MAP_US_STATE_FEATURES_BY_KEY.get(canonicalKey) ?? null;
   }
   const canonicalKey = REGION_MAP_COUNTRY_ALIASES.get(rawKey) ?? rawKey;
   return REGION_MAP_FEATURES_BY_KEY.get(canonicalKey) ?? null;
@@ -371,6 +477,30 @@ function resolveRegionMapBaseColor(chart: XlsxChart, seriesIndex: number) {
     ?? "#ff006e";
 }
 
+function resolveRegionMapDataColor(chart: XlsxChart, seriesIndex: number) {
+  const noDataColor = normalizeRendererHexColor(resolveRegionMapBaseColor(chart, seriesIndex));
+  const palette = Array.isArray(chart.chartColorPalette) ? chart.chartColorPalette : [];
+  for (const candidate of palette) {
+    const normalized = normalizeRendererHexColor(candidate);
+    if (normalized && normalized !== noDataColor) {
+      return normalized;
+    }
+  }
+  return noDataColor ?? "#4f81bd";
+}
+
+function resolveRegionMapValueColors(series: XlsxChartSeries | null | undefined) {
+  const raw = series?.raw && typeof series.raw === "object"
+    ? series.raw as Record<string, unknown>
+    : null;
+  const colors = Array.isArray(raw?.valueColors)
+    ? raw.valueColors
+      .map((value) => normalizeRendererHexColor(value))
+      .filter((value): value is string => Boolean(value))
+    : [];
+  return colors.length >= 2 ? colors : null;
+}
+
 function resolveRegionMapLayoutProperties(series: XlsxChartSeries | null | undefined) {
   const raw = series?.raw && typeof series.raw === "object"
     ? series.raw as Record<string, unknown>
@@ -380,12 +510,53 @@ function resolveRegionMapLayoutProperties(series: XlsxChartSeries | null | undef
     : null;
 }
 
-function resolveRegionMapValueColor(baseColor: string, ratio: number) {
-  const clamped = clamp(ratio, 0, 1);
-  if (clamped <= 0.5) {
-    return mixRgbColor(lightenColor(baseColor, 0.82), lightenColor(baseColor, 0.28), clamped / 0.5);
+function resolveRegionMapFeatureSet(labels: string[], geography: Record<string, unknown> | null) {
+  const cultureRegion = typeof geography?.cultureRegion === "string"
+    ? geography.cultureRegion.trim().toUpperCase()
+    : "";
+  const countryMatches = labels.filter((label) => resolveRegionMapFeature(label, "country") != null).length;
+  const stateMatches = labels.filter((label) => resolveRegionMapFeature(label, "us-state") != null).length;
+  if (cultureRegion === "US" && stateMatches > 0 && stateMatches >= countryMatches) {
+    return "us-state" as const;
   }
-  return mixRgbColor(lightenColor(baseColor, 0.28), darkenColor(baseColor, 0.08), (clamped - 0.5) / 0.5);
+  return "country" as const;
+}
+
+function getRegionMapBaseFeatures(featureSet: "country" | "us-state") {
+  return featureSet === "us-state" ? US_STATE_FEATURES : WORLD_COUNTRY_FEATURES;
+}
+
+function resolveRegionMapValueColorFromStops(stops: string[], ratio: number) {
+  if (stops.length === 0) {
+    return "#4f81bd";
+  }
+  if (stops.length === 1) {
+    return stops[0];
+  }
+  const clamped = clamp(ratio, 0, 1);
+  const scaled = clamped * (stops.length - 1);
+  const lowerIndex = Math.floor(scaled);
+  const upperIndex = Math.min(stops.length - 1, lowerIndex + 1);
+  const mixRatio = scaled - lowerIndex;
+  return mixRgbColor(stops[lowerIndex] ?? stops[0], stops[upperIndex] ?? stops[stops.length - 1], mixRatio);
+}
+
+function resolveRegionMapValueColor(chart: XlsxChart, seriesIndex: number, ratio: number) {
+  const explicitStops = resolveRegionMapValueColors(chart.series[seriesIndex] ?? null);
+  if (explicitStops) {
+    return resolveRegionMapValueColorFromStops(explicitStops, ratio);
+  }
+  const baseColor = resolveRegionMapDataColor(chart, seriesIndex);
+  return resolveRegionMapValueColorFromStops([
+    lightenColor(baseColor, 0.82),
+    lightenColor(baseColor, 0.28),
+    darkenColor(baseColor, 0.08)
+  ], ratio);
+}
+
+function resolveRegionMapNoDataColor(chart: XlsxChart, seriesIndex: number) {
+  const baseColor = resolveRegionMapBaseColor(chart, seriesIndex);
+  return normalizeRendererHexColor(baseColor) ?? "#ff006e";
 }
 
 function buildRegionMapLegendItems(chart: XlsxChart): LegendItem[] {
@@ -399,13 +570,12 @@ function buildRegionMapLegendItems(chart: XlsxChart): LegendItem[] {
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
   const ticks = buildNumericTickValues(minValue, maxValue, undefined).slice(0, 5);
-  const baseColor = resolveRegionMapBaseColor(chart, primarySeriesIndex);
   return ticks.slice(0, -1).map((tick, index) => {
     const nextTick = ticks[index + 1] ?? maxValue;
     const midpoint = tick + (nextTick - tick) * 0.5;
     const ratio = (midpoint - minValue) / Math.max(1e-6, maxValue - minValue);
     return {
-      color: resolveRegionMapValueColor(baseColor, ratio),
+      color: resolveRegionMapValueColor(chart, primarySeriesIndex, ratio),
       label: `${formatTickValue(tick)}-${formatTickValue(nextTick)}`
     };
   });
@@ -865,7 +1035,10 @@ function buildHierarchyData(chart: XlsxChart) {
     let current = root;
     path.forEach((part, levelIndex) => {
       current.children = current.children ?? [];
-      let next = current.children.find((child) => child.name === part);
+      const preserveDuplicateLeaf = levelIndex === path.length - 1 && path.length === 1;
+      let next = preserveDuplicateLeaf
+        ? undefined
+        : current.children.find((child) => child.name === part);
       if (!next) {
         next = { children: [], name: part };
         if (levelIndex === 0) {
@@ -1035,17 +1208,17 @@ function hasExplicitSurfaceBaseColor(chart: XlsxChart) {
 function buildMonochromeSurfacePalette(baseColor: string, count: number) {
   if (count <= 3) {
     return [
-      lightenColor(baseColor, 0.58),
-      lightenColor(baseColor, 0.18),
-      darkenColor(baseColor, 0.12)
+      lightenColor(baseColor, 0.22),
+      baseColor,
+      darkenColor(baseColor, 0.2)
     ];
   }
   return [
-    lightenColor(baseColor, 0.62),
-    lightenColor(baseColor, 0.34),
+    lightenColor(baseColor, 0.3),
+    lightenColor(baseColor, 0.14),
     baseColor,
-    darkenColor(baseColor, 0.12),
-    darkenColor(baseColor, 0.24)
+    darkenColor(baseColor, 0.1),
+    darkenColor(baseColor, 0.22)
   ];
 }
 
@@ -1062,7 +1235,7 @@ function getBuiltinSurfacePalette(chart: XlsxChart) {
     return ["#5b9bd5", "#ed7d31", "#a5a5a5"];
   }
   if (normalized === 35 || normalized === 36 || (chart.wireframe !== true && normalized == null)) {
-    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#b4c7e7"];
+    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#d9e2f3"];
   }
   return null;
 }
@@ -1075,12 +1248,12 @@ function getSurfaceBandCount(chart: XlsxChart) {
   if (explicitBandCount != null && explicitBandCount > 0) {
     return explicitBandCount;
   }
+  if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
+    return chart.chartColorPalette.length;
+  }
   const builtinPalette = getBuiltinSurfacePalette(chart);
   if (builtinPalette && builtinPalette.length > 0) {
     return builtinPalette.length;
-  }
-  if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
-    return chart.chartColorPalette.length;
   }
   return chart.wireframe ? 3 : 5;
 }
@@ -1175,6 +1348,41 @@ function resolveSurfaceBandColor(chart: XlsxChart, palette: ChartRendererPalette
   return resolveSurfaceColor(chart, palette, 1);
 }
 
+function resolveSurfaceBandIndex(domain: SurfaceDomain, value: number) {
+  const ticks = domain.ticks;
+  for (let index = 0; index < ticks.length - 1; index += 1) {
+    const end = ticks[index + 1] ?? domain.safeMax;
+    if (value <= end || index === ticks.length - 2) {
+      return index;
+    }
+  }
+  return Math.max(0, ticks.length - 2);
+}
+
+function resolveSurfacePlotRect(chart: XlsxChart, layout: ChartLayout) {
+  if (!isContourSurfaceChart(chart)) {
+    return layout.plot;
+  }
+  const columnCount = Math.max(1, getCategoryLabels(chart).length);
+  const rowCount = Math.max(1, chart.series.length);
+  const targetAspect = Math.max(0.72, columnCount / Math.max(1, rowCount));
+  const widthScale = chart.wireframe ? 0.78 : 0.84;
+  const heightScale = chart.wireframe ? 0.72 : 0.8;
+  let width = layout.plot.width * widthScale;
+  let height = layout.plot.height * heightScale;
+  if (width / Math.max(1e-6, height) > targetAspect) {
+    width = height * targetAspect;
+  } else {
+    height = width / Math.max(1e-6, targetAspect);
+  }
+  return {
+    height,
+    left: layout.plot.left + (layout.plot.width - width) / 2,
+    top: layout.plot.top + (layout.plot.height - height) / 2,
+    width
+  };
+}
+
 function buildSurfaceLegendItems(chart: XlsxChart, palette: ChartRendererPalette) {
   const domain = getSurfaceDomain(chart);
   if (!domain) {
@@ -1208,6 +1416,7 @@ function isContourSurfaceChart(chart: XlsxChart) {
 }
 
 function renderSurfaceAxes(chart: XlsxChart, layout: ChartLayout) {
+  const plot = resolveSurfacePlotRect(chart, layout);
   const categories = getCategoryLabels(chart);
   const seriesLabels = chart.series.map((series, index) => normalizeCategoryLabel(series.name) || `Q${index + 1}`);
   const labelColor = resolveChartAxisTextColor(chart);
@@ -1215,22 +1424,22 @@ function renderSurfaceAxes(chart: XlsxChart, layout: ChartLayout) {
   const rowCount = Math.max(1, seriesLabels.length);
   const columnCount = Math.max(1, categories.length);
   const columnPositions = categories.map((_, index) => (
-    layout.plot.left + (columnCount <= 1 ? layout.plot.width / 2 : (index / (columnCount - 1)) * layout.plot.width)
+    plot.left + (columnCount <= 1 ? plot.width / 2 : (index / (columnCount - 1)) * plot.width)
   ));
   const rowPositions = seriesLabels.map((_, index) => (
-    layout.plot.top + layout.plot.height - (rowCount <= 1 ? layout.plot.height / 2 : (index / (rowCount - 1)) * layout.plot.height)
+    plot.top + plot.height - (rowCount <= 1 ? plot.height / 2 : (index / (rowCount - 1)) * plot.height)
   ));
 
   return (
     <g>
       <rect
         fill="none"
-        height={layout.plot.height}
+        height={plot.height}
         stroke={lightenColor(axisColor, 0.18)}
         strokeWidth={0.8}
-        width={layout.plot.width}
-        x={layout.plot.left}
-        y={layout.plot.top}
+        width={plot.width}
+        x={plot.left}
+        y={plot.top}
       />
       {categories.map((label, index) => (
         <text
@@ -1238,8 +1447,8 @@ function renderSurfaceAxes(chart: XlsxChart, layout: ChartLayout) {
           fill={labelColor}
           fontSize={10}
           textAnchor="middle"
-          x={columnPositions[index] ?? layout.plot.left}
-          y={layout.plot.top + layout.plot.height + 14}
+          x={columnPositions[index] ?? plot.left}
+          y={plot.top + plot.height + 14}
         >
           {label}
         </text>
@@ -1250,8 +1459,8 @@ function renderSurfaceAxes(chart: XlsxChart, layout: ChartLayout) {
           fill={labelColor}
           fontSize={10}
           textAnchor="start"
-          x={layout.plot.left + layout.plot.width + 8}
-          y={(rowPositions[index] ?? layout.plot.top) + 3}
+          x={plot.left + plot.width + 8}
+          y={(rowPositions[index] ?? plot.top) + 3}
         >
           {label}
         </text>
@@ -4682,6 +4891,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
 }
 
 function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+  const plot = resolveSurfacePlotRect(chart, layout);
   const categories = getCategoryLabels(chart);
   const rows = chart.series.length;
   const cols = Math.max(
@@ -4719,24 +4929,77 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
           continue;
         }
 
-        const x0 = layout.plot.left + (columnIndex / Math.max(1, cols - 1)) * layout.plot.width;
-        const x1 = layout.plot.left + ((columnIndex + 1) / Math.max(1, cols - 1)) * layout.plot.width;
-        const y0 = layout.plot.top + layout.plot.height - (rowIndex / Math.max(1, rows - 1)) * layout.plot.height;
-        const y1 = layout.plot.top + layout.plot.height - ((rowIndex + 1) / Math.max(1, rows - 1)) * layout.plot.height;
+        const x0 = plot.left + (columnIndex / Math.max(1, cols - 1)) * plot.width;
+        const x1 = plot.left + ((columnIndex + 1) / Math.max(1, cols - 1)) * plot.width;
+        const y0 = plot.top + plot.height - (rowIndex / Math.max(1, rows - 1)) * plot.height;
+        const y1 = plot.top + plot.height - ((rowIndex + 1) / Math.max(1, rows - 1)) * plot.height;
         const averageValue = (p00 + p10 + p01 + p11) / 4;
 
         if (!chart.wireframe) {
+          const primaryAvgA = (p00 + p10 + p11) / 3;
+          const primaryAvgB = (p00 + p11 + p01) / 3;
+          const secondaryAvgA = (p00 + p10 + p01) / 3;
+          const secondaryAvgB = (p10 + p11 + p01) / 3;
+          const primaryRange = (Math.max(p00, p10, p11) - Math.min(p00, p10, p11))
+            + (Math.max(p00, p11, p01) - Math.min(p00, p11, p01));
+          const secondaryRange = (Math.max(p00, p10, p01) - Math.min(p00, p10, p01))
+            + (Math.max(p10, p11, p01) - Math.min(p10, p11, p01));
+          const usePrimaryDiagonal = primaryRange <= secondaryRange;
+          const triangles = usePrimaryDiagonal
+            ? [
+                {
+                  bandColor: resolveSurfaceBandColor(chart, palette, domain, primaryAvgA),
+                  bandIndex: resolveSurfaceBandIndex(domain, primaryAvgA),
+                  points: `${x0},${y0} ${x1},${y0} ${x1},${y1}`
+                },
+                {
+                  bandColor: resolveSurfaceBandColor(chart, palette, domain, primaryAvgB),
+                  bandIndex: resolveSurfaceBandIndex(domain, primaryAvgB),
+                  points: `${x0},${y0} ${x1},${y1} ${x0},${y1}`
+                }
+              ]
+            : [
+                {
+                  bandColor: resolveSurfaceBandColor(chart, palette, domain, secondaryAvgA),
+                  bandIndex: resolveSurfaceBandIndex(domain, secondaryAvgA),
+                  points: `${x0},${y0} ${x1},${y0} ${x0},${y1}`
+                },
+                {
+                  bandColor: resolveSurfaceBandColor(chart, palette, domain, secondaryAvgB),
+                  bandIndex: resolveSurfaceBandIndex(domain, secondaryAvgB),
+                  points: `${x1},${y0} ${x1},${y1} ${x0},${y1}`
+                }
+              ];
+          const splitLine = usePrimaryDiagonal
+            ? { x1: x0, y1: y0, x2: x1, y2: y1 }
+            : { x1: x1, y1: y0, x2: x0, y2: y1 };
+          const splitBands = triangles[0]?.bandIndex !== triangles[1]?.bandIndex;
           quads.push(
-            <rect
-              key={`surface-contour-cell-${rowIndex}-${columnIndex}`}
-              fill={resolveSurfaceBandColor(chart, palette, domain, averageValue)}
-              height={Math.abs(y1 - y0)}
-              stroke={lightenColor(wallLineColor, 0.14)}
-              strokeWidth={0.5}
-              width={Math.abs(x1 - x0)}
-              x={Math.min(x0, x1)}
-              y={Math.min(y0, y1)}
-            />
+            <g key={`surface-contour-cell-${rowIndex}-${columnIndex}`}>
+              {splitBands ? (
+                <>
+                  <polygon fill={triangles[0]?.bandColor} points={triangles[0]?.points} stroke="none" />
+                  <polygon fill={triangles[1]?.bandColor} points={triangles[1]?.points} stroke="none" />
+                  <line
+                    stroke={mixRgbColor(triangles[0]?.bandColor ?? wallLineColor, triangles[1]?.bandColor ?? wallLineColor, 0.5)}
+                    strokeWidth={0.8}
+                    x1={splitLine.x1}
+                    x2={splitLine.x2}
+                    y1={splitLine.y1}
+                    y2={splitLine.y2}
+                  />
+                </>
+              ) : (
+                <rect
+                  fill={resolveSurfaceBandColor(chart, palette, domain, averageValue)}
+                  height={Math.abs(y1 - y0)}
+                  stroke="none"
+                  width={Math.abs(x1 - x0)}
+                  x={Math.min(x0, x1)}
+                  y={Math.min(y0, y1)}
+                />
+              )}
+            </g>
           );
         }
 
@@ -4810,15 +5073,15 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
       <g>
         <rect
           fill={wallFill}
-          height={layout.plot.height}
+          height={plot.height}
           stroke={lightenColor(wallLineColor, 0.14)}
           strokeWidth={0.8}
-          width={layout.plot.width}
-          x={layout.plot.left}
-          y={layout.plot.top}
+          width={plot.width}
+          x={plot.left}
+          y={plot.top}
         />
         {Array.from({ length: cols }, (_, columnIndex) => {
-          const x = layout.plot.left + (cols <= 1 ? layout.plot.width / 2 : (columnIndex / (cols - 1)) * layout.plot.width);
+          const x = plot.left + (cols <= 1 ? plot.width / 2 : (columnIndex / (cols - 1)) * plot.width);
           return (
             <line
               key={`surface-contour-grid-col-${columnIndex}`}
@@ -4826,20 +5089,20 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
               strokeWidth={0.8}
               x1={x}
               x2={x}
-              y1={layout.plot.top}
-              y2={layout.plot.top + layout.plot.height}
+              y1={plot.top}
+              y2={plot.top + plot.height}
             />
           );
         })}
         {Array.from({ length: rows }, (_, rowIndex) => {
-          const y = layout.plot.top + layout.plot.height - (rows <= 1 ? layout.plot.height / 2 : (rowIndex / (rows - 1)) * layout.plot.height);
+          const y = plot.top + plot.height - (rows <= 1 ? plot.height / 2 : (rowIndex / (rows - 1)) * plot.height);
           return (
             <line
               key={`surface-contour-grid-row-${rowIndex}`}
               stroke={lightenColor(wallLineColor, 0.18)}
               strokeWidth={0.8}
-              x1={layout.plot.left}
-              x2={layout.plot.left + layout.plot.width}
+              x1={plot.left}
+              x2={plot.left + plot.width}
               y1={y}
               y2={y}
             />
@@ -4850,12 +5113,12 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
         {chart.wireframe ? null : (
           <rect
             fill="none"
-            height={layout.plot.height}
+            height={plot.height}
             stroke={lightenColor(wallLineColor, 0.1)}
             strokeWidth={0.8}
-            width={layout.plot.width}
-            x={layout.plot.left}
-            y={layout.plot.top}
+            width={plot.width}
+            x={plot.left}
+            y={plot.top}
           />
         )}
       </g>
@@ -4882,7 +5145,7 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
       const value = matrix[rowIndex][columnIndex];
       const hasValue = value != null;
       const normalizedX = cols <= 1 ? 0 : ((columnIndex / (cols - 1)) - 0.5) * 2;
-      const normalizedY = hasValue ? ((((value - minValue) / (safeMax - minValue)) - 0.5) * 1.8 * depthScale) : (-0.9 * depthScale);
+      const normalizedY = hasValue ? (-((((value - minValue) / (safeMax - minValue)) - 0.5) * 1.8) * depthScale) : (0.9 * depthScale);
       const normalizedZ = rows <= 1 ? 0 : ((rowIndex / (rows - 1)) - 0.5) * 2;
 
       const x1 = normalizedX * cosY + normalizedZ * sinY;
@@ -5787,8 +6050,25 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
   }
 
   const labels = getCategoryLabels(chart);
+  const layoutProperties = resolveRegionMapLayoutProperties(primarySeries);
+  const geography = layoutProperties?.geography && typeof layoutProperties.geography === "object"
+    ? layoutProperties.geography as Record<string, unknown>
+    : null;
+  const featureSet = resolveRegionMapFeatureSet(labels, geography);
+  const viewedRegionType = typeof geography?.viewedRegionType === "string"
+    ? geography.viewedRegionType
+    : null;
+  const projectionType = typeof geography?.projectionType === "string"
+    ? geography.projectionType
+    : null;
+  const projection = featureSet === "us-state"
+    ? geoIdentity()
+    : projectionType === "miller"
+      ? geoMercator()
+      : geoNaturalEarth1();
+  const availableFeatures = getRegionMapBaseFeatures(featureSet);
   const entries = labels.map((label, index) => {
-    const feature = resolveRegionMapFeature(label);
+    const feature = resolveRegionMapFeature(label, featureSet);
     const value = safeNumber(primarySeries.values[index]);
     return {
       feature,
@@ -5802,23 +6082,10 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
     label: string;
     value: number;
   }>;
-
-  const layoutProperties = resolveRegionMapLayoutProperties(primarySeries);
-  const geography = layoutProperties?.geography && typeof layoutProperties.geography === "object"
-    ? layoutProperties.geography as Record<string, unknown>
-    : null;
-  const viewedRegionType = typeof geography?.viewedRegionType === "string"
-    ? geography.viewedRegionType
-    : null;
-  const projectionType = typeof geography?.projectionType === "string"
-    ? geography.projectionType
-    : null;
-  const projection = projectionType === "miller"
-    ? geoMiller()
-    : geoNaturalEarth1();
-  const fitFeatures = viewedRegionType === "dataOnly" && entries.length > 0
+  const fitToMatchedData = entries.length > 0 && (viewedRegionType === "dataOnly" || entries.length === 1);
+  const fitFeatures = fitToMatchedData
     ? entries.map((entry) => entry.feature)
-    : WORLD_COUNTRY_FEATURES;
+    : availableFeatures;
   projection.fitExtent(
     [
       [layout.plot.left + 8, layout.plot.top + 8],
@@ -5830,16 +6097,13 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
     } satisfies FeatureCollection<Geometry, { name?: string }>
   );
   const path = geoPath(projection);
-  const baseFeatures = viewedRegionType === "dataOnly" && entries.length > 0
+  const baseFeatures = fitToMatchedData
     ? fitFeatures
-    : WORLD_COUNTRY_FEATURES;
-  const noDataFill = chart.chartAreaFillColor && chart.chartAreaFillColor !== "transparent"
-    ? lightenColor(chart.chartAreaFillColor, 0.16)
-    : "#d9d9d9";
+    : availableFeatures;
+  const noDataFill = resolveRegionMapNoDataColor(chart, primarySeriesIndex);
   const outlineColor = chart.chartAreaBorderColor && chart.chartAreaBorderColor !== "transparent"
     ? chart.chartAreaBorderColor
-    : "#a6a6a6";
-  const baseColor = resolveRegionMapBaseColor(chart, primarySeriesIndex);
+    : darkenColor(noDataFill, 0.22);
   const minValue = entries.length > 0 ? Math.min(...entries.map((entry) => entry.value)) : 0;
   const maxValue = entries.length > 0 ? Math.max(...entries.map((entry) => entry.value)) : 1;
   const showRegionLabels = layoutProperties?.regionLabelLayout !== "none";
@@ -5868,12 +6132,13 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
           return null;
         }
         const ratio = maxValue <= minValue ? 1 : (entry.value - minValue) / Math.max(1e-6, maxValue - minValue);
+        const fill = resolveRegionMapValueColor(chart, primarySeriesIndex, ratio);
         return (
           <path
             d={d}
-            fill={resolveRegionMapValueColor(baseColor, ratio)}
+            fill={fill}
             key={`region-map-value-${entry.key || index}`}
-            stroke={darkenColor(baseColor, 0.18)}
+            stroke={darkenColor(fill, 0.18)}
             strokeLinejoin="round"
             strokeWidth={0.85}
           />

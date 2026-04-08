@@ -959,7 +959,7 @@ function getBuiltinSurfacePalette(styleId: number | undefined, wireframe: boolea
     return ["#5b9bd5", "#ed7d31", "#a5a5a5"];
   }
   if (normalized === 35 || normalized === 36 || (wireframe !== true && normalized == null)) {
-    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#b4c7e7"];
+    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#d9e2f3"];
   }
   return null;
 }
@@ -1393,6 +1393,65 @@ function applyChartStyleFromXml(
     chart.titleColor = styleAppearance.titleColor ?? chart.titleColor;
     return styleAppearance;
   };
+  const applyModernChartExStyles = () => {
+    const modernPlotAreaNode = chartDocument?.documentElement
+      ? getFirstLocalDescendant(chartDocument.documentElement, "plotArea")
+      : null;
+    if (!modernPlotAreaNode) {
+      return;
+    }
+
+    const plotAreaShapeProperties = getFirstLocalChild(modernPlotAreaNode, "spPr");
+    if (plotAreaShapeProperties) {
+      const plotAreaFillColor = resolveChartFillColor(plotAreaShapeProperties, themePalette);
+      const plotAreaLineStyle = resolveChartLineStyle(plotAreaShapeProperties, themePalette);
+      if (plotAreaFillColor) {
+        chart.chartAreaFillColor = chart.chartAreaFillColor ?? plotAreaFillColor;
+      }
+      if (plotAreaLineStyle.color) {
+        chart.chartAreaBorderColor = chart.chartAreaBorderColor ?? plotAreaLineStyle.color;
+      }
+    }
+
+    const modernSeriesNodes = getLocalElements(modernPlotAreaNode, "series");
+    if (modernSeriesNodes.length === 0) {
+      return;
+    }
+
+    chart.series = chart.series.map((series, seriesIndex) => {
+      const modernSeriesNode = modernSeriesNodes[seriesIndex] ?? null;
+      if (!modernSeriesNode) {
+        return series;
+      }
+      const seriesShapeProperties = getFirstLocalChild(modernSeriesNode, "spPr");
+      if (!seriesShapeProperties) {
+        return series;
+      }
+      const fillColor = resolveChartFillColor(seriesShapeProperties, themePalette);
+      const lineStyle = resolveChartLineStyle(seriesShapeProperties, themePalette);
+      const fallbackColor = fillColor ?? lineStyle.color ?? undefined;
+      const valueColorsNode = getFirstLocalChild(modernSeriesNode, "valueColors");
+      const valueColors = valueColorsNode
+        ? getLocalElements(valueColorsNode)
+          .map((node) => resolveChartColorNode(findFirstChartColorElement(node) ?? node, themePalette))
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+        : [];
+      return {
+        ...series,
+        color: series.color ?? fallbackColor,
+        lineColor: series.lineColor ?? lineStyle.color ?? fillColor ?? fallbackColor,
+        lineWidthPx: series.lineWidthPx ?? (typeof lineStyle.widthPx === "number" ? lineStyle.widthPx : undefined),
+        markerColor: series.markerColor ?? fallbackColor ?? series.color,
+        markerLineColor: series.markerLineColor ?? lineStyle.color ?? fallbackColor ?? series.lineColor,
+        raw: valueColors.length > 0
+          ? {
+              ...(series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : {}),
+              valueColors
+            }
+          : series.raw
+      };
+    });
+  };
 
   const chartDocument = parseXml(chartXml);
   const chartNode = chartDocument ? getFirstLocalDescendant(chartDocument, "chart") : null;
@@ -1402,6 +1461,11 @@ function applyChartStyleFromXml(
 
   if (!chartNode || !chartTypeNode) {
     applyRelationshipStyles();
+    const fallbackStyleId = readChartNumericAttribute(styleIdNode, "style");
+    if (typeof fallbackStyleId === "number" && Number.isFinite(fallbackStyleId)) {
+      chart.chartStyleId = fallbackStyleId;
+    }
+    applyModernChartExStyles();
     applyFallbackSeriesStyles();
     applyBuiltinChartDefaults(chart, themePalette);
     return;
@@ -2182,6 +2246,14 @@ function niceHistogramStep(value: number) {
   return scale * 10;
 }
 
+function formatHistogramBinLabel(lower: number, upper: number, index: number, closedRight: boolean) {
+  const leftBracket = closedRight
+    ? (index === 0 ? "[" : "(")
+    : "[";
+  const rightBracket = closedRight ? "]" : ")";
+  return `${leftBracket}${Number(lower.toFixed(6))},${Number(upper.toFixed(6))}${rightBracket}`;
+}
+
 type ChartExHistogramBin = {
   count: number;
   label: string;
@@ -2214,18 +2286,32 @@ function buildChartExHistogramBins(values: number[], rawSeries: unknown, sortByF
       ? rawBinning.count
       : undefined;
   const closedRight = rawBinning?.intervalClosed === "r" || rawBinning?.intervalClosed === "right";
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / Math.max(1, values.length);
+  const standardDeviation = Math.sqrt(Math.max(0, variance));
+  const allIntegers = values.every((value) => Math.abs(value - Math.round(value)) < 1e-9);
+  const scottWidth = standardDeviation > 0
+    ? (3.49 * standardDeviation) / Math.cbrt(values.length)
+    : undefined;
+  const fallbackWidth = explicitCount != null
+    ? (maxValue - minValue) / Math.max(1, explicitCount)
+    : scottWidth ?? ((maxValue - minValue) / Math.max(1, Math.ceil(Math.log2(values.length) + 1)));
   const roughWidth = explicitWidth
-    ?? niceHistogramStep((maxValue - minValue) / Math.max(1, explicitCount ?? Math.ceil(Math.log2(values.length) + 1)));
+    ?? (allIntegers
+      ? Math.max(1, Math.ceil(Math.max(fallbackWidth, 1e-6)))
+      : niceHistogramStep(Math.max(fallbackWidth, 1e-6)));
   const binWidth = Math.max(roughWidth, 1e-6);
-  const start = Math.floor(minValue / binWidth) * binWidth;
-  const end = Math.max(start + binWidth, Math.ceil(maxValue / binWidth) * binWidth);
+  const start = explicitWidth != null || explicitCount != null
+    ? Math.floor(minValue / binWidth) * binWidth
+    : minValue;
+  const end = Math.max(start + binWidth, start + Math.ceil((maxValue - start) / binWidth) * binWidth);
   const binCount = Math.max(1, Math.ceil((end - start) / binWidth));
   const bins = Array.from({ length: binCount }, (_, index) => {
     const lower = start + binWidth * index;
     const upper = lower + binWidth;
     return {
       count: 0,
-      label: `${Number(lower.toFixed(6))}-${Number(upper.toFixed(6))}`,
+      label: formatHistogramBinLabel(lower, upper, index, closedRight),
       lower,
       upper
     } satisfies ChartExHistogramBin;
