@@ -23,6 +23,22 @@ const DEFAULT_ZOOM_SCALE = 100;
 const FORMULA_COUNT_THRESHOLD = 1000;
 const FAST_STRUCTURE_PARSE_THRESHOLD_BYTES = 5 * 1024 * 1024;
 
+function isLegacyXlsWorkbook(bytes: Uint8Array) {
+  return bytes.byteLength >= 8
+    && bytes[0] === 0xd0
+    && bytes[1] === 0xcf
+    && bytes[2] === 0x11
+    && bytes[3] === 0xe0
+    && bytes[4] === 0xa1
+    && bytes[5] === 0xb1
+    && bytes[6] === 0x1a
+    && bytes[7] === 0xe1;
+}
+
+function shouldSkipXmlParsingForWorkbook(bytes: Uint8Array, skipXmlParsing = false) {
+  return skipXmlParsing || isLegacyXlsWorkbook(bytes);
+}
+
 type WorkerRequest =
   | {
       id: number;
@@ -429,6 +445,7 @@ function cellAddressToA1(cell: XlsxCellAddress) {
 async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
   const wasmModule = await getSheetsWasmModule();
   const bytes = new Uint8Array(buffer);
+  const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing);
   const nextWorkbook = wasmModule.Workbook.fromBytes(bytes);
   let totalFormulas = 0;
   for (let index = 0; index < nextWorkbook.sheetCount; index += 1) {
@@ -441,7 +458,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
 
   const shouldUseFastStructureParse =
     bytes.byteLength >= FAST_STRUCTURE_PARSE_THRESHOLD_BYTES && totalFormulas <= FORMULA_COUNT_THRESHOLD;
-  const structureAssets = skipXmlParsing || shouldUseFastStructureParse
+  const structureAssets = effectiveSkipXmlParsing || shouldUseFastStructureParse
     ? null
     : parseWorkbookStructureAssets(bytes, {
         includeCachedFormulaValues: true
@@ -461,7 +478,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
     const hasModernCharts = Array.isArray(worksheet.chartsEx) && worksheet.chartsEx.length > 0;
     return hasClassicCharts || hasModernCharts;
   }).some(Boolean);
-  const chartStyleAssets = skipXmlParsing || !hasCharts ? null : parseWorkbookChartStyleAssets(bytes);
+  const chartStyleAssets = effectiveSkipXmlParsing || !hasCharts ? null : parseWorkbookChartStyleAssets(bytes);
   const chartAssets = loadWorkbookChartAssets(nextWorkbook, chartStyleAssets, visibleSheetIndexByWorkbookSheetIndex);
   chartsByWorkbookSheetIndex = chartAssets.chartsByWorkbookSheetIndex;
   chartsheets = chartAssets.chartsheets;
@@ -478,6 +495,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
 async function parseCharts(buffer: ArrayBuffer, skipXmlParsing = false) {
   const wasmModule = await getSheetsWasmModule();
   const bytes = new Uint8Array(buffer);
+  const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing);
   const nextWorkbook = wasmModule.Workbook.fromBytes(bytes);
   let totalFormulas = 0;
   for (let index = 0; index < nextWorkbook.sheetCount; index += 1) {
@@ -488,7 +506,7 @@ async function parseCharts(buffer: ArrayBuffer, skipXmlParsing = false) {
   }
 
   const visibleSheetIndexByWorkbookSheetIndex = buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook);
-  const chartStyleAssets = skipXmlParsing ? null : parseWorkbookChartStyleAssets(bytes);
+  const chartStyleAssets = effectiveSkipXmlParsing ? null : parseWorkbookChartStyleAssets(bytes);
   const chartAssets = loadWorkbookChartAssets(nextWorkbook, chartStyleAssets, visibleSheetIndexByWorkbookSheetIndex);
   return {
     chartsByWorkbookSheetIndex: chartAssets.chartsByWorkbookSheetIndex,
