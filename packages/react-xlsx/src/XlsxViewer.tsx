@@ -3317,6 +3317,22 @@ function renderFileTooLarge(
   return defaultNode;
 }
 
+function renderCustomFileTooLarge(
+  fileTooLargeState: XlsxViewerProps["fileTooLargeState"],
+  renderProps: {
+    displayFileName: string;
+    fileSizeBytes: number;
+    maxFileSizeBytes: number;
+  },
+  palette: ViewerPalette
+) {
+  if (fileTooLargeState === undefined) {
+    return undefined;
+  }
+
+  return renderFileTooLarge(fileTooLargeState, renderProps, palette);
+}
+
 function renderDefaultChartLoadingCard(rect: XlsxImageRect) {
   const bars = [18, 32, 24];
   const barWidth = Math.max(8, Math.min(12, Math.round(rect.width * 0.018)));
@@ -8586,50 +8602,67 @@ function XlsxViewerInner({
   controller: XlsxViewerController;
 }) {
   const palette = useViewerPalette(isDark);
+  const { displayFileName, error } = controller;
+  const customFileTooLarge =
+    error instanceof XlsxFileSizeLimitExceededError
+      ? renderCustomFileTooLarge(
+          fileTooLargeState,
+          {
+            displayFileName,
+            fileSizeBytes: error.fileSizeBytes,
+            maxFileSizeBytes: error.maxFileSizeBytes
+          },
+          palette
+        )
+      : undefined;
 
   return (
     <ViewerAppearanceContext.Provider value={{ isDark }}>
       <ViewerContext.Provider value={controller}>
-        <div
-          className={classNames("react-xlsx-viewer", className)}
-          style={{
-            blockSize: height,
-            backgroundColor: palette.surface,
-            borderRadius: rounded ? 12 : 0,
-            color: palette.text,
-            display: "flex",
-            flex: "1 1 auto",
-            flexDirection: "column",
-            inlineSize: "100%",
-            maxHeight: "100%",
-            maxWidth: "100%",
-            minHeight: 0,
-            minWidth: 0,
-            overflow: "hidden",
-            width: "100%"
-          }}
-        >
-          {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
-          <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
-            <XlsxGrid
-              controller={controller}
-              emptyState={emptyState}
-              errorState={errorState}
-              fileTooLargeState={fileTooLargeState}
-              loadingComponent={loadingComponent}
-              loadingState={loadingState}
-              palette={palette}
-              renderChartLoading={renderChartLoading}
-              renderImage={renderImage}
-              renderImageSelection={renderImageSelection}
-              renderTableHeaderMenu={renderTableHeaderMenu}
-              selectionColor={selectionColor}
-              selectionFillColor={selectionFillColor}
-              selectionHeaderColor={selectionHeaderColor}
-              showImages={showImages}
-            />
+        {customFileTooLarge !== undefined ? (
+          customFileTooLarge
+        ) : (
+          <div
+            className={classNames("react-xlsx-viewer", className)}
+            style={{
+              blockSize: height,
+              backgroundColor: palette.surface,
+              borderRadius: rounded ? 12 : 0,
+              color: palette.text,
+              display: "flex",
+              flex: "1 1 auto",
+              flexDirection: "column",
+              inlineSize: "100%",
+              maxHeight: "100%",
+              maxWidth: "100%",
+              minHeight: 0,
+              minWidth: 0,
+              overflow: "hidden",
+              width: "100%"
+            }}
+          >
+            {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
+            <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
+              <XlsxGrid
+                controller={controller}
+                emptyState={emptyState}
+                errorState={errorState}
+                fileTooLargeState={fileTooLargeState}
+                loadingComponent={loadingComponent}
+                loadingState={loadingState}
+                palette={palette}
+                renderChartLoading={renderChartLoading}
+                renderImage={renderImage}
+                renderImageSelection={renderImageSelection}
+                renderTableHeaderMenu={renderTableHeaderMenu}
+                selectionColor={selectionColor}
+                selectionFillColor={selectionFillColor}
+                selectionHeaderColor={selectionHeaderColor}
+                showImages={showImages}
+              />
+            </div>
           </div>
-        </div>
+        )}
       </ViewerContext.Provider>
     </ViewerAppearanceContext.Provider>
   );
