@@ -816,6 +816,7 @@ export interface XlsxTableHeaderMenuRenderProps {
 export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions {
   children: React.ReactNode;
   controller?: XlsxViewerController;
+  isDark?: boolean;
 }
 
 export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
@@ -825,6 +826,7 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   errorState?: React.ReactNode | ((error: Error) => React.ReactNode);
   fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode);
   height?: React.CSSProperties["height"];
+  isDark?: boolean;
   loadingComponent?: React.ReactElement;
   loadingState?: React.ReactNode;
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;

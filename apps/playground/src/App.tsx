@@ -94,19 +94,23 @@ function ViewerEmptyState() {
 }
 
 function WorkbookToolbar({
+  isDocumentDark,
   onClear,
   onLoadUrl,
   onOpenFile,
   readOnly,
   remoteUrl,
+  setIsDocumentDark,
   setReadOnly,
   setRemoteUrl,
 }: {
+  isDocumentDark: boolean;
   onClear: () => void;
   onLoadUrl: () => void;
   onOpenFile: () => void;
   readOnly: boolean;
   remoteUrl: string;
+  setIsDocumentDark: (value: boolean) => void;
   setReadOnly: (value: boolean) => void;
   setRemoteUrl: (value: string) => void;
 }) {
@@ -205,6 +209,15 @@ function WorkbookToolbar({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+            <span className="text-muted-foreground text-[11px] font-medium">Document dark</span>
+            <Switch
+              aria-label="Toggle document dark mode"
+              checked={isDocumentDark}
+              onCheckedChange={setIsDocumentDark}
+              size="sm"
+            />
+          </div>
           <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
             <span className="text-muted-foreground text-[11px] font-medium">Read only</span>
             <Switch
@@ -447,6 +460,7 @@ export function App() {
   const [source, setSource] = React.useState<ViewerSource>(null);
   const [isReadingFile, setIsReadingFile] = React.useState(false);
   const [isDragActive, setIsDragActive] = React.useState(false);
+  const [isDocumentDark, setIsDocumentDark] = React.useState(false);
   const [isReadOnly, setIsReadOnly] = React.useState(false);
   const dragDepthRef = React.useRef(0);
 
@@ -591,13 +605,15 @@ export function App() {
           onDragOver={handleDragOver}
           onDrop={handleDrop}
         >
-          <XlsxViewerProvider controller={controller}>
+          <XlsxViewerProvider controller={controller} isDark={isDocumentDark}>
             <WorkbookToolbar
+              isDocumentDark={isDocumentDark}
               onClear={handleClear}
               onLoadUrl={handleLoadUrl}
               onOpenFile={() => fileInputRef.current?.click()}
               readOnly={isReadOnly}
               remoteUrl={remoteUrl}
+              setIsDocumentDark={setIsDocumentDark}
               setReadOnly={setIsReadOnly}
               setRemoteUrl={setRemoteUrl}
             />
@@ -607,6 +623,7 @@ export function App() {
                   className="h-full min-h-0 min-w-0 flex-1"
                   emptyState={<ViewerEmptyState />}
                   height="100%"
+                  isDark={isDocumentDark}
                   loadingState={
                     <div className="text-muted-foreground flex h-full w-full items-center justify-center text-sm">
                       Loading...

@@ -221,6 +221,7 @@ function darkenColor(color: string, ratio: number) {
 }
 
 const ViewerContext = React.createContext<XlsxViewerController | null>(null);
+const ViewerAppearanceContext = React.createContext<{ isDark: boolean }>({ isDark: false });
 
 type WorksheetWithRowsBatch = Worksheet & {
   getRowsBatch?: (startRow: number, maxRows: number, options?: unknown) => unknown;
@@ -1777,49 +1778,8 @@ function resolveImageHandleStyle(position: XlsxImageResizeHandlePosition, stroke
   return style;
 }
 
-function resolveIsDarkMode() {
-  if (typeof document === "undefined") {
-    return false;
-  }
-
-  const classList = document.documentElement.classList;
-  if (classList.contains("dark")) {
-    return true;
-  }
-  if (classList.contains("light")) {
-    return false;
-  }
-
-  return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function useViewerPalette() {
-  const [isDarkMode, setIsDarkMode] = React.useState(resolveIsDarkMode);
-
-  React.useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const update = () => setIsDarkMode(resolveIsDarkMode());
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const observer = new MutationObserver(update);
-
-    observer.observe(document.documentElement, {
-      attributeFilter: ["class", "data-theme"],
-      attributes: true
-    });
-
-    mediaQuery.addEventListener?.("change", update);
-    update();
-
-    return () => {
-      observer.disconnect();
-      mediaQuery.removeEventListener?.("change", update);
-    };
-  }, []);
-
-  return isDarkMode ? DARK_PALETTE : LIGHT_PALETTE;
+function useViewerPalette(isDark = false) {
+  return isDark ? DARK_PALETTE : LIGHT_PALETTE;
 }
 
 function columnLabel(col: number): string {
@@ -2913,6 +2873,63 @@ function DefaultTableHeaderMenu({
   );
 }
 
+function SegmentedControl({
+  items,
+  onValueChange,
+  palette,
+  value
+}: {
+  items: Array<{ id: string; label: string }>;
+  onValueChange: (value: string) => void;
+  palette: ViewerPalette;
+  value: string;
+}) {
+  return (
+    <div
+      aria-label="Workbook sheets"
+      role="tablist"
+      style={{
+        alignItems: "center",
+        backgroundColor: palette.sheetInactiveSurface,
+        border: `1px solid ${palette.strongBorder}`,
+        borderRadius: 10,
+        display: "inline-flex",
+        gap: 2,
+        minHeight: 36,
+        padding: 2
+      }}
+    >
+      {items.map((item) => {
+        const selected = item.id === value;
+        return (
+          <button
+            aria-selected={selected}
+            key={item.id}
+            onClick={() => onValueChange(item.id)}
+            role="tab"
+            style={{
+              backgroundColor: selected ? palette.sheetActiveSurface : "transparent",
+              border: "none",
+              borderRadius: 8,
+              boxShadow: selected ? palette.shadow : "none",
+              color: selected ? palette.sheetActiveText : palette.sheetInactiveText,
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: selected ? 600 : 500,
+              padding: "7px 12px",
+              transition: "background-color 120ms ease, color 120ms ease, box-shadow 120ms ease",
+              whiteSpace: "nowrap"
+            }}
+            type="button"
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function DefaultToolbar({ controller, palette }: { controller: XlsxViewerController; palette: ViewerPalette }) {
   const {
     activeTabIndex,
@@ -3023,20 +3040,27 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
           </div>
           {canDownload ? (
             <button
+              aria-label="Download workbook"
               onClick={download}
               style={{
+                alignItems: "center",
                 background: palette.buttonSurface,
                 border: `1px solid ${palette.strongBorder}`,
                 borderRadius: 8,
                 color: palette.buttonText,
                 cursor: "pointer",
-                fontSize: 12,
+                display: "inline-flex",
+                fontSize: 16,
                 fontWeight: 500,
-                padding: "6px 10px"
+                height: 32,
+                justifyContent: "center",
+                padding: 0,
+                width: 32
               }}
+              title="Download workbook"
               type="button"
             >
-              Download
+              ↓
             </button>
           ) : null}
         </div>
@@ -3046,33 +3070,16 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
           style={{
             backgroundColor: palette.subtleSurface,
             borderBottom: `1px solid ${palette.border}`,
-            display: "flex",
-            gap: 6,
             overflowX: "auto",
             padding: "8px 12px"
           }}
         >
-          {tabs.map((tab, index) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTabIndex(index)}
-              style={{
-                backgroundColor: index === activeTabIndex ? palette.sheetActiveSurface : palette.sheetInactiveSurface,
-                border: `1px solid ${index === activeTabIndex ? palette.strongBorder : "transparent"}`,
-                borderRadius: 8,
-                boxShadow: index === activeTabIndex ? palette.shadow : "none",
-                color: index === activeTabIndex ? palette.sheetActiveText : palette.sheetInactiveText,
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 500,
-                padding: "6px 12px",
-                whiteSpace: "nowrap"
-              }}
-              type="button"
-            >
-              {tab.name}
-            </button>
-          ))}
+          <SegmentedControl
+            items={tabs.map((tab, index) => ({ id: String(index), label: tab.name }))}
+            onValueChange={(value) => setActiveTabIndex(Number(value))}
+            palette={palette}
+            value={String(activeTabIndex)}
+          />
         </div>
       ) : null}
     </>
@@ -7177,7 +7184,7 @@ function XlsxGrid({
     selectionFillColor,
     selectionHeaderColor
   });
-  const selectionBorderWidth = 1.5;
+  const selectionBorderWidth = 1;
   const rowColSpan = renderedCols.length + 1 + (leadingColumnSpacerWidth > 0 ? 1 : 0) + (trailingColumnSpacerWidth > 0 ? 1 : 0);
   const gutterSeparatorShadow = `inset -1px 0 0 ${palette.border}, inset 0 -1px 0 ${palette.border}`;
   const headerCellStyle: React.CSSProperties = {
@@ -7408,7 +7415,7 @@ function XlsxGrid({
               defaultNode: (
                 <div
                   style={{
-                    border: `1.5px solid ${selectionStroke}`,
+                    border: `1px solid ${selectionStroke}`,
                     boxShadow: `0 0 0 1px ${palette.surface}`,
                     boxSizing: "border-box",
                     inset: 0,
@@ -7443,7 +7450,7 @@ function XlsxGrid({
           : (
               <div
                 style={{
-                  border: `1.5px solid ${selectionStroke}`,
+                  border: `1px solid ${selectionStroke}`,
                   boxShadow: `0 0 0 1px ${palette.surface}`,
                   boxSizing: "border-box",
                   inset: 0,
@@ -7524,7 +7531,7 @@ function XlsxGrid({
       >
         <div
           style={{
-            border: `1.5px solid ${selectionStroke}`,
+            border: `1px solid ${selectionStroke}`,
             boxShadow: `0 0 0 1px ${palette.surface}`,
             boxSizing: "border-box",
             inset: 0,
@@ -8454,7 +8461,8 @@ function XlsxViewerInner({
   emptyState,
   errorState,
   fileTooLargeState,
-  height = "100%",
+  height,
+  isDark = false,
   loadingComponent,
   loadingState,
   renderChartLoading,
@@ -8471,52 +8479,53 @@ function XlsxViewerInner({
 }: XlsxViewerProps & {
   controller: XlsxViewerController;
 }) {
-  const palette = useViewerPalette();
+  const palette = useViewerPalette(isDark);
 
   return (
-    <ViewerContext.Provider value={controller}>
-      <div
-        className={classNames("react-xlsx-viewer", className)}
-        style={{
-          blockSize: height,
-          backgroundColor: palette.surface,
-          border: `1px solid ${palette.border}`,
-          borderRadius: rounded ? 12 : 0,
-          color: palette.text,
-          display: "flex",
-          flex: "1 1 auto",
-          flexDirection: "column",
-          inlineSize: "100%",
-          maxHeight: "100%",
-          maxWidth: "100%",
-          minHeight: 0,
-          minWidth: 0,
-          overflow: "hidden",
-          width: "100%"
-        }}
-      >
-        {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
-        <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
-          <XlsxGrid
-            controller={controller}
-            emptyState={emptyState}
-            errorState={errorState}
-            fileTooLargeState={fileTooLargeState}
-            loadingComponent={loadingComponent}
-            loadingState={loadingState}
-            palette={palette}
-            renderChartLoading={renderChartLoading}
-            renderImage={renderImage}
-            renderImageSelection={renderImageSelection}
-            renderTableHeaderMenu={renderTableHeaderMenu}
-            selectionColor={selectionColor}
-            selectionFillColor={selectionFillColor}
-            selectionHeaderColor={selectionHeaderColor}
-            showImages={showImages}
-          />
+    <ViewerAppearanceContext.Provider value={{ isDark }}>
+      <ViewerContext.Provider value={controller}>
+        <div
+          className={classNames("react-xlsx-viewer", className)}
+          style={{
+            blockSize: height,
+            backgroundColor: palette.surface,
+            borderRadius: rounded ? 12 : 0,
+            color: palette.text,
+            display: "flex",
+            flex: "1 1 auto",
+            flexDirection: "column",
+            inlineSize: "100%",
+            maxHeight: "100%",
+            maxWidth: "100%",
+            minHeight: 0,
+            minWidth: 0,
+            overflow: "hidden",
+            width: "100%"
+          }}
+        >
+          {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
+          <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
+            <XlsxGrid
+              controller={controller}
+              emptyState={emptyState}
+              errorState={errorState}
+              fileTooLargeState={fileTooLargeState}
+              loadingComponent={loadingComponent}
+              loadingState={loadingState}
+              palette={palette}
+              renderChartLoading={renderChartLoading}
+              renderImage={renderImage}
+              renderImageSelection={renderImageSelection}
+              renderTableHeaderMenu={renderTableHeaderMenu}
+              selectionColor={selectionColor}
+              selectionFillColor={selectionFillColor}
+              selectionHeaderColor={selectionHeaderColor}
+              showImages={showImages}
+            />
+          </div>
         </div>
-      </div>
-    </ViewerContext.Provider>
+      </ViewerContext.Provider>
+    </ViewerAppearanceContext.Provider>
   );
 }
 
@@ -8527,18 +8536,31 @@ function XlsxViewerWithInlineController(props: XlsxViewerProps) {
 
 function XlsxViewerProviderWithInlineController({
   children,
+  isDark = false,
   ...options
 }: Omit<XlsxViewerProviderProps, "controller">) {
   const controller = useXlsxViewerController(options);
-  return <ViewerContext.Provider value={controller}>{children}</ViewerContext.Provider>;
+  return (
+    <ViewerAppearanceContext.Provider value={{ isDark }}>
+      <ViewerContext.Provider value={controller}>{children}</ViewerContext.Provider>
+    </ViewerAppearanceContext.Provider>
+  );
 }
 
-export function XlsxViewerProvider({ children, controller, ...options }: XlsxViewerProviderProps) {
+export function XlsxViewerProvider({ children, controller, isDark = false, ...options }: XlsxViewerProviderProps) {
   if (controller) {
-    return <ViewerContext.Provider value={controller}>{children}</ViewerContext.Provider>;
+    return (
+      <ViewerAppearanceContext.Provider value={{ isDark }}>
+        <ViewerContext.Provider value={controller}>{children}</ViewerContext.Provider>
+      </ViewerAppearanceContext.Provider>
+    );
   }
 
-  return <XlsxViewerProviderWithInlineController {...options}>{children}</XlsxViewerProviderWithInlineController>;
+  return (
+    <XlsxViewerProviderWithInlineController {...options} isDark={isDark}>
+      {children}
+    </XlsxViewerProviderWithInlineController>
+  );
 }
 
 export function useXlsxViewer() {
@@ -8883,6 +8905,7 @@ export function XlsxViewer(props: XlsxViewerProps) {
 
 export function DefaultXlsxToolbar() {
   const controller = useXlsxViewer();
-  const palette = useViewerPalette();
+  const { isDark } = React.useContext(ViewerAppearanceContext);
+  const palette = useViewerPalette(isDark);
   return <DefaultToolbar controller={controller} palette={palette} />;
 }
