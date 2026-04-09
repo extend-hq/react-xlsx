@@ -93,6 +93,14 @@ function ViewerEmptyState() {
   );
 }
 
+function ViewerFileTooLargeState() {
+  return (
+    <div className="grid h-full w-full place-items-center">
+      <div className="text-sm font-medium">File is too large</div>
+    </div>
+  );
+}
+
 function WorkbookToolbar({
   isDocumentDark,
   onClear,
@@ -622,6 +630,7 @@ export function App() {
                 <XlsxViewer
                   className="h-full min-h-0 min-w-0 flex-1"
                   emptyState={<ViewerEmptyState />}
+                  fileTooLargeState={<ViewerFileTooLargeState />}
                   height="100%"
                   isDark={isDocumentDark}
                   loadingState={
