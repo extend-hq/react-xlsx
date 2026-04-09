@@ -82,12 +82,24 @@ type PendingRequest = {
   resolve: (value: unknown) => void;
 };
 
+function createAbortError() {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("Aborted", "AbortError");
+  }
+
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 export class XlsxWorkerClient {
   private readonly worker: Worker;
 
   private nextRequestId = 1;
 
   private readonly pendingRequests = new Map<number, PendingRequest>();
+
+  private disposed = false;
 
   constructor() {
     this.worker = new Worker(new URL("./xlsx-worker.js", import.meta.url), { type: "module" });
@@ -96,11 +108,17 @@ export class XlsxWorkerClient {
   }
 
   dispose() {
+    if (this.disposed) {
+      return;
+    }
+
+    this.disposed = true;
     this.worker.removeEventListener("message", this.handleMessage);
     this.worker.removeEventListener("error", this.handleError);
     this.worker.terminate();
+    const abortError = createAbortError();
     for (const request of this.pendingRequests.values()) {
-      request.reject(new Error("Worker was disposed."));
+      request.reject(abortError);
     }
     this.pendingRequests.clear();
   }
@@ -154,6 +172,11 @@ export class XlsxWorkerClient {
 
   private request<TResult>(message: WorkerMessage, transfer: Transferable[] = []) {
     return new Promise<TResult>((resolve, reject) => {
+      if (this.disposed) {
+        reject(createAbortError());
+        return;
+      }
+
       const id = this.nextRequestId;
       this.nextRequestId += 1;
       this.pendingRequests.set(id, { reject, resolve: resolve as (value: unknown) => void });

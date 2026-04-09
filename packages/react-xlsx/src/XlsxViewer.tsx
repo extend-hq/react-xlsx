@@ -1,12 +1,7 @@
 import * as React from "react";
 import type { Worksheet } from "@dukelib/sheets-wasm";
 import {
-  elementScroll,
-  observeElementOffset,
-  observeElementRect,
-  useVirtualizer,
-  type Rect,
-  type Virtualizer
+  useVirtualizer
 } from "@tanstack/react-virtual";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
@@ -83,36 +78,75 @@ const IMAGE_HANDLE_CURSOR: Record<XlsxImageResizeHandlePosition, React.CSSProper
   w: "ew-resize"
 };
 
-function observeZoomedElementRect(
-  instance: Virtualizer<HTMLDivElement, Element>,
-  zoomFactor: number,
-  cb: (rect: Rect) => void
-) {
-  return observeElementRect(instance, (rect) => {
-    cb({
-      height: rect.height / zoomFactor,
-      width: rect.width / zoomFactor
-    });
+const NUMERIC_LENGTH_STYLE_KEYS = new Set([
+  "borderRadius",
+  "borderTopLeftRadius",
+  "borderTopRightRadius",
+  "borderBottomLeftRadius",
+  "borderBottomRightRadius",
+  "bottom",
+  "fontSize",
+  "gap",
+  "height",
+  "left",
+  "letterSpacing",
+  "margin",
+  "marginBottom",
+  "marginLeft",
+  "marginRight",
+  "marginTop",
+  "maxHeight",
+  "maxWidth",
+  "minHeight",
+  "minWidth",
+  "outlineOffset",
+  "outlineWidth",
+  "padding",
+  "paddingBottom",
+  "paddingLeft",
+  "paddingRight",
+  "paddingTop",
+  "right",
+  "textIndent",
+  "top",
+  "width"
+]);
+
+function scaleCssLengthExpression(value: string, scale: number) {
+  if (scale === 1) {
+    return value;
+  }
+
+  return value.replace(/(-?\d*\.?\d+)(px|pt)\b/g, (_, rawNumber: string, unit: string) => {
+    const nextValue = Number.parseFloat(rawNumber);
+    if (!Number.isFinite(nextValue)) {
+      return `${rawNumber}${unit}`;
+    }
+    return `${nextValue * scale}${unit}`;
   });
 }
 
-function observeZoomedElementOffset(
-  instance: Virtualizer<HTMLDivElement, Element>,
-  zoomFactor: number,
-  cb: (offset: number, isScrolling: boolean) => void
-) {
-  return observeElementOffset(instance, (offset, isScrolling) => {
-    cb(offset / zoomFactor, isScrolling);
-  });
-}
+function scaleCssProperties(style: React.CSSProperties, scale: number): React.CSSProperties {
+  if (scale === 1) {
+    return style;
+  }
 
-function scrollToZoomedOffset(
-  offset: number,
-  zoomFactor: number,
-  options: Parameters<typeof elementScroll>[1],
-  instance: Virtualizer<HTMLDivElement, Element>
-) {
-  elementScroll(offset * zoomFactor, options, instance);
+  const nextStyle: React.CSSProperties = {};
+  Object.entries(style).forEach(([key, value]) => {
+    if (typeof value === "string") {
+      nextStyle[key as keyof React.CSSProperties] = scaleCssLengthExpression(value, scale) as never;
+      return;
+    }
+
+    if (typeof value === "number" && NUMERIC_LENGTH_STYLE_KEYS.has(key)) {
+      nextStyle[key as keyof React.CSSProperties] = (value * scale) as never;
+      return;
+    }
+
+    nextStyle[key as keyof React.CSSProperties] = value as never;
+  });
+
+  return nextStyle;
 }
 
 function formatZoomScale(zoomScale: number) {
@@ -515,12 +549,16 @@ function resolveAnchoredRect(
     actualRowPrefixSums?: number[];
     colIndexByActual?: Map<number, number>;
     colPrefixSums?: number[];
+    headerHeight?: number;
     rowIndexByActual?: Map<number, number>;
+    rowHeaderWidth?: number;
     rowPrefixSums?: number[];
   }
 ): XlsxImageRect {
+  const headerHeight = options?.headerHeight ?? HEADER_HEIGHT;
+  const rowHeaderWidth = options?.rowHeaderWidth ?? ROW_HEADER_WIDTH;
   const resolveMarkerLeft = (col: number, colOffsetEmu: number) =>
-    ROW_HEADER_WIDTH +
+    rowHeaderWidth +
     resolveAxisStartOffset(
       col,
       visibleCols,
@@ -531,7 +569,7 @@ function resolveAnchoredRect(
     ) +
     emuToPixels(colOffsetEmu);
   const resolveMarkerTop = (row: number, rowOffsetEmu: number) =>
-    HEADER_HEIGHT +
+    headerHeight +
     resolveAxisStartOffset(
       row,
       visibleRows,
@@ -545,8 +583,8 @@ function resolveAnchoredRect(
   if (anchor.kind === "absolute") {
     return {
       height: Math.max(1, emuToPixels(anchor.sizeEmu.cy)),
-      left: ROW_HEADER_WIDTH + emuToPixels(anchor.positionEmu.x),
-      top: HEADER_HEIGHT + emuToPixels(anchor.positionEmu.y),
+      left: rowHeaderWidth + emuToPixels(anchor.positionEmu.x),
+      top: headerHeight + emuToPixels(anchor.positionEmu.y),
       width: Math.max(1, emuToPixels(anchor.sizeEmu.cx))
     };
   }
@@ -584,7 +622,9 @@ function resolveImageRect(
     actualRowPrefixSums?: number[];
     colIndexByActual?: Map<number, number>;
     colPrefixSums?: number[];
+    headerHeight?: number;
     rowIndexByActual?: Map<number, number>;
+    rowHeaderWidth?: number;
     rowPrefixSums?: number[];
   }
 ): XlsxImageRect {
@@ -700,20 +740,30 @@ function resolveFrozenDrawingPane(
   actualColWidths: number[],
   freezePanes: XlsxSheetData["freezePanes"] | null,
   stickyTopByRow: Map<number, number>,
-  stickyLeftByCol: Map<number, number>
+  stickyLeftByCol: Map<number, number>,
+  options?: {
+    defaultColWidth?: number;
+    defaultRowHeight?: number;
+    headerHeight?: number;
+    rowHeaderWidth?: number;
+  }
 ): FrozenDrawingPane {
+  const headerHeight = options?.headerHeight ?? HEADER_HEIGHT;
+  const rowHeaderWidth = options?.rowHeaderWidth ?? ROW_HEADER_WIDTH;
+  const defaultRowHeight = options?.defaultRowHeight ?? DEFAULT_ROW_HEIGHT;
+  const defaultColWidth = options?.defaultColWidth ?? DEFAULT_COL_WIDTH;
   const frozenPaneBottom =
     freezePanes?.row && freezePanes.row > 0 && frozenRows.length > 0
       ? frozenRows.reduce(
-          (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? HEADER_HEIGHT) + (actualRowHeights[row] ?? DEFAULT_ROW_HEIGHT)),
-          HEADER_HEIGHT
+          (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? headerHeight) + (actualRowHeights[row] ?? defaultRowHeight)),
+          headerHeight
         )
       : null;
   const frozenPaneRight =
     freezePanes?.col && freezePanes.col > 0 && frozenCols.length > 0
       ? frozenCols.reduce(
-          (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? ROW_HEADER_WIDTH) + (actualColWidths[col] ?? DEFAULT_COL_WIDTH)),
-          ROW_HEADER_WIDTH
+          (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? rowHeaderWidth) + (actualColWidths[col] ?? defaultColWidth)),
+          rowHeaderWidth
         )
       : null;
 
@@ -732,8 +782,8 @@ function resolveFrozenDrawingPane(
   return "scroll";
 }
 
-function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect): React.CSSProperties {
-  const borderWidth = shape.stroke?.none ? 0 : Math.max(0, shape.stroke?.widthPx ?? 0);
+function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect, viewerScale = 1): React.CSSProperties {
+  const borderWidth = shape.stroke?.none ? 0 : Math.max(0, shape.stroke?.widthPx ?? 0) * viewerScale;
   const strokeColor = shape.stroke?.color ?? "transparent";
   const fillColor = shape.fill?.none ? "transparent" : (shape.fill?.color ?? "transparent");
   const hasVisibleText = shape.paragraphs.some((paragraph) => paragraph.runs.some((run) => run.text.trim().length > 0));
@@ -747,7 +797,7 @@ function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect): React.
   if (shape.geometry === "ellipse") {
     borderRadius = "9999px";
   } else if (shape.geometry === "roundRect") {
-    borderRadius = 12;
+    borderRadius = 12 * viewerScale;
   }
 
   return {
@@ -1734,26 +1784,42 @@ function renderShapeParagraph(
   );
 }
 
-function clampImageRect(rect: XlsxImageRect): XlsxImageRect {
+function clampImageRect(
+  rect: XlsxImageRect,
+  options?: {
+    contentOffsetLeft?: number;
+    contentOffsetTop?: number;
+    minSizePx?: number;
+  }
+): XlsxImageRect {
+  const contentOffsetLeft = options?.contentOffsetLeft ?? ROW_HEADER_WIDTH;
+  const contentOffsetTop = options?.contentOffsetTop ?? HEADER_HEIGHT;
+  const minSizePx = options?.minSizePx ?? IMAGE_MIN_SIZE_PX;
   return {
-    height: Math.max(IMAGE_MIN_SIZE_PX, rect.height),
-    left: Math.max(ROW_HEADER_WIDTH, rect.left),
-    top: Math.max(HEADER_HEIGHT, rect.top),
-    width: Math.max(IMAGE_MIN_SIZE_PX, rect.width)
+    height: Math.max(minSizePx, rect.height),
+    left: Math.max(contentOffsetLeft, rect.left),
+    top: Math.max(contentOffsetTop, rect.top),
+    width: Math.max(minSizePx, rect.width)
   };
 }
 
-function resolveImageHandleStyle(position: XlsxImageResizeHandlePosition, stroke: string, surface: string): React.CSSProperties {
-  const offset = IMAGE_HANDLE_SIZE_PX / 2;
+function resolveImageHandleStyle(
+  position: XlsxImageResizeHandlePosition,
+  stroke: string,
+  surface: string,
+  scale = 1
+): React.CSSProperties {
+  const handleSize = IMAGE_HANDLE_SIZE_PX * scale;
+  const offset = handleSize / 2;
   const style: React.CSSProperties = {
     backgroundColor: surface,
-    border: `1px solid ${stroke}`,
-    borderRadius: 6,
+    border: `${Math.max(1, scale)}px solid ${stroke}`,
+    borderRadius: 6 * scale,
     cursor: IMAGE_HANDLE_CURSOR[position],
-    height: IMAGE_HANDLE_SIZE_PX,
+    height: handleSize,
     pointerEvents: "auto",
     position: "absolute",
-    width: IMAGE_HANDLE_SIZE_PX
+    width: handleSize
   };
 
   if (position.includes("n")) {
@@ -3570,17 +3636,18 @@ function buildConditionalIcon(iconSet: string, iconId: number): NonNullable<Cell
   }
 }
 
-function renderConditionalIcon(icon: NonNullable<CellRenderData["conditionalIcon"]>) {
+function renderConditionalIcon(icon: NonNullable<CellRenderData["conditionalIcon"]>, scale = 1) {
+  const iconSize = 14 * scale;
   if (icon.shape === "arrow") {
     const fill = icon.color ?? "#111827";
     const stroke = icon.borderColor ?? darkenColor(fill, 0.32);
     return (
       <svg
         aria-hidden="true"
-        height={14}
+        height={iconSize}
         style={{ display: "block" }}
         viewBox="0 0 16 16"
-        width={14}
+        width={iconSize}
       >
         <g transform={`rotate(${icon.rotationDeg ?? 0} 8 8)`}>
           <path
@@ -3601,12 +3668,12 @@ function renderConditionalIcon(icon: NonNullable<CellRenderData["conditionalIcon
           alignItems: "center",
           color: icon.color ?? "#111827",
           display: "inline-flex",
-          fontSize: 13,
+          fontSize: 13 * scale,
           fontWeight: 700,
-          height: 14,
+          height: iconSize,
           justifyContent: "center",
           lineHeight: 1,
-          width: 14
+          width: iconSize
         }}
       >
         {icon.glyph}
@@ -3621,19 +3688,19 @@ function renderConditionalIcon(icon: NonNullable<CellRenderData["conditionalIcon
         border: icon.borderColor ? `1px solid ${icon.borderColor}` : "none",
         borderRadius: "999px",
         display: "inline-block",
-        height: 12,
-        width: 12
+        height: 12 * scale,
+        width: 12 * scale
       }}
     />
   );
 }
 
-function renderCheckboxControl(checked: boolean, palette: ViewerPalette) {
+function renderCheckboxControl(checked: boolean, palette: ViewerPalette, scale = 1) {
   const stroke = paletteIsDark(palette) ? "#cbd5e1" : "#475569";
   const fill = checked ? (paletteIsDark(palette) ? "#60a5fa" : "#2563eb") : "transparent";
   const check = paletteIsDark(palette) ? "#020617" : "#ffffff";
   return (
-    <svg aria-hidden="true" height={14} style={{ display: "block" }} viewBox="0 0 16 16" width={14}>
+    <svg aria-hidden="true" height={14 * scale} style={{ display: "block" }} viewBox="0 0 16 16" width={14 * scale}>
       <rect fill={fill} height={11} rx={2} ry={2} stroke={stroke} strokeWidth={1.2} width={11} x={2.5} y={2.5} />
       {checked ? (
         <path
@@ -3899,10 +3966,12 @@ type GridRowProps = {
   readOnly: boolean;
   renderCellAdornment?: (cell: XlsxCellAddress) => React.ReactNode;
   rowHeight: number;
+  rowHeaderWidth: number;
   stickyLeftByCol: Map<number, number>;
   stickyTop?: number;
   trailingSpacerWidth: number;
   visibleCols: RenderedColumn[];
+  zoomFactor: number;
 };
 
 function GridRow({
@@ -3924,10 +3993,12 @@ function GridRow({
   readOnly,
   renderCellAdornment,
   rowHeight,
+  rowHeaderWidth,
   stickyLeftByCol,
   stickyTop,
   trailingSpacerWidth,
-  visibleCols
+  visibleCols,
+  zoomFactor
 }: GridRowProps) {
   const gutterSeparatorShadow = `inset -1px 0 0 ${palette.border}, inset 0 -1px 0 ${palette.border}`;
 
@@ -3943,17 +4014,17 @@ function GridRow({
           boxSizing: "border-box",
           boxShadow: gutterSeparatorShadow,
           color: palette.mutedText,
-          fontSize: "11px",
+          fontSize: scaleCssLengthExpression("11px", zoomFactor),
           height: rowHeight,
           left: 0,
           maxHeight: rowHeight,
-          minWidth: ROW_HEADER_WIDTH,
-          padding: "2px 4px",
+          minWidth: rowHeaderWidth,
+          padding: scaleCssLengthExpression("2px 4px", zoomFactor),
           position: "sticky",
           top: stickyTop,
           textAlign: "center",
           userSelect: "none",
-          width: ROW_HEADER_WIDTH,
+          width: rowHeaderWidth,
           zIndex: stickyTop !== undefined ? 45 : 35
         }}
       >
@@ -3963,9 +4034,9 @@ function GridRow({
             onPointerDown={(event) => onRowResizePointerDown(event, actualRow, rowHeight)}
             style={{
               backgroundColor: "transparent",
-              bottom: -8,
+              bottom: -8 * zoomFactor,
               cursor: "row-resize",
-              height: 16,
+              height: 16 * zoomFactor,
               left: 0,
               position: "absolute",
               width: "100%",
@@ -4067,7 +4138,7 @@ function GridRow({
           cellContentStyle.zIndex = 1;
         }
         if (trailingInset > 0) {
-          cellContentStyle.paddingRight = trailingInset + 4;
+          cellContentStyle.paddingRight = (trailingInset + 4) * zoomFactor;
         }
         if (cellData.conditionalIcon) {
           cellContentStyle.position = "relative";
@@ -4104,13 +4175,13 @@ function GridRow({
                 aria-hidden="true"
                 style={{
                   alignItems: "center",
-                  bottom: 4,
+                  bottom: 4 * zoomFactor,
                   display: "flex",
-                  left: 4,
+                  left: 4 * zoomFactor,
                   pointerEvents: "none",
                   position: "absolute",
-                  right: 4,
-                  top: 4,
+                  right: 4 * zoomFactor,
+                  top: 4 * zoomFactor,
                   zIndex: 0
                 }}
               >
@@ -4140,13 +4211,13 @@ function GridRow({
                   justifyContent: "center",
                   pointerEvents: "none",
                   position: "absolute",
-                  right: conditionalIconRight,
+                  right: conditionalIconRight * zoomFactor,
                   top: "50%",
                   transform: "translateY(-50%)",
                   zIndex: 2
                 }}
               >
-                {renderConditionalIcon(cellData.conditionalIcon)}
+                {renderConditionalIcon(cellData.conditionalIcon, zoomFactor)}
               </div>
             ) : null}
             {isEditing ? (
@@ -4175,7 +4246,7 @@ function GridRow({
                   height: "100%",
                   margin: 0,
                   outline: "none",
-                  padding: DEFAULT_CELL_PADDING,
+                  padding: scaleCssLengthExpression(DEFAULT_CELL_PADDING, zoomFactor),
                   width: "100%"
                 }}
                 value={editingValue}
@@ -4217,7 +4288,7 @@ function GridRow({
                   width: "100%"
                 }}
               >
-                {renderCheckboxControl(cellData.checkboxState, palette)}
+                {renderCheckboxControl(cellData.checkboxState, palette, zoomFactor)}
               </div>
             ) : (
               <div style={cellContentStyle}>{cellData.value}</div>
@@ -4248,9 +4319,11 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
     prev.readOnly !== next.readOnly ||
     prev.visibleCols !== next.visibleCols ||
     prev.leadingSpacerWidth !== next.leadingSpacerWidth ||
+    prev.rowHeaderWidth !== next.rowHeaderWidth ||
     prev.stickyLeftByCol !== next.stickyLeftByCol ||
     prev.stickyTop !== next.stickyTop ||
     prev.trailingSpacerWidth !== next.trailingSpacerWidth ||
+    prev.zoomFactor !== next.zoomFactor ||
     prev.getCellData !== next.getCellData ||
     prev.onCellClick !== next.onCellClick ||
     prev.onCellDoubleClick !== next.onCellDoubleClick ||
@@ -4548,6 +4621,11 @@ function XlsxGrid({
   );
   const hiddenRowSet = React.useMemo(() => new Set(activeSheet?.hiddenRows ?? []), [activeSheet?.hiddenRows]);
   const hiddenColSet = React.useMemo(() => new Set(activeSheet?.hiddenCols ?? []), [activeSheet?.hiddenCols]);
+  const displayDefaultRowHeight = DEFAULT_ROW_HEIGHT * zoomFactor;
+  const displayDefaultColWidth = DEFAULT_COL_WIDTH * zoomFactor;
+  const displayHeaderHeight = HEADER_HEIGHT * zoomFactor;
+  const displayRowHeaderWidth = ROW_HEADER_WIDTH * zoomFactor;
+  const displayImageMinSize = IMAGE_MIN_SIZE_PX * zoomFactor;
   const syncDrawingViewport = React.useCallback((scroller: HTMLDivElement | null) => {
     if (!scroller) {
       return;
@@ -4555,10 +4633,10 @@ function XlsxGrid({
 
     setDrawingViewport((current) => {
       const next = {
-        height: scroller.clientHeight / zoomFactor,
-        left: scroller.scrollLeft / zoomFactor,
-        top: scroller.scrollTop / zoomFactor,
-        width: scroller.clientWidth / zoomFactor
+        height: scroller.clientHeight,
+        left: scroller.scrollLeft,
+        top: scroller.scrollTop,
+        width: scroller.clientWidth
       };
       return current.left === next.left
         && current.top === next.top
@@ -4567,7 +4645,7 @@ function XlsxGrid({
         ? current
         : next;
     });
-  }, [zoomFactor]);
+  }, []);
   const visibleRows = React.useMemo(() => {
     return buildVisibleAxisIndices(
       activeSheet?.visibleRows ?? [],
@@ -4739,55 +4817,62 @@ function XlsxGrid({
       revision
     ]
   );
-  const effectiveColWidths = React.useMemo(
-    () => visibleCols.map((col) => actualColWidths[col] ?? DEFAULT_COL_WIDTH),
-    [actualColWidths, visibleCols]
+  const displayActualColWidths = React.useMemo(
+    () => actualColWidths.map((width) => width * zoomFactor),
+    [actualColWidths, zoomFactor]
   );
-  const effectiveRowHeights = React.useMemo(
-    () => visibleRows.map((row) => actualRowHeights[row] ?? DEFAULT_ROW_HEIGHT),
-    [actualRowHeights, visibleRows]
+  const displayActualRowHeights = React.useMemo(
+    () => actualRowHeights.map((height) => height * zoomFactor),
+    [actualRowHeights, zoomFactor]
+  );
+  const displayEffectiveColWidths = React.useMemo(
+    () => visibleCols.map((col) => displayActualColWidths[col] ?? displayDefaultColWidth),
+    [displayActualColWidths, displayDefaultColWidth, visibleCols]
+  );
+  const displayEffectiveRowHeights = React.useMemo(
+    () => visibleRows.map((row) => displayActualRowHeights[row] ?? displayDefaultRowHeight),
+    [displayActualRowHeights, displayDefaultRowHeight, visibleRows]
   );
   const rowIndexByActual = React.useMemo(() => new Map(visibleRows.map((row, index) => [row, index])), [visibleRows]);
   const colIndexByActual = React.useMemo(() => new Map(visibleCols.map((col, index) => [col, index])), [visibleCols]);
   const visibleRowsRef = React.useRef<number[]>(visibleRows);
   const visibleColsRef = React.useRef<number[]>(visibleCols);
-  const effectiveRowHeightsRef = React.useRef<number[]>(effectiveRowHeights);
-  const effectiveColWidthsRef = React.useRef<number[]>(effectiveColWidths);
-  const rowPrefixSums = React.useMemo(() => buildPrefixSums(effectiveRowHeights), [effectiveRowHeights]);
-  const colPrefixSums = React.useMemo(() => buildPrefixSums(effectiveColWidths), [effectiveColWidths]);
-  const actualRowPrefixSums = React.useMemo(() => buildPrefixSums(actualRowHeights), [actualRowHeights]);
-  const actualColPrefixSums = React.useMemo(() => buildPrefixSums(actualColWidths), [actualColWidths]);
+  const effectiveRowHeightsRef = React.useRef<number[]>(displayEffectiveRowHeights);
+  const effectiveColWidthsRef = React.useRef<number[]>(displayEffectiveColWidths);
+  const rowPrefixSums = React.useMemo(() => buildPrefixSums(displayEffectiveRowHeights), [displayEffectiveRowHeights]);
+  const colPrefixSums = React.useMemo(() => buildPrefixSums(displayEffectiveColWidths), [displayEffectiveColWidths]);
+  const actualRowPrefixSums = React.useMemo(() => buildPrefixSums(displayActualRowHeights), [displayActualRowHeights]);
+  const actualColPrefixSums = React.useMemo(() => buildPrefixSums(displayActualColWidths), [displayActualColWidths]);
   const stickyTopByRow = React.useMemo(
-    () => buildStickyOffsets(frozenRows, actualRowHeights, HEADER_HEIGHT),
-    [actualRowHeights, frozenRows]
+    () => buildStickyOffsets(frozenRows, displayActualRowHeights, displayHeaderHeight),
+    [displayActualRowHeights, displayHeaderHeight, frozenRows]
   );
   const stickyLeftByCol = React.useMemo(
-    () => buildStickyOffsets(frozenCols, actualColWidths, ROW_HEADER_WIDTH),
-    [actualColWidths, frozenCols]
+    () => buildStickyOffsets(frozenCols, displayActualColWidths, displayRowHeaderWidth),
+    [displayActualColWidths, displayRowHeaderWidth, frozenCols]
   );
   const frozenPaneBottom = React.useMemo(
     () => (
       frozenRows.length > 0
         ? frozenRows.reduce(
-            (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? HEADER_HEIGHT) + (actualRowHeights[row] ?? DEFAULT_ROW_HEIGHT)),
-            HEADER_HEIGHT
+            (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? displayHeaderHeight) + (displayActualRowHeights[row] ?? displayDefaultRowHeight)),
+            displayHeaderHeight
           )
-        : HEADER_HEIGHT
+        : displayHeaderHeight
     ),
-    [actualRowHeights, frozenRows, stickyTopByRow]
+    [displayActualRowHeights, displayDefaultRowHeight, displayHeaderHeight, frozenRows, stickyTopByRow]
   );
   const frozenPaneRight = React.useMemo(
     () => (
       frozenCols.length > 0
         ? frozenCols.reduce(
-            (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? ROW_HEADER_WIDTH) + (actualColWidths[col] ?? DEFAULT_COL_WIDTH)),
-            ROW_HEADER_WIDTH
+            (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? displayRowHeaderWidth) + (displayActualColWidths[col] ?? displayDefaultColWidth)),
+            displayRowHeaderWidth
           )
-        : ROW_HEADER_WIDTH
+        : displayRowHeaderWidth
     ),
-    [actualColWidths, frozenCols, stickyLeftByCol]
+    [displayActualColWidths, displayDefaultColWidth, displayRowHeaderWidth, frozenCols, stickyLeftByCol]
   );
-  const useNativeZoomForStickyLayout = zoomFactor !== 1;
   const rowPrefixSumsRef = React.useRef<number[]>(rowPrefixSums);
   const colPrefixSumsRef = React.useRef<number[]>(colPrefixSums);
   const firstVisibleRow = visibleRows[0];
@@ -4795,6 +4880,12 @@ function XlsxGrid({
   const firstVisibleCol = visibleCols[0];
   const lastVisibleCol = visibleCols[visibleCols.length - 1];
   const displayedSelection = fillPreviewRange ?? normalizedSelection;
+  const toLogicalRect = React.useCallback((rect: XlsxImageRect): XlsxImageRect => ({
+    height: rect.height / zoomFactor,
+    left: rect.left / zoomFactor,
+    top: rect.top / zoomFactor,
+    width: rect.width / zoomFactor
+  }), [zoomFactor]);
   const drawingExtents = React.useMemo(() => {
     const imageExtents = images.reduce(
       (current, image) => {
@@ -4839,24 +4930,18 @@ function XlsxGrid({
 
   const rowVirtualizer = useVirtualizer({
     count: visibleRows.length,
-    estimateSize: (index) => effectiveRowHeights[index] ?? DEFAULT_ROW_HEIGHT,
+    estimateSize: (index) => displayEffectiveRowHeights[index] ?? displayDefaultRowHeight,
     getScrollElement: () => scrollRef.current,
     getItemKey: (index) => visibleRows[index] ?? index,
-    observeElementOffset: (instance, cb) => observeZoomedElementOffset(instance, zoomFactor, cb),
-    observeElementRect: (instance, cb) => observeZoomedElementRect(instance, zoomFactor, cb),
-    overscan: 10,
-    scrollToFn: (offset, options, instance) => scrollToZoomedOffset(offset, zoomFactor, options, instance)
+    overscan: 10
   });
   const colVirtualizer = useVirtualizer({
     count: visibleCols.length,
-    estimateSize: (index) => effectiveColWidths[index] ?? DEFAULT_COL_WIDTH,
+    estimateSize: (index) => displayEffectiveColWidths[index] ?? displayDefaultColWidth,
     getScrollElement: () => scrollRef.current,
     getItemKey: (index) => visibleCols[index] ?? index,
     horizontal: true,
-    observeElementOffset: (instance, cb) => observeZoomedElementOffset(instance, zoomFactor, cb),
-    observeElementRect: (instance, cb) => observeZoomedElementRect(instance, zoomFactor, cb),
-    overscan: 6,
-    scrollToFn: (offset, options, instance) => scrollToZoomedOffset(offset, zoomFactor, options, instance)
+    overscan: 6
   });
   const currentRowVirtualItems = rowVirtualizer.getVirtualItems();
   const currentColVirtualItems = colVirtualizer.getVirtualItems();
@@ -5021,11 +5106,11 @@ function XlsxGrid({
   React.useEffect(() => {
     visibleRowsRef.current = visibleRows;
     visibleColsRef.current = visibleCols;
-    effectiveRowHeightsRef.current = effectiveRowHeights;
-    effectiveColWidthsRef.current = effectiveColWidths;
+    effectiveRowHeightsRef.current = displayEffectiveRowHeights;
+    effectiveColWidthsRef.current = displayEffectiveColWidths;
     rowPrefixSumsRef.current = rowPrefixSums;
     colPrefixSumsRef.current = colPrefixSums;
-  }, [colPrefixSums, effectiveColWidths, effectiveRowHeights, rowPrefixSums, visibleCols, visibleRows]);
+  }, [colPrefixSums, displayEffectiveColWidths, displayEffectiveRowHeights, rowPrefixSums, visibleCols, visibleRows]);
 
   React.useLayoutEffect(() => {
     const scroller = scrollRef.current;
@@ -5164,19 +5249,19 @@ function XlsxGrid({
     cachedScrollerRectRef.current = null;
     syncDrawingViewport(currentScroller);
     if (
-      (currentScroller.scrollHeight - (currentScroller.scrollTop + currentScroller.clientHeight)) / zoomFactor <
+      currentScroller.scrollHeight - (currentScroller.scrollTop + currentScroller.clientHeight) <
       OPEN_GRID_VERTICAL_EDGE_PX
     ) {
       setDisplayRowLimit((current) => current + OPEN_GRID_ROW_GROWTH);
     }
 
     if (
-      (currentScroller.scrollWidth - (currentScroller.scrollLeft + currentScroller.clientWidth)) / zoomFactor <
+      currentScroller.scrollWidth - (currentScroller.scrollLeft + currentScroller.clientWidth) <
       OPEN_GRID_HORIZONTAL_EDGE_PX
     ) {
       setDisplayColLimit((current) => current + OPEN_GRID_COL_GROWTH);
     }
-  }, [syncDrawingViewport, zoomFactor]);
+  }, [syncDrawingViewport]);
 
   React.useEffect(() => {
     if (!openTableMenu) {
@@ -5228,29 +5313,25 @@ function XlsxGrid({
 
     const pointerOffsetX = clientX - scrollerRect.left;
     const pointerOffsetY = clientY - scrollerRect.top;
-    const localX =
-      (pointerOffsetX / zoomFactor)
-      + (pointerOffsetX >= frozenPaneRight * zoomFactor ? (scroller.scrollLeft / zoomFactor) : 0);
-    const localY =
-      (pointerOffsetY / zoomFactor)
-      + (pointerOffsetY >= frozenPaneBottom * zoomFactor ? (scroller.scrollTop / zoomFactor) : 0);
-    const rowContentOffset = localY - HEADER_HEIGHT;
-    const colContentOffset = localX - ROW_HEADER_WIDTH;
+    const localX = pointerOffsetX + (pointerOffsetX >= frozenPaneRight ? scroller.scrollLeft : 0);
+    const localY = pointerOffsetY + (pointerOffsetY >= frozenPaneBottom ? scroller.scrollTop : 0);
+    const rowContentOffset = localY - displayHeaderHeight;
+    const colContentOffset = localX - displayRowHeaderWidth;
     let geometryCell: XlsxCellAddress | null = null;
 
-    if (localY >= HEADER_HEIGHT && localX < ROW_HEADER_WIDTH) {
+    if (localY >= displayHeaderHeight && localX < displayRowHeaderWidth) {
       const rowIndex = findIndexForOffsetPrefix(rowPrefixSumsCurrent, rowContentOffset);
       const actualRow = visibleRowsCurrent[rowIndex];
       if (actualRow !== undefined && firstVisibleColRef.current !== undefined) {
         geometryCell = { row: actualRow, col: firstVisibleColRef.current };
       }
-    } else if (localY < HEADER_HEIGHT && localX >= ROW_HEADER_WIDTH) {
+    } else if (localY < displayHeaderHeight && localX >= displayRowHeaderWidth) {
       const colIndex = findIndexForOffsetPrefix(colPrefixSumsCurrent, colContentOffset);
       const actualCol = visibleColsCurrent[colIndex];
       if (actualCol !== undefined && firstVisibleRowRef.current !== undefined) {
         geometryCell = { row: firstVisibleRowRef.current, col: actualCol };
       }
-    } else if (localY >= HEADER_HEIGHT && localX >= ROW_HEADER_WIDTH) {
+    } else if (localY >= displayHeaderHeight && localX >= displayRowHeaderWidth) {
       const rowIndex = findIndexForOffsetPrefix(rowPrefixSumsCurrent, rowContentOffset);
       const colIndex = findIndexForOffsetPrefix(colPrefixSumsCurrent, colContentOffset);
       const actualRow = visibleRowsCurrent[rowIndex];
@@ -5261,7 +5342,7 @@ function XlsxGrid({
     }
 
     return geometryCell;
-  }, [frozenPaneBottom, frozenPaneRight, zoomFactor]);
+  }, [displayHeaderHeight, displayRowHeaderWidth, frozenPaneBottom, frozenPaneRight]);
 
   const resolvePointerCellFromHitTest = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
     const elementsAtPoint = typeof document.elementsFromPoint === "function"
@@ -5358,22 +5439,22 @@ function XlsxGrid({
       return null;
     }
 
-    const logicalWidth = effectiveColWidths[colIndex] ?? DEFAULT_COL_WIDTH;
-    const logicalHeight = effectiveRowHeights[rowIndex] ?? DEFAULT_ROW_HEIGHT;
-    const contentScaleX = Math.max(0.0001, rect.width > 0 ? rect.width / logicalWidth : zoomFactor);
-    const contentScaleY = Math.max(0.0001, rect.height > 0 ? rect.height / logicalHeight : zoomFactor);
+    const displayWidth = displayEffectiveColWidths[colIndex] ?? displayDefaultColWidth;
+    const displayHeight = displayEffectiveRowHeights[rowIndex] ?? displayDefaultRowHeight;
+    const contentScaleX = Math.max(0.0001, rect.width > 0 ? rect.width / displayWidth : 1);
+    const contentScaleY = Math.max(0.0001, rect.height > 0 ? rect.height / displayHeight : 1);
 
     return {
       contentScaleX,
       contentScaleY,
       originContentX:
         (colPrefixSums[colIndex] ?? 0)
-        + clampContentOffset((clientX - rect.left) / contentScaleX, logicalWidth),
+        + clampContentOffset((clientX - rect.left) / contentScaleX, displayWidth),
       originContentY:
         (rowPrefixSums[rowIndex] ?? 0)
-        + clampContentOffset((clientY - rect.top) / contentScaleY, logicalHeight)
+        + clampContentOffset((clientY - rect.top) / contentScaleY, displayHeight)
     };
-  }, [colIndexByActual, colPrefixSums, effectiveColWidths, effectiveRowHeights, rowIndexByActual, rowPrefixSums, zoomFactor]);
+  }, [colIndexByActual, colPrefixSums, displayDefaultColWidth, displayDefaultRowHeight, displayEffectiveColWidths, displayEffectiveRowHeights, rowIndexByActual, rowPrefixSums]);
 
   const resolveRowPointerOrigin = React.useCallback((
     actualRow: number,
@@ -5385,17 +5466,17 @@ function XlsxGrid({
       return null;
     }
 
-    const logicalHeight = effectiveRowHeights[rowIndex] ?? DEFAULT_ROW_HEIGHT;
-    const contentScaleY = Math.max(0.0001, rect.height > 0 ? rect.height / logicalHeight : zoomFactor);
+    const displayHeight = displayEffectiveRowHeights[rowIndex] ?? displayDefaultRowHeight;
+    const contentScaleY = Math.max(0.0001, rect.height > 0 ? rect.height / displayHeight : 1);
     return {
-      contentScaleX: Math.max(0.0001, zoomFactor),
+      contentScaleX: 1,
       contentScaleY,
       originContentX: colPrefixSums[0] ?? 0,
       originContentY:
         (rowPrefixSums[rowIndex] ?? 0)
-        + clampContentOffset((clientY - rect.top) / contentScaleY, logicalHeight)
+        + clampContentOffset((clientY - rect.top) / contentScaleY, displayHeight)
     };
-  }, [colPrefixSums, effectiveRowHeights, rowIndexByActual, rowPrefixSums, zoomFactor]);
+  }, [colPrefixSums, displayDefaultRowHeight, displayEffectiveRowHeights, rowIndexByActual, rowPrefixSums]);
 
   const resolveColumnPointerOrigin = React.useCallback((
     actualCol: number,
@@ -5407,17 +5488,17 @@ function XlsxGrid({
       return null;
     }
 
-    const logicalWidth = effectiveColWidths[colIndex] ?? DEFAULT_COL_WIDTH;
-    const contentScaleX = Math.max(0.0001, rect.width > 0 ? rect.width / logicalWidth : zoomFactor);
+    const displayWidth = displayEffectiveColWidths[colIndex] ?? displayDefaultColWidth;
+    const contentScaleX = Math.max(0.0001, rect.width > 0 ? rect.width / displayWidth : 1);
     return {
       contentScaleX,
-      contentScaleY: Math.max(0.0001, zoomFactor),
+      contentScaleY: 1,
       originContentX:
         (colPrefixSums[colIndex] ?? 0)
-        + clampContentOffset((clientX - rect.left) / contentScaleX, logicalWidth),
+        + clampContentOffset((clientX - rect.left) / contentScaleX, displayWidth),
       originContentY: rowPrefixSums[0] ?? 0
     };
-  }, [colIndexByActual, colPrefixSums, effectiveColWidths, rowPrefixSums, zoomFactor]);
+  }, [colIndexByActual, colPrefixSums, displayDefaultColWidth, displayEffectiveColWidths, rowPrefixSums]);
 
   const applyColumnPreview = React.useCallback((actualCol: number, widthPx: number | null) => {
     const colElement = colElementRefs.current.get(actualCol);
@@ -5426,14 +5507,14 @@ function XlsxGrid({
     }
 
     const baseIndex = visibleCols.indexOf(actualCol);
-    const baseWidth = baseIndex >= 0 ? (effectiveColWidths[baseIndex] ?? DEFAULT_COL_WIDTH) : DEFAULT_COL_WIDTH;
+    const baseWidth = baseIndex >= 0 ? (displayEffectiveColWidths[baseIndex] ?? displayDefaultColWidth) : displayDefaultColWidth;
     const previewWidth = widthPx ?? baseWidth;
-    const baseTotalWidth = effectiveColWidths.reduce((sum, width) => sum + width, 0) + ROW_HEADER_WIDTH;
+    const baseTotalWidth = displayEffectiveColWidths.reduce((sum, width) => sum + width, 0) + displayRowHeaderWidth;
     const widthDelta = previewWidth - baseWidth;
     if (tableRef.current) {
       tableRef.current.style.width = `${baseTotalWidth + widthDelta}px`;
     }
-  }, [effectiveColWidths, visibleCols]);
+  }, [displayDefaultColWidth, displayEffectiveColWidths, displayRowHeaderWidth, visibleCols]);
 
   const applyRowPreview = React.useCallback((actualRow: number, heightPx: number | null) => {
     const rowElement =
@@ -5643,7 +5724,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     cellRenderCacheRef.current.clear();
-  }, [activeSheetIndex, displayColLimit, displayRowLimit, palette, revision, viewportRowBatch, worksheet]);
+  }, [activeSheetIndex, displayColLimit, displayRowLimit, palette, revision, viewportRowBatch, worksheet, zoomFactor]);
 
   React.useEffect(() => {
     setAsyncViewportRowBatch(null);
@@ -5670,7 +5751,7 @@ function XlsxGrid({
     if (!worksheet && !batchedCell) {
       const emptyData: CellRenderData = {
         isMergedSecondary: false,
-        style: {
+        style: scaleCssProperties({
           backgroundColor: resolveSheetSurface(activeSheet, palette),
           borderBottom: "none",
           borderRight: "none",
@@ -5678,7 +5759,7 @@ function XlsxGrid({
           padding: DEFAULT_CELL_PADDING,
           verticalAlign: "bottom",
           whiteSpace: "nowrap"
-        },
+        }, zoomFactor),
         value: ""
       };
       cellRenderCacheRef.current.set(cacheKey, emptyData);
@@ -5783,9 +5864,9 @@ function XlsxGrid({
       isTableHeader: Boolean(table && row >= table.start.row && row < table.start.row + headerRowCount),
       rowSpan: merge?.rowSpan,
       sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
-      style: buildCellStyle(mergedStyle, palette, activeSheet?.themePalette, {
+      style: scaleCssProperties(buildCellStyle(mergedStyle, palette, activeSheet?.themePalette, {
         showGridLines: activeSheet?.showGridLines
-      }),
+      }), zoomFactor),
       validation: resolveCellDataValidation(row, col, activeSheet),
       value: sparkline
         ? ""
@@ -5802,7 +5883,7 @@ function XlsxGrid({
         const horizontalPadding = getHorizontalPadding(nextData.style.padding);
         const textWidth = measureTextWidth(nextData.value, nextData.style);
         const requiredWidth = textWidth + horizontalPadding + 2;
-        let availableWidth = effectiveColWidths[startColIndex] ?? DEFAULT_COL_WIDTH;
+        let availableWidth = displayEffectiveColWidths[startColIndex] ?? displayDefaultColWidth;
 
         if (requiredWidth > availableWidth) {
           for (let nextColIndex = startColIndex + 1; nextColIndex < visibleCols.length; nextColIndex += 1) {
@@ -5816,13 +5897,13 @@ function XlsxGrid({
               break;
             }
 
-            availableWidth += effectiveColWidths[nextColIndex] ?? DEFAULT_COL_WIDTH;
+            availableWidth += displayEffectiveColWidths[nextColIndex] ?? displayDefaultColWidth;
             if (requiredWidth <= availableWidth) {
               break;
             }
           }
 
-          if (availableWidth > (effectiveColWidths[startColIndex] ?? DEFAULT_COL_WIDTH)) {
+          if (availableWidth > (displayEffectiveColWidths[startColIndex] ?? displayDefaultColWidth)) {
             nextData.spillWidth = Math.max(0, availableWidth - horizontalPadding);
           }
         }
@@ -5831,7 +5912,7 @@ function XlsxGrid({
 
     cellRenderCacheRef.current.set(cacheKey, nextData);
     return nextData;
-  }, [activeSheet, colIndexByActual, effectiveColWidths, effectiveTables, palette, sparklinesByCell, viewportRowBatch, visibleCols, worksheet]);
+  }, [activeSheet, colIndexByActual, displayDefaultColWidth, displayEffectiveColWidths, effectiveTables, palette, sparklinesByCell, viewportRowBatch, visibleCols, worksheet, zoomFactor]);
 
   React.useEffect(() => {
     conditionalFormatMetricsCacheRef.current.clear();
@@ -5859,11 +5940,11 @@ function XlsxGrid({
 
     return {
       height: sumPrefixRange(rowPrefixSums, startRowIndex, endRowIndex),
-      left: ROW_HEADER_WIDTH + sumPrefixRange(colPrefixSums, 0, startColIndex - 1),
-      top: HEADER_HEIGHT + sumPrefixRange(rowPrefixSums, 0, startRowIndex - 1),
+      left: displayRowHeaderWidth + sumPrefixRange(colPrefixSums, 0, startColIndex - 1),
+      top: displayHeaderHeight + sumPrefixRange(rowPrefixSums, 0, startRowIndex - 1),
       width: sumPrefixRange(colPrefixSums, startColIndex, endColIndex)
     };
-  }, [colIndexByActual, colPrefixSums, displayedSelection, rowIndexByActual, rowPrefixSums]);
+  }, [colIndexByActual, colPrefixSums, displayHeaderHeight, displayRowHeaderWidth, displayedSelection, rowIndexByActual, rowPrefixSums]);
   const resolvedSelectionOverlay = selectionOverlay;
   const virtualCols = React.useMemo<RenderedAxisItem[]>(
     () =>
@@ -5879,10 +5960,10 @@ function XlsxGrid({
             end: colPrefixSums[index + 1] ?? 0,
             index,
             key: visibleCols[index] ?? index,
-            size: effectiveColWidths[index] ?? DEFAULT_COL_WIDTH,
+            size: displayEffectiveColWidths[index] ?? displayDefaultColWidth,
             start: colPrefixSums[index] ?? 0
           })),
-    [colPrefixSums, colVirtualizer, effectiveColWidths, shouldVirtualizeCols, visibleCols]
+    [colPrefixSums, colVirtualizer, displayDefaultColWidth, displayEffectiveColWidths, shouldVirtualizeCols, visibleCols]
   );
   const renderedCols = React.useMemo<RenderedColumn[]>(
     () => {
@@ -5902,7 +5983,7 @@ function XlsxGrid({
       });
       return columns;
     },
-    [effectiveColWidths, virtualCols, visibleCols]
+    [virtualCols, visibleCols]
   );
   const totalContentWidth = colPrefixSums[colPrefixSums.length - 1] ?? 0;
   const leadingColumnSpacerWidth = shouldVirtualizeCols ? (virtualCols[0]?.start ?? 0) : 0;
@@ -5917,12 +5998,14 @@ function XlsxGrid({
             rect:
               imagePreviewRect && imagePreviewRect.id === image.id
                 ? imagePreviewRect.rect
-                : resolveImageRect(image, visibleRows, visibleCols, effectiveRowHeights, effectiveColWidths, {
+                : resolveImageRect(image, visibleRows, visibleCols, displayEffectiveRowHeights, displayEffectiveColWidths, {
                     actualColPrefixSums,
                     actualRowPrefixSums,
                     colIndexByActual,
                     colPrefixSums,
+                    headerHeight: displayHeaderHeight,
                     rowIndexByActual,
+                    rowHeaderWidth: displayRowHeaderWidth,
                     rowPrefixSums
                   })
           }))
@@ -5932,8 +6015,10 @@ function XlsxGrid({
       colPrefixSums,
       actualColPrefixSums,
       actualRowPrefixSums,
-      effectiveColWidths,
-      effectiveRowHeights,
+      displayHeaderHeight,
+      displayEffectiveColWidths,
+      displayEffectiveRowHeights,
+      displayRowHeaderWidth,
       imagePreviewRect,
       images,
       rowIndexByActual,
@@ -5947,12 +6032,14 @@ function XlsxGrid({
     () =>
       showImages
         ? shapes.map((shape) => ({
-            rect: resolveAnchoredRect(shape.anchor, visibleRows, visibleCols, effectiveRowHeights, effectiveColWidths, {
+            rect: resolveAnchoredRect(shape.anchor, visibleRows, visibleCols, displayEffectiveRowHeights, displayEffectiveColWidths, {
               actualColPrefixSums,
               actualRowPrefixSums,
               colIndexByActual,
               colPrefixSums,
+              headerHeight: displayHeaderHeight,
               rowIndexByActual,
+              rowHeaderWidth: displayRowHeaderWidth,
               rowPrefixSums
             }),
             shape
@@ -5963,8 +6050,10 @@ function XlsxGrid({
       colPrefixSums,
       actualColPrefixSums,
       actualRowPrefixSums,
-      effectiveColWidths,
-      effectiveRowHeights,
+      displayHeaderHeight,
+      displayEffectiveColWidths,
+      displayEffectiveRowHeights,
+      displayRowHeaderWidth,
       rowIndexByActual,
       rowPrefixSums,
       shapes,
@@ -5981,12 +6070,14 @@ function XlsxGrid({
             rect:
               chartPreviewRect && chartPreviewRect.id === chart.id
                 ? chartPreviewRect.rect
-                : resolveAnchoredRect(chart.anchor, visibleRows, visibleCols, effectiveRowHeights, effectiveColWidths, {
+                : resolveAnchoredRect(chart.anchor, visibleRows, visibleCols, displayEffectiveRowHeights, displayEffectiveColWidths, {
                     actualColPrefixSums,
                     actualRowPrefixSums,
                     colIndexByActual,
                     colPrefixSums,
+                    headerHeight: displayHeaderHeight,
                     rowIndexByActual,
+                    rowHeaderWidth: displayRowHeaderWidth,
                     rowPrefixSums
                   })
           }))
@@ -5998,8 +6089,10 @@ function XlsxGrid({
       charts,
       colIndexByActual,
       colPrefixSums,
-      effectiveColWidths,
-      effectiveRowHeights,
+      displayHeaderHeight,
+      displayEffectiveColWidths,
+      displayEffectiveRowHeights,
+      displayRowHeaderWidth,
       rowIndexByActual,
       rowPrefixSums,
       showImages,
@@ -6059,8 +6152,8 @@ function XlsxGrid({
       return null;
     }
 
-    let left = ROW_HEADER_WIDTH + sumPrefixRange(colPrefixSums, 0, startColIndex - 1);
-    let top = HEADER_HEIGHT + sumPrefixRange(rowPrefixSums, 0, startRowIndex - 1);
+    let left = displayRowHeaderWidth + sumPrefixRange(colPrefixSums, 0, startColIndex - 1);
+    let top = displayHeaderHeight + sumPrefixRange(rowPrefixSums, 0, startRowIndex - 1);
     let width = sumPrefixRange(colPrefixSums, startColIndex, endColIndex);
     let height = sumPrefixRange(rowPrefixSums, startRowIndex, endRowIndex);
 
@@ -6068,7 +6161,7 @@ function XlsxGrid({
     if (columnPreview) {
       const previewIndex = colIndexByActual.get(columnPreview.actualIndex);
       if (previewIndex !== undefined) {
-        const baseWidth = effectiveColWidths[previewIndex] ?? DEFAULT_COL_WIDTH;
+        const baseWidth = displayEffectiveColWidths[previewIndex] ?? displayDefaultColWidth;
         const widthDelta = columnPreview.size - baseWidth;
         if (previewIndex < startColIndex) {
           left += widthDelta;
@@ -6083,7 +6176,7 @@ function XlsxGrid({
     if (rowPreview) {
       const previewIndex = rowIndexByActual.get(rowPreview.actualIndex);
       if (previewIndex !== undefined) {
-        const baseHeight = effectiveRowHeights[previewIndex] ?? DEFAULT_ROW_HEIGHT;
+        const baseHeight = displayEffectiveRowHeights[previewIndex] ?? displayDefaultRowHeight;
         const heightDelta = rowPreview.size - baseHeight;
         if (previewIndex < startRowIndex) {
           top += heightDelta;
@@ -6096,11 +6189,11 @@ function XlsxGrid({
 
     return {
       height: Math.max(0, height),
-      left: Math.max(ROW_HEADER_WIDTH, left),
-      top: Math.max(HEADER_HEIGHT, top),
+      left: Math.max(displayRowHeaderWidth, left),
+      top: Math.max(displayHeaderHeight, top),
       width: Math.max(0, width)
     };
-  }, [colIndexByActual, colPrefixSums, effectiveColWidths, effectiveRowHeights, rowIndexByActual, rowPrefixSums]);
+  }, [colIndexByActual, colPrefixSums, displayDefaultColWidth, displayDefaultRowHeight, displayEffectiveColWidths, displayEffectiveRowHeights, displayHeaderHeight, displayRowHeaderWidth, rowIndexByActual, rowPrefixSums]);
 
   const resolveMountedRangeOverlayRect = React.useCallback((range: XlsxCellRange, geometryRect: {
     height: number;
@@ -6126,11 +6219,11 @@ function XlsxGrid({
 
     return {
       height: Math.max(0, bottom - top),
-      left: Math.max(ROW_HEADER_WIDTH, left),
-      top: Math.max(HEADER_HEIGHT, top),
+      left: Math.max(displayRowHeaderWidth, left),
+      top: Math.max(displayHeaderHeight, top),
       width: Math.max(0, right - left)
     };
-  }, [resolveMountedCellOverlayRectForAddress]);
+  }, [displayHeaderHeight, displayRowHeaderWidth, resolveMountedCellOverlayRectForAddress]);
 
   const resolveDragPreviewRect = React.useCallback((range: XlsxCellRange) => {
     const dragState = selectionDragRef.current;
@@ -6281,11 +6374,11 @@ function XlsxGrid({
     overlay.style.visibility = "visible";
     const fillHandle = fillHandleRef.current;
     if (fillHandle) {
-      fillHandle.style.left = `${nextRect.left + nextRect.width - 4}px`;
-      fillHandle.style.top = `${nextRect.top + nextRect.height - 4}px`;
+      fillHandle.style.left = `${nextRect.left + nextRect.width - (4 * zoomFactor)}px`;
+      fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
     }
     applyHeaderSelection(range);
-  }, [applyHeaderSelection, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect]);
+  }, [applyHeaderSelection, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect, zoomFactor]);
 
   const applyPreviewOverlayFromElement = React.useCallback((element: HTMLElement, range: XlsxCellRange) => {
     const overlay = selectionOverlayRef.current;
@@ -6307,11 +6400,11 @@ function XlsxGrid({
     overlay.style.visibility = "visible";
     const fillHandle = fillHandleRef.current;
     if (fillHandle) {
-      fillHandle.style.left = `${nextRect.left + nextRect.width - 4}px`;
-      fillHandle.style.top = `${nextRect.top + nextRect.height - 4}px`;
+      fillHandle.style.left = `${nextRect.left + nextRect.width - (4 * zoomFactor)}px`;
+      fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
     }
     applyHeaderSelection(range);
-  }, [applyHeaderSelection, resolveMountedCellOverlayRect, resolveOverlayRect]);
+  }, [applyHeaderSelection, resolveMountedCellOverlayRect, resolveOverlayRect, zoomFactor]);
 
   const syncActiveValidationOverlay = React.useCallback((cell: XlsxCellAddress | null) => {
     const overlay = activeValidationOverlayRef.current;
@@ -6332,11 +6425,11 @@ function XlsxGrid({
       return;
     }
 
-    overlay.style.left = `${rect.left + rect.width - 16}px`;
+    overlay.style.left = `${rect.left + rect.width - (16 * zoomFactor)}px`;
     overlay.style.top = `${rect.top + (rect.height / 2)}px`;
     overlay.style.opacity = "1";
     overlay.style.visibility = "visible";
-  }, [getCellData, resolveOverlayRect]);
+  }, [getCellData, resolveOverlayRect, zoomFactor]);
 
   const commitSelectionRange = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
@@ -6396,8 +6489,8 @@ function XlsxGrid({
         actualIndex: state.actualIndex,
         size:
           state.type === "column"
-            ? Math.max(DEFAULT_COL_WIDTH / 2, state.initialPx + ((event.clientX - state.startPosition) / zoomFactor))
-            : Math.max(DEFAULT_ROW_HEIGHT / 1.5, state.initialPx + ((event.clientY - state.startPosition) / zoomFactor)),
+            ? Math.max(displayDefaultColWidth / 2, state.initialPx + (event.clientX - state.startPosition))
+            : Math.max(displayDefaultRowHeight / 1.5, state.initialPx + (event.clientY - state.startPosition)),
         type: state.type
       };
 
@@ -6450,9 +6543,9 @@ function XlsxGrid({
         }
         if (preview && preview.actualIndex === resizeState.actualIndex && preview.type === resizeState.type) {
           if (preview.type === "column") {
-            controller.resizeColumn(preview.actualIndex, preview.size);
+            controller.resizeColumn(preview.actualIndex, preview.size / zoomFactor);
           } else {
-            controller.resizeRow(preview.actualIndex, preview.size);
+            controller.resizeRow(preview.actualIndex, preview.size / zoomFactor);
           }
         }
       }
@@ -6471,7 +6564,7 @@ function XlsxGrid({
         resizeFrameRef.current = null;
       }
     };
-  }, [applyColumnPreview, applyRowPreview, controller, refreshOverlayFromCurrentSelection, rowVirtualizer, shouldVirtualizeRows, zoomFactor]);
+  }, [applyColumnPreview, applyRowPreview, controller, displayDefaultColWidth, displayDefaultRowHeight, refreshOverlayFromCurrentSelection, rowVirtualizer, shouldVirtualizeRows, zoomFactor]);
 
   function buildDraggedSelectionRange(
     dragState: { anchor: XlsxCellAddress; axis: "cell" | "column" | "row" },
@@ -6869,14 +6962,14 @@ function XlsxGrid({
           color: palette.mutedText,
           cursor: "pointer",
           display: "inline-flex",
-          fontSize: 10,
-          height: 16,
+          fontSize: 10 * zoomFactor,
+          height: 16 * zoomFactor,
           justifyContent: "center",
           padding: 0,
           position: "absolute",
-          right: 4,
-          top: 3,
-          width: 16,
+          right: 4 * zoomFactor,
+          top: 3 * zoomFactor,
+          width: 16 * zoomFactor,
           zIndex: 6
         }}
         type="button"
@@ -6884,7 +6977,7 @@ function XlsxGrid({
         {direction === "ascending" ? "▲" : direction === "descending" ? "▼" : "▾"}
       </button>
     );
-  }, [effectiveTables, palette.mutedText, sortState]);
+  }, [effectiveTables, palette.mutedText, sortState, zoomFactor]);
 
   const startChartMove = React.useCallback((
     event: React.PointerEvent<HTMLElement>,
@@ -7141,7 +7234,7 @@ function XlsxGrid({
         end: rowPrefixSums[index + 1] ?? 0,
         index,
         key: actualRow,
-        size: effectiveRowHeights[index] ?? DEFAULT_ROW_HEIGHT,
+        size: displayEffectiveRowHeights[index] ?? displayDefaultRowHeight,
         start: rowPrefixSums[index] ?? 0
       }))
     : (() => {
@@ -7164,7 +7257,7 @@ function XlsxGrid({
             end: rowPrefixSums[index + 1] ?? 0,
             index,
             key: visibleRows[index] ?? index,
-            size: effectiveRowHeights[index] ?? DEFAULT_ROW_HEIGHT,
+            size: displayEffectiveRowHeights[index] ?? displayDefaultRowHeight,
             start: rowPrefixSums[index] ?? 0
           });
         });
@@ -7174,20 +7267,18 @@ function XlsxGrid({
   const totalHeight = shouldVirtualizeRows
     ? rowVirtualizer.getTotalSize()
     : (rowPrefixSums[rowPrefixSums.length - 1] ?? 0);
-  const totalWidth = totalContentWidth + ROW_HEADER_WIDTH;
-  const sheetContentHeight = HEADER_HEIGHT + totalHeight;
-  const zoomedSheetHeight = sheetContentHeight * zoomFactor;
-  const zoomedSheetWidth = totalWidth * zoomFactor;
+  const totalWidth = totalContentWidth + displayRowHeaderWidth;
+  const sheetContentHeight = displayHeaderHeight + totalHeight;
   const { fill: selectionFill, header: selectionHeaderSurface, stroke: selectionStroke } = resolveSelectionColors({
     palette,
     selectionColor,
     selectionFillColor,
     selectionHeaderColor
   });
-  const selectionBorderWidth = 1;
+  const selectionBorderWidth = Math.max(1, zoomFactor);
   const rowColSpan = renderedCols.length + 1 + (leadingColumnSpacerWidth > 0 ? 1 : 0) + (trailingColumnSpacerWidth > 0 ? 1 : 0);
   const gutterSeparatorShadow = `inset -1px 0 0 ${palette.border}, inset 0 -1px 0 ${palette.border}`;
-  const headerCellStyle: React.CSSProperties = {
+  const headerCellStyle = scaleCssProperties({
     backgroundColor: palette.headerSurface,
     borderBottom: "none",
     borderRight: "none",
@@ -7204,8 +7295,8 @@ function XlsxGrid({
     userSelect: "none",
     whiteSpace: "nowrap",
     zIndex: 50
-  };
-  const columnResizeHandleStyle: React.CSSProperties = {
+  }, zoomFactor);
+  const columnResizeHandleStyle = scaleCssProperties({
     backgroundColor: "transparent",
     cursor: "col-resize",
     position: "absolute",
@@ -7214,17 +7305,23 @@ function XlsxGrid({
     width: 16,
     height: "100%",
     zIndex: 5
-  };
+  }, zoomFactor);
   function resolveDrawingPane(rect: XlsxImageRect) {
     return resolveFrozenDrawingPane(
       rect,
       frozenRows,
       frozenCols,
-      actualRowHeights,
-      actualColWidths,
+      displayActualRowHeights,
+      displayActualColWidths,
       activeSheet?.freezePanes ?? null,
       stickyTopByRow,
-      stickyLeftByCol
+      stickyLeftByCol,
+      {
+        defaultColWidth: displayDefaultColWidth,
+        defaultRowHeight: displayDefaultRowHeight,
+        headerHeight: displayHeaderHeight,
+        rowHeaderWidth: displayRowHeaderWidth
+      }
     );
   }
 
@@ -7243,12 +7340,12 @@ function XlsxGrid({
     const groupScaleX = shape.scaleX ?? 1;
     const groupScaleY = shape.scaleY ?? 1;
     const strokeScale = Math.max(groupScaleX, groupScaleY);
-    const textScale = strokeScale;
+    const textScale = strokeScale * zoomFactor;
     const textWidth = groupScaleX !== 0 ? rect.width / groupScaleX : rect.width;
     const textHeight = groupScaleY !== 0 ? rect.height / groupScaleY : rect.height;
     const vectorShape = resolveShapeVector(shape);
     const strokeColor = shape.stroke?.none ? "transparent" : (shape.stroke?.color ?? "transparent");
-    const scaledStrokeWidth = (shape.stroke?.widthPx ?? (shape.geometry === "line" ? 2 : 1)) * strokeScale;
+    const scaledStrokeWidth = (shape.stroke?.widthPx ?? (shape.geometry === "line" ? 2 : 1)) * strokeScale * zoomFactor;
     const headMarkerId = `${shape.id}-${pane}-head-marker`;
     const tailMarkerId = `${shape.id}-${pane}-tail-marker`;
     const headMarker = vectorShape
@@ -7272,7 +7369,7 @@ function XlsxGrid({
         )
       : null;
     const style = {
-      ...buildShapeContainerStyle(shape, rect),
+      ...buildShapeContainerStyle(shape, rect, zoomFactor),
       ...(vectorShape ? {
         backgroundColor: "transparent",
         border: "none"
@@ -7326,7 +7423,7 @@ function XlsxGrid({
             display: "flex",
             flex: 1,
             flexDirection: "column",
-            gap: 2,
+            gap: 2 * zoomFactor,
             height: textHeight,
             justifyContent:
               shape.textBox?.verticalAlign === "middle"
@@ -7334,10 +7431,10 @@ function XlsxGrid({
                 : shape.textBox?.verticalAlign === "bottom"
                   ? "flex-end"
                   : "flex-start",
-            paddingBottom: inset?.bottom ?? 4,
-            paddingLeft: inset?.left ?? 6,
-            paddingRight: inset?.right ?? 6,
-            paddingTop: inset?.top ?? 4,
+            paddingBottom: (inset?.bottom ?? 4) * zoomFactor,
+            paddingLeft: (inset?.left ?? 6) * zoomFactor,
+            paddingRight: (inset?.right ?? 6) * zoomFactor,
+            paddingTop: (inset?.top ?? 4) * zoomFactor,
             pointerEvents: "none",
             position: "relative",
             transform:
@@ -7415,8 +7512,8 @@ function XlsxGrid({
               defaultNode: (
                 <div
                   style={{
-                    border: `1px solid ${selectionStroke}`,
-                    boxShadow: `0 0 0 1px ${palette.surface}`,
+                    border: `${Math.max(1, zoomFactor)}px solid ${selectionStroke}`,
+                    boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${palette.surface}`,
                     boxSizing: "border-box",
                     inset: 0,
                     pointerEvents: "none",
@@ -7428,7 +7525,7 @@ function XlsxGrid({
                         <div
                           key={position}
                           onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                          style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                          style={resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)}
                         />
                       ))
                     : null}
@@ -7441,8 +7538,8 @@ function XlsxGrid({
                   }
                 },
                 style: canEditImage
-                  ? resolveImageHandleStyle(position, selectionStroke, palette.surface)
-                  : { ...resolveImageHandleStyle(position, selectionStroke, palette.surface), display: "none" }
+                  ? resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)
+                  : { ...resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor), display: "none" }
               }),
               image,
               rect
@@ -7450,8 +7547,8 @@ function XlsxGrid({
           : (
               <div
                 style={{
-                  border: `1px solid ${selectionStroke}`,
-                  boxShadow: `0 0 0 1px ${palette.surface}`,
+                  border: `${Math.max(1, zoomFactor)}px solid ${selectionStroke}`,
+                  boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${palette.surface}`,
                   boxSizing: "border-box",
                   inset: 0,
                   pointerEvents: "none",
@@ -7463,7 +7560,7 @@ function XlsxGrid({
                       <div
                         key={position}
                         onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                        style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                        style={resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)}
                       />
                     ))
                   : null}
@@ -7531,8 +7628,8 @@ function XlsxGrid({
       >
         <div
           style={{
-            border: `1px solid ${selectionStroke}`,
-            boxShadow: `0 0 0 1px ${palette.surface}`,
+            border: `${Math.max(1, zoomFactor)}px solid ${selectionStroke}`,
+            boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${palette.surface}`,
             boxSizing: "border-box",
             inset: 0,
             pointerEvents: "none",
@@ -7544,7 +7641,7 @@ function XlsxGrid({
                 <div
                   key={position}
                   onPointerDown={(event) => startChartResize(event, chart, rect, position)}
-                  style={resolveImageHandleStyle(position, selectionStroke, palette.surface)}
+                  style={resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)}
                 />
               ))
             : null}
@@ -7848,8 +7945,8 @@ function XlsxGrid({
         return;
       }
 
-      const deltaX = (event.clientX - interaction.startClientX) / zoomFactor;
-      const deltaY = (event.clientY - interaction.startClientY) / zoomFactor;
+      const deltaX = event.clientX - interaction.startClientX;
+      const deltaY = event.clientY - interaction.startClientY;
       if (!interaction.didMove && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
         interaction.didMove = true;
       }
@@ -7860,7 +7957,12 @@ function XlsxGrid({
               left: interaction.baseRect.left + deltaX,
               top: interaction.baseRect.top + deltaY
             }
-          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, IMAGE_MIN_SIZE_PX)
+          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, displayImageMinSize),
+        {
+          contentOffsetLeft: displayRowHeaderWidth,
+          contentOffsetTop: displayHeaderHeight,
+          minSizePx: displayImageMinSize
+        }
       );
 
       scheduleImagePreviewRect({ id: interaction.imageId, rect: nextRect });
@@ -7899,7 +8001,7 @@ function XlsxGrid({
         if (interaction.didMove) {
           skipNextImageClickRef.current = interaction.imageId;
         }
-        setImageRect(interaction.imageId, preview.rect);
+        setImageRect(interaction.imageId, toLogicalRect(preview.rect));
       }
       imagePreviewRectRef.current = null;
       setImagePreviewRect(null);
@@ -7924,8 +8026,8 @@ function XlsxGrid({
         return;
       }
 
-      const deltaX = (event.clientX - interaction.startClientX) / zoomFactor;
-      const deltaY = (event.clientY - interaction.startClientY) / zoomFactor;
+      const deltaX = event.clientX - interaction.startClientX;
+      const deltaY = event.clientY - interaction.startClientY;
       if (!interaction.didMove && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
         interaction.didMove = true;
       }
@@ -7936,7 +8038,12 @@ function XlsxGrid({
               left: interaction.baseRect.left + deltaX,
               top: interaction.baseRect.top + deltaY
             }
-          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, 48)
+          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, 48 * zoomFactor),
+        {
+          contentOffsetLeft: displayRowHeaderWidth,
+          contentOffsetTop: displayHeaderHeight,
+          minSizePx: 48 * zoomFactor
+        }
       );
 
       scheduleChartPreviewRect({ id: interaction.chartId, rect: nextRect });
@@ -7975,7 +8082,7 @@ function XlsxGrid({
         if (interaction.didMove) {
           skipNextChartClickRef.current = interaction.chartId;
         }
-        setChartRect(interaction.chartId, preview.rect);
+        setChartRect(interaction.chartId, toLogicalRect(preview.rect));
       }
       chartPreviewRectRef.current = null;
       setChartPreviewRect(null);
@@ -8177,8 +8284,8 @@ function XlsxGrid({
             minHeight: "100%",
             minWidth: "100%",
             position: "relative",
-            width: zoomedSheetWidth,
-            height: zoomedSheetHeight
+            width: totalWidth,
+            height: sheetContentHeight
           }}
         >
           <div
@@ -8188,9 +8295,6 @@ function XlsxGrid({
               left: 0,
               position: "absolute",
               top: 0,
-              transform: undefined,
-              transformOrigin: "top left",
-              zoom: useNativeZoomForStickyLayout ? zoomFactor : undefined,
               width: totalWidth
             }}
           >
@@ -8213,7 +8317,7 @@ function XlsxGrid({
               }}
             >
               <colgroup>
-                <col style={{ width: ROW_HEADER_WIDTH }} />
+                <col style={{ width: displayRowHeaderWidth }} />
                 {leadingColumnSpacerWidth > 0 ? <col style={{ width: leadingColumnSpacerWidth }} /> : null}
                 {renderedCols.map((column) => (
                   <col
@@ -8237,7 +8341,7 @@ function XlsxGrid({
                       ...headerCellStyle,
                       backgroundColor: palette.headerSurface,
                       left: 0,
-                      width: ROW_HEADER_WIDTH,
+                      width: displayRowHeaderWidth,
                       zIndex: 60
                     }}
                   />
@@ -8320,10 +8424,12 @@ function XlsxGrid({
                         readOnly={readOnly}
                         renderCellAdornment={renderCellAdornment}
                         rowHeight={virtualRow.size}
+                        rowHeaderWidth={displayRowHeaderWidth}
                         stickyLeftByCol={stickyLeftByCol}
                         stickyTop={stickyTopByRow.get(actualRow)}
                         trailingSpacerWidth={trailingColumnSpacerWidth}
                         visibleCols={renderedCols}
+                        zoomFactor={zoomFactor}
                       />
                     </React.Fragment>
                   );
@@ -8364,16 +8470,16 @@ function XlsxGrid({
                 alignItems: "center",
                 color: palette.mutedText,
                 display: "inline-flex",
-                fontSize: 10,
+                fontSize: 10 * zoomFactor,
                 fontWeight: 700,
-                height: 16,
+                height: 16 * zoomFactor,
                 justifyContent: "center",
                 opacity: 0,
                 pointerEvents: "none",
                 position: "absolute",
                 transform: "translateY(-50%)",
                 visibility: "hidden",
-                width: 12,
+                width: 12 * zoomFactor,
                 zIndex: 26
               }}
             >
@@ -8392,16 +8498,16 @@ function XlsxGrid({
               }}
               style={{
                 backgroundColor: selectionStroke,
-                border: `1px solid ${palette.surface}`,
+                border: `${Math.max(1, zoomFactor)}px solid ${palette.surface}`,
                 contain: "layout paint",
                 cursor: "crosshair",
                 display: !readOnly && resolvedSelectionOverlay ? "block" : "none",
-                height: 8,
-                left: resolvedSelectionOverlay ? resolvedSelectionOverlay.left + resolvedSelectionOverlay.width - 4 : 0,
+                height: 8 * zoomFactor,
+                left: resolvedSelectionOverlay ? resolvedSelectionOverlay.left + resolvedSelectionOverlay.width - (4 * zoomFactor) : 0,
                 pointerEvents: "auto",
                 position: "absolute",
-                top: resolvedSelectionOverlay ? resolvedSelectionOverlay.top + resolvedSelectionOverlay.height - 4 : 0,
-                width: 8,
+                top: resolvedSelectionOverlay ? resolvedSelectionOverlay.top + resolvedSelectionOverlay.height - (4 * zoomFactor) : 0,
+                width: 8 * zoomFactor,
                 zIndex: 25
               }}
             />
@@ -8410,7 +8516,7 @@ function XlsxGrid({
                 ref={tableMenuRef}
                 style={{
                   color: palette.text,
-                  left: Math.max(ROW_HEADER_WIDTH + 4, openTableMenuState.left),
+                  left: Math.max(displayRowHeaderWidth + (4 * zoomFactor), openTableMenuState.left),
                   position: "absolute",
                   top: openTableMenuState.top,
                   zIndex: 50

@@ -1036,13 +1036,34 @@ function parseClipboardText(text: string): string[][] {
   return rows.map((row) => row.split("\t"));
 }
 
-async function resolveWorkbookBuffer({ file, src }: UseXlsxViewerControllerOptions): Promise<ArrayBuffer> {
+function createAbortError() {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("Aborted", "AbortError");
+  }
+
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+async function resolveWorkbookBuffer(
+  { file, src }: UseXlsxViewerControllerOptions,
+  signal?: AbortSignal
+): Promise<ArrayBuffer> {
   let buffer: ArrayBuffer;
+
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
 
   if (file) {
     buffer = file;
   } else if (src) {
-    const response = await fetch(src);
+    const response = await fetch(src, { signal });
     if (!response.ok) {
       throw new Error(`Failed to fetch workbook (status ${response.status})`);
     }
@@ -1974,9 +1995,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           triggerFallback();
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (workerTimeoutHandle !== null) {
           window.clearTimeout(workerTimeoutHandle);
+        }
+        if (isAbortError(error)) {
+          return;
         }
         triggerFallback();
       });
@@ -2052,6 +2076,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     let isCurrent = true;
+    const abortController = new AbortController();
     setIsLoading(true);
     setError(null);
     clearImageAssets();
@@ -2076,13 +2101,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSortState(null);
     setZoomScaleOverridesByTabId({});
     setRevision(0);
-    if (!workerSupported) {
-      disposeWorkerClient();
-    }
+    disposeWorkerClient();
 
-    void resolveWorkbookBuffer({ file, src })
+    void resolveWorkbookBuffer({ file, src }, abortController.signal)
       .then(async (buffer) => {
-        if (!isCurrent) {
+        if (!isCurrent || abortController.signal.aborted) {
           return;
         }
 
@@ -2113,7 +2136,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         if (shouldUseWorkerForLoad) {
           try {
             const snapshot = await getWorkerClient().loadWorkbook(buffer);
-            if (!isCurrent) {
+            if (!isCurrent || abortController.signal.aborted) {
               return;
             }
             if (hasIncompleteWorkerChartSnapshot(snapshot)) {
@@ -2134,6 +2157,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             setIsLoading(false);
             return;
           } catch (workerError) {
+            if (!isCurrent || isAbortError(workerError)) {
+              return;
+            }
             if (!shouldFallbackFromWorkerError(workerError)) {
               throw workerError;
             }
@@ -2143,7 +2169,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         }
 
         const { imageAssets: nextImageAssets, parsedWorkbook: nextParsedWorkbook } = await loadWorkbookOnMainThread(buffer);
-        if (!isCurrent) {
+        if (!isCurrent || abortController.signal.aborted) {
           revokeWorkbookImageAssets(nextImageAssets);
           return;
         }
@@ -2167,7 +2193,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         setIsLoading(false);
       })
       .catch((nextError: unknown) => {
-        if (!isCurrent) {
+        if (!isCurrent || isAbortError(nextError)) {
           return;
         }
 
@@ -2185,9 +2211,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     return () => {
       isCurrent = false;
-      if (!workerSupported) {
-        disposeWorkerClient();
-      }
+      abortController.abort();
+      disposeWorkerClient();
     };
   }, [
     clearChartAssets,
@@ -2375,6 +2400,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           setIsLoading(false);
         })
         .catch(async (workerError: unknown) => {
+          if (isAbortError(workerError)) {
+            return;
+          }
           if (!shouldFallbackFromWorkerError(workerError)) {
             throw workerError;
           }
