@@ -4780,7 +4780,7 @@ function XlsxGrid({
     ),
     [actualColWidths, frozenCols, stickyLeftByCol]
   );
-  const useNativeZoomForFrozenPanes = zoomFactor !== 1 && (frozenRows.length > 0 || frozenCols.length > 0);
+  const useNativeZoomForStickyLayout = zoomFactor !== 1;
   const rowPrefixSumsRef = React.useRef<number[]>(rowPrefixSums);
   const colPrefixSumsRef = React.useRef<number[]>(colPrefixSums);
   const firstVisibleRow = visibleRows[0];
@@ -6095,14 +6095,44 @@ function XlsxGrid({
     };
   }, [colIndexByActual, colPrefixSums, effectiveColWidths, effectiveRowHeights, rowIndexByActual, rowPrefixSums]);
 
+  const resolveMountedRangeOverlayRect = React.useCallback((range: XlsxCellRange, geometryRect: {
+    height: number;
+    left: number;
+    top: number;
+    width: number;
+  }) => {
+    const normalized = normalizeRange(range);
+    const startRect = resolveMountedCellOverlayRectForAddress(normalized.start);
+    const topRightRect = resolveMountedCellOverlayRectForAddress({ row: normalized.start.row, col: normalized.end.col });
+    const bottomLeftRect = resolveMountedCellOverlayRectForAddress({ row: normalized.end.row, col: normalized.start.col });
+    const endRect = resolveMountedCellOverlayRectForAddress(normalized.end);
+
+    const leftRect = startRect ?? bottomLeftRect;
+    const topRect = startRect ?? topRightRect;
+    const rightRect = topRightRect ?? endRect;
+    const bottomRect = bottomLeftRect ?? endRect;
+
+    const left = leftRect ? leftRect.left : geometryRect.left;
+    const top = topRect ? topRect.top : geometryRect.top;
+    const right = rightRect ? rightRect.left + rightRect.width : geometryRect.left + geometryRect.width;
+    const bottom = bottomRect ? bottomRect.top + bottomRect.height : geometryRect.top + geometryRect.height;
+
+    return {
+      height: Math.max(0, bottom - top),
+      left: Math.max(ROW_HEADER_WIDTH, left),
+      top: Math.max(HEADER_HEIGHT, top),
+      width: Math.max(0, right - left)
+    };
+  }, [resolveMountedCellOverlayRectForAddress]);
+
   const resolveDragPreviewRect = React.useCallback((range: XlsxCellRange) => {
     const dragState = selectionDragRef.current;
     if (!dragState || !dragState.didDrag || dragState.axis !== "cell" || !dragState.originOverlayRect) {
       return null;
     }
 
-    const geometryRect = resolveGeometryOverlayRect(range);
-    if (!geometryRect) {
+    const rangeRect = resolveGeometryOverlayRect(range);
+    if (!rangeRect) {
       return null;
     }
 
@@ -6115,12 +6145,13 @@ function XlsxGrid({
     const originCell = dragState.originCell;
     const originOnLeft = originCell.col === normalized.start.col;
     const originOnTop = originCell.row === normalized.start.row;
-    const geometryRight = geometryRect.left + geometryRect.width;
-    const geometryBottom = geometryRect.top + geometryRect.height;
+    const adjustedRangeRect = resolveMountedRangeOverlayRect(range, rangeRect);
+    const geometryRight = adjustedRangeRect.left + adjustedRangeRect.width;
+    const geometryBottom = adjustedRangeRect.top + adjustedRangeRect.height;
     const originRight = originRect.left + originRect.width;
     const originBottom = originRect.top + originRect.height;
-    const left = originOnLeft ? originRect.left : Math.min(originRect.left, geometryRect.left);
-    const top = originOnTop ? originRect.top : Math.min(originRect.top, geometryRect.top);
+    const left = originOnLeft ? originRect.left : Math.min(originRect.left, adjustedRangeRect.left);
+    const top = originOnTop ? originRect.top : Math.min(originRect.top, adjustedRangeRect.top);
     const right = originOnLeft ? Math.max(originRight, geometryRight) : originRight;
     const bottom = originOnTop ? Math.max(originBottom, geometryBottom) : originBottom;
 
@@ -6130,7 +6161,7 @@ function XlsxGrid({
       top,
       width: Math.max(originRect.width, right - left)
     };
-  }, [resolveGeometryOverlayRect]);
+  }, [resolveGeometryOverlayRect, resolveMountedRangeOverlayRect]);
 
   const resolveOverlayRect = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
@@ -6143,33 +6174,13 @@ function XlsxGrid({
 
     const geometryRect = resolveGeometryOverlayRect(range);
     if (geometryRect) {
-      const mountedStartCellRect =
-        resolveMountedCellOverlayRectForAddress(normalized.start)
-        ?? resolveMountedCellOverlayRectForAddress({ row: normalized.start.row, col: normalized.end.col });
-      const mountedEndCellRect =
-        resolveMountedCellOverlayRectForAddress({ row: normalized.end.row, col: normalized.start.col })
-        ?? resolveMountedCellOverlayRectForAddress(normalized.end);
-      let top = geometryRect.top;
-      let bottom = geometryRect.top + geometryRect.height;
-      if (mountedStartCellRect) {
-        top = mountedStartCellRect.top;
-      }
-      if (mountedEndCellRect) {
-        bottom = mountedEndCellRect.top + mountedEndCellRect.height;
-      }
-
-      return {
-        ...geometryRect,
-        height: Math.max(0, bottom - top),
-        top: Math.max(HEADER_HEIGHT, top)
-      };
+      return resolveMountedRangeOverlayRect(range, geometryRect);
     }
 
     return null;
   }, [
     resolveGeometryOverlayRect,
-    resolveMountedCellOverlayRect,
-    resolveMountedCellOverlayRectForAddress,
+    resolveMountedRangeOverlayRect,
   ]);
 
   const openTableMenuState = React.useMemo(() => {
@@ -8170,9 +8181,9 @@ function XlsxGrid({
               left: 0,
               position: "absolute",
               top: 0,
-              transform: useNativeZoomForFrozenPanes || zoomFactor === 1 ? undefined : `scale(${zoomFactor})`,
+              transform: undefined,
               transformOrigin: "top left",
-              zoom: useNativeZoomForFrozenPanes ? zoomFactor : undefined,
+              zoom: useNativeZoomForStickyLayout ? zoomFactor : undefined,
               width: totalWidth
             }}
           >
