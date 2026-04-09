@@ -6,6 +6,7 @@ type WorkerMessage =
       type: "load";
       payload: {
         buffer: ArrayBuffer;
+        skipXmlParsing?: boolean;
       };
     }
   | {
@@ -13,6 +14,7 @@ type WorkerMessage =
       type: "parseCharts";
       payload: {
         buffer: ArrayBuffer;
+        skipXmlParsing?: boolean;
       };
     }
   | {
@@ -123,7 +125,7 @@ export class XlsxWorkerClient {
     this.pendingRequests.clear();
   }
 
-  loadWorkbook(buffer: ArrayBuffer) {
+  loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
     const workerBuffer = cloneArrayBufferForTransfer(buffer);
     return this.request<{
       chartsByWorkbookSheetIndex: XlsxChart[][];
@@ -133,7 +135,10 @@ export class XlsxWorkerClient {
       tabs: XlsxWorkbookTab[];
     }>({
       id: 0,
-      payload: { buffer: workerBuffer },
+      payload: {
+        buffer: workerBuffer,
+        skipXmlParsing
+      },
       type: "load"
     }, [workerBuffer]);
   }
@@ -149,7 +154,7 @@ export class XlsxWorkerClient {
     });
   }
 
-  parseCharts(buffer: ArrayBuffer) {
+  parseCharts(buffer: ArrayBuffer, skipXmlParsing = false) {
     const workerBuffer = cloneArrayBufferForTransfer(buffer);
     return this.request<{
       chartsByWorkbookSheetIndex: XlsxChart[][];
@@ -157,7 +162,10 @@ export class XlsxWorkerClient {
       tabs: XlsxWorkbookTab[];
     }>({
       id: 0,
-      payload: { buffer: workerBuffer },
+      payload: {
+        buffer: workerBuffer,
+        skipXmlParsing
+      },
       type: "parseCharts"
     }, [workerBuffer]);
   }

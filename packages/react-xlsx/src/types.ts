@@ -562,6 +562,7 @@ export interface UseXlsxViewerControllerOptions {
   maxFileSizeBytes?: number;
   readOnly?: boolean;
   readOnlyAboveBytes?: number;
+  skipXmlParsing?: boolean;
   src?: string;
   useWorker?: boolean;
 }

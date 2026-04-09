@@ -1664,8 +1664,8 @@ function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
   };
 }
 
-function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook) {
-  if (!isZipWorkbook(bytes)) {
+function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook, skipXmlParsing = false) {
+  if (skipXmlParsing || !isZipWorkbook(bytes)) {
     return createBasicWorkbookAssets(workbook);
   }
 
@@ -1743,6 +1743,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
     readOnly: requestedReadOnly = false,
     readOnlyAboveBytes = 0,
+    skipXmlParsing = false,
     src,
     useWorker = true
   } = options;
@@ -1905,6 +1906,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const quickAssets = loadWorkbookChartAssets(targetWorkbook, null, visibleSheetIndexByWorkbookSheetIndex);
     setChartAssets(quickAssets);
 
+    if (skipXmlParsing) {
+      return;
+    }
+
     const hasCharts = quickAssets.chartsByWorkbookSheetIndex.some((sheetCharts) => sheetCharts.length > 0);
     if (!hasCharts) {
       setIsChartsLoading(false);
@@ -1977,7 +1982,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    void getWorkerClient().parseCharts(buffer)
+    void getWorkerClient().parseCharts(buffer, skipXmlParsing)
       .then((result) => {
         if (workerTimeoutHandle !== null) {
           window.clearTimeout(workerTimeoutHandle);
@@ -2004,16 +2009,16 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         }
         triggerFallback();
       });
-  }, [getWorkerClient, hasIncompleteWorkerChartSnapshot, setChartAssets, workerSupported]);
+  }, [getWorkerClient, hasIncompleteWorkerChartSnapshot, setChartAssets, skipXmlParsing, workerSupported]);
 
   const loadWorkbookOnMainThread = React.useCallback(async (buffer: ArrayBuffer) => {
     const nextParsedWorkbook = await parseWorkbookBuffer(buffer);
-    const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(buffer), nextParsedWorkbook.workbook);
+    const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(buffer), nextParsedWorkbook.workbook, skipXmlParsing);
     return {
       imageAssets: nextImageAssets,
       parsedWorkbook: nextParsedWorkbook
     };
-  }, []);
+  }, [skipXmlParsing]);
 
   const refreshWorkbookState = React.useCallback((targetWorkbook: Workbook) => {
     const nextSheets = buildSheetList(
@@ -2135,11 +2140,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         if (shouldUseWorkerForLoad) {
           try {
-            const snapshot = await getWorkerClient().loadWorkbook(buffer);
+            const snapshot = await getWorkerClient().loadWorkbook(buffer, skipXmlParsing);
             if (!isCurrent || abortController.signal.aborted) {
               return;
             }
-            if (hasIncompleteWorkerChartSnapshot(snapshot)) {
+            if (!skipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
               throw new Error("Worker chart payload incomplete");
             }
 
@@ -2379,9 +2384,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const shouldUseWorkerForLoad = workerSupported && (requestedReadOnly || shouldForceReadOnly);
 
     if (shouldUseWorkerForLoad) {
-      void getWorkerClient().loadWorkbook(deferredBuffer)
+      void getWorkerClient().loadWorkbook(deferredBuffer, skipXmlParsing)
         .then((snapshot) => {
-          if (hasIncompleteWorkerChartSnapshot(snapshot)) {
+          if (!skipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
             throw new Error("Worker chart payload incomplete");
           }
           deferredBufferRef.current = null;
@@ -2448,7 +2453,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     void parseWorkbookBuffer(deferredBuffer)
       .then((nextParsedWorkbook) => {
-        const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(deferredBuffer), nextParsedWorkbook.workbook);
+        const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(deferredBuffer), nextParsedWorkbook.workbook, skipXmlParsing);
         deferredBufferRef.current = null;
         setDeferredLoadFileSize(null);
         setImageAssets(nextImageAssets);
