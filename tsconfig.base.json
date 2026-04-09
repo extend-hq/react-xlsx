@@ -14,7 +14,7 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
-      "react-xlsx": ["packages/react-xlsx/src/index.ts"]
+      "@extend-hq/react-xlsx": ["packages/react-xlsx/src/index.ts"]
     }
   }
 }

@@ -1,5 +1,16 @@
 # react-xlsx
 
+[![npm version](https://img.shields.io/github/v/release/extend-hq/react-xlsx?label=npm%20%28private%29)](https://www.npmjs.com/package/@extend-hq/react-xlsx)
+
+Private npm package: `@extend-hq/react-xlsx`
+The badge tracks the synced GitHub release version while the package remains private on npm.
+
+## Install
+
+```bash
+pnpm add @extend-hq/react-xlsx
+```
+
 ## File size limit
 
 `XlsxViewer` and `useXlsxViewerController` now enforce a configurable workbook file size limit before parsing.
@@ -9,7 +20,7 @@
 - `fileTooLargeState` lets you replace that placeholder
 
 ```tsx
-import { XlsxViewer } from "react-xlsx";
+import { XlsxViewer } from "@extend-hq/react-xlsx";
 
 <XlsxViewer
   file={buffer}
