@@ -1646,6 +1646,22 @@ function isZipWorkbook(bytes: Uint8Array) {
   return bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
 }
 
+function isLegacyXlsWorkbook(bytes: Uint8Array) {
+  return bytes.byteLength >= 8
+    && bytes[0] === 0xd0
+    && bytes[1] === 0xcf
+    && bytes[2] === 0x11
+    && bytes[3] === 0xe0
+    && bytes[4] === 0xa1
+    && bytes[5] === 0xb1
+    && bytes[6] === 0x1a
+    && bytes[7] === 0xe1;
+}
+
+function shouldSkipXmlParsingForWorkbook(bytes: Uint8Array, skipXmlParsing = false) {
+  return skipXmlParsing || isLegacyXlsWorkbook(bytes);
+}
+
 function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
   const objectUrls: string[] = [];
   return {
@@ -1665,7 +1681,7 @@ function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
 }
 
 function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook, skipXmlParsing = false) {
-  if (skipXmlParsing || !isZipWorkbook(bytes)) {
+  if (shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing) || !isZipWorkbook(bytes)) {
     return createBasicWorkbookAssets(workbook);
   }
 
@@ -1902,11 +1918,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     targetWorkbook: Workbook,
     targetSheets: XlsxSheetData[]
   ) => {
+    const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(buffer), skipXmlParsing);
     const visibleSheetIndexByWorkbookSheetIndex = buildVisibleSheetIndexMap(targetSheets);
     const quickAssets = loadWorkbookChartAssets(targetWorkbook, null, visibleSheetIndexByWorkbookSheetIndex);
     setChartAssets(quickAssets);
 
-    if (skipXmlParsing) {
+    if (effectiveSkipXmlParsing) {
       return;
     }
 
@@ -1982,7 +1999,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    void getWorkerClient().parseCharts(buffer, skipXmlParsing)
+    void getWorkerClient().parseCharts(buffer, effectiveSkipXmlParsing)
       .then((result) => {
         if (workerTimeoutHandle !== null) {
           window.clearTimeout(workerTimeoutHandle);
@@ -2013,7 +2030,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const loadWorkbookOnMainThread = React.useCallback(async (buffer: ArrayBuffer) => {
     const nextParsedWorkbook = await parseWorkbookBuffer(buffer);
-    const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(buffer), nextParsedWorkbook.workbook, skipXmlParsing);
+    const bytes = new Uint8Array(buffer);
+    const nextImageAssets = loadWorkbookImageAssets(
+      bytes,
+      nextParsedWorkbook.workbook,
+      shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing)
+    );
     return {
       imageAssets: nextImageAssets,
       parsedWorkbook: nextParsedWorkbook
@@ -2126,6 +2148,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         const shouldForceReadOnly = shouldForceReadOnlyForBuffer(buffer.byteLength);
         setForcedReadOnly(shouldForceReadOnly);
         const shouldUseWorkerForLoad = workerSupported && (requestedReadOnly || shouldForceReadOnly);
+        const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(buffer), skipXmlParsing);
 
         if (shouldDeferLoading && buffer.byteLength > deferLoadingAboveBytes) {
           deferredBufferRef.current = buffer;
@@ -2140,11 +2163,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         if (shouldUseWorkerForLoad) {
           try {
-            const snapshot = await getWorkerClient().loadWorkbook(buffer, skipXmlParsing);
+            const snapshot = await getWorkerClient().loadWorkbook(buffer, effectiveSkipXmlParsing);
             if (!isCurrent || abortController.signal.aborted) {
               return;
             }
-            if (!skipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
+            if (!effectiveSkipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
               throw new Error("Worker chart payload incomplete");
             }
 
@@ -2382,11 +2405,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const shouldForceReadOnly = shouldForceReadOnlyForBuffer(deferredBuffer.byteLength);
     setForcedReadOnly(shouldForceReadOnly);
     const shouldUseWorkerForLoad = workerSupported && (requestedReadOnly || shouldForceReadOnly);
+    const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(deferredBuffer), skipXmlParsing);
 
     if (shouldUseWorkerForLoad) {
-      void getWorkerClient().loadWorkbook(deferredBuffer, skipXmlParsing)
+      void getWorkerClient().loadWorkbook(deferredBuffer, effectiveSkipXmlParsing)
         .then((snapshot) => {
-          if (!skipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
+          if (!effectiveSkipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
             throw new Error("Worker chart payload incomplete");
           }
           deferredBufferRef.current = null;
@@ -2453,7 +2477,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     void parseWorkbookBuffer(deferredBuffer)
       .then((nextParsedWorkbook) => {
-        const nextImageAssets = loadWorkbookImageAssets(new Uint8Array(deferredBuffer), nextParsedWorkbook.workbook, skipXmlParsing);
+        const bytes = new Uint8Array(deferredBuffer);
+        const nextImageAssets = loadWorkbookImageAssets(
+          bytes,
+          nextParsedWorkbook.workbook,
+          shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing)
+        );
         deferredBufferRef.current = null;
         setDeferredLoadFileSize(null);
         setImageAssets(nextImageAssets);

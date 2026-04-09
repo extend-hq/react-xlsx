@@ -85,7 +85,7 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `maxFileSizeBytes` | `number` | Hard parse limit before rendering a too-large state. Defaults to `25 * 1024 * 1024` (`25 MB`). |
 | `readOnly` | `boolean` | Forces viewer editing features off. Defaults to `false`. |
 | `readOnlyAboveBytes` | `number` | Automatically switches large workbooks into read-only mode above this threshold. Defaults to `0` (disabled). |
-| `skipXmlParsing` | `boolean` | Skips the OOXML ZIP/XML parsing layer and relies only on `Workbook.fromBytes(...)` metadata. Useful for formats like `.xls` or `.xlsm` when the extra XML pass is undesirable. Defaults to `false`. |
+| `skipXmlParsing` | `boolean` | Skips the OOXML ZIP/XML parsing layer and relies only on `Workbook.fromBytes(...)` metadata. The viewer also auto-enables this mode for legacy `.xls` files when their OLE magic bytes are detected. Defaults to `false`. |
 
 ### Layout And Appearance Props
 
