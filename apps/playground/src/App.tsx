@@ -8,7 +8,7 @@ import {
   useXlsxViewerZoom,
   XlsxViewer,
   XlsxViewerProvider
-} from "react-xlsx";
+} from "@extend-hq/react-xlsx";
 
 const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
 import {
