@@ -1,5 +1,5 @@
 {
-  "name": "@extend-hq/react-xlsx",
+  "name": "@extend-ai/react-xlsx",
   "version": "0.1.0",
   "description": "React components and hooks for viewing XLSX workbooks",
   "repository": {

@@ -66,11 +66,11 @@ jobs:
 
       - name: Typecheck package
         if: steps.state.outputs.already_released != 'true'
-        run: pnpm --filter @extend-hq/react-xlsx typecheck
+        run: pnpm --filter @extend-ai/react-xlsx typecheck
 
       - name: Build package
         if: steps.state.outputs.already_released != 'true'
-        run: pnpm --filter @extend-hq/react-xlsx build
+        run: pnpm --filter @extend-ai/react-xlsx build
 
       - name: Publish with npm token bootstrap
         if: steps.state.outputs.already_released != 'true' && env.NPM_TOKEN != ''
