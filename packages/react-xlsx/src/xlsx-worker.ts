@@ -102,6 +102,10 @@ type WorkerSuccessResponse = {
         displayValue: string;
         formula: string;
       }
+    | {
+        rows: unknown[];
+        stylesById?: Record<number, Record<string, unknown>>;
+      }
     | unknown[]
     | null;
 };
@@ -120,6 +124,70 @@ let chartsheets: XlsxChartsheet[] = [];
 let sheets: XlsxSheetData[] = [];
 let tablesByWorkbookSheetIndex: XlsxTable[][] = [];
 let tabs: XlsxWorkbookTab[] = [];
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function compressRowsBatchStyles(rows: unknown[] | null) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return rows;
+  }
+
+  const styleIdBySerialized = new Map<string, number>();
+  const stylesById: Record<number, Record<string, unknown>> = {};
+  let nextStyleId = 1;
+  let compressedAnyStyle = false;
+
+  const nextRows = rows.map((row) => {
+    const rowRecord = asRecord(row);
+    if (!rowRecord || !Array.isArray(rowRecord.cells)) {
+      return row;
+    }
+
+    const nextCells = rowRecord.cells.map((cell) => {
+      const cellRecord = asRecord(cell);
+      const style = asRecord(cellRecord?.style);
+      if (!cellRecord || !style) {
+        return cell;
+      }
+
+      const serialized = JSON.stringify(style);
+      let styleId = styleIdBySerialized.get(serialized);
+      if (styleId === undefined) {
+        styleId = nextStyleId;
+        nextStyleId += 1;
+        styleIdBySerialized.set(serialized, styleId);
+        stylesById[styleId] = style;
+      }
+
+      compressedAnyStyle = true;
+      const { style: _style, ...cellWithoutStyle } = cellRecord;
+      return {
+        ...cellWithoutStyle,
+        styleId
+      };
+    });
+
+    return {
+      ...rowRecord,
+      cells: nextCells
+    };
+  });
+
+  if (!compressedAnyStyle) {
+    return rows;
+  }
+
+  return {
+    rows: nextRows,
+    stylesById
+  };
+}
 
 function buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook: Workbook, showHiddenSheets = false) {
   const mapping = new Map<number, number>();
@@ -580,13 +648,13 @@ async function handleMessage(message: WorkerRequest) {
         return null;
       }
 
-      return worksheet.getRowsBatch(message.payload.startRow, message.payload.rowCount, {
+      return compressRowsBatchStyles(worksheet.getRowsBatch(message.payload.startRow, message.payload.rowCount, {
         includeFormulas: true,
         includeHyperlinks: true,
         includeMergeInfo: true,
         includeStyles: true,
         useFormattedValues: true
-      }) as unknown[] | null;
+      }) as unknown[] | null);
     }
     default:
       return null;

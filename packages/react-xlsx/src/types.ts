@@ -319,6 +319,14 @@ export interface XlsxShape {
   zIndex: number;
 }
 
+export type XlsxRowsBatchResult =
+  | {
+      rows: unknown[];
+      stylesById?: Record<number, Record<string, unknown>>;
+    }
+  | unknown[]
+  | null;
+
 export type XlsxFormControlKind =
   | "button"
   | "checkbox"
@@ -712,7 +720,7 @@ export interface XlsxViewerController {
   selectImage: (id: string | null) => void;
   setChartRect: (id: string, rect: XlsxImageRect) => void;
   setImageRect: (id: string, rect: XlsxImageRect) => void;
-  getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<unknown[] | null>;
+  getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<XlsxRowsBatchResult>;
   tables: XlsxTable[];
   tabs: XlsxWorkbookTab[];
   undo: () => void;

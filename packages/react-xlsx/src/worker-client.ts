@@ -70,7 +70,13 @@ type WorkerSuccessMessage =
   | {
       id: number;
       success: true;
-      result: unknown[] | null;
+      result:
+        | {
+            rows: unknown[];
+            stylesById?: Record<number, Record<string, unknown>>;
+          }
+        | unknown[]
+        | null;
     };
 
 type WorkerErrorMessage = {
@@ -175,7 +181,10 @@ export class XlsxWorkerClient {
   }
 
   getRowsBatch(workbookSheetIndex: number, startRow: number, rowCount: number) {
-    return this.request<unknown[] | null>({
+    return this.request<{
+      rows: unknown[];
+      stylesById?: Record<number, Record<string, unknown>>;
+    } | unknown[] | null>({
       id: 0,
       payload: { rowCount, startRow, workbookSheetIndex },
       type: "getRowsBatch"

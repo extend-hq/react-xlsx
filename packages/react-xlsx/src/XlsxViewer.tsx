@@ -959,6 +959,7 @@ type WorksheetBatchCellEntry = {
   isMergedSecondary?: unknown;
   mergeSpan?: unknown;
   style?: unknown;
+  styleId?: unknown;
   value?: unknown;
 };
 
@@ -976,6 +977,7 @@ type BatchedCellData = {
   } | null;
   isMergedSecondary: boolean;
   mergeSpan: { colSpan?: number; rowSpan?: number } | null;
+  styleId: number | null;
   style: Record<string, unknown> | null;
   value: string;
 };
@@ -985,6 +987,11 @@ type WorksheetBatchWindow = {
   endRow: number;
   startRow: number;
 };
+
+type WorksheetBatchPayload = {
+  rows?: unknown;
+  stylesById?: unknown;
+} | unknown[] | null;
 
 function classNames(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -2692,6 +2699,12 @@ function resolveInheritedCellStyle(sheet: XlsxSheetData | null | undefined, row:
   const rowStyleId = sheet.rowStyleIds[row];
   const colStyle = colStyleId !== undefined ? sheet.styleById[colStyleId] ?? null : null;
   const rowStyle = rowStyleId !== undefined ? sheet.styleById[rowStyleId] ?? null : null;
+  if (!colStyle) {
+    return rowStyle;
+  }
+  if (!rowStyle) {
+    return colStyle;
+  }
   return mergeResolvedCellStyle(colStyle, rowStyle, { replaceXfSubtrees: true });
 }
 
@@ -3161,6 +3174,96 @@ function buildCellStyle(
 }
 
 let textMeasureCanvas: HTMLCanvasElement | null = null;
+const resolvedCellStyleCache = new WeakMap<Record<string, unknown>, Map<string, React.CSSProperties>>();
+const defaultResolvedCellStyleCache = new Map<string, React.CSSProperties>();
+const canvasCellStyleCacheByCss = new WeakMap<React.CSSProperties, CanvasCellStyleCache>();
+const objectCacheIds = new WeakMap<object, number>();
+const textWidthCache = new Map<string, number>();
+const wrappedTextHeightCache = new Map<string, number>();
+const MAX_TEXT_MEASURE_CACHE_ENTRIES = 40000;
+let nextObjectCacheId = 1;
+
+function getObjectCacheId(value: object | null | undefined) {
+  if (!value) {
+    return 0;
+  }
+
+  const existing = objectCacheIds.get(value);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const nextId = nextObjectCacheId;
+  nextObjectCacheId += 1;
+  objectCacheIds.set(value, nextId);
+  return nextId;
+}
+
+function setBoundedCacheValue<T>(cache: Map<string, T>, key: string, value: T) {
+  cache.set(key, value);
+  if (cache.size > MAX_TEXT_MEASURE_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey);
+    }
+  }
+  return value;
+}
+
+function buildCellStyleCacheContextKey(
+  palette: ViewerPalette,
+  themePalette: XlsxSheetData["themePalette"] | undefined,
+  showGridLines: boolean,
+  zoomFactor: number
+) {
+  return `${getObjectCacheId(palette)}:${getObjectCacheId(themePalette ?? null)}:${showGridLines ? 1 : 0}:${zoomFactor}`;
+}
+
+function resolveCachedScaledCellStyle(
+  style: Record<string, unknown> | null | undefined,
+  palette: ViewerPalette,
+  themePalette: XlsxSheetData["themePalette"] | undefined,
+  showGridLines: boolean,
+  zoomFactor: number
+) {
+  const contextKey = buildCellStyleCacheContextKey(palette, themePalette, showGridLines, zoomFactor);
+  if (!style) {
+    const cachedDefault = defaultResolvedCellStyleCache.get(contextKey);
+    if (cachedDefault) {
+      return cachedDefault;
+    }
+
+    const resolvedDefault = scaleCssProperties(buildCellStyle(null, palette, themePalette, { showGridLines }), zoomFactor);
+    defaultResolvedCellStyleCache.set(contextKey, resolvedDefault);
+    return resolvedDefault;
+  }
+
+  let cacheByContext = resolvedCellStyleCache.get(style);
+  if (!cacheByContext) {
+    cacheByContext = new Map<string, React.CSSProperties>();
+    resolvedCellStyleCache.set(style, cacheByContext);
+  }
+
+  const cached = cacheByContext.get(contextKey);
+  if (cached) {
+    return cached;
+  }
+
+  const resolved = scaleCssProperties(buildCellStyle(style, palette, themePalette, { showGridLines }), zoomFactor);
+  cacheByContext.set(contextKey, resolved);
+  return resolved;
+}
+
+function resolveCachedCanvasCellStyle(style: React.CSSProperties) {
+  const cached = canvasCellStyleCacheByCss.get(style);
+  if (cached) {
+    return cached;
+  }
+
+  const resolved = buildCanvasCellStyleCache(style);
+  canvasCellStyleCacheByCss.set(style, resolved);
+  return resolved;
+}
 
 function getHorizontalPadding(padding: React.CSSProperties["padding"]) {
   if (typeof padding !== "string") {
@@ -3208,8 +3311,15 @@ function measureTextWidth(value: string, style: React.CSSProperties) {
     return value.length * 7;
   }
 
-  context.font = buildCanvasFont(style);
-  return context.measureText(value).width;
+  const font = buildCanvasFont(style);
+  const cacheKey = `${font}\u0000${value}`;
+  const cached = textWidthCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  context.font = font;
+  return setBoundedCacheValue(textWidthCache, cacheKey, context.measureText(value).width);
 }
 
 function measureWrappedTextHeight(value: string, style: React.CSSProperties, widthPx: number) {
@@ -3232,9 +3342,20 @@ function measureWrappedTextHeight(value: string, style: React.CSSProperties, wid
     return (fallbackLineCount * lineHeight) + padding.top + padding.bottom;
   }
 
-  context.font = buildCanvasFont(style);
+  const font = buildCanvasFont(style);
+  const cacheKey = `${font}\u0000${lineHeight}\u0000${String(style.padding ?? "")}\u0000${availableWidth}\u0000${value}`;
+  const cached = wrappedTextHeightCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  context.font = font;
   const wrappedLines = wrapCanvasText(context, value, availableWidth);
-  return (wrappedLines.length * lineHeight) + padding.top + padding.bottom;
+  return setBoundedCacheValue(
+    wrappedTextHeightCache,
+    cacheKey,
+    (wrappedLines.length * lineHeight) + padding.top + padding.bottom
+  );
 }
 
 function canCellTextOverflow(data: CellRenderData) {
@@ -3633,15 +3754,21 @@ function normalizeBatchedCellValue(
 }
 
 function buildWorksheetBatchWindow(
-  rows: unknown[] | null,
+  rows: WorksheetBatchPayload,
   activeSheet: XlsxSheetData | null,
   startRow: number,
   endRow: number
 ): WorksheetBatchWindow {
   const cells = new Map<string, BatchedCellData>();
+  const rowEntries = Array.isArray(rows)
+    ? rows
+    : Array.isArray((rows as { rows?: unknown } | null)?.rows)
+      ? (rows as { rows: unknown[] }).rows
+      : null;
+  const stylesById = asRecord(!Array.isArray(rows) ? (rows as { stylesById?: unknown } | null)?.stylesById : null);
 
-  if (Array.isArray(rows)) {
-    for (const rowEntry of rows as WorksheetBatchRowEntry[]) {
+  if (Array.isArray(rowEntries)) {
+    for (const rowEntry of rowEntries as WorksheetBatchRowEntry[]) {
       const row = asNonNegativeInteger(rowEntry.index);
       if (row === null || !Array.isArray(rowEntry.cells)) {
         continue;
@@ -3654,12 +3781,16 @@ function buildWorksheetBatchWindow(
         }
 
         const formula = typeof cellEntry.formula === "string" ? cellEntry.formula : null;
+        const styleId = asNonNegativeInteger(cellEntry.styleId);
+        const resolvedStyle = asRecord(cellEntry.style)
+          ?? (styleId === null ? null : asRecord(stylesById?.[styleId]));
         cells.set(`${row}:${col}`, {
           formula,
           hyperlink: normalizeBatchedHyperlink(cellEntry.hyperlink),
           isMergedSecondary: cellEntry.isMergedSecondary === true,
           mergeSpan: normalizeBatchedMergeSpan(cellEntry.mergeSpan),
-          style: asRecord(cellEntry.style),
+          styleId,
+          style: resolvedStyle,
           value: normalizeBatchedCellValue(cellEntry.value, formula, row, col, activeSheet)
         });
       }
@@ -3671,6 +3802,24 @@ function buildWorksheetBatchWindow(
     endRow,
     startRow
   };
+}
+
+function invalidateCellRenderCacheRows(
+  cache: Map<string, CellRenderData>,
+  startRow: number,
+  endRow: number
+) {
+  if (!Number.isFinite(startRow) || !Number.isFinite(endRow) || endRow < startRow) {
+    return;
+  }
+
+  for (const key of cache.keys()) {
+    const separatorIndex = key.indexOf(":");
+    const row = Number.parseInt(separatorIndex >= 0 ? key.slice(0, separatorIndex) : key, 10);
+    if (Number.isFinite(row) && row >= startRow && row <= endRow) {
+      cache.delete(key);
+    }
+  }
 }
 
 function getTableAtCell(tables: XlsxTable[], row: number, col: number) {
@@ -3690,6 +3839,12 @@ function mergeResolvedCellStyle(
 ) {
   if (!base && !overlay) {
     return null;
+  }
+  if (!base) {
+    return overlay ?? null;
+  }
+  if (!overlay) {
+    return base;
   }
 
   const nextStyle: Record<string, unknown> = {
@@ -5606,6 +5761,7 @@ function XlsxGrid({
   const firstVisibleRowRef = React.useRef<number | undefined>(undefined);
   const lastVisibleRowRef = React.useRef<number | undefined>(undefined);
   const cellRenderCacheRef = React.useRef(new Map<string, CellRenderData>());
+  const previousViewportRowBatchRef = React.useRef<WorksheetBatchWindow | null>(null);
   const conditionalFormatMetricsCacheRef = React.useRef(new Map<string, number[]>());
   const resizeStateRef = React.useRef<
     | {
@@ -7536,7 +7692,28 @@ function XlsxGrid({
 
   React.useEffect(() => {
     cellRenderCacheRef.current.clear();
-  }, [activeSheetIndex, displayColLimit, displayRowLimit, palette, revision, viewportRowBatch, worksheet, zoomFactor]);
+    previousViewportRowBatchRef.current = viewportRowBatch;
+  }, [activeSheetIndex, displayColLimit, displayRowLimit, palette, revision, worksheet, zoomFactor]);
+
+  React.useEffect(() => {
+    const previousBatch = previousViewportRowBatchRef.current;
+    if (previousBatch === viewportRowBatch) {
+      return;
+    }
+
+    if (!previousBatch || !viewportRowBatch) {
+      cellRenderCacheRef.current.clear();
+      previousViewportRowBatchRef.current = viewportRowBatch;
+      return;
+    }
+
+    invalidateCellRenderCacheRows(
+      cellRenderCacheRef.current,
+      Math.min(previousBatch.startRow, viewportRowBatch.startRow),
+      Math.max(previousBatch.endRow, viewportRowBatch.endRow)
+    );
+    previousViewportRowBatchRef.current = viewportRowBatch;
+  }, [viewportRowBatch]);
 
   React.useEffect(() => {
     setAsyncViewportRowBatch(null);
@@ -7689,9 +7866,13 @@ function XlsxGrid({
       isTableHeader: Boolean(table && row >= table.start.row && row < table.start.row + headerRowCount),
       rowSpan: merge?.rowSpan,
       sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
-      style: scaleCssProperties(buildCellStyle(mergedStyle, palette, activeSheet?.themePalette, {
-        showGridLines: activeSheet?.showGridLines
-      }), zoomFactor),
+      style: resolveCachedScaledCellStyle(
+        mergedStyle,
+        palette,
+        activeSheet?.themePalette,
+        activeSheet?.showGridLines ?? true,
+        zoomFactor
+      ),
       textRotationDeg,
       validation: resolveCellDataValidation(row, col, activeSheet),
       value: sparkline
@@ -7703,7 +7884,7 @@ function XlsxGrid({
             : getCellDisplayValue(worksheet, row, col, activeSheet)
     };
 
-    nextData.canvas = buildCanvasCellStyleCache(nextData.style);
+    nextData.canvas = resolveCachedCanvasCellStyle(nextData.style);
 
     if (canCellTextOverflow(nextData)) {
       const startColIndex = colIndexByActual.get(col);
@@ -9711,7 +9892,7 @@ function XlsxGrid({
           }
 
           const cellStyle = cellData.style;
-          const canvasCellStyle = cellData.canvas ?? buildCanvasCellStyleCache(cellStyle);
+          const canvasCellStyle = cellData.canvas ?? resolveCachedCanvasCellStyle(cellStyle);
           const fillColor = cellData.conditionalColorScale?.color
             ?? (typeof cellStyle.backgroundColor === "string" ? cellStyle.backgroundColor : resolveSheetSurface(activeSheet, palette));
           const gradientFill = !cellData.conditionalColorScale && typeof cellStyle.backgroundImage === "string"

@@ -2979,29 +2979,32 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     let isCurrent = true;
-    void getCellSnapshotAsync(deferredMetadataSheet.workbookSheetIndex, deferredMetadataCell.row, deferredMetadataCell.col)
-      .then((snapshot) => {
-        if (!isCurrent) {
-          return;
-        }
+    const cancelScheduledTask = scheduleLowPriorityTask(() => {
+      void getCellSnapshotAsync(deferredMetadataSheet.workbookSheetIndex, deferredMetadataCell.row, deferredMetadataCell.col)
+        .then((snapshot) => {
+          if (!isCurrent) {
+            return;
+          }
 
-        workerCellSnapshotCacheRef.current.set(cacheKey, snapshot);
-        setWorkerCellSnapshotRevision((current) => current + 1);
-      })
-      .catch(() => {
-        if (!isCurrent) {
-          return;
-        }
+          workerCellSnapshotCacheRef.current.set(cacheKey, snapshot);
+          setWorkerCellSnapshotRevision((current) => current + 1);
+        })
+        .catch(() => {
+          if (!isCurrent) {
+            return;
+          }
 
-        workerCellSnapshotCacheRef.current.set(cacheKey, {
-          displayValue: "",
-          formula: ""
+          workerCellSnapshotCacheRef.current.set(cacheKey, {
+            displayValue: "",
+            formula: ""
+          });
+          setWorkerCellSnapshotRevision((current) => current + 1);
         });
-        setWorkerCellSnapshotRevision((current) => current + 1);
-      });
+    });
 
     return () => {
       isCurrent = false;
+      cancelScheduledTask();
     };
   }, [deferredMetadataCell, deferredMetadataSheet, getCellSnapshotAsync, isWorkerBacked]);
 
