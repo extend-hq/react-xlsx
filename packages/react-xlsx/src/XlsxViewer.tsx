@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { Worksheet } from "@dukelib/sheets-wasm";
+import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
 import {
   useVirtualizer
 } from "@tanstack/react-virtual";
@@ -68,6 +68,7 @@ const CANVAS_VIEWPORT_OVERSCAN_PX = 240;
 const LIVE_ZOOM_COMMIT_IDLE_MS = 48;
 const WHEEL_ZOOM_SENSITIVITY = 0.00025;
 const WHEEL_LINE_DELTA_PX = 16;
+const CHART_SOURCE_HIGHLIGHT_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#059669", "#ea580c", "#db2777"];
 const SHEET_SURFACE = "#ffffff";
 const SHEET_GRIDLINE = "#d9d9d9";
 const DEFAULT_CELL_PADDING = "0 4px";
@@ -882,6 +883,22 @@ type LiveGestureZoomState = {
   targetZoomScale: number;
 };
 
+type ChartRangeHighlight = {
+  fillColor: string;
+  range: XlsxCellRange;
+  strokeColor: string;
+  workbookSheetIndex: number;
+};
+
+type CellChartHighlight = {
+  borderBottom: boolean;
+  borderLeft: boolean;
+  borderRight: boolean;
+  borderTop: boolean;
+  fillColor: string;
+  strokeColor: string;
+};
+
 type WorksheetWithRowsBatch = Worksheet & {
   getRowsBatch?: (startRow: number, maxRows: number, options?: unknown) => unknown;
 };
@@ -978,6 +995,31 @@ function isCellInRange(cell: XlsxCellAddress, range: XlsxCellRange | null) {
     cell.col >= normalized.start.col &&
     cell.col <= normalized.end.col
   );
+}
+
+function resolveCellChartHighlight(
+  cell: XlsxCellAddress,
+  highlights: ChartRangeHighlight[]
+): CellChartHighlight | null {
+  let match: CellChartHighlight | null = null;
+
+  for (const highlight of highlights) {
+    if (!isCellInRange(cell, highlight.range)) {
+      continue;
+    }
+
+    const normalized = normalizeRange(highlight.range);
+    match = {
+      borderBottom: cell.row === normalized.end.row,
+      borderLeft: cell.col === normalized.start.col,
+      borderRight: cell.col === normalized.end.col,
+      borderTop: cell.row === normalized.start.row,
+      fillColor: highlight.fillColor,
+      strokeColor: highlight.strokeColor
+    };
+  }
+
+  return match;
 }
 
 function rangesEqual(left: XlsxCellRange | null, right: XlsxCellRange | null) {
@@ -2624,6 +2666,16 @@ function parseHexColor(color: string): [number, number, number] | null {
   return hslToRgb(hue, saturation, lightness);
 }
 
+function applyAlphaToColor(color: string, alpha: number) {
+  const rgb = parseHexColor(color);
+  if (!rgb) {
+    return color;
+  }
+
+  const [red, green, blue] = rgb;
+  return `rgba(${red}, ${green}, ${blue}, ${Math.max(0, Math.min(1, alpha))})`;
+}
+
 function relativeLuminance(color: string) {
   const rgb = parseHexColor(color);
   if (!rgb) {
@@ -3105,6 +3157,135 @@ function parseA1RangeReference(reference: string): XlsxCellRange | null {
   const start = parseA1CellReference(startRef ?? "");
   const end = parseA1CellReference(endRef ?? "");
   return start && end ? { end, start } : null;
+}
+
+function unescapeSheetNameReference(value: string) {
+  const trimmed = value.trim();
+  return trimmed.startsWith("'") && trimmed.endsWith("'")
+    ? trimmed.slice(1, -1).replace(/''/g, "'")
+    : trimmed;
+}
+
+function splitSheetFormulaReference(reference: string) {
+  let inQuotes = false;
+  for (let index = 0; index < reference.length; index += 1) {
+    const character = reference[index];
+    if (character === "'") {
+      if (inQuotes && reference[index + 1] === "'") {
+        index += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (character === "!" && !inQuotes) {
+      return {
+        range: reference.slice(index + 1),
+        sheetName: unescapeSheetNameReference(reference.slice(0, index))
+      };
+    }
+  }
+  return null;
+}
+
+function resolveChartFormulaRange(
+  formula: string,
+  fallbackSheetIndex: number,
+  sheets: XlsxSheetData[],
+  workbook: Workbook | null
+) {
+  let reference = formula.trim().replace(/^=/, "");
+  if (!reference) {
+    return null;
+  }
+
+  if (!reference.includes("!") && workbook) {
+    try {
+      const namedRange = workbook.getNamedRange(reference);
+      if (typeof namedRange === "string" && namedRange.length > 0 && namedRange !== reference) {
+        reference = namedRange;
+      }
+    } catch {
+      // Ignore missing named ranges and fall back to direct parsing.
+    }
+  }
+
+  const split = splitSheetFormulaReference(reference);
+  const range = parseA1RangeReference((split?.range ?? reference).replace(/\$/g, ""));
+  if (!range) {
+    return null;
+  }
+
+  let workbookSheetIndex = fallbackSheetIndex;
+  if (split?.sheetName) {
+    const workbookResolvedIndex = workbook?.sheetIndex(split.sheetName);
+    if (typeof workbookResolvedIndex === "number" && Number.isInteger(workbookResolvedIndex) && workbookResolvedIndex >= 0) {
+      workbookSheetIndex = workbookResolvedIndex;
+    } else {
+      const matchingSheet = sheets.find((sheet) => sheet.name === split.sheetName);
+      if (matchingSheet) {
+        workbookSheetIndex = matchingSheet.workbookSheetIndex;
+      }
+    }
+  }
+
+  return {
+    range: normalizeRange(range),
+    workbookSheetIndex
+  };
+}
+
+function collectChartRangeHighlights(
+  chart: XlsxChart | null,
+  sheets: XlsxSheetData[],
+  workbook: Workbook | null,
+  isDark: boolean
+) {
+  if (!chart) {
+    return [] as ChartRangeHighlight[];
+  }
+
+  const highlights: ChartRangeHighlight[] = [];
+  const seenRanges = new Set<string>();
+  const references = chart.series.flatMap((series) => [
+    series.categoriesRef?.formula,
+    typeof series.raw?.name === "string" ? series.raw.name : undefined,
+    series.valuesRef?.formula,
+    series.bubbleSizeRef?.formula
+  ]);
+
+  references.forEach((formula) => {
+    if (!formula) {
+      return;
+    }
+
+    const resolved = resolveChartFormulaRange(formula, chart.workbookSheetIndex, sheets, workbook);
+    if (!resolved) {
+      return;
+    }
+
+    const key = [
+      resolved.workbookSheetIndex,
+      resolved.range.start.row,
+      resolved.range.start.col,
+      resolved.range.end.row,
+      resolved.range.end.col
+    ].join(":");
+    if (seenRanges.has(key)) {
+      return;
+    }
+
+    seenRanges.add(key);
+    const strokeColor = CHART_SOURCE_HIGHLIGHT_COLORS[highlights.length % CHART_SOURCE_HIGHLIGHT_COLORS.length] ?? "#2563eb";
+    highlights.push({
+      fillColor: applyAlphaToColor(strokeColor, isDark ? 0.24 : 0.14),
+      range: resolved.range,
+      strokeColor,
+      workbookSheetIndex: resolved.workbookSheetIndex
+    });
+  });
+
+  return highlights;
 }
 
 function clampSparklineValue(value: number, min: number, max: number) {
@@ -4114,6 +4295,7 @@ function resolveSelectionColors({
 }
 
 type CellRenderData = {
+  chartHighlight?: CellChartHighlight | null;
   checkboxState?: boolean | null;
   conditionalColorScale?: {
     color: string;
@@ -4764,6 +4946,9 @@ function GridRow({
         if (cellData.conditionalColorScale || cellData.conditionalDataBar || cellData.conditionalIcon) {
           cellStyle.position = "relative";
         }
+        if (cellData.chartHighlight) {
+          cellStyle.position = cellStyle.position ?? "relative";
+        }
         if (cellData.isTableHeader) {
           cellStyle.position = "relative";
           cellStyle.zIndex = Math.max(Number(cellStyle.zIndex ?? 0), 4);
@@ -4811,6 +4996,10 @@ function GridRow({
           cellContentStyle.position = "relative";
           cellContentStyle.zIndex = 1;
         }
+        if (cellData.chartHighlight) {
+          cellContentStyle.position = cellContentStyle.position ?? "relative";
+          cellContentStyle.zIndex = Math.max(Number(cellContentStyle.zIndex ?? 0), 1);
+        }
         if (trailingInset > 0) {
           cellContentStyle.paddingRight = (trailingInset + 4) * zoomFactor;
         }
@@ -4848,6 +5037,22 @@ function GridRow({
             style={cellStyle}
             title={title}
           >
+            {cellData.chartHighlight ? (
+              <div
+                aria-hidden="true"
+                style={{
+                  backgroundColor: cellData.chartHighlight.fillColor,
+                  borderBottom: cellData.chartHighlight.borderBottom ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  borderLeft: cellData.chartHighlight.borderLeft ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  borderRight: cellData.chartHighlight.borderRight ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  borderTop: cellData.chartHighlight.borderTop ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  boxSizing: "border-box",
+                  inset: Math.max(1, zoomFactor * 0.5),
+                  pointerEvents: "none",
+                  position: "absolute"
+                }}
+              />
+            ) : null}
             {cellData.conditionalDataBar ? (
               <div
                 aria-hidden="true"
@@ -5115,6 +5320,7 @@ function XlsxGrid({
     sortTable,
     tables,
     undo,
+    workbook,
     zoomScale
   } = controller;
   const canResizeHeaders = !readOnly || allowResizeInReadOnly;
@@ -6941,6 +7147,20 @@ function XlsxGrid({
     }
     return map;
   }, [activeSheet?.sparklines]);
+  const chartRangeHighlights = React.useMemo(
+    () => collectChartRangeHighlights(selectedChart, sheets, workbook, paletteIsDark(palette)),
+    [palette, selectedChart, sheets, workbook]
+  );
+  const activeSheetChartHighlights = React.useMemo(
+    () => activeSheet
+      ? chartRangeHighlights.filter((highlight) => highlight.workbookSheetIndex === activeSheet.workbookSheetIndex)
+      : [],
+    [activeSheet, chartRangeHighlights]
+  );
+
+  React.useEffect(() => {
+    cellRenderCacheRef.current.clear();
+  }, [activeSheetChartHighlights, selectedChartId]);
 
   const getCellData = React.useCallback((row: number, col: number): CellRenderData => {
     const cacheKey = `${row}:${col}`;
@@ -7027,7 +7247,9 @@ function XlsxGrid({
     const checkboxState = mergedStyle?.cellControl && worksheet
       ? getCellBooleanValue(worksheet, row, col)
       : null;
+    const chartHighlight = resolveCellChartHighlight({ row, col }, activeSheetChartHighlights);
     const nextData: CellRenderData = {
+      chartHighlight,
       checkboxState,
       colSpan: merge?.colSpan,
       conditionalDataBar: worksheet
@@ -7160,7 +7382,21 @@ function XlsxGrid({
 
     cellRenderCacheRef.current.set(cacheKey, nextData);
     return nextData;
-  }, [activeSheet, colIndexByActual, colPrefixSums, displayDefaultColWidth, displayEffectiveColWidths, effectiveTables, palette, sparklinesByCell, viewportRowBatch, visibleCols, worksheet, zoomFactor]);
+  }, [
+    activeSheet,
+    activeSheetChartHighlights,
+    colIndexByActual,
+    colPrefixSums,
+    displayDefaultColWidth,
+    displayEffectiveColWidths,
+    effectiveTables,
+    palette,
+    sparklinesByCell,
+    viewportRowBatch,
+    visibleCols,
+    worksheet,
+    zoomFactor
+  ]);
 
   React.useEffect(() => {
     conditionalFormatMetricsCacheRef.current.clear();
@@ -9043,6 +9279,15 @@ function XlsxGrid({
               && cellStyle.backgroundColor !== resolveSheetSurface(activeSheet, palette));
           paneContext.fillStyle = gradientFill ?? fillColor;
           paneContext.fillRect(localRect.left, localRect.top, localRect.width, localRect.height);
+          if (cellData.chartHighlight) {
+            paneContext.fillStyle = cellData.chartHighlight.fillColor;
+            paneContext.fillRect(
+              localRect.left + 1,
+              localRect.top + 1,
+              Math.max(0, localRect.width - 2),
+              Math.max(0, localRect.height - 2)
+            );
+          }
 
           if (cellData.conditionalDataBar) {
             const barLeft = localRect.left + 4 * zoomFactor;
@@ -9114,6 +9359,25 @@ function XlsxGrid({
           }
           if (leftBorder && drawColIndex === 0) {
             strokeCanvasBorderSide(paneContext, "left", localRect, leftBorder);
+          }
+          if (cellData.chartHighlight) {
+            const highlightBorder = {
+              color: cellData.chartHighlight.strokeColor,
+              style: "solid",
+              width: Math.max(1, zoomFactor)
+            };
+            if (cellData.chartHighlight.borderTop) {
+              strokeCanvasBorderSide(paneContext, "top", localRect, highlightBorder);
+            }
+            if (cellData.chartHighlight.borderRight) {
+              strokeCanvasBorderSide(paneContext, "right", localRect, highlightBorder);
+            }
+            if (cellData.chartHighlight.borderBottom) {
+              strokeCanvasBorderSide(paneContext, "bottom", localRect, highlightBorder);
+            }
+            if (cellData.chartHighlight.borderLeft) {
+              strokeCanvasBorderSide(paneContext, "left", localRect, highlightBorder);
+            }
           }
 
           const padding = resolveCanvasPadding(cellStyle.padding);
