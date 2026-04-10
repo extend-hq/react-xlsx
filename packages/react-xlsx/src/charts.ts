@@ -1228,7 +1228,11 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
           parseChartCacheValues(getFirstLocalChild(seriesNode, "xVal"), "numCache", "value")
           ?? parseChartMultiLevelCacheValues(getFirstLocalChild(seriesNode, "xVal"), "category")
         )
-      : parseChartCacheValues(getFirstLocalChild(seriesNode, "cat"), "strCache", "category");
+      : (
+          parseChartCacheValues(getFirstLocalChild(seriesNode, "cat"), "strCache", "category")
+          ?? parseChartCacheValues(getFirstLocalChild(seriesNode, "cat"), "numCache", "category")
+          ?? parseChartMultiLevelCacheValues(getFirstLocalChild(seriesNode, "cat"), "category")
+        );
     const cachedValues = isScatterChart
       ? parseChartCacheValues(getFirstLocalChild(seriesNode, "yVal"), "numCache", "value")
       : parseChartCacheValues(getFirstLocalChild(seriesNode, "val"), "numCache", "value");

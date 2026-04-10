@@ -2019,7 +2019,9 @@ function formatCategoryLabel(chart: XlsxChart, value: unknown, fallback = "") {
   const rawRecord = chart.raw && typeof chart.raw === "object"
     ? chart.raw as Record<string, unknown>
     : null;
-  const numeric = safeNumber(value);
+  const numeric = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : null;
   const formatCode = chart.categoryAxis?.numberFormat?.formatCode;
   if (numeric != null && isLikelyDateFormatCode(formatCode)) {
     return formatExcelDateSerial(numeric, formatCode, rawRecord?.date1904 === true);

@@ -294,6 +294,7 @@ export interface XlsxShape {
   flipV?: boolean;
   geometry: string;
   geometryAdjustments?: Record<string, number>;
+  hidden?: boolean;
   hyperlink?: string;
   id: string;
   name?: string;
@@ -309,6 +310,37 @@ export interface XlsxShape {
   };
   stroke?: XlsxShapeStroke;
   textBox?: XlsxShapeTextBox;
+  workbookSheetIndex: number;
+  zIndex: number;
+}
+
+export type XlsxFormControlKind =
+  | "button"
+  | "checkbox"
+  | "dropdown"
+  | "editbox"
+  | "group-box"
+  | "label"
+  | "listbox"
+  | "radio"
+  | "scrollbar"
+  | "spinner"
+  | "unknown";
+
+export interface XlsxFormControl {
+  anchor: XlsxImageAnchor;
+  checked?: boolean;
+  fontFamily?: string;
+  fontSizePt?: number;
+  hidden?: boolean;
+  id: string;
+  kind: XlsxFormControlKind;
+  label?: string;
+  linkedCell?: string;
+  name?: string;
+  sheetIndex: number;
+  textAlign?: "center" | "left" | "right";
+  textColor?: string;
   workbookSheetIndex: number;
   zIndex: number;
 }
@@ -601,7 +633,9 @@ export interface XlsxViewerController {
   clearSelectedImage: () => void;
   getChartById: (id: string) => XlsxChart | null;
   getChartsheetById: (id: string) => XlsxChartsheet | null;
+  formControls: XlsxFormControl[];
   getSheetCharts: (sheetIndex?: number) => XlsxChart[];
+  getSheetFormControls: (sheetIndex?: number) => XlsxFormControl[];
   getImageById: (id: string) => XlsxImage | null;
   getSheetImages: (sheetIndex?: number) => XlsxImage[];
   getSheetShapes: (sheetIndex?: number) => XlsxShape[];
@@ -821,9 +855,13 @@ export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions 
 }
 
 export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
+  allowResizeInReadOnly?: boolean;
   className?: string;
   controller?: XlsxViewerController;
   emptyState?: React.ReactNode;
+  enableCanvasSelectionAnimation?: boolean;
+  enableGestureZoom?: boolean;
+  experimentalCanvas?: boolean;
   errorState?: React.ReactNode | ((error: Error) => React.ReactNode);
   fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode);
   height?: React.CSSProperties["height"];
