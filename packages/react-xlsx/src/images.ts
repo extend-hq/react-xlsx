@@ -920,6 +920,8 @@ function parseSpreadsheetAlignment(node: Element | null): XlsxResolvedCellStyle[
   const vertical = node.getAttribute("vertical");
   const wrapText = node.getAttribute("wrapText");
   const indent = node.getAttribute("indent");
+  const shrinkToFit = node.getAttribute("shrinkToFit");
+  const textRotation = node.getAttribute("textRotation");
   if (horizontal) {
     alignment.horizontal = horizontal;
   }
@@ -929,8 +931,17 @@ function parseSpreadsheetAlignment(node: Element | null): XlsxResolvedCellStyle[
   if (wrapText !== null) {
     alignment.wrapText = wrapText === "1";
   }
+  if (shrinkToFit !== null) {
+    alignment.shrinkToFit = shrinkToFit === "1";
+  }
   if (indent !== null) {
     alignment.indent = Number(indent);
+  }
+  if (textRotation !== null) {
+    const parsedRotation = Number(textRotation);
+    if (Number.isFinite(parsedRotation)) {
+      alignment.textRotation = parsedRotation;
+    }
   }
 
   return Object.keys(alignment).length > 0 ? alignment : undefined;

@@ -20,6 +20,8 @@ pnpm add @extend-ai/react-xlsx
 - Inline controller usage or provider-driven composition with hooks
 - Large-file safeguards, deferred loading, and worker-backed parsing
 - Optional editing, copy/paste, CSV/XLSX export, chart/image manipulation, and zoom controls
+- Primary support is for OOXML `.xlsx` workbooks
+- Legacy `.xls` and macro-enabled `.xlsm` workbooks have limited support: the viewer only displays workbook data that `@dukelib/sheets-wasm` can parse, and format-specific XML features may be missing or skipped
 
 ## Quick Start
 
@@ -85,7 +87,7 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `maxFileSizeBytes` | `number` | Hard parse limit before rendering a too-large state. Defaults to `25 * 1024 * 1024` (`25 MB`). |
 | `readOnly` | `boolean` | Forces viewer editing features off. Defaults to `false`. |
 | `readOnlyAboveBytes` | `number` | Automatically switches large workbooks into read-only mode above this threshold. Defaults to `0` (disabled). |
-| `skipXmlParsing` | `boolean` | Skips the OOXML ZIP/XML parsing layer and relies only on `Workbook.fromBytes(...)` metadata. The viewer also auto-enables this mode for legacy `.xls` files when their OLE magic bytes are detected. Defaults to `false`. |
+| `skipXmlParsing` | `boolean` | Skips the OOXML ZIP/XML parsing layer and relies only on `Workbook.fromBytes(...)` metadata from `@dukelib/sheets-wasm`. The viewer also auto-enables this mode for legacy `.xls` files when their OLE magic bytes are detected. This is effectively the limited-support path used for `.xls` and some `.xlsm` content, so only data Duke Sheets can parse will render. Defaults to `false`. |
 
 ### Layout And Appearance Props
 
@@ -96,6 +98,9 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `isDark` | `boolean` | Enables the built-in dark viewer palette. |
 | `rounded` | `boolean` | Toggles the default rounded outer shell. Defaults to `true`. |
 | `showDefaultToolbar` | `boolean` | Shows or hides the built-in toolbar. Defaults to `true`. |
+| `enableGestureZoom` | `boolean` | Enables pinch-to-zoom and modifier-key (`Cmd`/`Ctrl`) scroll-to-zoom inside the viewer. Defaults to `true`. |
+| `allowResizeInReadOnly` | `boolean` | Allows row and column resizing even when `readOnly` is enabled. Defaults to `false`. |
+| `experimentalCanvas` | `boolean` | Routes the worksheet renderer through the experimental canvas implementation. Defaults to `false`. |
 | `toolbar` | `React.ReactNode \| (controller: XlsxViewerController) => React.ReactNode` | Replaces the toolbar area with a custom node or render function. |
 | `selectionColor` | `string` | Border/accent color for the current selection. |
 | `selectionFillColor` | `string` | Fill color used for selection overlays. |

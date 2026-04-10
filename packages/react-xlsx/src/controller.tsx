@@ -3158,7 +3158,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const sortTable = React.useCallback((tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => {
     const worksheet = getActiveWorksheet();
     const targetTable = tables.find((table) => table.name === tableName || table.displayName === tableName);
-    if (readOnly || !worksheet || !workbook || !activeSheet || !targetTable) {
+    if (!worksheet || !workbook || !activeSheet || !targetTable) {
       return;
     }
 

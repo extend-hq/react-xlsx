@@ -821,9 +821,13 @@ export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions 
 }
 
 export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
+  allowResizeInReadOnly?: boolean;
   className?: string;
   controller?: XlsxViewerController;
   emptyState?: React.ReactNode;
+  enableCanvasSelectionAnimation?: boolean;
+  enableGestureZoom?: boolean;
+  experimentalCanvas?: boolean;
   errorState?: React.ReactNode | ((error: Error) => React.ReactNode);
   fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode);
   height?: React.CSSProperties["height"];

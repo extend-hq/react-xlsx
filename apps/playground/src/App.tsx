@@ -82,7 +82,7 @@ function ViewerEmptyState() {
     <div className="flex h-full w-full items-center justify-center px-6">
       <div className="mx-auto max-w-sm text-center">
         <div className="mx-auto flex size-12 items-center justify-center rounded-2xl border bg-muted/50 shadow-sm">
-          <FileSpreadsheet className="text-muted-foreground size-5" />
+          <FileSpreadsheet className="size-5 text-slate-300 dark:text-muted-foreground" />
         </div>
         <div className="mt-4 text-sm font-medium">Open an XLSX workbook</div>
         <p className="text-muted-foreground mt-2 text-xs leading-5">
@@ -102,22 +102,26 @@ function ViewerFileTooLargeState() {
 }
 
 function WorkbookToolbar({
+  experimentalCanvas,
   isDocumentDark,
   onClear,
   onLoadUrl,
   onOpenFile,
   readOnly,
   remoteUrl,
+  setExperimentalCanvas,
   setIsDocumentDark,
   setReadOnly,
   setRemoteUrl,
 }: {
+  experimentalCanvas: boolean;
   isDocumentDark: boolean;
   onClear: () => void;
   onLoadUrl: () => void;
   onOpenFile: () => void;
   readOnly: boolean;
   remoteUrl: string;
+  setExperimentalCanvas: (value: boolean) => void;
   setIsDocumentDark: (value: boolean) => void;
   setReadOnly: (value: boolean) => void;
   setRemoteUrl: (value: string) => void;
@@ -223,6 +227,15 @@ function WorkbookToolbar({
               aria-label="Toggle document dark mode"
               checked={isDocumentDark}
               onCheckedChange={setIsDocumentDark}
+              size="sm"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+            <span className="text-muted-foreground text-[11px] font-medium">Canvas</span>
+            <Switch
+              aria-label="Toggle experimental canvas renderer"
+              checked={experimentalCanvas}
+              onCheckedChange={setExperimentalCanvas}
               size="sm"
             />
           </div>
@@ -469,6 +482,7 @@ export function App() {
   const [isReadingFile, setIsReadingFile] = React.useState(false);
   const [isDragActive, setIsDragActive] = React.useState(false);
   const [isDocumentDark, setIsDocumentDark] = React.useState(false);
+  const [experimentalCanvas, setExperimentalCanvas] = React.useState(false);
   const [isReadOnly, setIsReadOnly] = React.useState(false);
   const dragDepthRef = React.useRef(0);
 
@@ -615,12 +629,14 @@ export function App() {
         >
           <XlsxViewerProvider controller={controller} isDark={isDocumentDark}>
             <WorkbookToolbar
+              experimentalCanvas={experimentalCanvas}
               isDocumentDark={isDocumentDark}
               onClear={handleClear}
               onLoadUrl={handleLoadUrl}
               onOpenFile={() => fileInputRef.current?.click()}
               readOnly={isReadOnly}
               remoteUrl={remoteUrl}
+              setExperimentalCanvas={setExperimentalCanvas}
               setIsDocumentDark={setIsDocumentDark}
               setReadOnly={setIsReadOnly}
               setRemoteUrl={setRemoteUrl}
@@ -638,6 +654,7 @@ export function App() {
                       Loading...
                     </div>
                   }
+                  experimentalCanvas={experimentalCanvas}
                   readOnly={isReadOnly}
                   rounded={true}
                   showDefaultToolbar={false}
