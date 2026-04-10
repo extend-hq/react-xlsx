@@ -35,6 +35,7 @@ import type {
   XlsxClipboardData,
   XlsxConditionalFormatRule,
   XlsxDataValidation,
+  XlsxFormControl,
   XlsxFreezePanes,
   XlsxImage,
   XlsxImageRect,
@@ -1666,6 +1667,7 @@ function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
   const objectUrls: string[] = [];
   return {
     archive: {},
+    formControlsByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => [] as XlsxFormControl[]),
     imageOriginsById: new Map(),
     imagesByWorkbookSheetIndex: collectWorksheetApiImages(workbook, objectUrls),
     namedCellStyleByName: {},
@@ -1772,6 +1774,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [tabs, setTabs] = React.useState<XlsxWorkbookTab[]>([]);
   const [isChartsLoading, setIsChartsLoading] = React.useState(false);
   const [workerTablesByWorkbookSheetIndex, setWorkerTablesByWorkbookSheetIndex] = React.useState<XlsxTable[][]>([]);
+  const [formControlsByWorkbookSheetIndex, setFormControlsByWorkbookSheetIndex] = React.useState<XlsxFormControl[][]>([]);
   const [imagesByWorkbookSheetIndex, setImagesByWorkbookSheetIndex] = React.useState<XlsxImage[][]>([]);
   const [shapesByWorkbookSheetIndex, setShapesByWorkbookSheetIndex] = React.useState<XlsxShape[][]>([]);
   const [activeSheetIndex, setActiveSheetIndexState] = React.useState(0);
@@ -1827,6 +1830,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     revokeWorkbookImageAssets(imageAssetsRef.current);
     imageAssetsRef.current = null;
     sheetOriginsRef.current = [];
+    setFormControlsByWorkbookSheetIndex([]);
     setImagesByWorkbookSheetIndex([]);
     setShapesByWorkbookSheetIndex([]);
   }, []);
@@ -1846,6 +1850,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     revokeWorkbookImageAssets(imageAssetsRef.current);
     imageAssetsRef.current = assets;
     sheetOriginsRef.current = assets?.sheetOrigins.slice() ?? [];
+    setFormControlsByWorkbookSheetIndex(assets?.formControlsByWorkbookSheetIndex ?? []);
     setImagesByWorkbookSheetIndex(assets?.imagesByWorkbookSheetIndex ?? []);
     setShapesByWorkbookSheetIndex(assets?.shapesByWorkbookSheetIndex ?? []);
   }, []);
@@ -2599,6 +2604,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     };
   }, [visibleSheetIndexByWorkbookSheetIndex]);
 
+  const mapPublicFormControl = React.useCallback((control: XlsxFormControl) => {
+    const visibleSheetIndex = visibleSheetIndexByWorkbookSheetIndex.get(control.workbookSheetIndex);
+    return {
+      ...control,
+      sheetIndex: visibleSheetIndex ?? control.workbookSheetIndex
+    };
+  }, [visibleSheetIndexByWorkbookSheetIndex]);
+
   const publicChartsByWorkbookSheetIndex = React.useMemo(
     () => chartsByWorkbookSheetIndex.map((sheetCharts) => sheetCharts.map(mapPublicChart)),
     [chartsByWorkbookSheetIndex, mapPublicChart]
@@ -2663,6 +2676,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [activeSheetIndex, imagesByWorkbookSheetIndex, mapPublicImage, sheets]);
 
   const images = React.useMemo(() => getSheetImages(activeSheetIndex), [activeSheetIndex, getSheetImages]);
+
+  const getSheetFormControls = React.useCallback((sheetIndex = activeSheetIndex) => {
+    const targetSheet = sheets[sheetIndex];
+    if (!targetSheet) {
+      return [];
+    }
+
+    return (formControlsByWorkbookSheetIndex[targetSheet.workbookSheetIndex] ?? []).map(mapPublicFormControl);
+  }, [activeSheetIndex, formControlsByWorkbookSheetIndex, mapPublicFormControl, sheets]);
+
+  const formControls = React.useMemo(() => getSheetFormControls(activeSheetIndex), [activeSheetIndex, getSheetFormControls]);
 
   const getSheetShapes = React.useCallback((sheetIndex = activeSheetIndex) => {
     const targetSheet = sheets[sheetIndex];
@@ -4246,10 +4270,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       exportXlsx,
       error,
       fillSelection,
+      formControls,
       getChartById,
       getChartsheetById,
       getImageById,
       getSheetCharts,
+      getSheetFormControls,
       getSheetImages,
       getSheetShapes,
       file,
@@ -4348,10 +4374,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       exportXlsx,
       file,
       fillSelection,
+      formControls,
       getChartById,
       getChartsheetById,
       getImageById,
       getSheetCharts,
+      getSheetFormControls,
       getSheetImages,
       getSheetShapes,
       getClipboardData,
@@ -4360,6 +4388,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       getCellSnapshotAsync,
       getActiveWorksheet,
       historyRevision,
+      formControls,
       images,
       isLoadDeferred,
       isLoading,

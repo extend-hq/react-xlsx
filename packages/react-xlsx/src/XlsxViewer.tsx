@@ -18,6 +18,7 @@ import type {
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxFormControl,
   XlsxImage,
   XlsxImageRect,
   XlsxImageRenderProps,
@@ -4354,6 +4355,26 @@ function renderCheckboxControl(checked: boolean, palette: ViewerPalette, scale =
   );
 }
 
+function renderRadioControl(checked: boolean, palette: ViewerPalette, scale = 1) {
+  const stroke = paletteIsDark(palette) ? "#cbd5e1" : "#475569";
+  const dot = paletteIsDark(palette) ? "#60a5fa" : "#2563eb";
+  return (
+    <svg aria-hidden="true" height={14 * scale} style={{ display: "block" }} viewBox="0 0 16 16" width={14 * scale}>
+      <circle cx={8} cy={8} fill="transparent" r={5.5} stroke={stroke} strokeWidth={1.2} />
+      {checked ? <circle cx={8} cy={8} fill={dot} r={2.75} /> : null}
+    </svg>
+  );
+}
+
+function resolveFormControlLabel(control: XlsxFormControl) {
+  const label = control.label ?? control.name;
+  if (!label) {
+    return "";
+  }
+
+  return label.replace(/\u00a0/g, " ").replace(/^\s+/, "");
+}
+
 function resolveConditionalDataBarForCell(
   row: number,
   col: number,
@@ -5048,6 +5069,7 @@ function XlsxGrid({
     displayFileName,
     error,
     fillSelection,
+    formControls,
     getActiveWorksheet,
     getChartById,
     getRowsBatchAsync,
@@ -5256,6 +5278,7 @@ function XlsxGrid({
   const paneDrawingNodesCacheRef = React.useRef<{
     chartRects: Array<{ chart: XlsxChart; rect: XlsxImageRect }>;
     drawingViewport: DrawingViewport;
+    formControlRects: Array<{ control: XlsxFormControl; rect: XlsxImageRect }>;
     imageRects: Array<{ image: XlsxImage; rect: XlsxImageRect }>;
     palette: ViewerPalette;
     readOnly: boolean;
@@ -5297,6 +5320,35 @@ function XlsxGrid({
     interactionModeRef.current = mode;
   }, []);
   const worksheet = getActiveWorksheet();
+  const mergedSecondaryAnchorMap = React.useMemo(() => {
+    const map = new Map<string, XlsxCellAddress>();
+    const mergedRegions = Array.isArray(worksheet?.mergedRegions) ? worksheet.mergedRegions : [];
+
+    for (const entry of mergedRegions) {
+      const region = asRecord(entry);
+      const startRow = asNonNegativeInteger(region?.startRow);
+      const startCol = asNonNegativeInteger(region?.startCol);
+      const endRow = asNonNegativeInteger(region?.endRow);
+      const endCol = asNonNegativeInteger(region?.endCol);
+      if (startRow === null || startCol === null || endRow === null || endCol === null) {
+        continue;
+      }
+
+      for (let mergeRow: number = startRow; mergeRow <= endRow; mergeRow += 1) {
+        for (let mergeCol: number = startCol; mergeCol <= endCol; mergeCol += 1) {
+          if (mergeRow === startRow && mergeCol === startCol) {
+            continue;
+          }
+          map.set(`${mergeRow}:${mergeCol}`, { row: startRow, col: startCol });
+        }
+      }
+    }
+
+    return map;
+  }, [worksheet]);
+  const resolveMergeAnchorCell = React.useCallback((cell: XlsxCellAddress): XlsxCellAddress => {
+    return mergedSecondaryAnchorMap.get(`${cell.row}:${cell.col}`) ?? cell;
+  }, [mergedSecondaryAnchorMap]);
   const normalizedSelection = React.useMemo(() => (selection ? normalizeRange(selection) : null), [selection]);
   const zoomFactor = React.useMemo(() => Math.max(0.1, zoomScale / 100), [zoomScale]);
   const previousZoomFactorRef = React.useRef(zoomFactor);
@@ -6535,11 +6587,12 @@ function XlsxGrid({
   const resolvePointerCellFromClient = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
     const geometryCell = resolvePointerCellFromGeometry(clientX, clientY);
     if (geometryCell && !worksheet?.isMergedSecondary(geometryCell.row, geometryCell.col)) {
-      return geometryCell;
+      return resolveMergeAnchorCell(geometryCell);
     }
 
-    return resolvePointerCellFromHitTest(clientX, clientY) ?? geometryCell;
-  }, [resolvePointerCellFromGeometry, resolvePointerCellFromHitTest, worksheet]);
+    const resolvedCell = resolvePointerCellFromHitTest(clientX, clientY) ?? geometryCell;
+    return resolvedCell ? resolveMergeAnchorCell(resolvedCell) : null;
+  }, [resolveMergeAnchorCell, resolvePointerCellFromGeometry, resolvePointerCellFromHitTest, worksheet]);
 
   const resolveDraggedSelectionCell = React.useCallback((
     dragState: {
@@ -6574,12 +6627,8 @@ function XlsxGrid({
       return { row: dragState.originCell.row, col: actualCol };
     }
 
-    if (worksheet?.isMergedSecondary(actualRow, actualCol)) {
-      return hitCell ?? geometryCell;
-    }
-
-    return { row: actualRow, col: actualCol };
-  }, [resolvePointerCellFromGeometry, resolvePointerCellFromHitTest, rowIndexByActual, worksheet]);
+    return resolveMergeAnchorCell({ row: actualRow, col: actualCol });
+  }, [resolveMergeAnchorCell, resolvePointerCellFromGeometry, resolvePointerCellFromHitTest, rowIndexByActual]);
 
   const resolveCellPointerOrigin = React.useCallback((
     cell: XlsxCellAddress,
@@ -7410,6 +7459,42 @@ function XlsxGrid({
       visibleRows
     ]
   );
+  const formControlRects = React.useMemo(
+    () =>
+      showImages
+        ? formControls
+          .filter((control) => !control.hidden)
+          .map((control) => ({
+            control,
+            rect: resolveAnchoredRect(control.anchor, visibleRows, visibleCols, displayEffectiveRowHeights, displayEffectiveColWidths, {
+              actualColPrefixSums,
+              actualRowPrefixSums,
+              colIndexByActual,
+              colPrefixSums,
+              headerHeight: displayHeaderHeight,
+              rowIndexByActual,
+              rowHeaderWidth: displayRowHeaderWidth,
+              rowPrefixSums
+            })
+          }))
+        : [],
+    [
+      actualColPrefixSums,
+      actualRowPrefixSums,
+      colIndexByActual,
+      colPrefixSums,
+      displayHeaderHeight,
+      displayEffectiveColWidths,
+      displayEffectiveRowHeights,
+      displayRowHeaderWidth,
+      formControls,
+      rowIndexByActual,
+      rowPrefixSums,
+      showImages,
+      visibleCols,
+      visibleRows
+    ]
+  );
   const chartRects = React.useMemo(
     () =>
       showImages
@@ -7486,10 +7571,21 @@ function XlsxGrid({
 
   const resolveGeometryOverlayRect = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
-    const startRowIndex = rowIndexByActual.get(normalized.start.row);
-    const endRowIndex = rowIndexByActual.get(normalized.end.row);
-    const startColIndex = colIndexByActual.get(normalized.start.col);
-    const endColIndex = colIndexByActual.get(normalized.end.col);
+    const startCell = resolveMergeAnchorCell(normalized.start);
+    const isSingleCellSelection = normalized.start.row === normalized.end.row && normalized.start.col === normalized.end.col;
+    const merge = isSingleCellSelection
+      ? (worksheet?.getMergeSpan(startCell.row, startCell.col) as { colSpan?: number; rowSpan?: number } | null | undefined)
+      : null;
+    const endCell = isSingleCellSelection
+      ? {
+          row: startCell.row + Math.max(1, merge?.rowSpan ?? 1) - 1,
+          col: startCell.col + Math.max(1, merge?.colSpan ?? 1) - 1
+        }
+      : normalized.end;
+    const startRowIndex = rowIndexByActual.get(startCell.row);
+    const endRowIndex = rowIndexByActual.get(endCell.row);
+    const startColIndex = colIndexByActual.get(startCell.col);
+    const endColIndex = colIndexByActual.get(endCell.col);
 
     if (
       startRowIndex === undefined ||
@@ -7541,7 +7637,7 @@ function XlsxGrid({
       top: Math.max(displayHeaderHeight, top),
       width: Math.max(0, width)
     };
-  }, [colIndexByActual, colPrefixSums, displayDefaultColWidth, displayDefaultRowHeight, displayEffectiveColWidths, displayEffectiveRowHeights, displayHeaderHeight, displayRowHeaderWidth, rowIndexByActual, rowPrefixSums]);
+  }, [colIndexByActual, colPrefixSums, displayDefaultColWidth, displayDefaultRowHeight, displayEffectiveColWidths, displayEffectiveRowHeights, displayHeaderHeight, displayRowHeaderWidth, resolveMergeAnchorCell, rowIndexByActual, rowPrefixSums, worksheet]);
 
   const resolveMountedRangeOverlayRect = React.useCallback((range: XlsxCellRange, geometryRect: {
     height: number;
@@ -8877,34 +8973,50 @@ function XlsxGrid({
       ) {
         continue;
       }
+      const drawnMergedAnchorKeys = new Set<string>();
       for (const rowItem of paneAxisItems.rows) {
         for (const colItem of paneAxisItems.cols) {
           const cell = { row: rowItem.actualRow, col: colItem.actualCol };
-          const cellData = getCellData(cell.row, cell.col);
+          const anchorCell = resolveMergeAnchorCell(cell);
+          const anchorKey = `${anchorCell.row}:${anchorCell.col}`;
+          let drawCell = anchorCell;
+          let cellData = getCellData(drawCell.row, drawCell.col);
+          if ((cellData.colSpan || cellData.rowSpan) && drawnMergedAnchorKeys.has(anchorKey)) {
+            continue;
+          }
           if (cellData.isMergedSecondary) {
+            continue;
+          }
+          if (cellData.colSpan || cellData.rowSpan) {
+            drawnMergedAnchorKeys.add(anchorKey);
+          }
+
+          const drawRowIndex = rowIndexByActual.get(drawCell.row);
+          const drawColIndex = colIndexByActual.get(drawCell.col);
+          if (drawRowIndex === undefined || drawColIndex === undefined) {
             continue;
           }
 
           const displayRect = cellData.colSpan || cellData.rowSpan
-            ? resolveCellDisplayRect(cell)
+            ? resolveCellDisplayRect(drawCell)
             : null;
-          const baseLeft = displayRect?.left ?? (displayRowHeaderWidth + colItem.start);
-          const baseTop = displayRect?.top ?? (displayHeaderHeight + rowItem.start);
+          const baseLeft = displayRect?.left ?? (displayRowHeaderWidth + (colPrefixSums[drawColIndex] ?? 0));
+          const baseTop = displayRect?.top ?? (displayHeaderHeight + (rowPrefixSums[drawRowIndex] ?? 0));
           const useFrozenHorizontalPosition = pane === "left" || pane === "corner";
           const useFrozenVerticalPosition = pane === "top" || pane === "corner";
           const localRect = {
-            height: displayRect?.height ?? rowItem.size,
+            height: displayRect?.height ?? (displayEffectiveRowHeights[drawRowIndex] ?? rowItem.size),
             left: (
               useFrozenHorizontalPosition
-                ? (stickyLeftByCol.get(colItem.actualCol) ?? (baseLeft - drawingViewport.left))
+                ? (stickyLeftByCol.get(drawCell.col) ?? (baseLeft - drawingViewport.left))
                 : (baseLeft - drawingViewport.left)
             ) - paneBoundsForCell.left,
             top: (
               useFrozenVerticalPosition
-                ? (stickyTopByRow.get(rowItem.actualRow) ?? (baseTop - drawingViewport.top))
+                ? (stickyTopByRow.get(drawCell.row) ?? (baseTop - drawingViewport.top))
                 : (baseTop - drawingViewport.top)
             ) - paneBoundsForCell.top,
-            width: displayRect?.width ?? colItem.size
+            width: displayRect?.width ?? (displayEffectiveColWidths[drawColIndex] ?? colItem.size)
           };
           const drawableWidth = Math.max(localRect.width, cellData.spillWidth ?? 0);
 
@@ -8958,17 +9070,17 @@ function XlsxGrid({
           const rightBorder = parseCanvasBorderDeclaration(cellStyle.borderRight);
           const bottomBorder = parseCanvasBorderDeclaration(cellStyle.borderBottom);
           const leftBorder = parseCanvasBorderDeclaration(cellStyle.borderLeft);
-          const rightNeighborCol = visibleCols[colItem.index + Math.max(1, cellData.colSpan ?? 1)];
+          const rightNeighborCol = visibleCols[drawColIndex + Math.max(1, cellData.colSpan ?? 1)];
           const rightNeighborData = rightNeighborCol === undefined
             ? null
-            : getCellData(cell.row, rightNeighborCol);
+            : getCellData(drawCell.row, rightNeighborCol);
           const rightNeighborLeftBorder = rightNeighborData?.isMergedSecondary
             ? null
             : parseCanvasBorderDeclaration(rightNeighborData?.style.borderLeft);
-          const bottomNeighborRow = visibleRows[rowItem.index + Math.max(1, cellData.rowSpan ?? 1)];
+          const bottomNeighborRow = visibleRows[drawRowIndex + Math.max(1, cellData.rowSpan ?? 1)];
           const bottomNeighborData = bottomNeighborRow === undefined
             ? null
-            : getCellData(bottomNeighborRow, cell.col);
+            : getCellData(bottomNeighborRow, drawCell.col);
           const bottomNeighborTopBorder = bottomNeighborData?.isMergedSecondary
             ? null
             : parseCanvasBorderDeclaration(bottomNeighborData?.style.borderTop);
@@ -8990,7 +9102,7 @@ function XlsxGrid({
             paneContext.stroke();
           }
 
-          if (topBorder && rowItem.index === 0) {
+          if (topBorder && drawRowIndex === 0) {
             strokeCanvasBorderSide(paneContext, "top", localRect, topBorder);
           }
           if (resolvedRightBorder) {
@@ -8999,7 +9111,7 @@ function XlsxGrid({
           if (resolvedBottomBorder) {
             strokeCanvasBorderSide(paneContext, "bottom", localRect, resolvedBottomBorder);
           }
-          if (leftBorder && colItem.index === 0) {
+          if (leftBorder && drawColIndex === 0) {
             strokeCanvasBorderSide(paneContext, "left", localRect, leftBorder);
           }
 
@@ -9286,6 +9398,10 @@ function XlsxGrid({
     canvasPaneAxisItems,
     canvasVisibleColItems,
     canvasVisibleRowItems,
+    colIndexByActual,
+    colPrefixSums,
+    displayEffectiveColWidths,
+    displayEffectiveRowHeights,
     displayHeaderHeight,
     displayRowHeaderWidth,
     displayedSelection,
@@ -9299,7 +9415,10 @@ function XlsxGrid({
     resolveCellDisplayRect,
     resolveCanvasColumnHeaderRect,
     resolveCanvasRowHeaderRect,
+    resolveMergeAnchorCell,
     resizeGuide,
+    rowIndexByActual,
+    rowPrefixSums,
     selectionHeaderSurface,
     stickyLeftByCol,
     stickyTopByRow,
@@ -9895,6 +10014,170 @@ function XlsxGrid({
     );
   }
 
+  function renderFormControlDrawing(control: XlsxFormControl, rect: XlsxImageRect, pane: FrozenDrawingPane) {
+    const drawingPane = resolveDrawingPane(rect);
+    if (drawingPane !== pane) {
+      return null;
+    }
+
+    const hasMeasuredViewport = drawingViewport.width > 0 && drawingViewport.height > 0;
+    if (pane === "scroll" && hasMeasuredViewport && !rectIntersectsViewport(rect, drawingViewport)) {
+      return null;
+    }
+
+    const isFrozenDrawing = pane !== "scroll";
+    const controlLabel = resolveFormControlLabel(control);
+    const fontSizePx = Math.max(9 * zoomFactor, ((control.fontSizePt ?? 9) * 96 / 72) * zoomFactor);
+    const stroke = paletteIsDark(palette) ? "#cbd5e1" : "#475569";
+    const textColor = control.textColor ?? "#000000";
+    const commonStyle: React.CSSProperties = {
+      alignItems: control.kind === "group-box" ? "stretch" : "center",
+      color: textColor,
+      contain: "layout paint",
+      display: "flex",
+      fontFamily: control.fontFamily ?? "Calibri, sans-serif",
+      fontSize: fontSizePx,
+      fontWeight: 400,
+      gap: 4 * zoomFactor,
+      height: rect.height,
+      justifyContent:
+        control.textAlign === "center"
+          ? "center"
+          : control.textAlign === "right"
+            ? "flex-end"
+            : "flex-start",
+      left: rect.left,
+      lineHeight: 1.2,
+      overflow: "hidden",
+      pointerEvents: "none",
+      position: "absolute",
+      top: rect.top,
+      width: rect.width,
+      zIndex: isFrozenDrawing ? control.zIndex + 20 : control.zIndex
+    };
+
+    if (control.kind === "group-box") {
+      return (
+        <div
+          key={`${pane}-${control.id}`}
+          style={{
+            ...commonStyle,
+            padding: `${Math.max(7, fontSizePx * 0.5)}px ${6 * zoomFactor}px ${4 * zoomFactor}px`,
+            position: "absolute"
+          }}
+        >
+          <div
+            style={{
+              border: `${Math.max(1, zoomFactor)}px solid ${stroke}`,
+              borderRadius: 2 * zoomFactor,
+              height: "100%",
+              position: "relative",
+              width: "100%"
+            }}
+          >
+            {controlLabel ? (
+              <span
+                style={{
+                  backgroundColor: SHEET_SURFACE,
+                  left: 8 * zoomFactor,
+                  maxWidth: `calc(100% - ${16 * zoomFactor}px)`,
+                  padding: `0 ${4 * zoomFactor}px`,
+                  position: "absolute",
+                  top: -(fontSizePx * 0.6),
+                  whiteSpace: "nowrap"
+                }}
+              >
+                {controlLabel}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
+
+    let content: React.ReactNode;
+    if (control.kind === "radio") {
+      content = renderRadioControl(Boolean(control.checked), palette, zoomFactor);
+    } else if (control.kind === "checkbox") {
+      content = renderCheckboxControl(Boolean(control.checked), palette, zoomFactor);
+    } else if (control.kind === "button") {
+      return (
+        <div
+          key={`${pane}-${control.id}`}
+          style={{
+            ...commonStyle,
+            background: "linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%)",
+            border: `${Math.max(1, zoomFactor)}px solid ${stroke}`,
+            borderRadius: 4 * zoomFactor,
+            boxSizing: "border-box",
+            justifyContent: "center",
+            padding: `0 ${6 * zoomFactor}px`,
+            textAlign: "center"
+          }}
+        >
+          {controlLabel}
+        </div>
+      );
+    } else if (control.kind === "dropdown") {
+      return (
+        <div
+          key={`${pane}-${control.id}`}
+          style={{
+            ...commonStyle,
+            border: `${Math.max(1, zoomFactor)}px solid ${stroke}`,
+            borderRadius: 2 * zoomFactor,
+            boxSizing: "border-box",
+            justifyContent: "space-between",
+            padding: `0 ${6 * zoomFactor}px`
+          }}
+        >
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{controlLabel}</span>
+          <span aria-hidden="true" style={{ fontSize: fontSizePx * 0.85 }}>▼</span>
+        </div>
+      );
+    } else if (control.kind === "editbox" || control.kind === "listbox" || control.kind === "scrollbar" || control.kind === "spinner" || control.kind === "unknown") {
+      return (
+        <div
+          key={`${pane}-${control.id}`}
+          style={{
+            ...commonStyle,
+            border: `${Math.max(1, zoomFactor)}px solid ${stroke}`,
+            borderRadius: 2 * zoomFactor,
+            boxSizing: "border-box",
+            padding: `0 ${6 * zoomFactor}px`
+          }}
+        >
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{controlLabel}</span>
+        </div>
+      );
+    } else {
+      content = null;
+    }
+
+    return (
+      <div
+        key={`${pane}-${control.id}`}
+        style={{
+          ...commonStyle,
+          padding: `0 ${Math.max(1, zoomFactor)}px`
+        }}
+      >
+        {content}
+        {controlLabel ? (
+          <span
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap"
+            }}
+          >
+            {controlLabel}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderImageDrawing(
     image: XlsxImage,
     rect: XlsxImageRect,
@@ -10149,6 +10432,7 @@ function XlsxGrid({
     previousPaneDrawingNodes !== null
     && previousPaneDrawingNodes.showImages === showImages
     && previousPaneDrawingNodes.chartRects === chartRects
+    && previousPaneDrawingNodes.formControlRects === formControlRects
     && previousPaneDrawingNodes.shapeRects === shapeRects
     && previousPaneDrawingNodes.imageRects === imageRects
     && previousPaneDrawingNodes.selectedChartId === selectedChartId
@@ -10178,6 +10462,7 @@ function XlsxGrid({
               <>
                 {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "corner"))}
                 {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "corner"))}
+                {formControlRects.map(({ control, rect }) => renderFormControlDrawing(control, rect, "corner"))}
                 {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "corner"))}
               </>
             ),
@@ -10185,6 +10470,7 @@ function XlsxGrid({
               <>
                 {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "left"))}
                 {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "left"))}
+                {formControlRects.map(({ control, rect }) => renderFormControlDrawing(control, rect, "left"))}
                 {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "left"))}
               </>
             ),
@@ -10192,6 +10478,7 @@ function XlsxGrid({
               <>
                 {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "scroll"))}
                 {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "scroll"))}
+                {formControlRects.map(({ control, rect }) => renderFormControlDrawing(control, rect, "scroll"))}
                 {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "scroll"))}
               </>
             ),
@@ -10199,6 +10486,7 @@ function XlsxGrid({
               <>
                 {chartRects.map(({ chart, rect }) => renderChartDrawing(chart, rect, "top"))}
                 {shapeRects.map(({ shape, rect }) => renderShapeDrawing(shape, rect, "top"))}
+                {formControlRects.map(({ control, rect }) => renderFormControlDrawing(control, rect, "top"))}
                 {imageRects.map(({ image, rect }) => renderImageDrawing(image, rect, "top"))}
               </>
             )
@@ -10208,6 +10496,7 @@ function XlsxGrid({
     paneDrawingNodesCacheRef.current = {
       chartRects,
       drawingViewport,
+      formControlRects,
       imageRects,
       isChartsLoading,
       palette,
