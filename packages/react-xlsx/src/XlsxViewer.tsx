@@ -9155,32 +9155,104 @@ function XlsxGrid({
               paneContext.lineTo(boxLeft + (boxSize * 0.8), boxTop + (boxSize * 0.3));
               paneContext.stroke();
             }
-          } else if (cellData.sparkline && cellData.sparkline.values.length > 1) {
+          } else if (cellData.sparkline) {
+            const sparkline = cellData.sparkline.config;
             const sparklineValues = cellData.sparkline.values;
-            const numericValues = sparklineValues.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-            if (numericValues.length > 1) {
-              const minValue = Math.min(...numericValues);
-              const maxValue = Math.max(...numericValues);
-              const span = maxValue - minValue || 1;
-              paneContext.strokeStyle = typeof cellStyle.color === "string" ? cellStyle.color : palette.text;
-              paneContext.lineWidth = Math.max(1, zoomFactor);
-              paneContext.beginPath();
-              let didMove = false;
-              sparklineValues.forEach((value, index) => {
-                if (typeof value !== "number" || !Number.isFinite(value)) {
-                  return;
-                }
-                const x = contentLeft + ((contentWidth || 1) * (sparklineValues.length === 1 ? 0.5 : index / Math.max(1, sparklineValues.length - 1)));
-                const y = contentTop + contentHeight - (((value - minValue) / span) * contentHeight);
-                if (!didMove) {
-                  paneContext.moveTo(x, y);
-                  didMove = true;
-                } else {
-                  paneContext.lineTo(x, y);
-                }
-              });
-              if (didMove) {
+            const points = sparklineValues
+              .map((value, index) => ({ index, value }))
+              .filter((entry): entry is { index: number; value: number } => typeof entry.value === "number" && Number.isFinite(entry.value));
+            if (points.length > 0) {
+              const negativeColor = sparkline.negativeColor ?? "#c2410c";
+              const seriesColor = sparkline.color ?? "#2563eb";
+              const markerColor = sparkline.markerColor ?? seriesColor;
+              const sparkLeft = contentLeft + 1;
+              const sparkTop = contentTop + 2;
+              const sparkWidth = Math.max(1, contentWidth - 2);
+              const sparkHeight = Math.max(1, contentHeight - 4);
+
+              if (sparkline.type === "winLoss") {
+                const normalizedValues = points.map((entry) => ({ ...entry, value: entry.value >= 0 ? 1 : -1 }));
+                const segmentWidth = Math.max(4 * zoomFactor, sparkWidth / Math.max(normalizedValues.length * 1.9, 1));
+                const gap = normalizedValues.length > 1
+                  ? (sparkWidth - segmentWidth * normalizedValues.length) / (normalizedValues.length - 1)
+                  : 0;
+                const positiveY = sparkTop + Math.max(1.5 * zoomFactor, sparkHeight * 0.18);
+                const negativeY = sparkTop + sparkHeight - Math.max(1.5 * zoomFactor, sparkHeight * 0.18);
+                paneContext.strokeStyle = seriesColor;
+                paneContext.lineCap = "round";
+                paneContext.lineWidth = Math.max(1.5, 1.8 * zoomFactor);
+                normalizedValues.forEach((entry, index) => {
+                  const left = sparkLeft + index * (segmentWidth + Math.max(0, gap));
+                  const y = entry.value >= 0 ? positiveY : negativeY;
+                  paneContext.beginPath();
+                  paneContext.moveTo(left, y);
+                  paneContext.lineTo(left + segmentWidth, y);
+                  paneContext.stroke();
+                });
+              } else if (sparkline.type === "column") {
+                const minValue = Math.min(0, ...points.map((entry) => entry.value));
+                const maxValue = Math.max(0, ...points.map((entry) => entry.value));
+                const zeroY = sparkTop + sparkHeight - clampSparklineValue(0, minValue, maxValue) * sparkHeight;
+                const barWidth = Math.max(2 * zoomFactor, sparkWidth / Math.max(points.length * 1.8, 1));
+                const gap = points.length > 1 ? (sparkWidth - barWidth * points.length) / (points.length - 1) : 0;
+                paneContext.strokeStyle = palette.border;
+                paneContext.lineWidth = 1;
+                paneContext.beginPath();
+                paneContext.moveTo(sparkLeft, zeroY);
+                paneContext.lineTo(sparkLeft + sparkWidth, zeroY);
                 paneContext.stroke();
+                points.forEach((entry, index) => {
+                  const left = sparkLeft + index * (barWidth + Math.max(0, gap));
+                  const y = sparkTop + sparkHeight - clampSparklineValue(entry.value, minValue, maxValue) * sparkHeight;
+                  const top = Math.min(y, zeroY);
+                  const barHeight = Math.max(1, Math.abs(y - zeroY));
+                  paneContext.fillStyle = entry.value < 0 ? negativeColor : seriesColor;
+                  paneContext.fillRect(left, top, barWidth, barHeight);
+                });
+              } else if (points.length > 1) {
+                const minValue = Math.min(...points.map((entry) => entry.value));
+                const maxValue = Math.max(...points.map((entry) => entry.value));
+                const xStep = points.length > 1 ? sparkWidth / (points.length - 1) : 0;
+                paneContext.strokeStyle = seriesColor;
+                paneContext.lineCap = "round";
+                paneContext.lineJoin = "round";
+                paneContext.lineWidth = Math.max(1.2, 1.6 * zoomFactor);
+                paneContext.beginPath();
+                points.forEach((entry, index) => {
+                  const x = sparkLeft + index * xStep;
+                  const y = sparkTop + sparkHeight - clampSparklineValue(entry.value, minValue, maxValue) * sparkHeight;
+                  if (index === 0) {
+                    paneContext.moveTo(x, y);
+                  } else {
+                    paneContext.lineTo(x, y);
+                  }
+                });
+                paneContext.stroke();
+
+                if (sparkline.markers) {
+                  const highValue = Math.max(...points.map((entry) => entry.value));
+                  const lowValue = Math.min(...points.map((entry) => entry.value));
+                  points.forEach((entry, index) => {
+                    const x = sparkLeft + index * xStep;
+                    const y = sparkTop + sparkHeight - clampSparklineValue(entry.value, minValue, maxValue) * sparkHeight;
+                    let fill = markerColor;
+                    if (entry.value === highValue && sparkline.highColor) {
+                      fill = sparkline.highColor;
+                    } else if (entry.value === lowValue && sparkline.lowColor) {
+                      fill = sparkline.lowColor;
+                    } else if (index === 0 && sparkline.firstColor) {
+                      fill = sparkline.firstColor;
+                    } else if (index === points.length - 1 && sparkline.lastColor) {
+                      fill = sparkline.lastColor;
+                    } else if (entry.value < 0 && sparkline.negative && sparkline.negativeColor) {
+                      fill = sparkline.negativeColor;
+                    }
+                    paneContext.fillStyle = fill;
+                    paneContext.beginPath();
+                    paneContext.arc(x, y, Math.max(1.25, 1.75 * zoomFactor), 0, Math.PI * 2);
+                    paneContext.fill();
+                  });
+                }
               }
             }
           } else {
