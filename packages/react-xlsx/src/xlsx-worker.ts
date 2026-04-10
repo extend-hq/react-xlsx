@@ -12,6 +12,7 @@ import type {
   XlsxFreezePanes,
   XlsxResolvedCellStyle,
   XlsxSheetData,
+  XlsxSheetVisibility,
   XlsxTable,
   XlsxTableStyleDefinition,
   XlsxWorkbookTab
@@ -39,12 +40,17 @@ function shouldSkipXmlParsingForWorkbook(bytes: Uint8Array, skipXmlParsing = fal
   return skipXmlParsing || isLegacyXlsWorkbook(bytes);
 }
 
+function normalizeWorksheetVisibility(value: unknown): XlsxSheetVisibility {
+  return value === "hidden" || value === "veryHidden" ? value : "visible";
+}
+
 type WorkerRequest =
   | {
       id: number;
       type: "load";
       payload: {
         buffer: ArrayBuffer;
+        showHiddenSheets?: boolean;
         skipXmlParsing?: boolean;
       };
     }
@@ -53,6 +59,7 @@ type WorkerRequest =
       type: "parseCharts";
       payload: {
         buffer: ArrayBuffer;
+        showHiddenSheets?: boolean;
         skipXmlParsing?: boolean;
       };
     }
@@ -114,12 +121,13 @@ let sheets: XlsxSheetData[] = [];
 let tablesByWorkbookSheetIndex: XlsxTable[][] = [];
 let tabs: XlsxWorkbookTab[] = [];
 
-function buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook: Workbook) {
+function buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook: Workbook, showHiddenSheets = false) {
   const mapping = new Map<number, number>();
   let visibleIndex = 0;
   for (let workbookSheetIndex = 0; workbookSheetIndex < nextWorkbook.sheetCount; workbookSheetIndex += 1) {
     const worksheet = nextWorkbook.getSheet(workbookSheetIndex);
-    if (worksheet.visibility !== "visible") {
+    const visibility = normalizeWorksheetVisibility(worksheet.visibility);
+    if (!showHiddenSheets && visibility !== "visible") {
       continue;
     }
     mapping.set(workbookSheetIndex, visibleIndex);
@@ -237,14 +245,16 @@ function resolveWorksheetZoomScale(
 
 function buildSheetList(
   nextWorkbook: Workbook,
-  structureAssets?: WorkbookStructureAssets | null
+  structureAssets?: WorkbookStructureAssets | null,
+  showHiddenSheets = false
 ) {
   const sheetsByWorkbookSheetIndex: XlsxSheetData[] = [];
 
   for (let index = 0; index < nextWorkbook.sheetCount; index += 1) {
     const worksheet = nextWorkbook.getSheet(index);
     const sheetState = structureAssets?.sheetStatesByWorkbookSheetIndex[index] ?? null;
-    if (worksheet.visibility !== "visible") {
+    const visibility = normalizeWorksheetVisibility(worksheet.visibility);
+    if (!showHiddenSheets && visibility !== "visible") {
       continue;
     }
 
@@ -286,9 +296,12 @@ function buildSheetList(
         maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
         hiddenCols: sheetState?.hiddenCols ?? [],
         hiddenRows: sheetState?.hiddenRows ?? [],
+        minUsedCol: -1,
+        minUsedRow: -1,
         maxUsedCol: -1,
         maxUsedRow: -1,
         name: worksheet.name,
+        visibility,
         namedCellStyleByName: structureAssets?.namedCellStyleByName ?? {},
         rowCount: 0,
         rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
@@ -307,7 +320,7 @@ function buildSheetList(
       continue;
     }
 
-    const [, , maxRow, maxCol] = usedRange;
+    const [minRow, minCol, maxRow, maxCol] = usedRange;
     const hiddenRows = (sheetState?.hiddenRows ?? []).filter((row) => row >= 0 && row <= maxRow);
     const hiddenCols = (sheetState?.hiddenCols ?? []).filter((col) => col >= 0 && col <= maxCol);
 
@@ -329,9 +342,12 @@ function buildSheetList(
       maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
       hiddenCols,
       hiddenRows,
+      minUsedCol: minCol,
+      minUsedRow: minRow,
       maxUsedCol: maxCol,
       maxUsedRow: maxRow,
       name: worksheet.name,
+      visibility,
       namedCellStyleByName: structureAssets?.namedCellStyleByName ?? {},
       rowCount: Math.max(0, maxRow + 1 - hiddenRows.length),
       rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
@@ -442,7 +458,7 @@ function cellAddressToA1(cell: XlsxCellAddress) {
   return `${label}${cell.row + 1}`;
 }
 
-async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
+async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false) {
   const wasmModule = await getSheetsWasmModule();
   const bytes = new Uint8Array(buffer);
   const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing);
@@ -464,7 +480,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
         includeCachedFormulaValues: true
       });
   workbook = nextWorkbook;
-  sheets = buildSheetList(nextWorkbook, structureAssets);
+  sheets = buildSheetList(nextWorkbook, structureAssets, showHiddenSheets);
   tablesByWorkbookSheetIndex = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) =>
     mapWorksheetTables(
       nextWorkbook.getSheet(workbookSheetIndex),
@@ -479,7 +495,12 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
     return hasClassicCharts || hasModernCharts;
   }).some(Boolean);
   const chartStyleAssets = effectiveSkipXmlParsing || !hasCharts ? null : parseWorkbookChartStyleAssets(bytes);
-  const chartAssets = loadWorkbookChartAssets(nextWorkbook, chartStyleAssets, visibleSheetIndexByWorkbookSheetIndex);
+  const chartAssets = loadWorkbookChartAssets(
+    nextWorkbook,
+    chartStyleAssets,
+    visibleSheetIndexByWorkbookSheetIndex,
+    showHiddenSheets
+  );
   chartsByWorkbookSheetIndex = chartAssets.chartsByWorkbookSheetIndex;
   chartsheets = chartAssets.chartsheets;
   tabs = chartAssets.tabs;
@@ -492,7 +513,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false) {
   };
 }
 
-async function parseCharts(buffer: ArrayBuffer, skipXmlParsing = false) {
+async function parseCharts(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false) {
   const wasmModule = await getSheetsWasmModule();
   const bytes = new Uint8Array(buffer);
   const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing);
@@ -505,9 +526,14 @@ async function parseCharts(buffer: ArrayBuffer, skipXmlParsing = false) {
     nextWorkbook.calculate();
   }
 
-  const visibleSheetIndexByWorkbookSheetIndex = buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook);
+  const visibleSheetIndexByWorkbookSheetIndex = buildVisibleSheetIndexByWorkbookSheetIndex(nextWorkbook, showHiddenSheets);
   const chartStyleAssets = effectiveSkipXmlParsing ? null : parseWorkbookChartStyleAssets(bytes);
-  const chartAssets = loadWorkbookChartAssets(nextWorkbook, chartStyleAssets, visibleSheetIndexByWorkbookSheetIndex);
+  const chartAssets = loadWorkbookChartAssets(
+    nextWorkbook,
+    chartStyleAssets,
+    visibleSheetIndexByWorkbookSheetIndex,
+    showHiddenSheets
+  );
   return {
     chartsByWorkbookSheetIndex: chartAssets.chartsByWorkbookSheetIndex,
     chartsheets: chartAssets.chartsheets,
@@ -522,10 +548,10 @@ function respond(message: WorkerResponse) {
 async function handleMessage(message: WorkerRequest) {
   switch (message.type) {
     case "load": {
-      return loadWorkbook(message.payload.buffer, message.payload.skipXmlParsing);
+      return loadWorkbook(message.payload.buffer, message.payload.skipXmlParsing, message.payload.showHiddenSheets);
     }
     case "parseCharts": {
-      return parseCharts(message.payload.buffer, message.payload.skipXmlParsing);
+      return parseCharts(message.payload.buffer, message.payload.skipXmlParsing, message.payload.showHiddenSheets);
     }
     case "getCellSnapshot": {
       if (!workbook) {

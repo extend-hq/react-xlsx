@@ -36,6 +36,7 @@ export type {
   XlsxShapeTextBox,
   XlsxShapeTextRun,
   XlsxSheetData,
+  XlsxSheetVisibility,
   XlsxThemePalette,
   XlsxTable,
   XlsxTableColumn,

@@ -38,6 +38,9 @@ const SERIES_COLORS = [
   "#636363",
   "#997300"
 ];
+function normalizeWorksheetVisibility(value: unknown): "hidden" | "veryHidden" | "visible" {
+  return value === "hidden" || value === "veryHidden" ? value : "visible";
+}
 const EMU_PER_PIXEL = 9525;
 const THEME_COLOR_INDEX_BY_NAME: Record<string, number> = {
   accent1: 4,
@@ -3467,18 +3470,28 @@ function normalizeChartsheet(raw: unknown, index: number): XlsxChartsheet {
 function buildTabs(
   workbook: Workbook,
   chartsheets: XlsxChartsheet[],
-  visibleSheetIndexByWorkbookSheetIndex: Map<number, number>
+  visibleSheetIndexByWorkbookSheetIndex: Map<number, number>,
+  showHiddenSheets = false
 ): XlsxWorkbookTab[] {
   const rawOrder = Array.isArray(workbook.sheetOrder) ? workbook.sheetOrder as Array<Record<string, unknown>> : [];
   if (rawOrder.length === 0) {
-    return workbook.sheetNames.map((name, index) => ({
-      id: `sheet-${index}`,
-      index,
-      kind: "sheet" as const,
-      name,
-      sheetIndex: visibleSheetIndexByWorkbookSheetIndex.get(index) ?? index,
-      workbookSheetIndex: index
-    }));
+    return workbook.sheetNames.flatMap((name, index) => {
+      const worksheet = workbook.getSheet(index);
+      const visibility = normalizeWorksheetVisibility(worksheet.visibility);
+      if (!showHiddenSheets && visibility !== "visible") {
+        return [];
+      }
+
+      return [{
+        id: `sheet-${index}`,
+        index,
+        kind: "sheet" as const,
+        name,
+        sheetIndex: visibleSheetIndexByWorkbookSheetIndex.get(index) ?? index,
+        visibility,
+        workbookSheetIndex: index
+      }];
+    });
   }
 
   return rawOrder.flatMap<XlsxWorkbookTab>((entry, index) => {
@@ -3496,7 +3509,8 @@ function buildTabs(
     }
 
     const worksheet = workbook.getSheet(slotIndex);
-    if (worksheet.visibility !== "visible") {
+    const visibility = normalizeWorksheetVisibility(worksheet.visibility);
+    if (!showHiddenSheets && visibility !== "visible") {
       return [];
     }
 
@@ -3506,6 +3520,7 @@ function buildTabs(
       kind: "sheet" as const,
       name: worksheet.name,
       sheetIndex: visibleSheetIndexByWorkbookSheetIndex.get(slotIndex) ?? slotIndex,
+      visibility,
       workbookSheetIndex: slotIndex
     }];
   });
@@ -3627,7 +3642,8 @@ function applyChartOrigins(
 export function loadWorkbookChartAssets(
   workbook: Workbook,
   imageAssets: Pick<WorkbookImageAssets, "archive" | "sheetOrigins" | "themePalette"> | null,
-  visibleSheetIndexByWorkbookSheetIndex: Map<number, number>
+  visibleSheetIndexByWorkbookSheetIndex: Map<number, number>,
+  showHiddenSheets = false
 ): WorkbookChartAssets {
   const chartsByWorkbookSheetIndex = Array.from({ length: workbook.sheetCount }, (_, workbookSheetIndex) => {
     const worksheet = workbook.getSheet(workbookSheetIndex);
@@ -3752,7 +3768,7 @@ export function loadWorkbookChartAssets(
   const chartsheets = Array.isArray(workbook.chartsheets)
     ? workbook.chartsheets.map((entry, index) => normalizeChartsheet(entry, index))
     : [];
-  const tabs = buildTabs(workbook, chartsheets, visibleSheetIndexByWorkbookSheetIndex);
+  const tabs = buildTabs(workbook, chartsheets, visibleSheetIndexByWorkbookSheetIndex, showHiddenSheets);
   const chartOriginsById = new Map<string, WorkbookChartOrigin>();
 
   if (imageAssets) {

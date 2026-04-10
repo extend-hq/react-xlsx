@@ -237,6 +237,19 @@ function resolveCanvasPadding(padding: React.CSSProperties["padding"]) {
   };
 }
 
+function resolveSpreadsheetTextRotation(textRotation: unknown) {
+  if (typeof textRotation !== "number" || !Number.isFinite(textRotation)) {
+    return null;
+  }
+
+  if (textRotation < 0 || textRotation > 180) {
+    return null;
+  }
+
+  const excelDegrees = textRotation > 90 ? 90 - textRotation : textRotation;
+  return -excelDegrees;
+}
+
 function resolveCanvasFont(style: React.CSSProperties, fallbackSize = 12) {
   if (typeof style.font === "string" && style.font.trim().length > 0) {
     return style.font;
@@ -3199,6 +3212,31 @@ function measureTextWidth(value: string, style: React.CSSProperties) {
   return context.measureText(value).width;
 }
 
+function measureWrappedTextHeight(value: string, style: React.CSSProperties, widthPx: number) {
+  if (!value) {
+    return 0;
+  }
+
+  const availableWidth = Math.max(1, widthPx - getHorizontalPadding(style.padding));
+  const lineHeight = resolveCanvasLineHeight(style, 12);
+  const padding = resolveCanvasPadding(style.padding);
+  const fallbackLineCount = value.replace(/\r\n?/g, "\n").split("\n").length;
+
+  if (typeof document === "undefined") {
+    return (fallbackLineCount * lineHeight) + padding.top + padding.bottom;
+  }
+
+  textMeasureCanvas ??= document.createElement("canvas");
+  const context = textMeasureCanvas.getContext("2d");
+  if (!context) {
+    return (fallbackLineCount * lineHeight) + padding.top + padding.bottom;
+  }
+
+  context.font = buildCanvasFont(style);
+  const wrappedLines = wrapCanvasText(context, value, availableWidth);
+  return (wrappedLines.length * lineHeight) + padding.top + padding.bottom;
+}
+
 function canCellTextOverflow(data: CellRenderData) {
   if (!data.value || data.isMergedSecondary || data.shrinkToFit || data.style.whiteSpace === "pre-wrap") {
     return false;
@@ -3868,7 +3906,7 @@ function SegmentedControl({
   palette,
   value
 }: {
-  items: Array<{ id: string; label: string }>;
+  items: Array<{ id: string; label: string; title?: string; visibility?: "hidden" | "veryHidden" | "visible" }>;
   onValueChange: (value: string) => void;
   palette: ViewerPalette;
   value: string;
@@ -3890,6 +3928,7 @@ function SegmentedControl({
     >
       {items.map((item) => {
         const selected = item.id === value;
+        const isHidden = item.visibility === "hidden" || item.visibility === "veryHidden";
         return (
           <button
             aria-selected={selected}
@@ -3905,10 +3944,12 @@ function SegmentedControl({
               cursor: "pointer",
               fontSize: 12,
               fontWeight: selected ? 600 : 500,
+              opacity: isHidden && !selected ? 0.68 : 1,
               padding: "7px 12px",
               transition: "background-color 120ms ease, color 120ms ease, box-shadow 120ms ease",
               whiteSpace: "nowrap"
             }}
+            title={item.title}
             type="button"
           >
             {item.label}
@@ -4064,7 +4105,17 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
           }}
         >
           <SegmentedControl
-            items={tabs.map((tab, index) => ({ id: String(index), label: tab.name }))}
+            items={tabs.map((tab, index) => ({
+              id: String(index),
+              label: tab.name,
+              title:
+                tab.visibility === "hidden"
+                  ? `${tab.name} (hidden)`
+                  : tab.visibility === "veryHidden"
+                    ? `${tab.name} (very hidden)`
+                    : tab.name,
+              visibility: tab.visibility
+            }))}
             onValueChange={(value) => setActiveTabIndex(Number(value))}
             palette={palette}
             value={String(activeTabIndex)}
@@ -4463,6 +4514,7 @@ type CellRenderData = {
     validationType: string;
   } | null;
   value: string;
+  textRotationDeg?: number | null;
 };
 
 type PaintedBodyCanvasSignature = {
@@ -4926,6 +4978,28 @@ function resolveCellContentJustify(verticalAlign: React.CSSProperties["verticalA
   return "flex-end";
 }
 
+function resolveCellContentAlignItems(textAlign: React.CSSProperties["textAlign"]) {
+  if (textAlign === "center") {
+    return "center";
+  }
+  if (textAlign === "right" || textAlign === "end") {
+    return "flex-end";
+  }
+  return "flex-start";
+}
+
+function resolveFirstUsedVisibleIndex(visibleIndices: number[], minUsedIndex: number) {
+  if (visibleIndices.length === 0) {
+    return -1;
+  }
+  if (minUsedIndex <= 0) {
+    return visibleIndices[0] ?? -1;
+  }
+
+  const firstVisibleUsed = visibleIndices.find((index) => index >= minUsedIndex);
+  return firstVisibleUsed ?? visibleIndices[0] ?? -1;
+}
+
 type RenderedAxisItem = {
   end: number;
   index: number;
@@ -5159,10 +5233,24 @@ function GridRow({
           cellContentStyle.alignItems = "center";
           cellContentStyle.justifyContent = "center";
         }
+        if (cellData.textRotationDeg) {
+          cellContentStyle.alignItems = resolveCellContentAlignItems(cellStyle.textAlign);
+          cellContentStyle.overflow = "visible";
+        }
         if (cellData.shrinkToFitFontSizePx) {
           cellContentStyle.fontSize = cellData.shrinkToFitFontSizePx;
           cellContentStyle.lineHeight = `${resolveCanvasLineHeight(cellData.style, cellData.shrinkToFitFontSizePx)}px`;
         }
+        const rotatedTextStyle = cellData.textRotationDeg
+          ? {
+              display: "inline-block",
+              maxWidth: "none",
+              transform: `rotate(${cellData.textRotationDeg}deg)`,
+              transformOrigin: "center center",
+              whiteSpace: "nowrap",
+              width: "max-content"
+            } satisfies React.CSSProperties
+          : null;
         const title = [cellData.hyperlink?.tooltip, cellData.validation?.message, cellData.value]
           .filter((value, index, values): value is string => typeof value === "string" && value.length > 0 && values.indexOf(value) === index)
           .join("\n");
@@ -5322,7 +5410,9 @@ function GridRow({
                 {renderCheckboxControl(cellData.checkboxState, palette, zoomFactor)}
               </div>
             ) : (
-              <div style={cellContentStyle}>{cellData.value}</div>
+              <div style={cellContentStyle}>
+                {rotatedTextStyle ? <span style={rotatedTextStyle}>{cellData.value}</span> : cellData.value}
+              </div>
             )}
           </td>
         );
@@ -5634,6 +5724,7 @@ function XlsxGrid({
   const paintedHeaderCanvasSignatureRef = React.useRef<PaintedHeaderCanvasSignature | null>(null);
   const pendingDrawingViewportRef = React.useRef<DrawingViewport | null>(null);
   const drawingViewportFrameRef = React.useRef<number | null>(null);
+  const initialScrollKeyRef = React.useRef<string | null>(null);
   const chartPreviewRectRef = React.useRef<{ id: string; rect: XlsxImageRect } | null>(null);
   const skipNextChartClickRef = React.useRef<string | null>(null);
   const paneDrawingNodesCacheRef = React.useRef<{
@@ -6110,6 +6201,47 @@ function XlsxGrid({
             continue;
           }
 
+          const maxMeasuredCol = Math.min(displayColLimit - 1, activeSheet?.maxUsedCol ?? -1);
+          let estimatedAutoHeight = 0;
+          if (maxMeasuredCol >= 0) {
+            for (let col = 0; col <= maxMeasuredCol; col += 1) {
+              if (worksheet.isColumnHidden(col) || worksheet.isMergedSecondary(row, col)) {
+                continue;
+              }
+
+              const cellValue = worksheet.getFormattedValueAt(row, col);
+              if (!cellValue) {
+                continue;
+              }
+
+              const rawStyle = (worksheet.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined) ?? null;
+              const cellStyle = buildCellStyle(rawStyle, palette, activeSheet?.themePalette, {
+                showGridLines: activeSheet?.showGridLines
+              });
+              if (cellStyle.whiteSpace !== "pre-wrap" && !cellValue.includes("\n") && !cellValue.includes("\r")) {
+                continue;
+              }
+
+              const merge = worksheet.getMergeSpan(row, col) as { colSpan?: number } | null | undefined;
+              const colSpan = Math.max(1, merge?.colSpan ?? 1);
+              let cellWidth = 0;
+              for (let spanCol = col; spanCol < Math.min(displayColLimit, col + colSpan); spanCol += 1) {
+                cellWidth += actualColWidths[spanCol] ?? (activeSheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH);
+              }
+              estimatedAutoHeight = Math.max(
+                estimatedAutoHeight,
+                measureWrappedTextHeight(cellValue, cellStyle, cellWidth)
+              );
+            }
+          }
+          if (estimatedAutoHeight > 0) {
+            heights[row] = Math.max(
+              resolveRenderedSheetAxisPixels(Math.ceil(estimatedAutoHeight), showGridLines),
+              fallbackHeight
+            );
+            continue;
+          }
+
           heights[row] = Math.max(
             resolveRenderedSheetAxisPixels(
               activeSheet?.rowHeightOverridesPx[row] ?? activeSheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
@@ -6145,11 +6277,16 @@ function XlsxGrid({
     [
       activeSheet?.defaultRowHeightPx,
       activeSheet?.maxUsedRow,
+      activeSheet?.maxUsedCol,
       activeSheet?.rowHeightOverridesPx,
       activeSheet?.rowHeights,
       activeSheet?.showGridLines,
+      activeSheet?.themePalette,
       activeSheet?.visibleRows,
+      actualColWidths,
       displayRowLimit,
+      displayColLimit,
+      palette,
       worksheet,
       revision
     ]
@@ -6661,15 +6798,62 @@ function XlsxGrid({
   ]);
 
   React.useEffect(() => {
+    const initialScrollKey = [
+      displayFileName,
+      activeSheetIndex,
+      activeSheet?.workbookSheetIndex ?? -1,
+      activeSheet?.name ?? "",
+      activeSheet?.minUsedRow ?? -1,
+      activeSheet?.minUsedCol ?? -1,
+      isWorkerBacked ? "worker" : "main"
+    ].join("|");
+    if (initialScrollKeyRef.current === initialScrollKey) {
+      return;
+    }
+
+    const initialUsedRow = resolveFirstUsedVisibleIndex(visibleRows, activeSheet?.minUsedRow ?? -1);
+    const initialUsedCol = resolveFirstUsedVisibleIndex(visibleCols, activeSheet?.minUsedCol ?? -1);
+    const initialScrollTop = initialUsedRow > 0
+      ? sumPrefixRange(actualRowPrefixSums, 0, initialUsedRow - 1)
+      : 0;
+    const initialScrollLeft = initialUsedCol > 0
+      ? sumPrefixRange(actualColPrefixSums, 0, initialUsedCol - 1)
+      : 0;
+
     if (shouldVirtualizeRows) {
-      rowVirtualizer.scrollToOffset(0);
+      rowVirtualizer.scrollToOffset(initialScrollTop);
     } else if (scrollRef.current) {
-      scrollRef.current.scrollTop = 0;
+      scrollRef.current.scrollTop = initialScrollTop;
     }
     if (scrollRef.current) {
-      scrollRef.current.scrollLeft = 0;
+      scrollRef.current.scrollLeft = initialScrollLeft;
     }
-  }, [activeSheetIndex, shouldVirtualizeRows]);
+    if (shouldVirtualizeCols && frozenCols.length === 0) {
+      colVirtualizer.scrollToOffset(initialScrollLeft);
+    }
+    if (scrollRef.current) {
+      syncDrawingViewport(scrollRef.current, { immediate: true });
+    }
+    initialScrollKeyRef.current = initialScrollKey;
+  }, [
+    activeSheet?.minUsedCol,
+    activeSheet?.minUsedRow,
+    activeSheet?.name,
+    activeSheet?.workbookSheetIndex,
+    activeSheetIndex,
+    actualColPrefixSums,
+    actualRowPrefixSums,
+    colVirtualizer,
+    displayFileName,
+    frozenCols.length,
+    isWorkerBacked,
+    shouldVirtualizeCols,
+    shouldVirtualizeRows,
+    syncDrawingViewport,
+    rowVirtualizer,
+    visibleCols,
+    visibleRows
+  ]);
 
   React.useEffect(() => {
     clearLiveGestureZoom();
@@ -7433,6 +7617,7 @@ function XlsxGrid({
     const tableStyle = resolveTableCellStyle(table, row, col, activeSheet);
     const mergedStyle = mergeResolvedCellStyle(rawStyle, tableStyle);
     const alignment = mergedStyle?.alignment as Record<string, unknown> | undefined;
+    const textRotationDeg = resolveSpreadsheetTextRotation(alignment?.textRotation);
     const headerRowCount = table ? Math.max(table.headerRowCount, 1) : 0;
     const rawHyperlink = batchCoversRow
       ? batchedCell?.hyperlink
@@ -7507,6 +7692,7 @@ function XlsxGrid({
       style: scaleCssProperties(buildCellStyle(mergedStyle, palette, activeSheet?.themePalette, {
         showGridLines: activeSheet?.showGridLines
       }), zoomFactor),
+      textRotationDeg,
       validation: resolveCellDataValidation(row, col, activeSheet),
       value: sparkline
         ? ""
@@ -9644,13 +9830,19 @@ function XlsxGrid({
           const contentTop = localRect.top + padding.top;
           const contentWidth = Math.max(0, localRect.width - padding.left - padding.right);
           const contentHeight = Math.max(0, localRect.height - padding.top - padding.bottom);
-          const textClipOverscan = Math.max(1, zoomFactor * 1.5);
+          const activeFontSizePx = cellData.shrinkToFitFontSizePx
+            ?? resolveCanvasFontSizePx(cellStyle, 12 * zoomFactor);
+          const textClipOverscan = Math.max(
+            1,
+            zoomFactor * 1.5,
+            activeFontSizePx * (cellData.textRotationDeg ? 0.75 : 0.18)
+          );
           paneContext.save();
           paneContext.beginPath();
           paneContext.rect(
-            contentLeft,
+            contentLeft - textClipOverscan,
             contentTop - textClipOverscan,
-            contentWidth,
+            contentWidth + (textClipOverscan * 2),
             contentHeight + (textClipOverscan * 2)
           );
           paneContext.clip();
@@ -9796,7 +9988,24 @@ function XlsxGrid({
             const shouldEllipsizeText = canvasCellStyle.textOverflowEllipsis;
             const shouldWrapText = canvasCellStyle.usesWrappedText || rawText.includes("\n");
 
-            if (shouldWrapText) {
+            if (cellData.textRotationDeg && rawText.length > 0) {
+              const textY = contentTop + (contentHeight / 2);
+              const rotationOriginX = contentLeft + (contentWidth / 2);
+              paneContext.save();
+              paneContext.translate(rotationOriginX, textY);
+              paneContext.rotate((cellData.textRotationDeg * Math.PI) / 180);
+              paneContext.textAlign = align;
+              paneContext.fillText(
+                rawText,
+                align === "right"
+                  ? contentWidth / 2
+                  : align === "center"
+                    ? 0
+                    : -(contentWidth / 2),
+                0
+              );
+              paneContext.restore();
+            } else if (shouldWrapText) {
               const wrappedLines = wrapCanvasText(paneContext, rawText, maxTextWidth);
               const lineHeight = cellData.shrinkToFitFontSizePx
                 ? resolveCanvasLineHeight(cellStyle, cellData.shrinkToFitFontSizePx)
@@ -9834,9 +10043,9 @@ function XlsxGrid({
               deferredSpillTextsByPane[pane].push({
                 align,
                 clipHeight: contentHeight + (textClipOverscan * 2),
-                clipLeft: contentLeft,
+                clipLeft: contentLeft - textClipOverscan,
                 clipTop: contentTop - textClipOverscan,
-                clipWidth: spillMaxWidth,
+                clipWidth: spillMaxWidth + (textClipOverscan * 2),
                 color: textColor,
                 ellipsize: shouldEllipsizeText,
                 font: paneContext.font,
@@ -10376,7 +10585,7 @@ function XlsxGrid({
   const cornerBodyCanvasWidth = leftBodyCanvasWidth;
   const cornerBodyCanvasHeight = topBodyCanvasHeight;
   const canvasBodyBaseStyle: React.CSSProperties = {
-    cursor: readOnly ? "default" : "cell",
+    cursor: "cell",
     pointerEvents: "auto",
     position: "absolute",
     transformOrigin: "0 0",

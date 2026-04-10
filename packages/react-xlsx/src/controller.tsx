@@ -43,6 +43,7 @@ import type {
   XlsxResolvedCellStyle,
   XlsxShape,
   XlsxSheetData,
+  XlsxSheetVisibility,
   XlsxSparkline,
   XlsxThemePalette,
   XlsxTable,
@@ -76,6 +77,10 @@ const MIN_ZOOM_SCALE = 10;
 const MAX_ZOOM_SCALE = 400;
 const ZOOM_STEP = 10;
 const DEFAULT_ZOOM_TAB_KEY = "__default__";
+
+function normalizeWorksheetVisibility(value: unknown): XlsxSheetVisibility {
+  return value === "hidden" || value === "veryHidden" ? value : "visible";
+}
 
 type IdleRequestHandle = number;
 
@@ -508,14 +513,16 @@ function buildSheetList(
   themePalette?: XlsxThemePalette | null,
   styleById?: Record<number, XlsxResolvedCellStyle> | null,
   namedCellStyleByName?: Record<string, XlsxResolvedCellStyle> | null,
-  tableStyleByName?: Record<string, XlsxTableStyleDefinition> | null
+  tableStyleByName?: Record<string, XlsxTableStyleDefinition> | null,
+  showHiddenSheets = false
 ): XlsxSheetData[] {
   const sheets: XlsxSheetData[] = [];
 
   for (let index = 0; index < workbook.sheetCount; index += 1) {
     const worksheet = workbook.getSheet(index);
     const sheetState = sheetStatesByWorkbookSheetIndex?.[index] ?? null;
-    if (worksheet.visibility !== "visible") {
+    const visibility = normalizeWorksheetVisibility(worksheet.visibility);
+    if (!showHiddenSheets && visibility !== "visible") {
       continue;
     }
 
@@ -555,9 +562,12 @@ function buildSheetList(
         maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
         hiddenCols: sheetState?.hiddenCols ?? [],
         hiddenRows: sheetState?.hiddenRows ?? [],
+        minUsedCol: -1,
+        minUsedRow: -1,
         maxUsedCol: -1,
         maxUsedRow: -1,
         name: worksheet.name,
+        visibility,
         namedCellStyleByName: namedCellStyleByName ?? {},
         rowCount: 0,
         colCount: 0,
@@ -578,7 +588,7 @@ function buildSheetList(
       continue;
     }
 
-    const [, , maxRow, maxCol] = usedRange;
+    const [minRow, minCol, maxRow, maxCol] = usedRange;
     let visibleRowsCache: number[] | null = null;
     let visibleColsCache: number[] | null = null;
     let rowHeightsCache: number[] | null = null;
@@ -650,9 +660,12 @@ function buildSheetList(
       maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
       hiddenCols: sheetState?.hiddenCols ?? [],
       hiddenRows: sheetState?.hiddenRows ?? [],
+      minUsedCol: minCol,
+      minUsedRow: minRow,
       maxUsedCol: maxCol,
       maxUsedRow: maxRow,
       name: worksheet.name,
+      visibility,
       namedCellStyleByName: namedCellStyleByName ?? {},
       rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
       rowStyleIds: sheetState?.rowStyleIds ?? {},
@@ -1761,6 +1774,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
     readOnly: requestedReadOnly = false,
     readOnlyAboveBytes = 0,
+    showHiddenSheets = false,
     skipXmlParsing = false,
     src,
     useWorker = true
@@ -1808,7 +1822,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
   const readOnly = requestedReadOnly || forcedReadOnly;
   const workerSupported = useWorker && typeof Worker !== "undefined";
-  const shouldUseWorker = workerSupported && readOnly;
+  const shouldUseWorker = workerSupported && forcedReadOnly;
   const shouldForceReadOnlyForBuffer = React.useCallback((bufferByteLength: number) => (
     !requestedReadOnly && readOnlyAboveBytes > 0 && bufferByteLength > readOnlyAboveBytes
   ), [readOnlyAboveBytes, requestedReadOnly]);
@@ -1912,11 +1926,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const assets = loadWorkbookChartAssets(
       targetWorkbook,
       imageAssetsRef.current,
-      buildVisibleSheetIndexMap(targetSheets)
+      buildVisibleSheetIndexMap(targetSheets),
+      showHiddenSheets
     );
     chartAssetsRef.current = assets;
     return assets;
-  }, []);
+  }, [showHiddenSheets]);
 
   const startChartDisplayHydration = React.useCallback((
     buffer: ArrayBuffer,
@@ -1925,7 +1940,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   ) => {
     const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(buffer), skipXmlParsing);
     const visibleSheetIndexByWorkbookSheetIndex = buildVisibleSheetIndexMap(targetSheets);
-    const quickAssets = loadWorkbookChartAssets(targetWorkbook, null, visibleSheetIndexByWorkbookSheetIndex);
+    const quickAssets = loadWorkbookChartAssets(targetWorkbook, null, visibleSheetIndexByWorkbookSheetIndex, showHiddenSheets);
     setChartAssets(quickAssets);
 
     if (effectiveSkipXmlParsing) {
@@ -1980,7 +1995,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           const hydratedAssets = loadWorkbookChartAssets(
             targetWorkbook,
             imageAssetsRef.current,
-            visibleSheetIndexByWorkbookSheetIndex
+            visibleSheetIndexByWorkbookSheetIndex,
+            showHiddenSheets
           );
           if (requestToken !== chartLoadRequestTokenRef.current) {
             return;
@@ -2004,7 +2020,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    void getWorkerClient().parseCharts(buffer, effectiveSkipXmlParsing)
+    void getWorkerClient().parseCharts(buffer, effectiveSkipXmlParsing, showHiddenSheets)
       .then((result) => {
         if (workerTimeoutHandle !== null) {
           window.clearTimeout(workerTimeoutHandle);
@@ -2031,7 +2047,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         }
         triggerFallback();
       });
-  }, [getWorkerClient, hasIncompleteWorkerChartSnapshot, setChartAssets, skipXmlParsing, workerSupported]);
+  }, [getWorkerClient, hasIncompleteWorkerChartSnapshot, setChartAssets, showHiddenSheets, skipXmlParsing, workerSupported]);
 
   const loadWorkbookOnMainThread = React.useCallback(async (buffer: ArrayBuffer) => {
     const nextParsedWorkbook = await parseWorkbookBuffer(buffer);
@@ -2054,18 +2070,20 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       imageAssetsRef.current?.themePalette,
       imageAssetsRef.current?.styleById,
       imageAssetsRef.current?.namedCellStyleByName,
-      imageAssetsRef.current?.tableStyleByName
+      imageAssetsRef.current?.tableStyleByName,
+      showHiddenSheets
     );
     setSheets(nextSheets);
     setChartAssets(
       loadWorkbookChartAssets(
         targetWorkbook,
         imageAssetsRef.current,
-        buildVisibleSheetIndexMap(nextSheets)
+        buildVisibleSheetIndexMap(nextSheets),
+        showHiddenSheets
       )
     );
     setRevision((current) => current + 1);
-  }, [setChartAssets]);
+  }, [setChartAssets, showHiddenSheets]);
 
   React.useEffect(() => () => {
     chartDisplayFallbackCleanupRef.current?.();
@@ -2152,7 +2170,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         const shouldForceReadOnly = shouldForceReadOnlyForBuffer(buffer.byteLength);
         setForcedReadOnly(shouldForceReadOnly);
-        const shouldUseWorkerForLoad = workerSupported && (requestedReadOnly || shouldForceReadOnly);
+        const shouldUseWorkerForLoad = workerSupported && shouldForceReadOnly;
         const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(buffer), skipXmlParsing);
 
         if (shouldDeferLoading && buffer.byteLength > deferLoadingAboveBytes) {
@@ -2168,7 +2186,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         if (shouldUseWorkerForLoad) {
           try {
-            const snapshot = await getWorkerClient().loadWorkbook(buffer, effectiveSkipXmlParsing);
+            const snapshot = await getWorkerClient().loadWorkbook(buffer, effectiveSkipXmlParsing, showHiddenSheets);
             if (!isCurrent || abortController.signal.aborted) {
               return;
             }
@@ -2215,7 +2233,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           nextImageAssets.themePalette,
           nextImageAssets.styleById,
           nextImageAssets.namedCellStyleByName,
-          nextImageAssets.tableStyleByName
+          nextImageAssets.tableStyleByName,
+          showHiddenSheets
         );
         setSheets(nextSheets);
         startChartDisplayHydration(buffer, nextParsedWorkbook.workbook, nextSheets);
@@ -2264,7 +2283,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     shouldDeferLoading,
     shouldForceReadOnlyForBuffer,
     workerSupported,
-    src
+    src,
+    showHiddenSheets
   ]);
 
   const activeTab = tabs[activeTabIndex] ?? null;
@@ -2409,11 +2429,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     const shouldForceReadOnly = shouldForceReadOnlyForBuffer(deferredBuffer.byteLength);
     setForcedReadOnly(shouldForceReadOnly);
-    const shouldUseWorkerForLoad = workerSupported && (requestedReadOnly || shouldForceReadOnly);
+    const shouldUseWorkerForLoad = workerSupported && shouldForceReadOnly;
     const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(deferredBuffer), skipXmlParsing);
 
     if (shouldUseWorkerForLoad) {
-      void getWorkerClient().loadWorkbook(deferredBuffer, effectiveSkipXmlParsing)
+      void getWorkerClient().loadWorkbook(deferredBuffer, effectiveSkipXmlParsing, showHiddenSheets)
         .then((snapshot) => {
           if (!effectiveSkipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
             throw new Error("Worker chart payload incomplete");
@@ -2453,7 +2473,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             nextImageAssets.themePalette,
             nextImageAssets.styleById,
             nextImageAssets.namedCellStyleByName,
-            nextImageAssets.tableStyleByName
+            nextImageAssets.tableStyleByName,
+            showHiddenSheets
           );
           setSheets(nextSheets);
           startChartDisplayHydration(deferredBuffer, nextParsedWorkbook.workbook, nextSheets);
@@ -2498,7 +2519,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           nextImageAssets.themePalette,
           nextImageAssets.styleById,
           nextImageAssets.namedCellStyleByName,
-          nextImageAssets.tableStyleByName
+          nextImageAssets.tableStyleByName,
+          showHiddenSheets
         );
         setSheets(nextSheets);
         startChartDisplayHydration(deferredBuffer, nextParsedWorkbook.workbook, nextSheets);
@@ -3039,7 +3061,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       nextImageAssets.themePalette,
       nextImageAssets.styleById,
       nextImageAssets.namedCellStyleByName,
-      nextImageAssets.tableStyleByName
+      nextImageAssets.tableStyleByName,
+      showHiddenSheets
     );
     const nextSheetIndex = Math.max(0, Math.min(entry.activeSheetIndex, Math.max(0, nextSheets.length - 1)));
 
@@ -3048,7 +3071,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setImageAssets(nextImageAssets);
     setWorkbook(nextWorkbook);
     setSheets(nextSheets);
-    const nextChartAssets = loadWorkbookChartAssets(nextWorkbook, nextImageAssets, buildVisibleSheetIndexMap(nextSheets));
+    const nextChartAssets = loadWorkbookChartAssets(nextWorkbook, nextImageAssets, buildVisibleSheetIndexMap(nextSheets), showHiddenSheets);
     setChartAssets(nextChartAssets);
     setActiveSheetIndexState(nextSheetIndex);
     const nextTabIndex = nextChartAssets.tabs.findIndex((tab) => tab.kind === "sheet" && tab.sheetIndex === nextSheetIndex);
@@ -3899,11 +3922,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       imageAssetsRef.current?.themePalette,
       imageAssetsRef.current?.styleById,
       imageAssetsRef.current?.namedCellStyleByName,
-      imageAssetsRef.current?.tableStyleByName
+      imageAssetsRef.current?.tableStyleByName,
+      showHiddenSheets
     );
     setSheets(nextSheets);
     const nextChartAssets = imageAssetsRef.current
-      ? loadWorkbookChartAssets(workbook, imageAssetsRef.current, buildVisibleSheetIndexMap(nextSheets))
+      ? loadWorkbookChartAssets(workbook, imageAssetsRef.current, buildVisibleSheetIndexMap(nextSheets), showHiddenSheets)
       : null;
     if (imageAssetsRef.current) {
       setChartAssets(nextChartAssets);
@@ -3938,11 +3962,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       imageAssetsRef.current?.themePalette,
       imageAssetsRef.current?.styleById,
       imageAssetsRef.current?.namedCellStyleByName,
-      imageAssetsRef.current?.tableStyleByName
+      imageAssetsRef.current?.tableStyleByName,
+      showHiddenSheets
     );
     setSheets(nextSheets);
     if (imageAssetsRef.current) {
-      setChartAssets(loadWorkbookChartAssets(workbook, imageAssetsRef.current, buildVisibleSheetIndexMap(nextSheets)));
+      setChartAssets(loadWorkbookChartAssets(workbook, imageAssetsRef.current, buildVisibleSheetIndexMap(nextSheets), showHiddenSheets));
     }
     setActiveSheetIndexState((current) => Math.max(0, Math.min(current, nextSheets.length - 1)));
     setRevision((current) => current + 1);

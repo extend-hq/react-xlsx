@@ -91,6 +91,8 @@ export interface XlsxFreezePanes {
   row: number;
 }
 
+export type XlsxSheetVisibility = "hidden" | "veryHidden" | "visible";
+
 export interface XlsxSheetData {
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
@@ -100,6 +102,7 @@ export interface XlsxSheetData {
   conditionalFormatRules: XlsxConditionalFormatRule[];
   dataValidations: XlsxDataValidation[];
   name: string;
+  visibility: XlsxSheetVisibility;
   columnWidthCharacterWidthPx?: number;
   defaultColWidthPx: number;
   defaultRowHeightPx: number;
@@ -108,6 +111,8 @@ export interface XlsxSheetData {
   hasVerticalMerges: boolean;
   maxHorizontalMergeEndCol: number;
   maxVerticalMergeEndRow: number;
+  minUsedCol: number;
+  minUsedRow: number;
   maxUsedCol: number;
   maxUsedRow: number;
   rowCount: number;
@@ -543,6 +548,7 @@ export interface XlsxWorkbookTab {
   kind: "chartsheet" | "sheet";
   name: string;
   sheetIndex?: number;
+  visibility?: XlsxSheetVisibility;
   workbookSheetIndex?: number;
 }
 
@@ -594,6 +600,7 @@ export interface UseXlsxViewerControllerOptions {
   maxFileSizeBytes?: number;
   readOnly?: boolean;
   readOnlyAboveBytes?: number;
+  showHiddenSheets?: boolean;
   skipXmlParsing?: boolean;
   src?: string;
   useWorker?: boolean;
