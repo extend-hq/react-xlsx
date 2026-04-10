@@ -24,6 +24,7 @@ import {
   type WorkbookImageSheetOrigin,
   type WorkbookTableMetadata
 } from "./images";
+import { resolveUsedRangeContentAnchor } from "./sheet-anchor";
 import { getSheetsWasmModule } from "./wasm";
 import { XlsxWorkerClient } from "./worker-client";
 import type {
@@ -514,7 +515,8 @@ function buildSheetList(
   styleById?: Record<number, XlsxResolvedCellStyle> | null,
   namedCellStyleByName?: Record<string, XlsxResolvedCellStyle> | null,
   tableStyleByName?: Record<string, XlsxTableStyleDefinition> | null,
-  showHiddenSheets = false
+  showHiddenSheets = false,
+  normalizeUsedRangeStart = false
 ): XlsxSheetData[] {
   const sheets: XlsxSheetData[] = [];
 
@@ -588,7 +590,13 @@ function buildSheetList(
       continue;
     }
 
-    const [minRow, minCol, maxRow, maxCol] = usedRange;
+    const { minUsedCol: minCol, minUsedRow: minRow } = normalizeUsedRangeStart
+      ? resolveUsedRangeContentAnchor(worksheet, usedRange)
+      : {
+          minUsedCol: usedRange[1],
+          minUsedRow: usedRange[0]
+        };
+    const [, , maxRow, maxCol] = usedRange;
     let visibleRowsCache: number[] | null = null;
     let visibleColsCache: number[] | null = null;
     let rowHeightsCache: number[] | null = null;
@@ -1823,9 +1831,18 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const readOnly = requestedReadOnly || forcedReadOnly;
   const workerSupported = useWorker && typeof Worker !== "undefined";
   const shouldUseWorker = workerSupported && forcedReadOnly;
-  const shouldForceReadOnlyForBuffer = React.useCallback((bufferByteLength: number) => (
-    !requestedReadOnly && readOnlyAboveBytes > 0 && bufferByteLength > readOnlyAboveBytes
-  ), [readOnlyAboveBytes, requestedReadOnly]);
+  const shouldForceReadOnlyForBuffer = React.useCallback((buffer: ArrayBuffer | Uint8Array) => {
+    if (requestedReadOnly) {
+      return false;
+    }
+
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    if (isLegacyXlsWorkbook(bytes)) {
+      return true;
+    }
+
+    return readOnlyAboveBytes > 0 && bytes.byteLength > readOnlyAboveBytes;
+  }, [readOnlyAboveBytes, requestedReadOnly]);
 
   const disposeWorkerClient = React.useCallback(() => {
     workerClientRef.current?.dispose();
@@ -2052,14 +2069,16 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const loadWorkbookOnMainThread = React.useCallback(async (buffer: ArrayBuffer) => {
     const nextParsedWorkbook = await parseWorkbookBuffer(buffer);
     const bytes = new Uint8Array(buffer);
+    const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing);
     const nextImageAssets = loadWorkbookImageAssets(
       bytes,
       nextParsedWorkbook.workbook,
-      shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing)
+      effectiveSkipXmlParsing
     );
     return {
       imageAssets: nextImageAssets,
-      parsedWorkbook: nextParsedWorkbook
+      parsedWorkbook: nextParsedWorkbook,
+      skipXmlParsing: effectiveSkipXmlParsing
     };
   }, [skipXmlParsing]);
 
@@ -2168,7 +2187,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           throw createWorkbookTooLargeError(preflight);
         }
 
-        const shouldForceReadOnly = shouldForceReadOnlyForBuffer(buffer.byteLength);
+        const shouldForceReadOnly = shouldForceReadOnlyForBuffer(buffer);
         setForcedReadOnly(shouldForceReadOnly);
         const shouldUseWorkerForLoad = workerSupported && shouldForceReadOnly;
         const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(buffer), skipXmlParsing);
@@ -2427,7 +2446,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    const shouldForceReadOnly = shouldForceReadOnlyForBuffer(deferredBuffer.byteLength);
+    const shouldForceReadOnly = shouldForceReadOnlyForBuffer(deferredBuffer);
     setForcedReadOnly(shouldForceReadOnly);
     const shouldUseWorkerForLoad = workerSupported && shouldForceReadOnly;
     const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(deferredBuffer), skipXmlParsing);

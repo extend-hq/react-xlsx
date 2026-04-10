@@ -12558,6 +12558,7 @@ function XlsxViewerInner({
 }) {
   const palette = useViewerPalette(isDark);
   const { displayFileName, error } = controller;
+  const effectiveExperimentalCanvas = experimentalCanvas || controller.isWorkerBacked === true;
   const customFileTooLarge =
     error instanceof XlsxFileSizeLimitExceededError
       ? renderCustomFileTooLarge(
@@ -12605,7 +12606,7 @@ function XlsxViewerInner({
                 enableCanvasSelectionAnimation={enableCanvasSelectionAnimation}
                 enableGestureZoom={enableGestureZoom}
                 errorState={errorState}
-                experimentalCanvas={experimentalCanvas}
+                experimentalCanvas={effectiveExperimentalCanvas}
                 fileTooLargeState={fileTooLargeState}
                 loadingComponent={loadingComponent}
                 loadingState={loadingState}
