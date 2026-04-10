@@ -1999,6 +1999,19 @@ function normalizeControlLabel(label: string | null | undefined) {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function isPlaceholderFormControlName(name: string | null | undefined) {
+  const normalized = normalizeControlLabel(name)?.toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return /^(option button|group box|check box|drop down|dropdown|list box|edit box|scroll bar|spinner|spin button|button)\s+\d+$/.test(normalized);
+}
+
+function resolveNamedFormControlLabel(name: string | null | undefined) {
+  return isPlaceholderFormControlName(name) ? undefined : normalizeControlLabel(name);
+}
+
 function parseAnchor(anchorNode: Element) {
   if (anchorNode.localName === "anchor") {
     const from = parseMarker(getFirstChild(anchorNode, "from"));
@@ -2656,6 +2669,7 @@ function parseShapeNode(
     flipV: transform.flipV,
     geometry,
     geometryAdjustments,
+    hidden: nonVisualProps?.getAttribute("hidden") === "1" || undefined,
     hyperlink: getHyperlinkTarget(nonVisualProps ?? shapeNode, drawingRelationships),
     id: shapeId,
     name: nonVisualProps?.getAttribute("name") ?? undefined,
@@ -3009,7 +3023,7 @@ function parseSheetFormControls(
       hidden: vmlControl?.hidden ?? false,
       id: `form-control-${workbookSheetIndex}-${index}`,
       kind,
-      label: vmlControl?.label ?? normalizeControlLabel(controlNode.name),
+      label: vmlControl?.label,
       linkedCell: ctrlProp?.linkedCell ?? vmlControl?.linkedCell,
       name: controlNode.name,
       sheetIndex: workbookSheetIndex,
@@ -3021,6 +3035,105 @@ function parseSheetFormControls(
   });
 
   return parsedControls.sort((left, right) => left.zIndex - right.zIndex);
+}
+
+function flattenShapeText(shape: XlsxShape) {
+  const text = shape.paragraphs
+    .flatMap((paragraph) => paragraph.runs.map((run) => run.text))
+    .join(" ");
+  return normalizeControlLabel(text);
+}
+
+function rectArea(rect: DrawingRectEmu) {
+  return Math.max(0, rect.cx) * Math.max(0, rect.cy);
+}
+
+function rectIntersectionArea(left: DrawingRectEmu, right: DrawingRectEmu) {
+  const overlapX = Math.max(0, Math.min(left.x + left.cx, right.x + right.cx) - Math.max(left.x, right.x));
+  const overlapY = Math.max(0, Math.min(left.y + left.cy, right.y + right.cy) - Math.max(left.y, right.y));
+  return overlapX * overlapY;
+}
+
+function rectCenterDistance(left: DrawingRectEmu, right: DrawingRectEmu) {
+  const leftCenterX = left.x + left.cx / 2;
+  const leftCenterY = left.y + left.cy / 2;
+  const rightCenterX = right.x + right.cx / 2;
+  const rightCenterY = right.y + right.cy / 2;
+  return Math.hypot(leftCenterX - rightCenterX, leftCenterY - rightCenterY);
+}
+
+function findHiddenShapeControlMatch(
+  control: XlsxFormControl,
+  shapes: XlsxShape[],
+  sheetState: WorkbookSheetState | null
+): XlsxShape | null {
+  const controlRect = anchorToAbsoluteRect(control.anchor, sheetState);
+  const controlArea = Math.max(1, rectArea(controlRect));
+  const placeholderName = isPlaceholderFormControlName(control.name);
+  let bestMatch: XlsxShape | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  shapes.forEach((shape) => {
+    if (!shape.hidden) {
+      return;
+    }
+
+    const shapeRect = anchorToAbsoluteRect(shape.anchor, sheetState);
+    const shapeArea = Math.max(1, rectArea(shapeRect));
+    const intersectionArea = rectIntersectionArea(controlRect, shapeRect);
+    const overlapScore = intersectionArea / Math.min(controlArea, shapeArea);
+    const distance = rectCenterDistance(controlRect, shapeRect);
+    const maxDimension = Math.max(controlRect.cx, controlRect.cy, shapeRect.cx, shapeRect.cy, 1);
+    const distanceScore = distance / maxDimension;
+    const textLabel = flattenShapeText(shape);
+    const sameName = normalizeControlLabel(shape.name)?.toLowerCase() === normalizeControlLabel(control.name)?.toLowerCase();
+    let score = overlapScore * 4 - distanceScore;
+
+    if (sameName) {
+      score += 1;
+    }
+
+    if (control.kind === "group-box") {
+      score += textLabel ? -3 : 0.5;
+      score += shape.stroke?.none ? -1.5 : 0.75;
+    } else {
+      score += textLabel ? 2 : -1;
+      score += shape.stroke?.none ? 0.2 : -0.5;
+    }
+
+    if (!placeholderName && textLabel && textLabel === resolveNamedFormControlLabel(control.name)) {
+      score += 0.5;
+    }
+
+    if (score > bestScore) {
+      bestMatch = shape;
+      bestScore = score;
+    }
+  });
+
+  return bestScore >= 0.25 ? bestMatch : null;
+}
+
+function enrichFormControlsWithHiddenShapes(
+  formControls: XlsxFormControl[],
+  shapes: XlsxShape[],
+  sheetState: WorkbookSheetState | null
+) {
+  return formControls.map((control) => {
+    const matchedShape = findHiddenShapeControlMatch(control, shapes, sheetState);
+    const matchedLabel = matchedShape ? flattenShapeText(matchedShape) : undefined;
+    const fallbackLabel = resolveNamedFormControlLabel(control.name);
+    let resolvedAnchor = control.anchor;
+    if (matchedShape && (control.kind === "group-box" || matchedLabel || isPlaceholderFormControlName(control.name))) {
+      resolvedAnchor = matchedShape.anchor;
+    }
+
+    return {
+      ...control,
+      anchor: resolvedAnchor,
+      label: control.label ?? matchedLabel ?? fallbackLabel
+    };
+  });
 }
 
 export function revokeWorkbookImageAssets(assets: WorkbookImageAssets | null) {
@@ -3193,10 +3306,16 @@ export function parseWorkbookImageAssets(bytes: Uint8Array): WorkbookImageAssets
       workbookSheetIndex,
       zIndexBase
     );
+    const visibleShapeList = shapeList.filter((shape) => !shape.hidden);
+    const enrichedFormControlList = enrichFormControlsWithHiddenShapes(
+      formControlList,
+      shapeList,
+      sheetStatesByWorkbookSheetIndex[workbookSheetIndex] ?? null
+    );
 
-    formControlsByWorkbookSheetIndex[workbookSheetIndex] = formControlList;
+    formControlsByWorkbookSheetIndex[workbookSheetIndex] = enrichedFormControlList;
     imagesByWorkbookSheetIndex[workbookSheetIndex] = imageList;
-    shapesByWorkbookSheetIndex[workbookSheetIndex] = shapeList;
+    shapesByWorkbookSheetIndex[workbookSheetIndex] = visibleShapeList;
     sheetOrigins[workbookSheetIndex] = attachments.length > 0
       ? {
           attachments,

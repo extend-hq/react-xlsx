@@ -4372,6 +4372,11 @@ function resolveFormControlLabel(control: XlsxFormControl) {
     return "";
   }
 
+  const normalized = label.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (/^(option button|group box|check box|drop down|dropdown|list box|edit box|scroll bar|spinner|spin button|button)\s+\d+$/.test(normalized)) {
+    return "";
+  }
+
   return label.replace(/\u00a0/g, " ").replace(/^\s+/, "");
 }
 
@@ -6946,6 +6951,7 @@ function XlsxGrid({
 
     const batchCoversRow = viewportRowBatch ? row >= viewportRowBatch.startRow && row <= viewportRowBatch.endRow : false;
     const batchedCell = batchCoversRow ? viewportRowBatch?.cells.get(cacheKey) : undefined;
+    const worksheetMergedSecondary = worksheet?.isMergedSecondary(row, col) ?? false;
 
     if (!worksheet && !batchedCell) {
       const emptyData: CellRenderData = {
@@ -6965,7 +6971,7 @@ function XlsxGrid({
       return emptyData;
     }
 
-    if (batchedCell?.isMergedSecondary) {
+    if (batchedCell?.isMergedSecondary || worksheetMergedSecondary) {
       const mergedSecondaryData: CellRenderData = {
         isMergedSecondary: true,
         style: {},
@@ -6975,19 +6981,11 @@ function XlsxGrid({
       return mergedSecondaryData;
     }
 
-    if (!batchedCell && !batchCoversRow && worksheet?.isMergedSecondary(row, col)) {
-      const mergedSecondaryData: CellRenderData = {
-        isMergedSecondary: true,
-        style: {},
-        value: ""
-      };
-      cellRenderCacheRef.current.set(cacheKey, mergedSecondaryData);
-      return mergedSecondaryData;
-    }
-
-    const merge = batchCoversRow
-      ? batchedCell?.mergeSpan
-      : (worksheet?.getMergeSpan(row, col) as { colSpan?: number; rowSpan?: number } | null | undefined);
+    const merge = worksheet
+      ? (worksheet.getMergeSpan(row, col) as { colSpan?: number; rowSpan?: number } | null | undefined)
+      : batchCoversRow
+        ? batchedCell?.mergeSpan
+        : null;
     const inheritedStyle = resolveInheritedCellStyle(activeSheet, row, col);
     const worksheetStyle = batchCoversRow
       ? batchedCell?.style ?? null
@@ -7742,13 +7740,15 @@ function XlsxGrid({
 
     if (worksheet && (colSpan > 1 || rowSpan > 1)) {
       for (let nextCol = cell.col + 1; nextCol < displayColLimit; nextCol += 1) {
-        if (!worksheet.isMergedSecondary(cell.row, nextCol)) {
+        const nextAnchor = resolveMergeAnchorCell({ row: cell.row, col: nextCol });
+        if (nextAnchor.row !== cell.row || nextAnchor.col !== cell.col) {
           break;
         }
         endActualCol = nextCol;
       }
       for (let nextRow = cell.row + 1; nextRow < displayRowLimit; nextRow += 1) {
-        if (!worksheet.isMergedSecondary(nextRow, cell.col)) {
+        const nextAnchor = resolveMergeAnchorCell({ row: nextRow, col: cell.col });
+        if (nextAnchor.row !== cell.row || nextAnchor.col !== cell.col) {
           break;
         }
         endActualRow = nextRow;
@@ -7770,6 +7770,7 @@ function XlsxGrid({
     displayRowLimit,
     displayRowHeaderWidth,
     getCellData,
+    resolveMergeAnchorCell,
     rowIndexByActual,
     worksheet
   ]);
@@ -10057,12 +10058,13 @@ function XlsxGrid({
     };
 
     if (control.kind === "group-box") {
+      const hasLabel = controlLabel.length > 0;
       return (
         <div
           key={`${pane}-${control.id}`}
           style={{
             ...commonStyle,
-            padding: `${Math.max(7, fontSizePx * 0.5)}px ${6 * zoomFactor}px ${4 * zoomFactor}px`,
+            padding: `${hasLabel ? Math.max(7, fontSizePx * 0.5) : 0}px 0 0`,
             position: "absolute"
           }}
         >
