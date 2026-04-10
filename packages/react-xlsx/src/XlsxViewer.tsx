@@ -9883,6 +9883,56 @@ function XlsxGrid({
     );
   }
 
+  function resolveCanvasDrawingClipPath(rect: XlsxImageRect, pane: FrozenDrawingPane) {
+    if (!experimentalCanvas) {
+      return undefined;
+    }
+
+    const paneBounds = (() => {
+      switch (pane) {
+        case "corner":
+          return {
+            bottom: frozenPaneBottom,
+            left: displayRowHeaderWidth,
+            right: frozenPaneRight,
+            top: displayHeaderHeight
+          };
+        case "left":
+          return {
+            bottom: drawingViewport.top + drawingViewport.height,
+            left: displayRowHeaderWidth,
+            right: frozenPaneRight,
+            top: drawingViewport.top + frozenPaneBottom
+          };
+        case "top":
+          return {
+            bottom: frozenPaneBottom,
+            left: drawingViewport.left + frozenPaneRight,
+            right: drawingViewport.left + drawingViewport.width,
+            top: displayHeaderHeight
+          };
+        case "scroll":
+        default:
+          return {
+            bottom: drawingViewport.top + drawingViewport.height,
+            left: drawingViewport.left + frozenPaneRight,
+            right: drawingViewport.left + drawingViewport.width,
+            top: drawingViewport.top + frozenPaneBottom
+          };
+      }
+    })();
+
+    const clipTop = Math.max(0, paneBounds.top - rect.top);
+    const clipRight = Math.max(0, (rect.left + rect.width) - paneBounds.right);
+    const clipBottom = Math.max(0, (rect.top + rect.height) - paneBounds.bottom);
+    const clipLeft = Math.max(0, paneBounds.left - rect.left);
+    if (clipTop <= 0 && clipRight <= 0 && clipBottom <= 0 && clipLeft <= 0) {
+      return undefined;
+    }
+
+    return `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`;
+  }
+
   function renderShapeDrawing(shape: XlsxShape, rect: XlsxImageRect, pane: FrozenDrawingPane) {
     const drawingPane = resolveDrawingPane(rect);
     if (drawingPane !== pane) {
@@ -10329,7 +10379,9 @@ function XlsxGrid({
 
     const isFrozenDrawing = pane !== "scroll";
     const canEditChart = !readOnly && chart.editable !== false;
+    const clipPath = resolveCanvasDrawingClipPath(rect, pane);
     const style: React.CSSProperties = {
+      clipPath,
       contain: "layout paint",
       height: rect.height,
       left: rect.left,
