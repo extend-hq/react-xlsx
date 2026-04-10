@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "React components and hooks for viewing XLSX workbooks",
   "repository": {
     "type": "git",
