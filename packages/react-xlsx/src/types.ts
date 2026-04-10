@@ -846,13 +846,45 @@ export interface XlsxViewerCharts {
   updateChart: (id: string, patch: Partial<XlsxChart>) => void;
 }
 
+export type XlsxSheetThumbnailResolution =
+  | number
+  | {
+      maxHeight?: number;
+      maxWidth?: number;
+    };
+
+export interface UseXlsxViewerThumbnailsOptions {
+  includeHeaders?: boolean;
+  resolution?: XlsxSheetThumbnailResolution;
+}
+
+export interface XlsxSheetThumbnail {
+  aspectRatio: number;
+  contentHeight: number;
+  contentWidth: number;
+  height: number;
+  paint: (canvas: HTMLCanvasElement | null) => boolean;
+  sheet: XlsxSheetData;
+  sheetIndex: number;
+  sourceRange: XlsxCellRange;
+  width: number;
+  workbookSheetIndex: number;
+}
+
+export interface XlsxViewerThumbnails {
+  paintThumbnail: (sheetIndex: number, canvas: HTMLCanvasElement | null) => boolean;
+  thumbnails: XlsxSheetThumbnail[];
+}
+
 export interface XlsxTableHeaderMenuRenderProps {
-  close: () => void;
+  cell: XlsxCellAddress;
   column: XlsxTableColumn;
   direction: XlsxTableSortDirection | null;
   sortAscending: () => void;
   sortDescending: () => void;
   table: XlsxTable;
+  triggerIcon: string;
+  triggerProps: React.ButtonHTMLAttributes<HTMLButtonElement>;
 }
 
 export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions {

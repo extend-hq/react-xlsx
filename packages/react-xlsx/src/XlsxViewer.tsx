@@ -26,10 +26,12 @@ import type {
   XlsxImageSelectionRenderProps,
   XlsxShape,
   XlsxSheetData,
+  XlsxSheetThumbnail,
   XlsxThemePalette,
   XlsxTable,
   XlsxTableColumn,
   XlsxTableHeaderMenuRenderProps,
+  UseXlsxViewerThumbnailsOptions,
   XlsxViewerCharts,
   XlsxViewerTables,
   XlsxViewerController,
@@ -38,6 +40,7 @@ import type {
   XlsxViewerProps,
   XlsxViewerProviderProps,
   XlsxViewerSelection,
+  XlsxViewerThumbnails,
   XlsxViewerZoom
 } from "./types";
 
@@ -65,6 +68,13 @@ const IMAGE_MIN_SIZE_PX = 16;
 const IMAGE_HANDLE_SIZE_PX = 10;
 const CANVAS_RESIZE_HIT_SLOP_PX = 8;
 const CANVAS_VIEWPORT_OVERSCAN_PX = 240;
+const THUMBNAIL_DEFAULT_MAX_DIMENSION = 192;
+const THUMBNAIL_FALLBACK_ROWS = 12;
+const THUMBNAIL_FALLBACK_COLS = 8;
+const THUMBNAIL_MAX_ROWS = 200;
+const THUMBNAIL_MAX_COLS = 80;
+const THUMBNAIL_MAX_SOURCE_HEIGHT_PX = 900;
+const THUMBNAIL_MAX_SOURCE_WIDTH_PX = 1440;
 const LIVE_ZOOM_COMMIT_IDLE_MS = 48;
 const WHEEL_ZOOM_SENSITIVITY = 0.00025;
 const WHEEL_LINE_DELTA_PX = 16;
@@ -2649,6 +2659,146 @@ function useViewerPalette(isDark = false) {
   return isDark ? DARK_PALETTE : LIGHT_PALETTE;
 }
 
+type SheetThumbnailAxisItem = {
+  actualIndex: number;
+  size: number;
+  start: number;
+};
+
+type SheetThumbnailRenderPlan = {
+  aspectRatio: number;
+  contentHeight: number;
+  contentWidth: number;
+  height: number;
+  paint: (canvas: HTMLCanvasElement | null) => boolean;
+  sourceRange: XlsxCellRange;
+  width: number;
+};
+
+function normalizeThumbnailResolution(
+  resolution?: UseXlsxViewerThumbnailsOptions["resolution"]
+) {
+  if (typeof resolution === "number" && Number.isFinite(resolution) && resolution > 0) {
+    return {
+      maxHeight: resolution,
+      maxWidth: resolution
+    };
+  }
+
+  const resolvedObject = typeof resolution === "object" && resolution ? resolution : undefined;
+  return {
+    maxHeight: resolvedObject?.maxHeight && Number.isFinite(resolvedObject.maxHeight) && resolvedObject.maxHeight > 0
+      ? resolvedObject.maxHeight
+      : THUMBNAIL_DEFAULT_MAX_DIMENSION,
+    maxWidth: resolvedObject?.maxWidth && Number.isFinite(resolvedObject.maxWidth) && resolvedObject.maxWidth > 0
+      ? resolvedObject.maxWidth
+      : THUMBNAIL_DEFAULT_MAX_DIMENSION
+  };
+}
+
+function resolveThumbnailOutputSize(
+  sourceWidth: number,
+  sourceHeight: number,
+  resolution?: UseXlsxViewerThumbnailsOptions["resolution"]
+) {
+  const normalized = normalizeThumbnailResolution(resolution);
+  const safeSourceWidth = Math.max(1, sourceWidth);
+  const safeSourceHeight = Math.max(1, sourceHeight);
+  const scale = Math.min(
+    normalized.maxWidth / safeSourceWidth,
+    normalized.maxHeight / safeSourceHeight,
+    1
+  );
+
+  return {
+    height: Math.max(1, Math.round(safeSourceHeight * scale)),
+    maxHeight: normalized.maxHeight,
+    maxWidth: normalized.maxWidth,
+    scale,
+    width: Math.max(1, Math.round(safeSourceWidth * scale))
+  };
+}
+
+function resolveThumbnailAxisIndices({
+  fallbackCount,
+  getSizePx,
+  maxCount,
+  maxLogicalPixels,
+  maxUsedIndex,
+  minUsedIndex,
+  precomputed
+}: {
+  fallbackCount: number;
+  getSizePx: (actualIndex: number) => number;
+  maxCount: number;
+  maxLogicalPixels: number;
+  maxUsedIndex: number;
+  minUsedIndex: number;
+  precomputed: number[];
+}) {
+  const sourceIndices = precomputed.length > 0
+    ? precomputed
+    : Array.from({
+        length: Math.max(fallbackCount, Math.max(0, maxUsedIndex + 1))
+      }, (_, index) => index);
+  const hasUsedRange = maxUsedIndex >= minUsedIndex && maxUsedIndex >= 0;
+  const preferredStart = hasUsedRange ? Math.max(0, minUsedIndex) : 0;
+  const preferredEnd = hasUsedRange ? maxUsedIndex : Math.max(0, preferredStart + fallbackCount - 1);
+  const picked: number[] = [];
+  let totalSize = 0;
+
+  for (const actualIndex of sourceIndices) {
+    if (actualIndex < preferredStart) {
+      continue;
+    }
+    if (hasUsedRange && actualIndex > preferredEnd) {
+      break;
+    }
+
+    const size = Math.max(1, getSizePx(actualIndex));
+    picked.push(actualIndex);
+    totalSize += size;
+    if (picked.length >= maxCount || totalSize >= maxLogicalPixels) {
+      break;
+    }
+  }
+
+  if (picked.length > 0) {
+    return picked;
+  }
+
+  for (const actualIndex of sourceIndices) {
+    const size = Math.max(1, getSizePx(actualIndex));
+    picked.push(actualIndex);
+    totalSize += size;
+    if (picked.length >= fallbackCount || picked.length >= maxCount || totalSize >= maxLogicalPixels) {
+      break;
+    }
+  }
+
+  return picked.length > 0 ? picked : [0];
+}
+
+function buildThumbnailAxisItems(actualIndices: number[], getSizePx: (actualIndex: number) => number) {
+  const items: SheetThumbnailAxisItem[] = [];
+  let offset = 0;
+
+  for (const actualIndex of actualIndices) {
+    const size = Math.max(1, getSizePx(actualIndex));
+    items.push({
+      actualIndex,
+      size,
+      start: offset
+    });
+    offset += size;
+  }
+
+  return {
+    items,
+    totalSize: offset
+  };
+}
+
 function columnLabel(col: number): string {
   let label = "";
   let nextValue = col;
@@ -3840,7 +3990,6 @@ function getTableHeaderColumn(table: XlsxTable | null, row: number, col: number)
 }
 
 function DefaultTableHeaderMenu({
-  close,
   direction,
   sortAscending,
   sortDescending
@@ -3859,10 +4008,7 @@ function DefaultTableHeaderMenu({
       }}
     >
       <button
-        onClick={() => {
-          sortAscending();
-          close();
-        }}
+        onClick={sortAscending}
         style={{
           background: direction === "ascending" ? "var(--xlsx-menu-active)" : "transparent",
           border: "none",
@@ -3878,10 +4024,7 @@ function DefaultTableHeaderMenu({
         Sort A to Z
       </button>
       <button
-        onClick={() => {
-          sortDescending();
-          close();
-        }}
+        onClick={sortDescending}
         style={{
           background: direction === "descending" ? "var(--xlsx-menu-active)" : "transparent",
           border: "none",
@@ -3898,6 +4041,26 @@ function DefaultTableHeaderMenu({
       </button>
     </div>
   );
+}
+
+function resolveTableHeaderTriggerStyle(palette: ViewerPalette, zoomFactor: number): React.CSSProperties {
+  return {
+    alignItems: "center",
+    background: "transparent",
+    border: "none",
+    color: palette.mutedText,
+    cursor: "pointer",
+    display: "inline-flex",
+    fontSize: 10 * zoomFactor,
+    height: 16 * zoomFactor,
+    justifyContent: "center",
+    padding: 0,
+    position: "absolute",
+    right: 4 * zoomFactor,
+    top: 3 * zoomFactor,
+    width: 16 * zoomFactor,
+    zIndex: 6
+  };
 }
 
 function SegmentedControl({
@@ -9085,6 +9248,31 @@ function XlsxGrid({
       sortState && sortState.tableName === table.name && sortState.columnIndex === tableColumn.index
         ? sortState.direction
         : null;
+    const triggerIcon = direction === "ascending" ? "▲" : direction === "descending" ? "▼" : "▾";
+
+    if (renderTableHeaderMenu) {
+      return renderTableHeaderMenu({
+        cell,
+        column: tableColumn,
+        direction,
+        sortAscending: () => sortTable(table.name, tableColumn.index, "ascending"),
+        sortDescending: () => sortTable(table.name, tableColumn.index, "descending"),
+        table,
+        triggerIcon,
+        triggerProps: {
+          "aria-haspopup": "menu",
+          "aria-label": `Open menu for ${tableColumn.name}`,
+          onClick: (event) => {
+            event.stopPropagation();
+          },
+          onPointerDown: (event) => {
+            event.stopPropagation();
+          },
+          style: resolveTableHeaderTriggerStyle(palette, zoomFactor),
+          type: "button"
+        }
+      });
+    }
 
     return (
       <button
@@ -9105,28 +9293,14 @@ function XlsxGrid({
           );
         }}
         style={{
-          alignItems: "center",
-          background: "transparent",
-          border: "none",
-          color: palette.mutedText,
-          cursor: "pointer",
-          display: "inline-flex",
-          fontSize: 10 * zoomFactor,
-          height: 16 * zoomFactor,
-          justifyContent: "center",
-          padding: 0,
-          position: "absolute",
-          right: 4 * zoomFactor,
-          top: 3 * zoomFactor,
-          width: 16 * zoomFactor,
-          zIndex: 6
+          ...resolveTableHeaderTriggerStyle(palette, zoomFactor)
         }}
         type="button"
       >
-        {direction === "ascending" ? "▲" : direction === "descending" ? "▼" : "▾"}
+        {triggerIcon}
       </button>
     );
-  }, [effectiveTables, palette.mutedText, sortState, zoomFactor]);
+  }, [effectiveTables, palette, renderTableHeaderMenu, sortState, sortTable, zoomFactor]);
   const resolveCanvasColumnHeaderRect = React.useCallback((actualCol: number) => {
     const colIndex = colIndexByActual.get(actualCol);
     if (colIndex === undefined) {
@@ -12297,7 +12471,7 @@ function XlsxGrid({
                 }}
               />
             ) : null}
-            {openTableMenuState ? (
+            {!renderTableHeaderMenu && openTableMenuState ? (
               <div
                 ref={tableMenuRef}
                 style={{
@@ -12308,36 +12482,28 @@ function XlsxGrid({
                   zIndex: 50
                 }}
               >
-                {renderTableHeaderMenu
-                  ? renderTableHeaderMenu({
-                      close: () => setOpenTableMenu(null),
-                      column: openTableMenuState.column,
-                      direction:
-                        sortState &&
-                        sortState.tableName === openTableMenuState.table.name &&
-                        sortState.columnIndex === openTableMenuState.column.index
-                          ? sortState.direction
-                          : null,
-                      sortAscending: () => sortTable(openTableMenuState.table.name, openTableMenuState.column.index, "ascending"),
-                      sortDescending: () => sortTable(openTableMenuState.table.name, openTableMenuState.column.index, "descending"),
-                      table: openTableMenuState.table
-                    })
-                  : (
-                    <DefaultTableHeaderMenu
-                      close={() => setOpenTableMenu(null)}
-                      column={openTableMenuState.column}
-                      direction={
-                        sortState &&
-                        sortState.tableName === openTableMenuState.table.name &&
-                        sortState.columnIndex === openTableMenuState.column.index
-                          ? sortState.direction
-                          : null
-                      }
-                      sortAscending={() => sortTable(openTableMenuState.table.name, openTableMenuState.column.index, "ascending")}
-                      sortDescending={() => sortTable(openTableMenuState.table.name, openTableMenuState.column.index, "descending")}
-                      table={openTableMenuState.table}
-                    />
-                  )}
+                <DefaultTableHeaderMenu
+                  cell={{ col: openTableMenuState.column.index + openTableMenuState.table.start.col, row: openTableMenuState.table.start.row }}
+                  column={openTableMenuState.column}
+                  direction={
+                    sortState &&
+                    sortState.tableName === openTableMenuState.table.name &&
+                    sortState.columnIndex === openTableMenuState.column.index
+                      ? sortState.direction
+                      : null
+                  }
+                  sortAscending={() => {
+                    sortTable(openTableMenuState.table.name, openTableMenuState.column.index, "ascending");
+                    setOpenTableMenu(null);
+                  }}
+                  sortDescending={() => {
+                    sortTable(openTableMenuState.table.name, openTableMenuState.column.index, "descending");
+                    setOpenTableMenu(null);
+                  }}
+                  table={openTableMenuState.table}
+                  triggerIcon="▾"
+                  triggerProps={{ type: "button" }}
+                />
               </div>
             ) : null}
           </div>
@@ -12803,6 +12969,543 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       tabs,
       updateChart
     ]
+  );
+}
+
+export function useXlsxViewerThumbnails(
+  options: UseXlsxViewerThumbnailsOptions = {}
+): XlsxViewerThumbnails {
+  const { workbook, sheets } = useXlsxViewer();
+  const { isDark } = React.useContext(ViewerAppearanceContext);
+  const palette = useViewerPalette(isDark);
+  const includeHeaders = options.includeHeaders ?? true;
+  const resolution = options.resolution;
+
+  const thumbnails = React.useMemo<XlsxSheetThumbnail[]>(() => {
+    return sheets.map((sheet, sheetIndex) => {
+      const worksheet = workbook?.getSheet(sheet.workbookSheetIndex) ?? null;
+      const showGridLines = sheet.showGridLines ?? true;
+      const hiddenRowSet = new Set(sheet.hiddenRows ?? []);
+      const hiddenColSet = new Set(sheet.hiddenCols ?? []);
+      const visibleRows = buildVisibleAxisIndices(
+        sheet.visibleRows ?? [],
+        Math.max(THUMBNAIL_FALLBACK_ROWS, (sheet.maxUsedRow ?? -1) + THUMBNAIL_FALLBACK_ROWS + 1),
+        sheet.maxUsedRow ?? -1,
+        hiddenRowSet
+      );
+      const visibleCols = buildVisibleAxisIndices(
+        sheet.visibleCols ?? [],
+        Math.max(THUMBNAIL_FALLBACK_COLS, (sheet.maxUsedCol ?? -1) + THUMBNAIL_FALLBACK_COLS + 1),
+        sheet.maxUsedCol ?? -1,
+        hiddenColSet
+      );
+      const resolveColumnWidthPx = (actualCol: number) => {
+        if (worksheet && !worksheet.isColumnHidden(actualCol)) {
+          const width = worksheet.getColumnWidth(actualCol);
+          if (width !== undefined && width !== null) {
+            return Math.max(
+              resolveRenderedSheetAxisPixels(resolveSheetColumnWidthPixels(width, sheet.columnWidthCharacterWidthPx), showGridLines),
+              DEFAULT_COL_WIDTH / 2
+            );
+          }
+        }
+
+        return Math.max(
+          resolveRenderedSheetAxisPixels(
+            sheet.colWidthOverridesPx[actualCol] ?? sheet.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
+            showGridLines
+          ),
+          DEFAULT_COL_WIDTH / 2
+        );
+      };
+      const resolveRowHeightPx = (actualRow: number) => {
+        if (worksheet && !worksheet.isRowHidden(actualRow)) {
+          const height = worksheet.getRowHeight(actualRow);
+          if (height !== undefined && height !== null) {
+            return Math.max(
+              resolveRenderedSheetAxisPixels(resolveSheetRowHeightPixels(height), showGridLines),
+              DEFAULT_ROW_HEIGHT / 1.5
+            );
+          }
+        }
+
+        return Math.max(
+          resolveRenderedSheetAxisPixels(
+            sheet.rowHeightOverridesPx[actualRow] ?? sheet.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+            showGridLines
+          ),
+          DEFAULT_ROW_HEIGHT / 1.5
+        );
+      };
+      const previewRows = resolveThumbnailAxisIndices({
+        fallbackCount: THUMBNAIL_FALLBACK_ROWS,
+        getSizePx: resolveRowHeightPx,
+        maxCount: THUMBNAIL_MAX_ROWS,
+        maxLogicalPixels: THUMBNAIL_MAX_SOURCE_HEIGHT_PX,
+        maxUsedIndex: sheet.maxUsedRow ?? -1,
+        minUsedIndex: Math.max(0, sheet.minUsedRow ?? 0),
+        precomputed: visibleRows
+      });
+      const previewCols = resolveThumbnailAxisIndices({
+        fallbackCount: THUMBNAIL_FALLBACK_COLS,
+        getSizePx: resolveColumnWidthPx,
+        maxCount: THUMBNAIL_MAX_COLS,
+        maxLogicalPixels: THUMBNAIL_MAX_SOURCE_WIDTH_PX,
+        maxUsedIndex: sheet.maxUsedCol ?? -1,
+        minUsedIndex: Math.max(0, sheet.minUsedCol ?? 0),
+        precomputed: visibleCols
+      });
+      const rowAxis = buildThumbnailAxisItems(previewRows, resolveRowHeightPx);
+      const colAxis = buildThumbnailAxisItems(previewCols, resolveColumnWidthPx);
+      const rowItemByActual = new Map(rowAxis.items.map((item) => [item.actualIndex, item]));
+      const colItemByActual = new Map(colAxis.items.map((item) => [item.actualIndex, item]));
+      const headerHeight = includeHeaders ? HEADER_HEIGHT : 0;
+      const rowHeaderWidth = includeHeaders ? ROW_HEADER_WIDTH : 0;
+      const sourceWidth = rowHeaderWidth + colAxis.totalSize;
+      const sourceHeight = headerHeight + rowAxis.totalSize;
+      const outputSize = resolveThumbnailOutputSize(sourceWidth, sourceHeight, resolution);
+      const sourceRange: XlsxCellRange = {
+        start: {
+          col: previewCols[0] ?? 0,
+          row: previewRows[0] ?? 0
+        },
+        end: {
+          col: previewCols[previewCols.length - 1] ?? 0,
+          row: previewRows[previewRows.length - 1] ?? 0
+        }
+      };
+      const sparklineByCell = new Map<string, XlsxSheetData["sparklines"][number]>(
+        (sheet.sparklines ?? []).map((sparkline) => [`${sparkline.target.row}:${sparkline.target.col}`, sparkline])
+      );
+
+      const paint = (canvas: HTMLCanvasElement | null) => {
+        if (!canvas) {
+          return false;
+        }
+
+        const context = canvas.getContext("2d");
+        if (!context) {
+          return false;
+        }
+
+        const dpr = typeof window === "undefined" ? 1 : Math.max(1, window.devicePixelRatio || 1);
+        const outputWidth = outputSize.width;
+        const outputHeight = outputSize.height;
+        const scale = outputSize.scale;
+        const deviceWidth = Math.max(1, Math.round(outputWidth * dpr));
+        const deviceHeight = Math.max(1, Math.round(outputHeight * dpr));
+        if (canvas.width !== deviceWidth) {
+          canvas.width = deviceWidth;
+        }
+        if (canvas.height !== deviceHeight) {
+          canvas.height = deviceHeight;
+        }
+        if (canvas.style.width !== `${outputWidth}px`) {
+          canvas.style.width = `${outputWidth}px`;
+        }
+        if (canvas.style.height !== `${outputHeight}px`) {
+          canvas.style.height = `${outputHeight}px`;
+        }
+
+        context.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+        context.clearRect(0, 0, Math.max(1, sourceWidth), Math.max(1, sourceHeight));
+        context.fillStyle = palette.canvas;
+        context.fillRect(0, 0, Math.max(1, sourceWidth), Math.max(1, sourceHeight));
+        context.fillStyle = resolveSheetSurface(sheet, palette);
+        context.fillRect(rowHeaderWidth, headerHeight, Math.max(1, colAxis.totalSize), Math.max(1, rowAxis.totalSize));
+
+        if (includeHeaders) {
+          context.fillStyle = palette.headerSurface;
+          context.fillRect(rowHeaderWidth, 0, Math.max(1, colAxis.totalSize), headerHeight);
+          context.fillStyle = palette.rowHeaderSurface;
+          context.fillRect(0, headerHeight, rowHeaderWidth, Math.max(1, rowAxis.totalSize));
+          context.fillRect(0, 0, rowHeaderWidth, headerHeight);
+        }
+
+        if (!worksheet) {
+          return true;
+        }
+
+        const conditionalFormatMetricsCache = new Map<string, number[]>();
+        const cellRenderCache = new Map<string, CellRenderData>();
+        const getCellData = (row: number, col: number): CellRenderData => {
+          const cacheKey = `${row}:${col}`;
+          const cached = cellRenderCache.get(cacheKey);
+          if (cached) {
+            return cached;
+          }
+
+          if (worksheet.isMergedSecondary(row, col)) {
+            const mergedSecondaryData: CellRenderData = {
+              isMergedSecondary: true,
+              style: {},
+              value: ""
+            };
+            cellRenderCache.set(cacheKey, mergedSecondaryData);
+            return mergedSecondaryData;
+          }
+
+          const merge = worksheet.getMergeSpan(row, col) as { colSpan?: number; rowSpan?: number } | null | undefined;
+          const inheritedStyle = resolveInheritedCellStyle(sheet, row, col);
+          const worksheetStyle = (worksheet.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined) ?? null;
+          const mergedStyle = mergeResolvedCellStyle(inheritedStyle, worksheetStyle, { replaceXfSubtrees: true });
+          const alignment = mergedStyle?.alignment as Record<string, unknown> | undefined;
+          const sparkline = sparklineByCell.get(cacheKey) ?? null;
+          const sparklineValues = sparkline
+            ? (
+                sparkline.range.start.row === sparkline.range.end.row
+                  ? Array.from(
+                      { length: Math.abs(sparkline.range.end.col - sparkline.range.start.col) + 1 },
+                      (_, index) => getCellNumericValue(
+                        worksheet,
+                        sparkline.range.start.row,
+                        Math.min(sparkline.range.start.col, sparkline.range.end.col) + index
+                      )
+                    )
+                  : Array.from(
+                      { length: Math.abs(sparkline.range.end.row - sparkline.range.start.row) + 1 },
+                      (_, index) => getCellNumericValue(
+                        worksheet,
+                        Math.min(sparkline.range.start.row, sparkline.range.end.row) + index,
+                        sparkline.range.start.col
+                      )
+                    )
+              )
+            : null;
+          const checkboxState = mergedStyle?.cellControl ? getCellBooleanValue(worksheet, row, col) : null;
+          const nextData: CellRenderData = {
+            canvas: undefined,
+            checkboxState,
+            colSpan: merge?.colSpan,
+            conditionalColorScale: resolveConditionalColorScaleForCell(
+              row,
+              col,
+              worksheet,
+              sheet,
+              conditionalFormatMetricsCache
+            ),
+            conditionalDataBar: resolveConditionalDataBarForCell(
+              row,
+              col,
+              worksheet,
+              sheet,
+              conditionalFormatMetricsCache
+            ),
+            conditionalIcon: resolveConditionalIconForCell(
+              row,
+              col,
+              worksheet,
+              sheet,
+              conditionalFormatMetricsCache
+            ),
+            isMergedSecondary: false,
+            rowSpan: merge?.rowSpan,
+            sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
+            style: buildCellStyle(mergedStyle, palette, sheet.themePalette, {
+              showGridLines
+            }),
+            textRotationDeg: resolveSpreadsheetTextRotation(alignment?.textRotation),
+            value: sparkline
+              ? ""
+              : checkboxState !== null
+                ? ""
+                : getCellDisplayValue(worksheet, row, col, sheet)
+          };
+
+          nextData.canvas = buildCanvasCellStyleCache(nextData.style);
+          cellRenderCache.set(cacheKey, nextData);
+          return nextData;
+        };
+
+        for (const rowItem of rowAxis.items) {
+          for (const colItem of colAxis.items) {
+            const cellData = getCellData(rowItem.actualIndex, colItem.actualIndex);
+            if (cellData.isMergedSecondary) {
+              continue;
+            }
+
+            const colSpan = Math.max(1, cellData.colSpan ?? 1);
+            const rowSpan = Math.max(1, cellData.rowSpan ?? 1);
+            let width = colItem.size;
+            let height = rowItem.size;
+            for (let colOffset = 1; colOffset < colSpan; colOffset += 1) {
+              const nextCol = colItemByActual.get(colItem.actualIndex + colOffset);
+              if (!nextCol) {
+                break;
+              }
+              width += nextCol.size;
+            }
+            for (let rowOffset = 1; rowOffset < rowSpan; rowOffset += 1) {
+              const nextRow = rowItemByActual.get(rowItem.actualIndex + rowOffset);
+              if (!nextRow) {
+                break;
+              }
+              height += nextRow.size;
+            }
+
+            const rect = {
+              height,
+              left: rowHeaderWidth + colItem.start,
+              top: headerHeight + rowItem.start,
+              width
+            };
+            const canvasCellStyle = cellData.canvas ?? buildCanvasCellStyleCache(cellData.style);
+            const gradientFill = typeof cellData.style.backgroundImage === "string"
+              ? resolveCanvasGradientFill(context, rect, cellData.style.backgroundImage)
+              : null;
+            const fillColor = cellData.conditionalColorScale?.color
+              ?? (typeof cellData.style.backgroundColor === "string" ? cellData.style.backgroundColor : resolveSheetSurface(sheet, palette));
+            const hasExplicitCellFill =
+              cellData.conditionalColorScale !== null
+              || gradientFill !== null
+              || (typeof cellData.style.backgroundColor === "string"
+                && cellData.style.backgroundColor !== resolveSheetSurface(sheet, palette));
+
+            context.fillStyle = gradientFill ?? fillColor;
+            context.fillRect(rect.left, rect.top, rect.width, rect.height);
+
+            if (cellData.conditionalDataBar) {
+              const barLeft = rect.left + 4;
+              const barTop = rect.top + 4;
+              const barWidth = Math.max(0, (rect.width - 8) * (cellData.conditionalDataBar.widthPercent / 100));
+              const barHeight = Math.max(0, rect.height - 8);
+              if (barWidth > 0 && barHeight > 0) {
+                context.fillStyle = resolveCanvasDataBarFill(
+                  context,
+                  barLeft,
+                  barTop,
+                  barWidth,
+                  barHeight,
+                  cellData.conditionalDataBar
+                );
+                context.fillRect(barLeft, barTop, barWidth, barHeight);
+                if (cellData.conditionalDataBar.border !== false && cellData.conditionalDataBar.borderColor) {
+                  context.strokeStyle = cellData.conditionalDataBar.borderColor;
+                  context.lineWidth = 1;
+                  context.strokeRect(barLeft + 0.5, barTop + 0.5, Math.max(0, barWidth - 1), Math.max(0, barHeight - 1));
+                }
+              }
+            }
+
+            if (showGridLines && !hasExplicitCellFill) {
+              context.strokeStyle = palette.border;
+              context.lineWidth = 1;
+              context.beginPath();
+              if (colItem.start === 0) {
+                context.moveTo(rect.left + 0.5, rect.top);
+                context.lineTo(rect.left + 0.5, rect.top + rect.height);
+              }
+              if (rowItem.start === 0) {
+                context.moveTo(rect.left, rect.top + 0.5);
+                context.lineTo(rect.left + rect.width, rect.top + 0.5);
+              }
+              context.moveTo(rect.left + rect.width - 0.5, rect.top);
+              context.lineTo(rect.left + rect.width - 0.5, rect.top + rect.height);
+              context.moveTo(rect.left, rect.top + rect.height - 0.5);
+              context.lineTo(rect.left + rect.width, rect.top + rect.height - 0.5);
+              context.stroke();
+            }
+
+            if (canvasCellStyle.topBorder) {
+              strokeCanvasBorderSide(context, "top", rect, canvasCellStyle.topBorder);
+            }
+            if (canvasCellStyle.rightBorder) {
+              strokeCanvasBorderSide(context, "right", rect, canvasCellStyle.rightBorder);
+            }
+            if (canvasCellStyle.bottomBorder) {
+              strokeCanvasBorderSide(context, "bottom", rect, canvasCellStyle.bottomBorder);
+            }
+            if (canvasCellStyle.leftBorder) {
+              strokeCanvasBorderSide(context, "left", rect, canvasCellStyle.leftBorder);
+            }
+
+            const padding = canvasCellStyle.padding;
+            const contentLeft = rect.left + padding.left;
+            const contentTop = rect.top + padding.top;
+            const contentWidth = Math.max(0, rect.width - padding.left - padding.right);
+            const contentHeight = Math.max(0, rect.height - padding.top - padding.bottom);
+            const rawText = cellData.value ?? "";
+
+            context.save();
+            context.beginPath();
+            context.rect(contentLeft, contentTop, contentWidth, contentHeight);
+            context.clip();
+            context.font = canvasCellStyle.baseFont;
+            context.fillStyle = canvasCellStyle.textColor;
+            context.textBaseline = "middle";
+
+            if (cellData.checkboxState != null) {
+              const boxSize = Math.min(14, contentWidth, contentHeight);
+              const boxLeft = rect.left + (rect.width - boxSize) / 2;
+              const boxTop = rect.top + (rect.height - boxSize) / 2;
+              context.strokeStyle = paletteIsDark(palette) ? "#cbd5e1" : "#475569";
+              context.lineWidth = 1.25;
+              context.strokeRect(boxLeft, boxTop, boxSize, boxSize);
+              if (cellData.checkboxState) {
+                context.fillStyle = paletteIsDark(palette) ? "#60a5fa" : "#2563eb";
+                context.fillRect(boxLeft + 1.5, boxTop + 1.5, Math.max(0, boxSize - 3), Math.max(0, boxSize - 3));
+              }
+            } else if (cellData.sparkline) {
+              const sparkline = cellData.sparkline.config;
+              const sparklineValues = cellData.sparkline.values;
+              const points = sparklineValues
+                .map((value, index) => ({ index, value }))
+                .filter((entry): entry is { index: number; value: number } => typeof entry.value === "number" && Number.isFinite(entry.value));
+              if (points.length > 1) {
+                const minValue = Math.min(...points.map((entry) => entry.value));
+                const maxValue = Math.max(...points.map((entry) => entry.value));
+                const sparkLeft = contentLeft + 1;
+                const sparkTop = contentTop + 2;
+                const sparkWidth = Math.max(1, contentWidth - 2);
+                const sparkHeight = Math.max(1, contentHeight - 4);
+                const xStep = points.length > 1 ? sparkWidth / (points.length - 1) : 0;
+                context.strokeStyle = sparkline.color ?? "#2563eb";
+                context.lineCap = "round";
+                context.lineJoin = "round";
+                context.lineWidth = 1.25;
+                context.beginPath();
+                points.forEach((entry, index) => {
+                  const x = sparkLeft + index * xStep;
+                  const y = sparkTop + sparkHeight - clampSparklineValue(entry.value, minValue, maxValue) * sparkHeight;
+                  if (index === 0) {
+                    context.moveTo(x, y);
+                  } else {
+                    context.lineTo(x, y);
+                  }
+                });
+                context.stroke();
+              }
+            } else if (rawText.length > 0) {
+              const align = canvasCellStyle.textAlign;
+              context.textAlign = align;
+              const textX = align === "right"
+                ? contentLeft + contentWidth
+                : align === "center"
+                  ? contentLeft + (contentWidth / 2)
+                  : contentLeft;
+              const textY = contentTop + (contentHeight / 2);
+              const trailingInset = cellData.conditionalIcon ? 18 : 0;
+              const maxTextWidth = Math.max(0, contentWidth - trailingInset);
+
+              if (cellData.textRotationDeg) {
+                const rotationOriginX = contentLeft + (contentWidth / 2);
+                context.save();
+                context.translate(rotationOriginX, textY);
+                context.rotate((cellData.textRotationDeg * Math.PI) / 180);
+                context.fillText(
+                  rawText,
+                  align === "right"
+                    ? contentWidth / 2
+                    : align === "center"
+                      ? 0
+                      : -(contentWidth / 2),
+                  0
+                );
+                context.restore();
+              } else if (canvasCellStyle.usesWrappedText || rawText.includes("\n")) {
+                const lines = wrapCanvasText(context, rawText, maxTextWidth);
+                const lineHeight = resolveCanvasLineHeight(cellData.style, 12);
+                const textBlockHeight = lines.length * lineHeight;
+                let textBlockTop = contentTop;
+                if (cellData.style.verticalAlign === "middle") {
+                  textBlockTop = contentTop + ((contentHeight - textBlockHeight) / 2);
+                } else if (cellData.style.verticalAlign !== "top") {
+                  textBlockTop = contentTop + contentHeight - textBlockHeight;
+                }
+                lines.forEach((line, lineIndex) => {
+                  context.fillText(line, textX, textBlockTop + (lineIndex * lineHeight) + (lineHeight / 2));
+                });
+              } else {
+                const text = canvasCellStyle.textOverflowEllipsis
+                  ? truncateCanvasText(context, rawText, maxTextWidth)
+                  : rawText;
+                context.fillText(text, textX, textY);
+              }
+            }
+
+            if (cellData.conditionalIcon) {
+              const iconSize = 10;
+              const iconX = rect.left + rect.width - (padding.right + iconSize + 4);
+              const iconY = rect.top + (rect.height / 2);
+              drawCanvasConditionalIcon(context, cellData.conditionalIcon, iconX + (iconSize / 2), iconY, iconSize);
+            }
+
+            context.restore();
+          }
+        }
+
+        if (includeHeaders) {
+          context.strokeStyle = palette.border;
+          context.lineWidth = 1;
+          context.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+          context.fillStyle = palette.mutedText;
+          context.textBaseline = "middle";
+
+          for (const colItem of colAxis.items) {
+            const left = rowHeaderWidth + colItem.start;
+            context.beginPath();
+            context.moveTo(left + colItem.size - 0.5, 0);
+            context.lineTo(left + colItem.size - 0.5, headerHeight);
+            context.moveTo(left, headerHeight - 0.5);
+            context.lineTo(left + colItem.size, headerHeight - 0.5);
+            context.stroke();
+            context.textAlign = "center";
+            context.fillText(columnLabel(colItem.actualIndex), left + (colItem.size / 2), headerHeight / 2);
+          }
+
+          for (const rowItem of rowAxis.items) {
+            const top = headerHeight + rowItem.start;
+            context.beginPath();
+            context.moveTo(0, top + rowItem.size - 0.5);
+            context.lineTo(rowHeaderWidth, top + rowItem.size - 0.5);
+            context.moveTo(rowHeaderWidth - 0.5, top);
+            context.lineTo(rowHeaderWidth - 0.5, top + rowItem.size);
+            context.stroke();
+            context.textAlign = "center";
+            context.fillText(`${rowItem.actualIndex + 1}`, rowHeaderWidth / 2, top + (rowItem.size / 2));
+          }
+
+          context.beginPath();
+          context.moveTo(rowHeaderWidth - 0.5, 0);
+          context.lineTo(rowHeaderWidth - 0.5, headerHeight);
+          context.moveTo(0, headerHeight - 0.5);
+          context.lineTo(rowHeaderWidth, headerHeight - 0.5);
+          context.stroke();
+        }
+
+        return true;
+      };
+
+      const plan: SheetThumbnailRenderPlan = {
+        aspectRatio: sourceWidth / Math.max(1, sourceHeight),
+        contentHeight: rowAxis.totalSize,
+        contentWidth: colAxis.totalSize,
+        height: outputSize.height,
+        paint,
+        sourceRange,
+        width: outputSize.width
+      };
+
+      return {
+        ...plan,
+        sheet,
+        sheetIndex,
+        workbookSheetIndex: sheet.workbookSheetIndex
+      };
+    });
+  }, [includeHeaders, palette, resolution, sheets, workbook]);
+
+  const paintThumbnail = React.useCallback(
+    (sheetIndex: number, canvas: HTMLCanvasElement | null) => thumbnails[sheetIndex]?.paint(canvas) ?? false,
+    [thumbnails]
+  );
+
+  return React.useMemo(
+    () => ({
+      paintThumbnail,
+      thumbnails
+    }),
+    [paintThumbnail, thumbnails]
   );
 }
 

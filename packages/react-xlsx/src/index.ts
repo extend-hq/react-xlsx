@@ -6,6 +6,7 @@ export {
   useXlsxViewerEditing,
   useXlsxViewerImages,
   useXlsxViewerSelection,
+  useXlsxViewerThumbnails,
   useXlsxViewerZoom,
   useXlsxViewerTables,
   XlsxViewer,
@@ -36,6 +37,8 @@ export type {
   XlsxShapeTextBox,
   XlsxShapeTextRun,
   XlsxSheetData,
+  XlsxSheetThumbnail,
+  XlsxSheetThumbnailResolution,
   XlsxSheetVisibility,
   XlsxThemePalette,
   XlsxTable,
@@ -51,6 +54,8 @@ export type {
   XlsxViewerProps,
   XlsxViewerProviderProps,
   XlsxViewerSelection,
+  XlsxViewerThumbnails,
   XlsxViewerZoom,
+  UseXlsxViewerThumbnailsOptions,
   XlsxViewerTables
 } from "./types";

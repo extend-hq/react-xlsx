@@ -17,6 +17,8 @@ pnpm add @extend-ai/react-xlsx
 - Regular worksheet rendering with frozen panes, tables, and selection state
 - Embedded charts on worksheets and dedicated chartsheet tabs
 - Embedded worksheet images with custom render hooks
+- Worksheet thumbnail painting via `useXlsxViewerThumbnails(...)`
+- Custom table header trigger rendering via `renderTableHeaderMenu(...)`
 - Inline controller usage or provider-driven composition with hooks
 - Large-file safeguards, deferred loading, and worker-backed parsing
 - Optional editing, copy/paste, CSV/XLSX export, chart/image manipulation, and zoom controls
@@ -119,7 +121,47 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `renderChartLoading` | `(props: XlsxChartLoadingRenderProps) => React.ReactNode` | Replaces the default chart-loading placeholder. |
 | `renderImage` | `(props: XlsxImageRenderProps) => React.ReactNode` | Replaces how worksheet images render. |
 | `renderImageSelection` | `(props: XlsxImageSelectionRenderProps) => React.ReactNode` | Replaces the selected-image overlay and resize handles. |
-| `renderTableHeaderMenu` | `(props: XlsxTableHeaderMenuRenderProps) => React.ReactNode` | Replaces the built-in table column menu. |
+| `renderTableHeaderMenu` | `(props: XlsxTableHeaderMenuRenderProps) => React.ReactNode` | Replaces the built-in table-header trigger. Return your full trigger + menu UI, such as a Radix `DropdownMenu`. |
+
+Example:
+
+```tsx
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "@radix-ui/react-dropdown-menu";
+import { XlsxViewer } from "@extend-ai/react-xlsx";
+
+<XlsxViewer
+  file={buffer}
+  renderTableHeaderMenu={({ column, direction, sortAscending, sortDescending, triggerIcon, triggerProps }) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button {...triggerProps}>{triggerIcon}</button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={sortAscending}>
+          Sort A to Z{direction === "ascending" ? " ✓" : ""}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={sortDescending}>
+          Sort Z to A{direction === "descending" ? " ✓" : ""}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled>{column.name}</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )}
+/>
+```
+
+Apply `triggerProps` to the actual trigger button so clicks do not leak into grid selection.
+
+Notes:
+
+- This render prop is intended for returning the full trigger and menu tree, not just menu items
+- In the default DOM renderer, your returned node replaces the built-in chevron trigger in the table header cell
+- `experimentalCanvas` still uses the built-in canvas affordance for table header menus
 
 ## `XlsxViewerProvider` Props
 
@@ -144,6 +186,52 @@ These hooks are exported from the package and work inside `XlsxViewer` or `XlsxV
 | `useXlsxViewerTables()` | `XlsxViewerTables` | Table metadata and sorting actions. |
 | `useXlsxViewerImages()` | `XlsxViewerImages` | Embedded image and chart positioning/manipulation. |
 | `useXlsxViewerCharts()` | `XlsxViewerCharts` | Chart and chartsheet access. |
+| `useXlsxViewerThumbnails(options?)` | `XlsxViewerThumbnails` | Paint worksheet thumbnails into your own canvas elements. |
+
+### Thumbnail Hook Example
+
+```tsx
+import * as React from "react";
+import { XlsxViewerProvider, useXlsxViewerThumbnails } from "@extend-ai/react-xlsx";
+
+function SheetThumbnailStrip() {
+  const { thumbnails } = useXlsxViewerThumbnails({
+    resolution: 160
+  });
+
+  return (
+    <div style={{ display: "flex", gap: 12 }}>
+      {thumbnails.map((thumbnail) => (
+        <SheetThumbnailCanvas key={thumbnail.workbookSheetIndex} thumbnail={thumbnail} />
+      ))}
+    </div>
+  );
+}
+
+function SheetThumbnailCanvas({ thumbnail }: { thumbnail: ReturnType<typeof useXlsxViewerThumbnails>["thumbnails"][number] }) {
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+
+  React.useEffect(() => {
+    thumbnail.paint(canvasRef.current);
+  }, [thumbnail]);
+
+  return <canvas ref={canvasRef} height={thumbnail.height} width={thumbnail.width} />;
+}
+
+function Example({ file }: { file: ArrayBuffer }) {
+  return (
+    <XlsxViewerProvider file={file}>
+      <SheetThumbnailStrip />
+    </XlsxViewerProvider>
+  );
+}
+```
+
+Notes:
+
+- `resolution` accepts either a single max dimension or `{ maxWidth, maxHeight }`
+- Thumbnails preserve the worksheet aspect ratio and paint into your supplied `<canvas>`
+- The current implementation renders a bounded top-left worksheet preview and does not include floating images or charts
 
 ## Oversized File Example
 
@@ -217,8 +305,10 @@ The package also exports the main types you are likely to use for custom integra
 - `XlsxViewerTables`
 - `XlsxViewerImages`
 - `XlsxViewerCharts`
+- `XlsxViewerThumbnails`
 - `XlsxChart`, `XlsxChartSeries`, `XlsxChartAxis`, `XlsxChartsheet`
 - `XlsxImage`, `XlsxImageRect`, `XlsxImageRenderProps`, `XlsxImageSelectionRenderProps`
+- `XlsxSheetThumbnail`, `XlsxSheetThumbnailResolution`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
 - `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`
 

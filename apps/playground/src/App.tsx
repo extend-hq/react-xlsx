@@ -5,6 +5,7 @@ import {
   useXlsxViewerController,
   useXlsxViewerEditing,
   useXlsxViewerSelection,
+  useXlsxViewerThumbnails,
   useXlsxViewerZoom,
   XlsxViewer,
   XlsxViewerProvider
@@ -32,6 +33,7 @@ import { ButtonGroup } from "./components/ui/button-group";
 import { Input } from "./components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
 
 type ViewerSource =
   | {
@@ -81,10 +83,7 @@ function ViewerEmptyState() {
   return (
     <div className="flex h-full w-full items-center justify-center px-6">
       <div className="mx-auto max-w-sm text-center">
-        <div className="mx-auto flex size-12 items-center justify-center rounded-2xl border bg-muted/50 shadow-sm">
-          <FileSpreadsheet className="size-5 text-slate-300 dark:text-muted-foreground" />
-        </div>
-        <div className="mt-4 text-sm font-medium">Open an XLSX workbook</div>
+        <div className="text-sm font-medium">Open an XLSX workbook</div>
         <p className="text-muted-foreground mt-2 text-xs leading-5">
           Use the ribbon above to upload a local file or load a workbook from a URL.
         </p>
@@ -450,6 +449,7 @@ function WorkbookToolbar({
 
 function SheetTabs() {
   const { activeSheetIndex, setActiveSheetIndex, sheets } = useXlsxViewer();
+  const { thumbnails } = useXlsxViewerThumbnails({ includeHeaders: true, resolution: { maxHeight: 132, maxWidth: 200 } });
 
   if (sheets.length === 0) {
     return null;
@@ -458,19 +458,75 @@ function SheetTabs() {
   return (
     <div className="flex items-center gap-1 overflow-x-auto border-t bg-muted/35 px-3 py-2">
       {sheets.map((sheet, index) => (
-        <button
-          className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-            index === activeSheetIndex
-              ? "border-border bg-background text-foreground shadow-sm"
-              : "border-transparent bg-transparent text-muted-foreground hover:bg-muted"
-          }`}
-          key={sheet.name}
-          onClick={() => setActiveSheetIndex(index)}
-          type="button"
-        >
-          {sheet.name}
-        </button>
+        <Tooltip key={sheet.name}>
+          <TooltipTrigger>
+            <button
+              className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                index === activeSheetIndex
+                  ? "border-border bg-background text-foreground shadow-sm"
+                  : "border-transparent bg-transparent text-muted-foreground hover:bg-muted"
+              }`}
+              onClick={() => setActiveSheetIndex(index)}
+              type="button"
+            >
+              {sheet.name}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent
+            align="center"
+            className="bg-popover text-popover-foreground rounded-xl border p-2 shadow-lg"
+            side="top"
+            sideOffset={8}
+          >
+            <SheetTabThumbnail
+              isActive={index === activeSheetIndex}
+              name={sheet.name}
+              thumbnail={thumbnails[index] ?? null}
+            />
+          </TooltipContent>
+        </Tooltip>
       ))}
+    </div>
+  );
+}
+
+function SheetTabThumbnail({
+  isActive,
+  name,
+  thumbnail
+}: {
+  isActive: boolean;
+  name: string;
+  thumbnail: ReturnType<typeof useXlsxViewerThumbnails>["thumbnails"][number] | null;
+}) {
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+
+  React.useEffect(() => {
+    thumbnail?.paint(canvasRef.current);
+  }, [thumbnail]);
+
+  return (
+    <div className="flex w-[212px] flex-col gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="truncate text-[11px] font-medium">{name}</div>
+        <div className="text-muted-foreground shrink-0 text-[10px] uppercase tracking-[0.16em]">
+          {isActive ? "Active" : "Sheet"}
+        </div>
+      </div>
+      <div className="bg-muted/40 overflow-hidden rounded-lg border shadow-sm">
+        {thumbnail ? (
+          <canvas
+            className="block h-auto w-full"
+            height={thumbnail.height}
+            ref={canvasRef}
+            width={thumbnail.width}
+          />
+        ) : (
+          <div className="text-muted-foreground flex h-[120px] items-center justify-center text-[11px]">
+            No preview
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -666,9 +722,6 @@ export function App() {
           {isDragActive ? (
             <div className="bg-background/82 absolute inset-0 z-30 flex items-center justify-center backdrop-blur-sm">
               <div className="bg-background/96 ring-border/80 flex min-w-[320px] max-w-md flex-col items-center gap-3 rounded-2xl border border-dashed px-8 py-10 text-center shadow-lg ring-1">
-                <div className="bg-emerald-600 text-white flex size-12 items-center justify-center rounded-2xl shadow-sm">
-                  <Upload className="size-5" />
-                </div>
                 <div>
                   <div className="text-sm font-medium">Drop workbook to open</div>
                   <p className="text-muted-foreground mt-2 text-xs leading-5">
