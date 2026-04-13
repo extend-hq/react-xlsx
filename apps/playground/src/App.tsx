@@ -552,10 +552,26 @@ export function App() {
 
   const controller = useXlsxViewerController(
     source?.type === "file"
-      ? { file: source.file, fileName: source.fileName, readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
+      ? {
+          allowResizeInReadOnly: true,
+          file: source.file,
+          fileName: source.fileName,
+          readOnly: isReadOnly,
+          readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES
+        }
       : source?.type === "url"
-        ? { src: source.src, fileName: source.fileName, readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
-        : { readOnly: isReadOnly, readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES }
+        ? {
+            allowResizeInReadOnly: true,
+            src: source.src,
+            fileName: source.fileName,
+            readOnly: isReadOnly,
+            readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES
+          }
+        : {
+            allowResizeInReadOnly: true,
+            readOnly: isReadOnly,
+            readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES
+          }
   );
   const zoomInitializedForSourceRef = React.useRef<string | null>(null);
   const sourceKey = React.useMemo(() => {
