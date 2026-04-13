@@ -10,9 +10,8 @@ import {
   XlsxViewer,
   XlsxViewerProvider
 } from "@extend-ai/react-xlsx";
-
-const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -30,10 +29,14 @@ import {
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { ButtonGroup } from "./components/ui/button-group";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input } from "./components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
+
+const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
+const PLAYGROUND_SAMPLE_URL = "/examples/welcome.xlsx";
 
 type ViewerSource =
   | {
@@ -104,6 +107,7 @@ function WorkbookToolbar({
   experimentalCanvas,
   isDocumentDark,
   onClear,
+  onLoadExampleUrl,
   onLoadUrl,
   onOpenFile,
   readOnly,
@@ -116,6 +120,7 @@ function WorkbookToolbar({
   experimentalCanvas: boolean;
   isDocumentDark: boolean;
   onClear: () => void;
+  onLoadExampleUrl: () => void;
   onLoadUrl: () => void;
   onOpenFile: () => void;
   readOnly: boolean;
@@ -289,6 +294,9 @@ function WorkbookToolbar({
             <Link2 />
             Load
           </Button>
+          <Button onClick={onLoadExampleUrl} size="sm" variant="outline">
+            Sample
+          </Button>
         </ToolbarCluster>
 
         <ToolbarCluster>
@@ -459,7 +467,7 @@ function SheetTabs() {
     <div className="flex items-center gap-1 overflow-x-auto border-t bg-muted/35 px-3 py-2">
       {sheets.map((sheet, index) => (
         <Tooltip key={sheet.name}>
-          <TooltipTrigger>
+          <TooltipTrigger render={<span className="inline-flex" />}>
             <button
               className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                 index === activeSheetIndex
@@ -598,8 +606,8 @@ export function App() {
     await loadWorkbookFile(nextFile);
   }, [loadWorkbookFile]);
 
-  const handleLoadUrl = React.useCallback(() => {
-    const trimmed = remoteUrl.trim();
+  const loadRemoteUrl = React.useCallback((nextUrl: string) => {
+    const trimmed = nextUrl.trim();
     if (!trimmed) {
       return;
     }
@@ -608,7 +616,16 @@ export function App() {
       src: trimmed,
       type: "url"
     });
-  }, [remoteUrl]);
+  }, []);
+
+  const handleLoadUrl = React.useCallback(() => {
+    loadRemoteUrl(remoteUrl);
+  }, [loadRemoteUrl, remoteUrl]);
+
+  const handleLoadExampleUrl = React.useCallback(() => {
+    setRemoteUrl(PLAYGROUND_SAMPLE_URL);
+    loadRemoteUrl(PLAYGROUND_SAMPLE_URL);
+  }, [loadRemoteUrl]);
 
   const handleClear = React.useCallback(() => {
     setSource(null);
@@ -688,6 +705,7 @@ export function App() {
               experimentalCanvas={experimentalCanvas}
               isDocumentDark={isDocumentDark}
               onClear={handleClear}
+              onLoadExampleUrl={handleLoadExampleUrl}
               onLoadUrl={handleLoadUrl}
               onOpenFile={() => fileInputRef.current?.click()}
               readOnly={isReadOnly}
@@ -712,6 +730,28 @@ export function App() {
                   }
                   experimentalCanvas={experimentalCanvas}
                   readOnly={isReadOnly}
+                  renderTableHeaderMenu={({ column, direction, sortAscending, sortDescending, triggerProps }) => (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        render={<Button size="icon-xs" variant="ghost" />}
+                        {...triggerProps}
+                      >
+                        <ChevronDown className="size-3" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuGroup>
+                          <DropdownMenuLabel>{column.name}</DropdownMenuLabel>
+                        </DropdownMenuGroup>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={sortAscending}>
+                          Sort A to Z{direction === "ascending" ? " ✓" : ""}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={sortDescending}>
+                          Sort Z to A{direction === "descending" ? " ✓" : ""}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                   rounded={true}
                   showDefaultToolbar={false}
                 />

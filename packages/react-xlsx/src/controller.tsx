@@ -858,12 +858,6 @@ function mapWorksheetTables(
 ): XlsxTable[] {
   const rawTables = (worksheet?.tables ?? []) as Array<Record<string, unknown>>;
   return rawTables.flatMap((table, index) => {
-    const reference = typeof table.reference === "string" ? table.reference : "";
-    const parsedRange = parseA1RangeReference(reference);
-    if (!parsedRange) {
-      return [];
-    }
-
     const rawColumns = Array.isArray(table.columns) ? table.columns : [];
     const rawName = typeof table.name === "string" ? table.name : `Table${index + 1}`;
     const rawDisplayName =
@@ -875,8 +869,14 @@ function mapWorksheetTables(
     const metadata = metadataForSheet?.find((entry) =>
       (entry.name && entry.name === rawName)
       || (entry.displayName && entry.displayName === rawDisplayName)
-      || (entry.reference && entry.reference === reference)
+      || (entry.reference && entry.reference === table.reference)
     );
+    const rawReference = typeof table.reference === "string" ? table.reference : "";
+    const reference = metadata?.reference ?? rawReference;
+    const parsedRange = parseA1RangeReference(reference);
+    if (!parsedRange) {
+      return [];
+    }
 
     return [{
       columns: rawColumns.map((column, columnIndex) => ({
@@ -886,16 +886,53 @@ function mapWorksheetTables(
       })),
       displayName: rawDisplayName,
       end: parsedRange.end,
-      headerRowCount: typeof table.headerRowCount === "number" ? table.headerRowCount : 1,
+      headerRowCount: metadata?.headerRowCount ?? resolveWorkbookTableCount(table.headerRowCount, 1),
       headerRowCellStyle: metadata?.headerRowCellStyle,
       name: rawName,
       reference,
       start: parsedRange.start,
       styleInfo: table.styleInfo as XlsxTable["styleInfo"] | undefined,
-      totalsRowCount: typeof table.totalsRowCount === "number" ? table.totalsRowCount : 0,
-      totalsRowShown: Boolean(table.totalsRowShown)
+      totalsRowCount: metadata?.totalsRowCount ?? resolveWorkbookTableCount(table.totalsRowCount, 0),
+      totalsRowShown: metadata?.totalsRowShown ?? resolveWorkbookTableBoolean(table.totalsRowShown)
     }];
   });
+}
+
+function resolveWorkbookTableCount(value: unknown, fallback: number) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function resolveWorkbookTableBoolean(value: unknown) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "0" || normalized === "false" || normalized === "") {
+      return false;
+    }
+    if (normalized === "1" || normalized === "true") {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function fileStem(fileName: string): string {
@@ -1077,7 +1114,18 @@ async function resolveWorkbookBuffer(
   if (file) {
     buffer = file;
   } else if (src) {
-    const response = await fetch(src, { signal });
+    let response: Response;
+    try {
+      response = await fetch(src, { signal });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      throw new Error(
+        "Failed to fetch workbook. The remote URL may be blocked by CORS, unavailable, or not directly downloadable from the browser."
+      );
+    }
     if (!response.ok) {
       throw new Error(`Failed to fetch workbook (status ${response.status})`);
     }

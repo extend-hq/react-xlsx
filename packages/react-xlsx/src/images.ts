@@ -226,9 +226,12 @@ export type WorkbookImageSheetOrigin = {
 
 export type WorkbookTableMetadata = {
   displayName?: string;
+  headerRowCount?: number;
   headerRowCellStyle?: string;
   name?: string;
   reference?: string;
+  totalsRowCount?: number;
+  totalsRowShown?: boolean;
 };
 
 export type WorkbookImageAssets = {
@@ -1182,12 +1185,40 @@ function parseWorkbookTableMetadata(
 
       return [{
         displayName: tableNode.getAttribute("displayName") ?? undefined,
+        headerRowCount: parseWorkbookTableCount(tableNode.getAttribute("headerRowCount"), 1),
         headerRowCellStyle: tableNode.getAttribute("headerRowCellStyle") ?? undefined,
         name: tableNode.getAttribute("name") ?? undefined,
-        reference: tableNode.getAttribute("ref") ?? undefined
+        reference: tableNode.getAttribute("ref") ?? undefined,
+        totalsRowCount: parseWorkbookTableCount(tableNode.getAttribute("totalsRowCount"), 0),
+        totalsRowShown: parseWorkbookTableBoolean(tableNode.getAttribute("totalsRowShown"), false)
       } satisfies WorkbookTableMetadata];
     });
   });
+}
+
+function parseWorkbookTableCount(value: string | null, fallback: number) {
+  if (value === null) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseWorkbookTableBoolean(value: string | null, fallback: boolean) {
+  if (value === null) {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "0" || normalized === "false" || normalized === "") {
+    return false;
+  }
+  if (normalized === "1" || normalized === "true") {
+    return true;
+  }
+
+  return fallback;
 }
 
 function parseSqrefRanges(sqref: string | null | undefined): XlsxCellRange[] {

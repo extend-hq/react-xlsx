@@ -12094,7 +12094,7 @@ function XlsxGrid({
                             pointerEvents: "none",
                             position: "absolute",
                             top: 0,
-                            transform: `translate(${-drawingViewport.left}px, ${-drawingViewport.top}px)`,
+                            transform: `translate(${-drawingViewport.left - frozenPaneRight}px, ${-drawingViewport.top - frozenPaneBottom}px)`,
                             width: totalWidth
                           }}
                         >
@@ -12109,7 +12109,7 @@ function XlsxGrid({
                             pointerEvents: "none",
                             position: "absolute",
                             top: 0,
-                            transform: `translate(${-drawingViewport.left}px, ${-displayHeaderHeight}px)`,
+                            transform: `translate(${-drawingViewport.left - frozenPaneRight}px, ${-displayHeaderHeight}px)`,
                             width: totalWidth
                           }}
                         >
@@ -12124,7 +12124,7 @@ function XlsxGrid({
                             pointerEvents: "none",
                             position: "absolute",
                             top: 0,
-                            transform: `translate(${-displayRowHeaderWidth}px, ${-drawingViewport.top}px)`,
+                            transform: `translate(${-displayRowHeaderWidth}px, ${-drawingViewport.top - frozenPaneBottom}px)`,
                             width: totalWidth
                           }}
                         >
