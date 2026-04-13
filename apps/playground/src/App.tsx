@@ -722,6 +722,7 @@ export function App() {
                   emptyState={<ViewerEmptyState />}
                   fileTooLargeState={<ViewerFileTooLargeState />}
                   height="100%"
+                  allowResizeInReadOnly
                   isDark={isDocumentDark}
                   loadingState={
                     <div className="text-muted-foreground flex h-full w-full items-center justify-center text-sm">

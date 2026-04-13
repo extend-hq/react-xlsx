@@ -594,6 +594,7 @@ export interface XlsxFileTooLargeRenderProps {
 }
 
 export interface UseXlsxViewerControllerOptions {
+  allowResizeInReadOnly?: boolean;
   deferLoadingAboveBytes?: number;
   file?: ArrayBuffer;
   fileName?: string;

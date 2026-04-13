@@ -1816,6 +1816,7 @@ function downloadUrl(src: string, fileName: string) {
 
 export function useXlsxViewerController(options: UseXlsxViewerControllerOptions): XlsxViewerController {
   const {
+    allowResizeInReadOnly = false,
     deferLoadingAboveBytes = DEFAULT_DEFER_LOADING_ABOVE_BYTES,
     file,
     fileName,
@@ -1869,6 +1870,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
   const readOnly = requestedReadOnly || forcedReadOnly;
+  const canResizeReadOnly = requestedReadOnly && allowResizeInReadOnly && !forcedReadOnly;
   const workerSupported = useWorker && typeof Worker !== "undefined";
   const shouldUseWorker = workerSupported && forcedReadOnly;
   const shouldForceReadOnlyForBuffer = React.useCallback((bufferByteLength: number) => (
@@ -3403,7 +3405,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [refreshWorkbookState, workbook]);
 
   const resizeColumn = React.useCallback((col: number, widthPx: number) => {
-    if (readOnly || !workbook || !activeSheet) {
+    if ((readOnly && !canResizeReadOnly) || !workbook || !activeSheet) {
       return;
     }
 
@@ -3414,10 +3416,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       pxToSheetColumnWidth(resolveContentSheetAxisPixels(widthPx, activeSheet.showGridLines))
     );
     refreshWorkbookState(workbook);
-  }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+  }, [activeSheet, canResizeReadOnly, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
   const resizeRow = React.useCallback((row: number, heightPx: number) => {
-    if (readOnly || !workbook || !activeSheet) {
+    if ((readOnly && !canResizeReadOnly) || !workbook || !activeSheet) {
       return;
     }
 
@@ -3428,7 +3430,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       pxToSheetRowHeight(resolveContentSheetAxisPixels(heightPx, activeSheet.showGridLines))
     );
     refreshWorkbookState(workbook);
-  }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+  }, [activeSheet, canResizeReadOnly, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
   const resolveAnchoredObjectRect = React.useCallback((
     anchor: XlsxImage["anchor"],
