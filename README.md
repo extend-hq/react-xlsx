@@ -1,8 +1,8 @@
 # react-xlsx
 
-[![npm version](https://img.shields.io/github/v/release/extend-hq/react-xlsx?label=npm%20%28private%29)](https://www.npmjs.com/package/@extend-ai/react-xlsx)
+[![release](https://img.shields.io/github/v/release/extend-hq/react-xlsx?label=release)](https://github.com/extend-hq/react-xlsx/releases)
 
-Private npm package: `@extend-ai/react-xlsx`
+Package: `@extend-ai/react-xlsx`
 
 `react-xlsx` provides React components and hooks for viewing XLSX workbooks with worksheet rendering, charts, chartsheets, embedded images, selection state, zoom, and editing helpers.
 
@@ -316,4 +316,4 @@ The package also exports the main types you are likely to use for custom integra
 
 - `XlsxViewer` resolves its controller in this order: explicit `controller` prop, provider context, then an internally created controller
 - `DefaultXlsxToolbar` is exported if you want the library toolbar outside the default shell
-- The npm badge tracks the synced GitHub release version while the package remains private on npm
+- The release badge tracks the latest GitHub release version
