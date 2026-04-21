@@ -562,48 +562,134 @@ export interface XlsxImageRect {
 export type XlsxImageResizeHandlePosition = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 export interface XlsxImageRenderProps {
+  /** The built-in image element that react-xlsx would render without customization. */
   defaultNode: React.ReactNode;
+  /** Workbook image metadata, including source, anchor, name, alt text, and editability. */
   image: XlsxImage;
+  /** The image rectangle in viewer pixels, including the current zoom level. */
   rect: XlsxImageRect;
+  /** Absolute positioning styles to apply when rendering a replacement image node. */
   style: React.CSSProperties;
 }
 
 export interface XlsxImageSelectionRenderProps {
+  /** The built-in selected-image outline and resize handles. */
   defaultNode: React.ReactNode;
+  /** Returns pointer handlers and styles for a custom resize handle. */
   getHandleProps: (
     position: XlsxImageResizeHandlePosition
   ) => {
     onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
     style: React.CSSProperties;
   };
+  /** The currently selected image. */
   image: XlsxImage;
+  /** The selected image rectangle in viewer pixels, including the current zoom level. */
   rect: XlsxImageRect;
 }
 
 export interface XlsxChartLoadingRenderProps {
+  /** The chart that is waiting for its renderer or data. */
   chart: XlsxChart;
+  /** The built-in chart loading placeholder. */
   defaultNode: React.ReactNode;
+  /** The chart rectangle in viewer pixels, including the current zoom level. */
   rect: XlsxImageRect;
 }
 
 export interface XlsxFileTooLargeRenderProps {
+  /** The built-in file-too-large message. */
   defaultNode: React.ReactNode;
+  /** File name displayed in the viewer UI. */
   displayFileName: string;
+  /** Actual file size in bytes. */
   fileSizeBytes: number;
+  /** Configured maximum file size in bytes. */
   maxFileSizeBytes: number;
 }
 
 export interface UseXlsxViewerControllerOptions {
+  /**
+   * Allows row and column resizing even while editing is disabled by `readOnly`.
+   *
+   * @default false
+   */
   allowResizeInReadOnly?: boolean;
+  /**
+   * Defers loading until `continueDeferredLoad()` is called when the file is larger than this byte threshold.
+   * Set to `0` to parse immediately.
+   *
+   * @default 0
+   * @example
+   * ```tsx
+   * useXlsxViewerController({ file, deferLoadingAboveBytes: 10 * 1024 * 1024 })
+   * ```
+   */
   deferLoadingAboveBytes?: number;
+  /**
+   * Local workbook bytes to load. Use either `file` or `src`.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer file={await uploadedFile.arrayBuffer()} fileName={uploadedFile.name} />
+   * ```
+   */
   file?: ArrayBuffer;
+  /**
+   * Optional display and download name for the workbook.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer file={buffer} fileName="forecast.xlsx" />
+   * ```
+   */
   fileName?: string;
+  /**
+   * Rejects files larger than this byte limit and renders `fileTooLargeState`.
+   *
+   * @default 25 * 1024 * 1024
+   */
   maxFileSizeBytes?: number;
+  /**
+   * Disables workbook edits, paste, fill, undo/redo, and other mutation actions.
+   *
+   * @default false
+   */
   readOnly?: boolean;
+  /**
+   * Automatically enables read-only mode for files larger than this byte threshold.
+   * Set to `0` to disable the automatic switch.
+   *
+   * @default 0
+   */
   readOnlyAboveBytes?: number;
+  /**
+   * Includes hidden and very hidden workbook sheets in the sheet tabs and controller state.
+   *
+   * @default false
+   */
   showHiddenSheets?: boolean;
+  /**
+   * Skips OOXML ZIP/XML parsing and relies on `@dukelib/sheets-wasm` metadata only.
+   * This is automatically used for legacy `.xls` files.
+   *
+   * @default false
+   */
   skipXmlParsing?: boolean;
+  /**
+   * Remote workbook URL to fetch and load. Use either `src` or `file`.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer src="/workbooks/report.xlsx" />
+   * ```
+   */
   src?: string;
+  /**
+   * Parses supported workbook data in a Web Worker so large files do not block React rendering.
+   *
+   * @default true
+   */
   useWorker?: boolean;
 }
 
@@ -878,46 +964,173 @@ export interface XlsxViewerThumbnails {
 }
 
 export interface XlsxTableHeaderMenuRenderProps {
+  /** Address of the table header cell that owns this menu. */
   cell: XlsxCellAddress;
+  /** Table column metadata for the active header. */
   column: XlsxTableColumn;
+  /** Current sort direction for this column, or `null` when unsorted. */
   direction: XlsxTableSortDirection | null;
+  /** Sorts the table by this column in ascending order. */
   sortAscending: () => void;
+  /** Sorts the table by this column in descending order. */
   sortDescending: () => void;
+  /** Table metadata for the active header. */
   table: XlsxTable;
+  /** Built-in trigger text/icon. Useful when composing your own trigger button. */
   triggerIcon: string;
+  /** Props that must be applied to your menu trigger button so grid selection does not receive the click. */
   triggerProps: React.ButtonHTMLAttributes<HTMLButtonElement>;
 }
 
 export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions {
+  /** Viewer UI and hooks that should share this provider's workbook controller. */
   children: React.ReactNode;
+  /**
+   * Existing controller to provide instead of creating one from `file`, `src`, or other controller options.
+   *
+   * @example
+   * ```tsx
+   * const controller = useXlsxViewerController({ src: "/report.xlsx" });
+   * return <XlsxViewerProvider controller={controller}><XlsxViewer /></XlsxViewerProvider>;
+   * ```
+   */
   controller?: XlsxViewerController;
+  /**
+   * Uses the built-in dark worksheet/viewer palette.
+   *
+   * @default false
+   */
   isDark?: boolean;
 }
 
 export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
+  /**
+   * Allows row and column resizing even while editing is disabled by `readOnly`.
+   *
+   * @default false
+   */
   allowResizeInReadOnly?: boolean;
+  /** Class name applied to the root viewer shell. */
   className?: string;
+  /**
+   * Existing controller to render. Takes precedence over provider context and source props on this viewer.
+   *
+   * @example
+   * ```tsx
+   * const controller = useXlsxViewerController({ file, fileName: "model.xlsx" });
+   * return <XlsxViewer controller={controller} />;
+   * ```
+   */
   controller?: XlsxViewerController;
+  /** Content shown when no workbook has been loaded. */
   emptyState?: React.ReactNode;
+  /**
+   * Animates the selection rectangle in canvas mode.
+   *
+   * @default true
+   */
   enableCanvasSelectionAnimation?: boolean;
+  /**
+   * Enables pinch zoom and modifier-key wheel zoom inside the viewer.
+   *
+   * @default true
+   */
   enableGestureZoom?: boolean;
+  /**
+   * Renders worksheets with the canvas renderer. Set to `false` to use the DOM table renderer.
+   *
+   * @default true
+   * @example
+   * ```tsx
+   * <XlsxViewer experimentalCanvas={false} />
+   * ```
+   */
   experimentalCanvas?: boolean;
+  /** Content shown for non-size load errors, or a function that receives the thrown error. */
   errorState?: React.ReactNode | ((error: Error) => React.ReactNode);
+  /** Content shown when `maxFileSizeBytes` rejects a file. */
   fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode);
+  /**
+   * CSS height for the viewer container.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer height="70vh" />
+   * ```
+   */
   height?: React.CSSProperties["height"];
+  /**
+   * Uses the built-in dark worksheet/viewer palette.
+   *
+   * @default false
+   */
   isDark?: boolean;
+  /** Legacy loading element rendered while the workbook is being parsed. Prefer `loadingState` for new code. */
   loadingComponent?: React.ReactElement;
+  /** Content shown while the workbook is being parsed. */
   loadingState?: React.ReactNode;
+  /** Replaces the chart loading placeholder. */
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;
+  /**
+   * Replaces worksheet images while preserving their calculated rect and style.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer renderImage={({ image, style }) => <img src={image.src} style={style} alt={image.description ?? ""} />} />
+   * ```
+   */
   renderImage?: (props: XlsxImageRenderProps) => React.ReactNode;
+  /** Replaces the selected-image outline and resize handles. */
   renderImageSelection?: (props: XlsxImageSelectionRenderProps) => React.ReactNode;
+  /**
+   * Toggles the default rounded outer shell.
+   *
+   * @default true
+   */
   rounded?: boolean;
+  /**
+   * Disables workbook edits, paste, fill, undo/redo, and other mutation actions.
+   *
+   * @default false
+   */
   readOnly?: boolean;
+  /**
+   * Border and accent color for the current selection.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer selectionColor="#2563eb" />
+   * ```
+   */
   selectionColor?: string;
+  /** Fill color used for the translucent selection overlay. */
   selectionFillColor?: string;
+  /** Accent color used for selected row and column headers. */
   selectionHeaderColor?: string;
+  /**
+   * Replaces the table header sort/filter trigger menu.
+   * Apply `triggerProps` to your actual trigger button so clicks do not leak into grid selection.
+   */
   renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode;
+  /**
+   * Shows worksheet images, charts, shapes, and form controls.
+   *
+   * @default true
+   */
   showImages?: boolean;
+  /**
+   * Shows the built-in toolbar above the workbook grid.
+   *
+   * @default true
+   */
   showDefaultToolbar?: boolean;
+  /**
+   * Replaces the toolbar area with a node or render function.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer toolbar={(controller) => <button onClick={controller.download}>Download</button>} />
+   * ```
+   */
   toolbar?: React.ReactNode | ((controller: XlsxViewerController) => React.ReactNode);
 }

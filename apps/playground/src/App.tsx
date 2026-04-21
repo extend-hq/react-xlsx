@@ -535,7 +535,7 @@ export function App() {
   const [isReadingFile, setIsReadingFile] = React.useState(false);
   const [isDragActive, setIsDragActive] = React.useState(false);
   const [isDocumentDark, setIsDocumentDark] = React.useState(false);
-  const [experimentalCanvas, setExperimentalCanvas] = React.useState(false);
+  const [experimentalCanvas, setExperimentalCanvas] = React.useState(true);
   const [isReadOnly, setIsReadOnly] = React.useState(false);
   const dragDepthRef = React.useRef(0);
 

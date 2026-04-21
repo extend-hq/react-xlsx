@@ -102,7 +102,7 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `showDefaultToolbar` | `boolean` | Shows or hides the built-in toolbar. Defaults to `true`. |
 | `enableGestureZoom` | `boolean` | Enables pinch-to-zoom and modifier-key (`Cmd`/`Ctrl`) scroll-to-zoom inside the viewer. Defaults to `true`. |
 | `allowResizeInReadOnly` | `boolean` | Allows row and column resizing even when `readOnly` is enabled. Defaults to `false`. |
-| `experimentalCanvas` | `boolean` | Routes the worksheet renderer through the experimental canvas implementation. Defaults to `false`. |
+| `experimentalCanvas` | `boolean` | Routes the worksheet renderer through the canvas implementation. Defaults to `true`. |
 | `toolbar` | `React.ReactNode \| (controller: XlsxViewerController) => React.ReactNode` | Replaces the toolbar area with a custom node or render function. |
 | `selectionColor` | `string` | Border/accent color for the current selection. |
 | `selectionFillColor` | `string` | Fill color used for selection overlays. |
