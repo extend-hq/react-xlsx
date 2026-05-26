@@ -2954,6 +2954,108 @@ function buildThumbnailAxisItems(actualIndices: number[], getSizePx: (actualInde
   };
 }
 
+function resolveThumbnailAxisAbsoluteOffset(
+  actualIndices: number[],
+  getSizePx: (actualIndex: number) => number,
+  actualIndex: number
+) {
+  let total = 0;
+
+  for (const candidate of actualIndices) {
+    if (candidate >= actualIndex) {
+      break;
+    }
+    total += Math.max(1, getSizePx(candidate));
+  }
+
+  return total;
+}
+
+function resolveThumbnailAxisMarkerOffset({
+  actualIndex,
+  actualIndices,
+  getSizePx,
+  offsetEmu,
+  previewStartActualIndex
+}: {
+  actualIndex: number;
+  actualIndices: number[];
+  getSizePx: (actualIndex: number) => number;
+  offsetEmu: number;
+  previewStartActualIndex: number;
+}) {
+  return (
+    resolveThumbnailAxisAbsoluteOffset(actualIndices, getSizePx, actualIndex)
+    - resolveThumbnailAxisAbsoluteOffset(actualIndices, getSizePx, previewStartActualIndex)
+    + emuToPixels(offsetEmu)
+  );
+}
+
+function resolveThumbnailAnchoredRect(
+  anchor: XlsxImage["anchor"],
+  visibleRows: number[],
+  visibleCols: number[],
+  getRowHeightPx: (actualIndex: number) => number,
+  getColWidthPx: (actualIndex: number) => number,
+  previewRows: number[],
+  previewCols: number[],
+  options: {
+    headerHeight: number;
+    rowHeaderWidth: number;
+  }
+): XlsxImageRect {
+  const previewStartRow = previewRows[0] ?? 0;
+  const previewStartCol = previewCols[0] ?? 0;
+  const previewOriginX = resolveThumbnailAxisAbsoluteOffset(visibleCols, getColWidthPx, previewStartCol);
+  const previewOriginY = resolveThumbnailAxisAbsoluteOffset(visibleRows, getRowHeightPx, previewStartRow);
+  const resolveMarkerLeft = (col: number, colOffsetEmu: number) =>
+    options.rowHeaderWidth + resolveThumbnailAxisMarkerOffset({
+      actualIndex: col,
+      actualIndices: visibleCols,
+      getSizePx: getColWidthPx,
+      offsetEmu: colOffsetEmu,
+      previewStartActualIndex: previewStartCol
+    });
+  const resolveMarkerTop = (row: number, rowOffsetEmu: number) =>
+    options.headerHeight + resolveThumbnailAxisMarkerOffset({
+      actualIndex: row,
+      actualIndices: visibleRows,
+      getSizePx: getRowHeightPx,
+      offsetEmu: rowOffsetEmu,
+      previewStartActualIndex: previewStartRow
+    });
+
+  if (anchor.kind === "absolute") {
+    return {
+      height: Math.max(1, emuToPixels(anchor.sizeEmu.cy)),
+      left: options.rowHeaderWidth + emuToPixels(anchor.positionEmu.x) - previewOriginX,
+      top: options.headerHeight + emuToPixels(anchor.positionEmu.y) - previewOriginY,
+      width: Math.max(1, emuToPixels(anchor.sizeEmu.cx))
+    };
+  }
+
+  if (anchor.kind === "one-cell") {
+    return {
+      height: Math.max(1, emuToPixels(anchor.sizeEmu.cy)),
+      left: resolveMarkerLeft(anchor.from.col, anchor.from.colOffsetEmu),
+      top: resolveMarkerTop(anchor.from.row, anchor.from.rowOffsetEmu),
+      width: Math.max(1, emuToPixels(anchor.sizeEmu.cx))
+    };
+  }
+
+  const left = resolveMarkerLeft(anchor.from.col, anchor.from.colOffsetEmu);
+  const top = resolveMarkerTop(anchor.from.row, anchor.from.rowOffsetEmu);
+  const right = resolveMarkerLeft(anchor.to.col, anchor.to.colOffsetEmu);
+  const bottom = resolveMarkerTop(anchor.to.row, anchor.to.rowOffsetEmu);
+
+  return {
+    height: Math.max(1, bottom - top),
+    left,
+    top,
+    width: Math.max(1, right - left)
+  };
+}
+
 function columnLabel(col: number): string {
   let label = "";
   let nextValue = col;
@@ -5244,6 +5346,260 @@ function resolveFormControlLabel(control: XlsxFormControl) {
   }
 
   return label.replace(/\u00a0/g, " ").replace(/^\s+/, "");
+}
+
+function drawStaticShapeText(
+  context: CanvasRenderingContext2D,
+  shape: XlsxShape,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  zoomFactor: number
+) {
+  if (shape.paragraphs.length === 0) {
+    return;
+  }
+
+  const inset = shape.textBox?.insetPx;
+  const paddingLeft = (inset?.left ?? 6) * zoomFactor;
+  const paddingRight = (inset?.right ?? 6) * zoomFactor;
+  const paddingTop = (inset?.top ?? 4) * zoomFactor;
+  const paddingBottom = (inset?.bottom ?? 4) * zoomFactor;
+  const textLeft = left + paddingLeft;
+  const textTop = top + paddingTop;
+  const textWidth = Math.max(0, width - paddingLeft - paddingRight);
+  const textHeight = Math.max(0, height - paddingTop - paddingBottom);
+  if (textWidth <= 0 || textHeight <= 0) {
+    return;
+  }
+
+  const lineMetrics = shape.paragraphs.map((paragraph) => {
+    const lineHeight = Math.max(
+      12 * zoomFactor,
+      ...paragraph.runs.map((run) => ((run.fontSizePt ?? 11) * 96 / 72) * zoomFactor * 1.2)
+    );
+    const widthPx = paragraph.runs.reduce((total, run) => {
+      const fontSize = ((run.fontSizePt ?? 11) * 96 / 72) * zoomFactor;
+      context.font = `${run.italic ? "italic " : ""}${run.bold ? "700 " : "400 "}${fontSize}px ${run.fontFamily ?? "Calibri, sans-serif"}`;
+      return total + measureCanvasTextWidth(context, run.text);
+    }, 0);
+    return { lineHeight, widthPx };
+  });
+  const totalTextHeight = lineMetrics.reduce((total, metric) => total + metric.lineHeight, 0);
+  let y = textTop;
+  if (shape.textBox?.verticalAlign === "middle") {
+    y = textTop + Math.max(0, (textHeight - totalTextHeight) / 2);
+  } else if (shape.textBox?.verticalAlign === "bottom") {
+    y = textTop + Math.max(0, textHeight - totalTextHeight);
+  }
+
+  context.save();
+  context.beginPath();
+  context.rect(textLeft, textTop, textWidth, textHeight);
+  context.clip();
+  context.textBaseline = "middle";
+  shape.paragraphs.forEach((paragraph, paragraphIndex) => {
+    const metric = lineMetrics[paragraphIndex] ?? { lineHeight: 14 * zoomFactor, widthPx: 0 };
+    let x = textLeft;
+    const align = paragraph.align ?? shape.textBox?.horizontalAlign ?? "left";
+    if (align === "center") {
+      x = textLeft + Math.max(0, (textWidth - metric.widthPx) / 2);
+    } else if (align === "right") {
+      x = textLeft + Math.max(0, textWidth - metric.widthPx);
+    }
+
+    paragraph.runs.forEach((run) => {
+      const fontSize = ((run.fontSizePt ?? 11) * 96 / 72) * zoomFactor;
+      context.font = `${run.italic ? "italic " : ""}${run.bold ? "700 " : "400 "}${fontSize}px ${run.fontFamily ?? "Calibri, sans-serif"}`;
+      context.fillStyle = run.color ?? "#000000";
+      context.textAlign = "left";
+      const textY = y + metric.lineHeight / 2;
+      context.fillText(run.text, x, textY);
+      if (run.underline && run.text.length > 0) {
+        const textWidthPx = measureCanvasTextWidth(context, run.text);
+        context.strokeStyle = run.color ?? "#000000";
+        context.lineWidth = Math.max(1, zoomFactor * 0.75);
+        context.beginPath();
+        context.moveTo(x, textY + Math.max(2, fontSize * 0.28));
+        context.lineTo(x + textWidthPx, textY + Math.max(2, fontSize * 0.28));
+        context.stroke();
+      }
+      x += measureCanvasTextWidth(context, run.text);
+    });
+    y += metric.lineHeight;
+  });
+  context.restore();
+}
+
+function drawStaticShape(
+  context: CanvasRenderingContext2D,
+  shape: XlsxShape,
+  rect: XlsxImageRect,
+  zoomFactor: number
+) {
+  const fillColor = shape.fill?.none ? "transparent" : (shape.fill?.color ?? "transparent");
+  const strokeColor = shape.stroke?.none ? "transparent" : (shape.stroke?.color ?? "transparent");
+  const lineWidth = Math.max(0, (shape.stroke?.widthPx ?? (shape.geometry === "line" ? 2 : 1)) * zoomFactor);
+  const vectorShape = resolveShapeVector(shape);
+  const opacity = Math.min(shape.fill?.opacity ?? 1, shape.stroke?.opacity ?? 1);
+
+  context.save();
+  context.translate(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  if (shape.rotationDeg) {
+    context.rotate((shape.rotationDeg * Math.PI) / 180);
+  }
+  context.scale(shape.flipH ? -1 : 1, shape.flipV ? -1 : 1);
+  context.globalAlpha *= opacity;
+  context.lineWidth = lineWidth;
+  context.strokeStyle = strokeColor;
+  context.fillStyle = fillColor;
+  applyCanvasShapeDash(context, shape.stroke?.dash, lineWidth);
+
+  const localLeft = -rect.width / 2;
+  const localTop = -rect.height / 2;
+  if (vectorShape && typeof Path2D !== "undefined") {
+    context.save();
+    context.translate(localLeft, localTop);
+    context.scale(
+      rect.width / Math.max(1, vectorShape.viewBox.width),
+      rect.height / Math.max(1, vectorShape.viewBox.height)
+    );
+    const path = getCachedCanvasPath2D(vectorShape.path);
+    if (!path) {
+      context.restore();
+      context.restore();
+      return;
+    }
+    if (fillColor !== "transparent") {
+      context.fill(path);
+    }
+    if (strokeColor !== "transparent" && lineWidth > 0) {
+      context.stroke(path);
+    }
+    context.restore();
+  } else if (shape.geometry === "ellipse") {
+    context.beginPath();
+    context.ellipse(0, 0, rect.width / 2, rect.height / 2, 0, 0, Math.PI * 2);
+    if (fillColor !== "transparent") {
+      context.fill();
+    }
+    if (strokeColor !== "transparent" && lineWidth > 0) {
+      context.stroke();
+    }
+  } else {
+    const radius = shape.geometry === "roundRect" ? 12 * zoomFactor : 0;
+    drawCanvasRoundedRect(context, localLeft, localTop, rect.width, rect.height, radius);
+    if (fillColor !== "transparent") {
+      context.fill();
+    }
+    if (strokeColor !== "transparent" && lineWidth > 0) {
+      context.stroke();
+    }
+  }
+
+  drawStaticShapeText(context, shape, localLeft, localTop, rect.width, rect.height, zoomFactor);
+  context.restore();
+}
+
+function drawStaticFormControl(
+  context: CanvasRenderingContext2D,
+  control: XlsxFormControl,
+  rect: XlsxImageRect,
+  palette: ViewerPalette,
+  zoomFactor: number,
+  sheetSurface = SHEET_SURFACE
+) {
+  const label = resolveFormControlLabel(control);
+  const stroke = paletteIsDark(palette) ? "#cbd5e1" : "#475569";
+  const textColor = control.textColor ?? "#000000";
+  const fontSizePx = Math.max(9 * zoomFactor, ((control.fontSizePt ?? 9) * 96 / 72) * zoomFactor);
+  const iconSize = Math.min(14 * zoomFactor, Math.max(0, rect.height - 4 * zoomFactor));
+  context.save();
+  context.font = `400 ${fontSizePx}px ${control.fontFamily ?? "Calibri, sans-serif"}`;
+  context.textBaseline = "middle";
+  context.fillStyle = textColor;
+  context.strokeStyle = stroke;
+  context.lineWidth = Math.max(1, zoomFactor);
+
+  if (control.kind === "group-box") {
+    const labelInset = label ? Math.max(7, fontSizePx * 0.5) : 0;
+    drawCanvasRoundedRect(context, rect.left, rect.top + labelInset, rect.width, Math.max(0, rect.height - labelInset), 2 * zoomFactor);
+    context.stroke();
+    if (label) {
+      context.fillStyle = sheetSurface;
+      const labelWidth = Math.min(rect.width - 16 * zoomFactor, measureCanvasTextWidth(context, label) + 8 * zoomFactor);
+      context.fillRect(rect.left + 8 * zoomFactor, rect.top, labelWidth, fontSizePx * 1.2);
+      context.fillStyle = textColor;
+      context.textAlign = "left";
+      context.fillText(label, rect.left + 12 * zoomFactor, rect.top + fontSizePx * 0.55);
+    }
+    context.restore();
+    return;
+  }
+
+  if (control.kind === "button" || control.kind === "dropdown" || control.kind === "editbox" || control.kind === "listbox" || control.kind === "scrollbar" || control.kind === "spinner" || control.kind === "unknown") {
+    if (control.kind === "button") {
+      const gradient = context.createLinearGradient(rect.left, rect.top, rect.left, rect.top + rect.height);
+      gradient.addColorStop(0, "#f8fafc");
+      gradient.addColorStop(1, "#e2e8f0");
+      context.fillStyle = gradient;
+    } else {
+      context.fillStyle = "transparent";
+    }
+    drawCanvasRoundedRect(context, rect.left, rect.top, rect.width, rect.height, control.kind === "button" ? 4 * zoomFactor : 2 * zoomFactor);
+    if (control.kind === "button") {
+      context.fill();
+    }
+    context.stroke();
+  }
+
+  let textLeft = rect.left + 2 * zoomFactor;
+  const textRightInset = control.kind === "dropdown" ? 18 * zoomFactor : 6 * zoomFactor;
+  if (control.kind === "checkbox") {
+    context.strokeRect(rect.left + 2 * zoomFactor, rect.top + (rect.height - iconSize) / 2, iconSize, iconSize);
+    if (control.checked) {
+      context.fillStyle = paletteIsDark(palette) ? "#60a5fa" : "#2563eb";
+      context.fillRect(rect.left + 2 * zoomFactor + 1.5, rect.top + (rect.height - iconSize) / 2 + 1.5, Math.max(0, iconSize - 3), Math.max(0, iconSize - 3));
+      context.strokeStyle = paletteIsDark(palette) ? "#020617" : "#ffffff";
+      context.beginPath();
+      context.moveTo(rect.left + 2 * zoomFactor + iconSize * 0.24, rect.top + rect.height / 2 + iconSize * 0.06);
+      context.lineTo(rect.left + 2 * zoomFactor + iconSize * 0.45, rect.top + rect.height / 2 + iconSize * 0.26);
+      context.lineTo(rect.left + 2 * zoomFactor + iconSize * 0.8, rect.top + rect.height / 2 - iconSize * 0.2);
+      context.stroke();
+    }
+    textLeft += iconSize + 4 * zoomFactor;
+  } else if (control.kind === "radio") {
+    context.beginPath();
+    context.arc(rect.left + 2 * zoomFactor + iconSize / 2, rect.top + rect.height / 2, iconSize / 2, 0, Math.PI * 2);
+    context.stroke();
+    if (control.checked) {
+      context.fillStyle = paletteIsDark(palette) ? "#60a5fa" : "#2563eb";
+      context.beginPath();
+      context.arc(rect.left + 2 * zoomFactor + iconSize / 2, rect.top + rect.height / 2, iconSize * 0.25, 0, Math.PI * 2);
+      context.fill();
+    }
+    textLeft += iconSize + 4 * zoomFactor;
+  }
+
+  if (label) {
+    const maxTextWidth = Math.max(0, rect.left + rect.width - textLeft - textRightInset);
+    const text = truncateCanvasText(context, label, maxTextWidth);
+    context.fillStyle = textColor;
+    context.textAlign = control.textAlign === "right" ? "right" : control.textAlign === "center" ? "center" : "left";
+    const textX = context.textAlign === "right"
+      ? rect.left + rect.width - textRightInset
+      : context.textAlign === "center"
+        ? textLeft + maxTextWidth / 2
+        : textLeft;
+    context.fillText(text, textX, rect.top + rect.height / 2);
+  }
+  if (control.kind === "dropdown") {
+    context.fillStyle = textColor;
+    context.textAlign = "center";
+    context.fillText("▼", rect.left + rect.width - 10 * zoomFactor, rect.top + rect.height / 2);
+  }
+  context.restore();
 }
 
 function resolveConditionalDataBarForCell(
@@ -14465,28 +14821,112 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
 export function useXlsxViewerThumbnails(
   options: UseXlsxViewerThumbnailsOptions = {}
 ): XlsxViewerThumbnails {
-  const { workbook, sheets } = useXlsxViewer();
+  const { getSheetFormControls, getSheetImages, getSheetShapes, workbook, sheets } = useXlsxViewer();
   const { isDark } = React.useContext(ViewerAppearanceContext);
   const palette = useViewerPalette(isDark);
   const includeHeaders = options.includeHeaders ?? true;
   const resolution = options.resolution;
+  const thumbnailImageCacheRef = React.useRef(new Map<string, {
+    failed: boolean;
+    image: HTMLImageElement;
+    loaded: boolean;
+    src: string;
+  }>());
+  const isMountedRef = React.useRef(false);
+  const [thumbnailImageLoadVersion, setThumbnailImageLoadVersion] = React.useState(0);
+
+  React.useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const getThumbnailImage = React.useCallback((image: XlsxImage) => {
+    if (typeof Image === "undefined") {
+      return null;
+    }
+
+    const cacheKey = image.id;
+    const cached = thumbnailImageCacheRef.current.get(cacheKey);
+    if (cached && cached.src === image.src) {
+      return cached.loaded && !cached.failed ? cached.image : null;
+    }
+
+    const imageElement = new Image();
+    const entry = {
+      failed: false,
+      image: imageElement,
+      loaded: false,
+      src: image.src
+    };
+    thumbnailImageCacheRef.current.set(cacheKey, entry);
+    imageElement.onload = () => {
+      entry.loaded = true;
+      if (isMountedRef.current) {
+        setThumbnailImageLoadVersion((version) => version + 1);
+      }
+    };
+    imageElement.onerror = () => {
+      entry.failed = true;
+      if (isMountedRef.current) {
+        setThumbnailImageLoadVersion((version) => version + 1);
+      }
+    };
+    imageElement.src = image.src;
+    return null;
+  }, []);
 
   const thumbnails = React.useMemo<XlsxSheetThumbnail[]>(() => {
     return sheets.map((sheet, sheetIndex) => {
       const worksheet = workbook?.getSheet(sheet.workbookSheetIndex) ?? null;
+      const sheetImages = getSheetImages(sheetIndex)
+        .filter((image) => image.src)
+        .sort((left, right) => left.zIndex - right.zIndex);
+      const sheetShapes = getSheetShapes(sheetIndex);
+      const sheetFormControls = getSheetFormControls(sheetIndex).filter((control) => !control.hidden);
+      const drawingBounds = [
+        ...sheetImages.map((image) => image.anchor),
+        ...sheetShapes.map((shape) => shape.anchor),
+        ...sheetFormControls.map((control) => control.anchor)
+      ].reduce<{
+        maxCol: number;
+        maxRow: number;
+        minCol: number;
+        minRow: number;
+      } | null>((bounds, anchor) => {
+        const drawingBound = resolveAnchoredBounds(anchor) ?? {
+          maxCol: 0,
+          maxRow: 0,
+          minCol: 0,
+          minRow: 0
+        };
+        return {
+          maxCol: Math.max(bounds?.maxCol ?? drawingBound.maxCol, drawingBound.maxCol),
+          maxRow: Math.max(bounds?.maxRow ?? drawingBound.maxRow, drawingBound.maxRow),
+          minCol: Math.min(bounds?.minCol ?? drawingBound.minCol, drawingBound.minCol),
+          minRow: Math.min(bounds?.minRow ?? drawingBound.minRow, drawingBound.minRow)
+        };
+      }, null);
+      const sheetMinUsedRow = (sheet.maxUsedRow ?? -1) >= (sheet.minUsedRow ?? 0) ? (sheet.minUsedRow ?? 0) : undefined;
+      const sheetMinUsedCol = (sheet.maxUsedCol ?? -1) >= (sheet.minUsedCol ?? 0) ? (sheet.minUsedCol ?? 0) : undefined;
+      const effectiveMinUsedRow = Math.max(0, Math.min(sheetMinUsedRow ?? drawingBounds?.minRow ?? 0, drawingBounds?.minRow ?? sheetMinUsedRow ?? 0));
+      const effectiveMinUsedCol = Math.max(0, Math.min(sheetMinUsedCol ?? drawingBounds?.minCol ?? 0, drawingBounds?.minCol ?? sheetMinUsedCol ?? 0));
+      const effectiveMaxUsedRow = Math.max(sheet.maxUsedRow ?? -1, drawingBounds?.maxRow ?? -1);
+      const effectiveMaxUsedCol = Math.max(sheet.maxUsedCol ?? -1, drawingBounds?.maxCol ?? -1);
       const showGridLines = sheet.showGridLines ?? true;
       const hiddenRowSet = new Set(sheet.hiddenRows ?? []);
       const hiddenColSet = new Set(sheet.hiddenCols ?? []);
       const visibleRows = buildVisibleAxisIndices(
         sheet.visibleRows ?? [],
-        Math.max(THUMBNAIL_FALLBACK_ROWS, (sheet.maxUsedRow ?? -1) + THUMBNAIL_FALLBACK_ROWS + 1),
-        sheet.maxUsedRow ?? -1,
+        Math.max(THUMBNAIL_FALLBACK_ROWS, effectiveMaxUsedRow + THUMBNAIL_FALLBACK_ROWS + 1),
+        effectiveMaxUsedRow,
         hiddenRowSet
       );
       const visibleCols = buildVisibleAxisIndices(
         sheet.visibleCols ?? [],
-        Math.max(THUMBNAIL_FALLBACK_COLS, (sheet.maxUsedCol ?? -1) + THUMBNAIL_FALLBACK_COLS + 1),
-        sheet.maxUsedCol ?? -1,
+        Math.max(THUMBNAIL_FALLBACK_COLS, effectiveMaxUsedCol + THUMBNAIL_FALLBACK_COLS + 1),
+        effectiveMaxUsedCol,
         hiddenColSet
       );
       const resolveColumnWidthPx = (actualCol: number) => {
@@ -14532,8 +14972,8 @@ export function useXlsxViewerThumbnails(
         getSizePx: resolveRowHeightPx,
         maxCount: THUMBNAIL_MAX_ROWS,
         maxLogicalPixels: THUMBNAIL_MAX_SOURCE_HEIGHT_PX,
-        maxUsedIndex: sheet.maxUsedRow ?? -1,
-        minUsedIndex: Math.max(0, sheet.minUsedRow ?? 0),
+        maxUsedIndex: effectiveMaxUsedRow,
+        minUsedIndex: effectiveMinUsedRow,
         precomputed: visibleRows
       });
       const previewCols = resolveThumbnailAxisIndices({
@@ -14541,8 +14981,8 @@ export function useXlsxViewerThumbnails(
         getSizePx: resolveColumnWidthPx,
         maxCount: THUMBNAIL_MAX_COLS,
         maxLogicalPixels: THUMBNAIL_MAX_SOURCE_WIDTH_PX,
-        maxUsedIndex: sheet.maxUsedCol ?? -1,
-        minUsedIndex: Math.max(0, sheet.minUsedCol ?? 0),
+        maxUsedIndex: effectiveMaxUsedCol,
+        minUsedIndex: effectiveMinUsedCol,
         precomputed: visibleCols
       });
       const rowAxis = buildThumbnailAxisItems(previewRows, resolveRowHeightPx);
@@ -14567,6 +15007,95 @@ export function useXlsxViewerThumbnails(
       const sparklineByCell = new Map<string, XlsxSheetData["sparklines"][number]>(
         (sheet.sparklines ?? []).map((sparkline) => [`${sparkline.target.row}:${sparkline.target.col}`, sparkline])
       );
+      const thumbnailImageRects = sheetImages
+        .map((image) => ({
+          image,
+          rect: resolveThumbnailAnchoredRect(
+            image.anchor,
+            visibleRows,
+            visibleCols,
+            resolveRowHeightPx,
+            resolveColumnWidthPx,
+            previewRows,
+            previewCols,
+            {
+              headerHeight,
+              rowHeaderWidth
+            }
+          )
+        }))
+        .filter(({ rect }) => (
+          rect.left + rect.width >= rowHeaderWidth
+          && rect.top + rect.height >= headerHeight
+          && rect.left <= sourceWidth
+          && rect.top <= sourceHeight
+        ));
+      const thumbnailShapeRects = sheetShapes
+        .map((shape) => ({
+          rect: resolveThumbnailAnchoredRect(
+            shape.anchor,
+            visibleRows,
+            visibleCols,
+            resolveRowHeightPx,
+            resolveColumnWidthPx,
+            previewRows,
+            previewCols,
+            {
+              headerHeight,
+              rowHeaderWidth
+            }
+          ),
+          shape
+        }))
+        .filter(({ rect }) => (
+          rect.left + rect.width >= rowHeaderWidth
+          && rect.top + rect.height >= headerHeight
+          && rect.left <= sourceWidth
+          && rect.top <= sourceHeight
+        ));
+      const thumbnailFormControlRects = sheetFormControls
+        .map((control) => ({
+          control,
+          rect: resolveThumbnailAnchoredRect(
+            control.anchor,
+            visibleRows,
+            visibleCols,
+            resolveRowHeightPx,
+            resolveColumnWidthPx,
+            previewRows,
+            previewCols,
+            {
+              headerHeight,
+              rowHeaderWidth
+            }
+          )
+        }))
+        .filter(({ rect }) => (
+          rect.left + rect.width >= rowHeaderWidth
+          && rect.top + rect.height >= headerHeight
+          && rect.left <= sourceWidth
+          && rect.top <= sourceHeight
+        ));
+      const thumbnailDrawingEntries = [
+        ...thumbnailShapeRects.map(({ rect, shape }) => ({
+          kind: "shape" as const,
+          rect,
+          shape,
+          zIndex: shape.zIndex
+        })),
+        ...thumbnailFormControlRects.map(({ control, rect }) => ({
+          control,
+          kind: "formControl" as const,
+          rect,
+          zIndex: control.zIndex
+        })),
+        ...thumbnailImageRects.map(({ image, rect }) => ({
+          image,
+          kind: "image" as const,
+          rect,
+          zIndex: image.zIndex
+        }))
+      ].sort((left, right) => left.zIndex - right.zIndex);
 
       const paint = (canvas: HTMLCanvasElement | null) => {
         if (!canvas) {
@@ -14938,6 +15467,26 @@ export function useXlsxViewerThumbnails(
           }
         }
 
+        if (thumbnailDrawingEntries.length > 0) {
+          context.save();
+          context.beginPath();
+          context.rect(rowHeaderWidth, headerHeight, Math.max(1, colAxis.totalSize), Math.max(1, rowAxis.totalSize));
+          context.clip();
+          for (const entry of thumbnailDrawingEntries) {
+            if (entry.kind === "shape") {
+              drawStaticShape(context, entry.shape, entry.rect, 1);
+            } else if (entry.kind === "formControl") {
+              drawStaticFormControl(context, entry.control, entry.rect, palette, 1, thumbnailSheetSurface);
+            } else {
+              const imageElement = getThumbnailImage(entry.image);
+              if (imageElement) {
+                context.drawImage(imageElement, entry.rect.left, entry.rect.top, entry.rect.width, entry.rect.height);
+              }
+            }
+          }
+          context.restore();
+        }
+
         if (includeHeaders) {
           context.strokeStyle = palette.border;
           context.lineWidth = 1;
@@ -14997,7 +15546,18 @@ export function useXlsxViewerThumbnails(
         workbookSheetIndex: sheet.workbookSheetIndex
       };
     });
-  }, [includeHeaders, palette, resolution, sheets, workbook]);
+  }, [
+    getSheetFormControls,
+    getSheetImages,
+    getSheetShapes,
+    getThumbnailImage,
+    includeHeaders,
+    palette,
+    resolution,
+    sheets,
+    thumbnailImageLoadVersion,
+    workbook
+  ]);
 
   const paintThumbnail = React.useCallback(
     (sheetIndex: number, canvas: HTMLCanvasElement | null) => thumbnails[sheetIndex]?.paint(canvas) ?? false,

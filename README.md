@@ -231,7 +231,7 @@ Notes:
 
 - `resolution` accepts either a single max dimension or `{ maxWidth, maxHeight }`
 - Thumbnails preserve the worksheet aspect ratio and paint into your supplied `<canvas>`
-- The current implementation renders a bounded top-left worksheet preview and does not include floating images or charts
+- The current implementation renders a bounded top-left worksheet preview, including loaded embedded worksheet images, shapes, and form controls, but does not include charts
 
 ## Oversized File Example
 
