@@ -6461,6 +6461,8 @@ function XlsxGrid({
   const selectionCommitFrameRef = React.useRef<number | null>(null);
   const selectionRef = React.useRef<XlsxCellRange | null>(null);
   const editingCellRef = React.useRef<XlsxCellAddress | null>(null);
+  const commitEditingRef = React.useRef<() => void>(() => {});
+  const editingInputRef = React.useRef<HTMLInputElement>(null);
   const readOnlyRef = React.useRef(readOnly);
   const committedZoomScaleRef = React.useRef(zoomScale);
   const gestureZoomScaleRef = React.useRef(zoomScale);
@@ -7584,6 +7586,21 @@ function XlsxGrid({
     editingCellRef.current = editingCell;
   }, [editingCell]);
 
+  React.useLayoutEffect(() => {
+    if (!editingCell) {
+      return;
+    }
+
+    const input = editingInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    input.focus();
+    const caret = input.value.length;
+    input.setSelectionRange(caret, caret);
+  }, [editingCell]);
+
   React.useEffect(() => {
     readOnlyRef.current = readOnly;
   }, [readOnly]);
@@ -8504,6 +8521,10 @@ function XlsxGrid({
     setEditingValue("");
     focusGrid();
   }, [focusGrid]);
+
+  React.useEffect(() => {
+    commitEditingRef.current = commitEditing;
+  }, [commitEditing]);
 
   const [, startBatchTransition] = React.useTransition();
   const [, startSelectionTransition] = React.useTransition();
@@ -10106,6 +10127,9 @@ function XlsxGrid({
     const initialRange = normalizeRange({ start: anchor, end: targetCell });
     const isActive = isSameCell(activeCellRef.current, targetCell);
     const committedOnPointerDown = !isActive || !editingCellRef.current;
+    if (editingCellRef.current && !isActive) {
+      commitEditingRef.current();
+    }
     const pointerOrigin =
       targetCell.row === cell.row && targetCell.col === cell.col
         ? resolveCellPointerOrigin(cell, event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY)
@@ -10523,6 +10547,9 @@ function XlsxGrid({
     const initialRange = normalizeRange({ start: anchor, end: cell });
     const isActive = isSameCell(activeCellRef.current, cell);
     const committedOnPointerDown = !isActive || !editingCellRef.current;
+    if (editingCellRef.current && !isActive) {
+      commitEditingRef.current();
+    }
     const rowIndex = rowIndexByActual.get(cell.row);
     const colIndex = colIndexByActual.get(cell.col);
     if (rowIndex === undefined || colIndex === undefined) {
@@ -14010,7 +14037,17 @@ function XlsxGrid({
                   />
                   <canvas ref={cornerHeaderCanvasRef} style={canvasCornerHeaderStyle} />
                 </div>
-                {editingCell && editingOverlayRect ? (
+                {editingCell && editingOverlayRect ? (() => {
+                  const editingCellStyle = getCellData(editingCell.row, editingCell.col).style;
+                  const editingBackground =
+                    typeof editingCellStyle.backgroundColor === "string"
+                      ? editingCellStyle.backgroundColor
+                      : resolveSheetSurface(activeSheet, palette);
+                  const editingColor =
+                    typeof editingCellStyle.color === "string"
+                      ? editingCellStyle.color
+                      : resolveReadableTextColor(null, editingBackground, palette);
+                  return (
                   <div
                     style={{
                       left: editingOverlayRect.left,
@@ -14022,6 +14059,7 @@ function XlsxGrid({
                     }}
                   >
                     <input
+                      ref={editingInputRef}
                       autoFocus
                       onBlur={commitEditing}
                       onChange={(event) => setEditingValue(event.target.value)}
@@ -14039,21 +14077,26 @@ function XlsxGrid({
                         }
                       }}
                       style={{
-                        backgroundColor: resolveSheetSurface(activeSheet, palette),
+                        backgroundColor: editingBackground,
                         border: 0,
                         boxShadow: `inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`,
-                        color: "#000000",
-                        font: resolveCanvasFont(getCellData(editingCell.row, editingCell.col).style, 12 * zoomFactor),
+                        boxSizing: "border-box",
+                        color: editingColor,
+                        display: "block",
+                        font: resolveCanvasFont(editingCellStyle, 12 * zoomFactor),
                         height: "100%",
                         margin: 0,
+                        minHeight: 0,
                         outline: "none",
+                        overflow: "hidden",
                         padding: scaleCssLengthExpression(DEFAULT_CELL_PADDING, zoomFactor),
                         width: "100%"
                       }}
                       value={editingValue}
                     />
                   </div>
-                ) : null}
+                  );
+                })() : null}
                 {activeCellAdornment && activeCellAdornmentRect ? (
                   <div
                     style={{
