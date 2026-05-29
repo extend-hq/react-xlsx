@@ -6138,13 +6138,13 @@ function GridRow({
                 aria-hidden="true"
                 style={{
                   alignItems: "center",
-                  bottom: 4 * zoomFactor,
+                  bottom: 0,
                   display: "flex",
-                  left: 4 * zoomFactor,
+                  left: 0,
                   pointerEvents: "none",
                   position: "absolute",
-                  right: 4 * zoomFactor,
-                  top: 4 * zoomFactor,
+                  right: 0,
+                  top: 0,
                   zIndex: 0
                 }}
               >
@@ -6156,7 +6156,7 @@ function GridRow({
                     border: cellData.conditionalDataBar.border !== false && cellData.conditionalDataBar.borderColor
                       ? `1px solid ${cellData.conditionalDataBar.borderColor}`
                       : "none",
-                    borderRadius: 2,
+                    borderRadius: 0,
                     height: "100%",
                     opacity: 1,
                     width: `${cellData.conditionalDataBar.widthPercent}%`
@@ -8791,6 +8791,13 @@ function XlsxGrid({
             ? batchedCell?.value ?? ""
             : getCellDisplayValue(worksheet, row, col, activeSheet)
     };
+
+    if (nextData.conditionalDataBar && !nextData.style.textAlign && worksheet) {
+      const numericValue = getCellNumericValue(worksheet, row, col);
+      if (numericValue !== null) {
+        nextData.style.textAlign = "right";
+      }
+    }
 
     nextData.canvas = buildCanvasCellStyleCache(nextData.style);
 
@@ -15330,10 +15337,10 @@ export function useXlsxViewerThumbnails(
             context.fillRect(rect.left, rect.top, rect.width, rect.height);
 
             if (cellData.conditionalDataBar) {
-              const barLeft = rect.left + 4;
-              const barTop = rect.top + 4;
-              const barWidth = Math.max(0, (rect.width - 8) * (cellData.conditionalDataBar.widthPercent / 100));
-              const barHeight = Math.max(0, rect.height - 8);
+              const barLeft = rect.left;
+              const barTop = rect.top;
+              const barWidth = Math.max(0, rect.width * (cellData.conditionalDataBar.widthPercent / 100));
+              const barHeight = Math.max(0, rect.height);
               if (barWidth > 0 && barHeight > 0) {
                 context.fillStyle = resolveCanvasDataBarFill(
                   context,
