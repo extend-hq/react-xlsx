@@ -95,6 +95,23 @@ const CANVAS_TEXT_WRAP_CACHE_LIMIT = 2048;
 const CANVAS_PATH2D_CACHE_LIMIT = 512;
 const EMPTY_VIRTUAL_ITEMS: VirtualItem[] = [];
 
+type SelectionDragState = {
+  anchor: XlsxCellAddress;
+  axis: "cell" | "column" | "row";
+  contentScaleX: number;
+  contentScaleY: number;
+  committedOnPointerDown: boolean;
+  didDrag: boolean;
+  originCell: XlsxCellAddress;
+  originOverlayRect: { height: number; left: number; top: number; width: number } | null;
+  originContentX: number;
+  originContentY: number;
+  previewRange: XlsxCellRange;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+};
+
 const IMAGE_HANDLE_CURSOR: Record<XlsxImageResizeHandlePosition, React.CSSProperties["cursor"]> = {
   e: "ew-resize",
   n: "ns-resize",
@@ -6506,24 +6523,9 @@ function XlsxGrid({
     | null
   >(null);
   const selectionDragRef = React.useRef<
-    | {
-        anchor: XlsxCellAddress;
-        axis: "cell" | "column" | "row";
-        contentScaleX: number;
-        contentScaleY: number;
-        committedOnPointerDown: boolean;
-        didDrag: boolean;
-        originCell: XlsxCellAddress;
-        originOverlayRect: { height: number; left: number; top: number; width: number } | null;
-        originContentX: number;
-        originContentY: number;
-        previewRange: XlsxCellRange;
-        pointerId: number;
-        startClientX: number;
-        startClientY: number;
-      }
-    | null
+    SelectionDragState | null
   >(null);
+  const pendingSelectionDragRef = React.useRef<SelectionDragState | null>(null);
   const fillDragRef = React.useRef<
     | {
         pointerId: number;
@@ -6533,6 +6535,7 @@ function XlsxGrid({
     | null
   >(null);
   const selectionDragCleanupRef = React.useRef<(() => void) | null>(null);
+  const pendingSelectionDragCleanupRef = React.useRef<(() => void) | null>(null);
   const fillDragCleanupRef = React.useRef<(() => void) | null>(null);
   const cachedScrollerRectRef = React.useRef<DOMRect | null>(null);
   const imageInteractionCleanupRef = React.useRef<(() => void) | null>(null);
@@ -7677,7 +7680,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     const previewRange = selectionPreviewRangeRef.current;
-    if (!previewRange || selectionDragRef.current || fillDragRef.current) {
+    if (!previewRange || pendingSelectionDragRef.current || selectionDragRef.current || fillDragRef.current) {
       return;
     }
 
@@ -8429,14 +8432,17 @@ function XlsxGrid({
   }, []);
 
   React.useEffect(() => {
+    pendingSelectionDragCleanupRef.current?.();
     selectionDragCleanupRef.current?.();
     fillDragCleanupRef.current?.();
     chartInteractionCleanupRef.current?.();
     imageInteractionCleanupRef.current?.();
+    pendingSelectionDragCleanupRef.current = null;
     selectionDragCleanupRef.current = null;
     fillDragCleanupRef.current = null;
     chartInteractionCleanupRef.current = null;
     imageInteractionCleanupRef.current = null;
+    pendingSelectionDragRef.current = null;
     selectionDragRef.current = null;
     fillDragRef.current = null;
     chartInteractionRef.current = null;
@@ -9904,6 +9910,125 @@ function XlsxGrid({
     return normalizeRange({ start: dragState.anchor, end: cell });
   }
 
+  function updateSelectionDragPreview(clientX: number, clientY: number) {
+    const dragState = selectionDragRef.current;
+    if (!dragState) {
+      return;
+    }
+
+    const nextCell = resolveDraggedSelectionCell(dragState, clientX, clientY);
+    if (!nextCell) {
+      return;
+    }
+
+    const nextRange = buildDraggedSelectionRange(dragState, nextCell);
+    if (!nextRange || rangesEqual(nextRange, dragState.previewRange)) {
+      return;
+    }
+
+    dragState.previewRange = nextRange;
+    selectionPreviewRangeRef.current = nextRange;
+    displayedSelectionRef.current = nextRange;
+    applyPreviewOverlay(nextRange);
+  }
+
+  function clearPendingSelectionDrag() {
+    const cleanup = pendingSelectionDragCleanupRef.current;
+    pendingSelectionDragCleanupRef.current = null;
+    pendingSelectionDragRef.current = null;
+    cleanup?.();
+  }
+
+  function finishPendingSelectionDrag() {
+    const pendingState = pendingSelectionDragRef.current;
+    clearPendingSelectionDrag();
+    if (pendingState && !pendingState.committedOnPointerDown) {
+      commitSelectionRange(pendingState.previewRange);
+    }
+  }
+
+  function promotePendingSelectionDrag(clientX: number, clientY: number) {
+    const pendingState = pendingSelectionDragRef.current;
+    if (!pendingState) {
+      return;
+    }
+
+    clearPendingSelectionDrag();
+    cachedScrollerRectRef.current = scrollRef.current?.getBoundingClientRect() ?? null;
+    pendingState.didDrag = true;
+    selectionDragRef.current = pendingState;
+    selectionPreviewRangeRef.current = pendingState.previewRange;
+    displayedSelectionRef.current = pendingState.previewRange;
+    setInteractionMode("select");
+    document.body.style.userSelect = "none";
+    installSelectionDragListeners(pendingState.pointerId);
+    updateSelectionDragPreview(clientX, clientY);
+  }
+
+  function installPendingSelectionDragListeners(pointerId: number, target: Element) {
+    const existingCleanup = pendingSelectionDragCleanupRef.current;
+    pendingSelectionDragCleanupRef.current = null;
+    existingCleanup?.();
+
+    const pointerTarget = target as Element & {
+      hasPointerCapture?: (pointerId: number) => boolean;
+      releasePointerCapture?: (pointerId: number) => void;
+      setPointerCapture?: (pointerId: number) => void;
+    };
+
+    try {
+      pointerTarget.setPointerCapture?.(pointerId);
+    } catch {
+      // Pointer capture can fail if the initiating element unmounts before the browser applies it.
+    }
+
+    const handlePointerMove = (event: Event) => {
+      const pointerEvent = event as PointerEvent;
+      if (pointerEvent.pointerId !== pointerId) {
+        return;
+      }
+
+      const pendingState = pendingSelectionDragRef.current;
+      if (!pendingState) {
+        return;
+      }
+
+      const deltaX = Math.abs(pointerEvent.clientX - pendingState.startClientX);
+      const deltaY = Math.abs(pointerEvent.clientY - pendingState.startClientY);
+      if (deltaX < SELECTION_DRAG_THRESHOLD_PX && deltaY < SELECTION_DRAG_THRESHOLD_PX) {
+        return;
+      }
+
+      event.preventDefault();
+      promotePendingSelectionDrag(pointerEvent.clientX, pointerEvent.clientY);
+    };
+
+    const handlePointerEnd = (event: Event) => {
+      const pointerEvent = event as PointerEvent;
+      if (pointerEvent.pointerId !== pointerId) {
+        return;
+      }
+
+      finishPendingSelectionDrag();
+    };
+
+    target.addEventListener("pointermove", handlePointerMove);
+    target.addEventListener("pointerup", handlePointerEnd);
+    target.addEventListener("pointercancel", handlePointerEnd);
+    pendingSelectionDragCleanupRef.current = () => {
+      target.removeEventListener("pointermove", handlePointerMove);
+      target.removeEventListener("pointerup", handlePointerEnd);
+      target.removeEventListener("pointercancel", handlePointerEnd);
+      try {
+        if (pointerTarget.hasPointerCapture?.(pointerId)) {
+          pointerTarget.releasePointerCapture?.(pointerId);
+        }
+      } catch {
+        // Pointer capture may already be released by the browser on pointerup/cancel.
+      }
+    };
+  }
+
   function installSelectionDragListeners(pointerId: number) {
     selectionDragCleanupRef.current?.();
     let pendingClientPoint: { x: number; y: number } | null = null;
@@ -9932,20 +10057,7 @@ function XlsxGrid({
         dragState.didDrag = true;
       }
 
-      const nextCell = resolveDraggedSelectionCell(dragState, pendingPoint.x, pendingPoint.y);
-      if (!nextCell) {
-        return;
-      }
-
-      const nextRange = buildDraggedSelectionRange(dragState, nextCell);
-      if (!nextRange || rangesEqual(nextRange, dragState.previewRange)) {
-        return;
-      }
-
-      dragState.previewRange = nextRange;
-      selectionPreviewRangeRef.current = nextRange;
-      displayedSelectionRef.current = nextRange;
-      applyPreviewOverlay(nextRange);
+      updateSelectionDragPreview(pendingPoint.x, pendingPoint.y);
     };
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -10143,6 +10255,7 @@ function XlsxGrid({
     }
 
     startCellSelection(
+      event.currentTarget,
       event.pointerId,
       anchor,
       "cell",
@@ -10196,6 +10309,7 @@ function XlsxGrid({
     }
 
     startCellSelection(
+      event.currentTarget,
       event.pointerId,
       { row: anchorRow, col: firstVisibleCol },
       "row",
@@ -10233,6 +10347,7 @@ function XlsxGrid({
     }
 
     startCellSelection(
+      event.currentTarget,
       event.pointerId,
       { row: firstVisibleRow, col: anchorCol },
       "column",
@@ -10557,6 +10672,7 @@ function XlsxGrid({
     }
 
     startCellSelection(
+      event.currentTarget,
       event.pointerId,
       anchor,
       "cell",
@@ -10644,6 +10760,7 @@ function XlsxGrid({
     }
 
     startCellSelection(
+      event.currentTarget,
       event.pointerId,
       { row: firstVisibleRow, col: anchorCol },
       "column",
@@ -10706,6 +10823,7 @@ function XlsxGrid({
     }
 
     startCellSelection(
+      event.currentTarget,
       event.pointerId,
       { row: anchorRow, col: firstVisibleCol },
       "row",
@@ -13412,6 +13530,7 @@ function XlsxGrid({
   }
 
   function startCellSelection(
+    target: Element,
     pointerId: number,
     anchor: XlsxCellAddress,
     axis: "cell" | "column" | "row",
@@ -13428,8 +13547,9 @@ function XlsxGrid({
     startClientX: number,
     startClientY: number
   ) {
-    cachedScrollerRectRef.current = scrollRef.current?.getBoundingClientRect() ?? null;
-    selectionDragRef.current = {
+    clearPendingSelectionDrag();
+    const previewRange = normalizeRange(initialRange);
+    pendingSelectionDragRef.current = {
       anchor,
       axis,
       contentScaleX: pointerOrigin.contentScaleX,
@@ -13441,16 +13561,14 @@ function XlsxGrid({
       originContentX: pointerOrigin.originContentX,
       originContentY: pointerOrigin.originContentY,
       pointerId,
-      previewRange: normalizeRange(initialRange),
+      previewRange,
       startClientX,
       startClientY
     };
-    selectionPreviewRangeRef.current = normalizeRange(initialRange);
-    displayedSelectionRef.current = selectionPreviewRangeRef.current;
-    applyPreviewOverlay(selectionPreviewRangeRef.current);
-    setInteractionMode("select");
-    document.body.style.userSelect = "none";
-    installSelectionDragListeners(pointerId);
+    selectionPreviewRangeRef.current = previewRange;
+    displayedSelectionRef.current = previewRange;
+    applyPreviewOverlay(previewRange);
+    installPendingSelectionDragListeners(pointerId, target);
   }
 
   function resolveFillRange(sourceRange: XlsxCellRange, cell: XlsxCellAddress): XlsxCellRange {
