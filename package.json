@@ -2,6 +2,7 @@
   "name": "react-xlsx-monorepo",
   "private": true,
   "version": "0.0.0",
+  "license": "MIT",
   "packageManager": "pnpm@9.15.0",
   "type": "module",
   "scripts": {
