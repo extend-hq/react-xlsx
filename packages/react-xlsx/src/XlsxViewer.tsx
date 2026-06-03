@@ -1225,6 +1225,17 @@ function isPrintableKey(event: React.KeyboardEvent) {
   return event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey;
 }
 
+function isInteractiveFocusTarget(target: EventTarget | null, container: HTMLElement) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  const interactiveElement = target.closest(
+    "a[href], button, input, select, textarea, [contenteditable=''], [contenteditable='true'], [role='button'], [role='menu'], [role='menuitem'], [role='textbox'], [tabindex]:not([tabindex='-1'])"
+  );
+  return Boolean(interactiveElement && interactiveElement !== container && container.contains(interactiveElement));
+}
+
 function sumSegment(values: number[], startIndex: number, endIndex: number) {
   let total = 0;
   for (let index = startIndex; index <= endIndex; index += 1) {
@@ -5858,6 +5869,24 @@ function resolveFirstUsedVisibleIndex(visibleIndices: number[], minUsedIndex: nu
   return firstVisibleUsed ?? visibleIndices[0] ?? -1;
 }
 
+function resolveLastUsedVisibleIndex(visibleIndices: number[], maxUsedIndex: number) {
+  if (visibleIndices.length === 0) {
+    return -1;
+  }
+  if (maxUsedIndex < 0) {
+    return visibleIndices[visibleIndices.length - 1] ?? -1;
+  }
+
+  for (let index = visibleIndices.length - 1; index >= 0; index -= 1) {
+    const visibleIndex = visibleIndices[index];
+    if (visibleIndex !== undefined && visibleIndex <= maxUsedIndex) {
+      return visibleIndex;
+    }
+  }
+
+  return visibleIndices[visibleIndices.length - 1] ?? -1;
+}
+
 type RenderedAxisItem = {
   end: number;
   index: number;
@@ -8465,8 +8494,8 @@ function XlsxGrid({
     setInteractionMode("idle");
   }, [activeSheetIndex, clearGlobalCursor, revision]);
 
-  const focusGrid = React.useCallback(() => {
-    scrollRef.current?.focus();
+  const focusGrid = React.useCallback((options?: FocusOptions) => {
+    scrollRef.current?.focus(options);
   }, []);
 
   const openHyperlink = React.useCallback((target?: string | null, location?: string | null) => {
@@ -13813,19 +13842,99 @@ function XlsxGrid({
     return { row: firstVisibleRow, col: firstVisibleCol };
   }
 
+  function ensureCellVisible(rowIndex: number, colIndex: number) {
+    const scroller = scrollRef.current;
+    if (!scroller) {
+      return;
+    }
+
+    let nextScrollTop = scroller.scrollTop;
+    let nextScrollLeft = scroller.scrollLeft;
+    const rowStart = displayHeaderHeight + (rowPrefixSums[rowIndex] ?? 0);
+    const rowEnd = displayHeaderHeight + (rowPrefixSums[rowIndex + 1] ?? rowStart);
+    const colStart = displayRowHeaderWidth + (colPrefixSums[colIndex] ?? 0);
+    const colEnd = displayRowHeaderWidth + (colPrefixSums[colIndex + 1] ?? colStart);
+
+    if (rowEnd > frozenPaneBottom) {
+      const visibleTop = scroller.scrollTop + frozenPaneBottom;
+      const visibleBottom = scroller.scrollTop + scroller.clientHeight;
+      if (rowStart < visibleTop) {
+        nextScrollTop = rowStart - frozenPaneBottom;
+      } else if (rowEnd > visibleBottom) {
+        nextScrollTop = rowEnd - scroller.clientHeight;
+      }
+    }
+
+    if (colEnd > frozenPaneRight) {
+      const visibleLeft = scroller.scrollLeft + frozenPaneRight;
+      const visibleRight = scroller.scrollLeft + scroller.clientWidth;
+      if (colStart < visibleLeft) {
+        nextScrollLeft = colStart - frozenPaneRight;
+      } else if (colEnd > visibleRight) {
+        nextScrollLeft = colEnd - scroller.clientWidth;
+      }
+    }
+
+    nextScrollTop = Math.max(0, Math.min(nextScrollTop, scroller.scrollHeight - scroller.clientHeight));
+    nextScrollLeft = Math.max(0, Math.min(nextScrollLeft, scroller.scrollWidth - scroller.clientWidth));
+
+    if (nextScrollTop !== scroller.scrollTop) {
+      scroller.scrollTop = nextScrollTop;
+    }
+    if (nextScrollLeft !== scroller.scrollLeft) {
+      scroller.scrollLeft = nextScrollLeft;
+    }
+    syncDrawingViewport(scroller, { immediate: true });
+  }
+
   function moveSelection(nextRowIndex: number, nextColIndex: number, extend: boolean) {
-    const nextRow = visibleRows[nextRowIndex];
-    const nextCol = visibleCols[nextColIndex];
+    const clampedRowIndex = Math.max(0, Math.min(nextRowIndex, visibleRows.length - 1));
+    const clampedColIndex = Math.max(0, Math.min(nextColIndex, visibleCols.length - 1));
+    const nextRow = visibleRows[clampedRowIndex];
+    const nextCol = visibleCols[clampedColIndex];
     if (nextRow === undefined || nextCol === undefined) {
       return;
     }
 
     selectCell({ row: nextRow, col: nextCol }, extend ? { extend: true } : undefined);
+    ensureCellVisible(clampedRowIndex, clampedColIndex);
+  }
+
+  function resolvePageRowIndex(currentRowIndex: number, direction: 1 | -1) {
+    const scroller = scrollRef.current;
+    const viewportHeight = Math.max(
+      displayDefaultRowHeight,
+      (scroller?.clientHeight ?? displayDefaultRowHeight * 20) - frozenPaneBottom
+    );
+    const currentOffset = rowPrefixSums[currentRowIndex] ?? 0;
+    const targetOffset = direction > 0
+      ? currentOffset + viewportHeight
+      : currentOffset - viewportHeight;
+    return Math.max(0, Math.min(findIndexForOffsetPrefix(rowPrefixSums, targetOffset), visibleRows.length - 1));
+  }
+
+  function resolvePageColIndex(currentColIndex: number, direction: 1 | -1) {
+    const scroller = scrollRef.current;
+    const viewportWidth = Math.max(
+      displayDefaultColWidth,
+      (scroller?.clientWidth ?? displayDefaultColWidth * 8) - frozenPaneRight
+    );
+    const currentOffset = colPrefixSums[currentColIndex] ?? 0;
+    const targetOffset = direction > 0
+      ? currentOffset + viewportWidth
+      : currentOffset - viewportWidth;
+    return Math.max(0, Math.min(findIndexForOffsetPrefix(colPrefixSums, targetOffset), visibleCols.length - 1));
   }
 
   const scrollerViewportProps: XlsxScrollerRenderProps["viewportProps"] = {
     key: activeTabIndex,
     ref: scrollRef,
+    "aria-colcount": Math.max(activeSheet?.colCount ?? 0, displayColLimit),
+    "aria-keyshortcuts": "ArrowUp ArrowDown ArrowLeft ArrowRight Home End PageUp PageDown Control+Home Control+End",
+    "aria-label": activeSheet ? `${activeSheet.name} worksheet grid` : "Workbook grid",
+    "aria-readonly": readOnly,
+    "aria-rowcount": Math.max(activeSheet?.rowCount ?? 0, displayRowLimit),
+    role: "grid",
     onScroll: handleScrollerScroll,
     onCopy: (event) => {
       if (editingCell) {
@@ -13847,6 +13956,18 @@ function XlsxGrid({
       }
 
       void copySelectionToClipboard();
+    },
+    onPointerDownCapture: (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      if (isInteractiveFocusTarget(event.target, event.currentTarget)) {
+        return;
+      }
+
+      if (document.activeElement !== event.currentTarget) {
+        event.currentTarget.focus({ preventScroll: true });
+      }
     },
     onKeyDown: (event) => {
       if (editingCell) {
@@ -13881,6 +14002,7 @@ function XlsxGrid({
 
       const currentRowIndex = rowIndexByActual.get(currentCell.row) ?? 0;
       const currentColIndex = colIndexByActual.get(currentCell.col) ?? 0;
+      const isCommandNavigation = event.ctrlKey || event.metaKey;
 
       if (!readOnly && isPrintableKey(event)) {
         event.preventDefault();
@@ -13891,27 +14013,95 @@ function XlsxGrid({
       switch (event.key) {
         case "ArrowDown":
           event.preventDefault();
-          moveSelection(Math.min(currentRowIndex + 1, visibleRows.length - 1), currentColIndex, event.shiftKey);
+          moveSelection(
+            isCommandNavigation
+              ? (rowIndexByActual.get(resolveLastUsedVisibleIndex(visibleRows, activeSheet?.maxUsedRow ?? -1)) ?? visibleRows.length - 1)
+              : currentRowIndex + 1,
+            currentColIndex,
+            event.shiftKey
+          );
           break;
         case "ArrowUp":
           event.preventDefault();
-          moveSelection(Math.max(currentRowIndex - 1, 0), currentColIndex, event.shiftKey);
+          moveSelection(
+            isCommandNavigation
+              ? (rowIndexByActual.get(resolveFirstUsedVisibleIndex(visibleRows, activeSheet?.minUsedRow ?? -1)) ?? 0)
+              : currentRowIndex - 1,
+            currentColIndex,
+            event.shiftKey
+          );
           break;
         case "ArrowLeft":
           event.preventDefault();
-          moveSelection(currentRowIndex, Math.max(currentColIndex - 1, 0), event.shiftKey);
+          moveSelection(
+            currentRowIndex,
+            isCommandNavigation
+              ? (colIndexByActual.get(resolveFirstUsedVisibleIndex(visibleCols, activeSheet?.minUsedCol ?? -1)) ?? 0)
+              : currentColIndex - 1,
+            event.shiftKey
+          );
           break;
         case "ArrowRight":
           event.preventDefault();
-          moveSelection(currentRowIndex, Math.min(currentColIndex + 1, visibleCols.length - 1), event.shiftKey);
+          moveSelection(
+            currentRowIndex,
+            isCommandNavigation
+              ? (colIndexByActual.get(resolveLastUsedVisibleIndex(visibleCols, activeSheet?.maxUsedCol ?? -1)) ?? visibleCols.length - 1)
+              : currentColIndex + 1,
+            event.shiftKey
+          );
+          break;
+        case "Home":
+          event.preventDefault();
+          moveSelection(
+            isCommandNavigation
+              ? (rowIndexByActual.get(resolveFirstUsedVisibleIndex(visibleRows, activeSheet?.minUsedRow ?? -1)) ?? 0)
+              : currentRowIndex,
+            colIndexByActual.get(resolveFirstUsedVisibleIndex(visibleCols, activeSheet?.minUsedCol ?? -1)) ?? 0,
+            event.shiftKey
+          );
+          break;
+        case "End":
+          event.preventDefault();
+          moveSelection(
+            isCommandNavigation
+              ? (rowIndexByActual.get(resolveLastUsedVisibleIndex(visibleRows, activeSheet?.maxUsedRow ?? -1)) ?? visibleRows.length - 1)
+              : currentRowIndex,
+            colIndexByActual.get(resolveLastUsedVisibleIndex(visibleCols, activeSheet?.maxUsedCol ?? -1)) ?? visibleCols.length - 1,
+            event.shiftKey
+          );
+          break;
+        case "PageDown":
+          event.preventDefault();
+          if (event.altKey) {
+            moveSelection(currentRowIndex, resolvePageColIndex(currentColIndex, 1), event.shiftKey);
+            break;
+          }
+          moveSelection(resolvePageRowIndex(currentRowIndex, 1), currentColIndex, event.shiftKey);
+          break;
+        case "PageUp":
+          event.preventDefault();
+          if (event.altKey) {
+            moveSelection(currentRowIndex, resolvePageColIndex(currentColIndex, -1), event.shiftKey);
+            break;
+          }
+          moveSelection(resolvePageRowIndex(currentRowIndex, -1), currentColIndex, event.shiftKey);
           break;
         case "Tab":
           event.preventDefault();
-          moveSelection(
-            currentRowIndex,
-            event.shiftKey ? Math.max(currentColIndex - 1, 0) : Math.min(currentColIndex + 1, visibleCols.length - 1),
-            false
-          );
+          if (event.shiftKey) {
+            moveSelection(
+              currentColIndex > 0 ? currentRowIndex : currentRowIndex - 1,
+              currentColIndex > 0 ? currentColIndex - 1 : visibleCols.length - 1,
+              false
+            );
+          } else {
+            moveSelection(
+              currentColIndex < visibleCols.length - 1 ? currentRowIndex : currentRowIndex + 1,
+              currentColIndex < visibleCols.length - 1 ? currentColIndex + 1 : 0,
+              false
+            );
+          }
           break;
         case "Enter":
           event.preventDefault();
@@ -13919,10 +14109,10 @@ function XlsxGrid({
             break;
           }
           if (event.shiftKey) {
-            moveSelection(Math.max(currentRowIndex - 1, 0), currentColIndex, false);
+            moveSelection(currentRowIndex - 1, currentColIndex, false);
             break;
           }
-          moveSelection(Math.min(currentRowIndex + 1, visibleRows.length - 1), currentColIndex, false);
+          moveSelection(currentRowIndex + 1, currentColIndex, false);
           break;
         case "Backspace":
         case "Delete":
