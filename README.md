@@ -213,6 +213,47 @@ Notes:
 - The canvas renderer (the default) honors the subset it can paint: `backgroundColor`, `backgroundImage` gradients, `color`, the four `border*` sides, `padding`, `textAlign`, `textDecoration`, `textOverflow`, and font properties. CSS-only effects such as `boxShadow`, `outline`, or `animation` apply in the DOM renderer.
 - `getCellStyle` is not applied to worksheet thumbnails painted via `useXlsxViewerThumbnails(...)`.
 
+### Animating Cell Styles
+
+To animate cell styling while keeping a stable `getCellStyle` callback, store transient styling state in a ref and bump the `cellStyleRevision` prop whenever the styles should change. Each new value forces the viewer to re-run `getCellStyle` and repaint.
+
+```tsx
+import * as React from "react";
+import { XlsxViewer, type XlsxViewerProps } from "@extend-ai/react-xlsx";
+
+function PulsingHighlight({ buffer }: { buffer: ArrayBuffer }) {
+  const pulseRef = React.useRef(0);
+  const [revision, setRevision] = React.useState(0);
+
+  React.useEffect(() => {
+    let frame = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      pulseRef.current = (Math.sin((now - start) / 800) + 1) / 2;
+      setRevision((value) => value + 1);
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
+    ({ cell }) =>
+      cell.row === 2 && cell.col === 1
+        ? { backgroundColor: `rgba(37, 99, 235, ${(0.1 + pulseRef.current * 0.2).toFixed(3)})` }
+        : undefined,
+    []
+  );
+
+  return <XlsxViewer file={buffer} getCellStyle={getCellStyle} cellStyleRevision={revision} />;
+}
+```
+
+Notes:
+
+- `cellStyleRevision` is only needed when `getCellStyle` stays stable but its output changes over time. Changing the `getCellStyle` callback identity already re-resolves cells.
+- Animated `backgroundColor`, `color`, and border changes repaint in both renderers. CSS-only animations (keyframes, transitions) only run in the DOM renderer (`experimentalCanvas={false}`).
+
 ## `XlsxViewerProvider` Props
 
 `XlsxViewerProvider` accepts all `UseXlsxViewerControllerOptions` plus:

@@ -93,6 +93,7 @@ function ViewerFileTooLargeState() {
 }
 
 function WorkbookToolbar({
+  animateHighlight,
   experimentalCanvas,
   highlightCells,
   isDocumentDark,
@@ -102,12 +103,14 @@ function WorkbookToolbar({
   onOpenFile,
   readOnly,
   remoteUrl,
+  setAnimateHighlight,
   setExperimentalCanvas,
   setHighlightCells,
   setIsDocumentDark,
   setReadOnly,
   setRemoteUrl,
 }: {
+  animateHighlight: boolean;
   experimentalCanvas: boolean;
   highlightCells: boolean;
   isDocumentDark: boolean;
@@ -117,6 +120,7 @@ function WorkbookToolbar({
   onOpenFile: () => void;
   readOnly: boolean;
   remoteUrl: string;
+  setAnimateHighlight: (value: boolean) => void;
   setExperimentalCanvas: (value: boolean) => void;
   setHighlightCells: (value: boolean) => void;
   setIsDocumentDark: (value: boolean) => void;
@@ -251,6 +255,16 @@ function WorkbookToolbar({
               aria-label="Toggle custom cell highlighting via getCellStyle"
               checked={highlightCells}
               onCheckedChange={setHighlightCells}
+              size="sm"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+            <span className="text-muted-foreground text-[11px] font-medium">Animate</span>
+            <Switch
+              aria-label="Animate cell highlighting via cellStyleRevision"
+              checked={animateHighlight}
+              disabled={!highlightCells}
+              onCheckedChange={setAnimateHighlight}
               size="sm"
             />
           </div>
@@ -552,19 +566,40 @@ export function App() {
   const [experimentalCanvas, setExperimentalCanvas] = React.useState(true);
   const [isReadOnly, setIsReadOnly] = React.useState(true);
   const [highlightCells, setHighlightCells] = React.useState(false);
+  const [animateHighlight, setAnimateHighlight] = React.useState(false);
+  const [cellStyleRevision, setCellStyleRevision] = React.useState(0);
+  const pulseRef = React.useRef(0);
   const dragDepthRef = React.useRef(0);
+
+  React.useEffect(() => {
+    if (!highlightCells || !animateHighlight) {
+      pulseRef.current = 0;
+      return;
+    }
+
+    let frame = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      // Oscillate between 0 and 1 on a ~1.6s loop, then flush via the revision counter.
+      pulseRef.current = (Math.sin((now - start) / 800) + 1) / 2;
+      setCellStyleRevision((value) => value + 1);
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, [animateHighlight, highlightCells]);
 
   const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
     ({ cell, isTableHeader }) => {
-      if (!highlightCells || isTableHeader) {
+      if (!highlightCells || isTableHeader || cell.row % 2 === 0) {
         return undefined;
       }
-      if (cell.row % 2 === 1) {
-        return { backgroundColor: isDocumentDark ? "rgba(56, 189, 248, 0.16)" : "rgba(37, 99, 235, 0.08)" };
-      }
-      return undefined;
+      const baseAlpha = isDocumentDark ? 0.16 : 0.08;
+      const alpha = animateHighlight ? baseAlpha + pulseRef.current * 0.18 : baseAlpha;
+      const channel = isDocumentDark ? "56, 189, 248" : "37, 99, 235";
+      return { backgroundColor: `rgba(${channel}, ${alpha.toFixed(3)})` };
     },
-    [highlightCells, isDocumentDark]
+    [animateHighlight, highlightCells, isDocumentDark]
   );
 
   const controller = useXlsxViewerController(
@@ -735,6 +770,7 @@ export function App() {
         >
           <XlsxViewerProvider controller={controller} isDark={isDocumentDark}>
             <WorkbookToolbar
+              animateHighlight={animateHighlight}
               experimentalCanvas={experimentalCanvas}
               highlightCells={highlightCells}
               isDocumentDark={isDocumentDark}
@@ -744,6 +780,7 @@ export function App() {
               onOpenFile={() => fileInputRef.current?.click()}
               readOnly={isReadOnly}
               remoteUrl={remoteUrl}
+              setAnimateHighlight={setAnimateHighlight}
               setExperimentalCanvas={setExperimentalCanvas}
               setHighlightCells={setHighlightCells}
               setIsDocumentDark={setIsDocumentDark}
@@ -755,6 +792,7 @@ export function App() {
                 <XlsxViewer
                   className="h-full min-h-0 min-w-0 flex-1"
                   emptyState={<ViewerEmptyState />}
+                  cellStyleRevision={cellStyleRevision}
                   fileTooLargeState={<ViewerFileTooLargeState />}
                   getCellStyle={getCellStyle}
                   height="100%"

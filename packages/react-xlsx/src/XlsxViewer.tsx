@@ -6388,6 +6388,7 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
 
 function XlsxGrid({
   allowResizeInReadOnly = false,
+  cellStyleRevision,
   controller,
   emptyState,
   enableCanvasSelectionAnimation = true,
@@ -6410,7 +6411,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "loadingComponent" | "loadingState" | "renderChartLoading" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "allowResizeInReadOnly" | "cellStyleRevision" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "loadingComponent" | "loadingState" | "renderChartLoading" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -8799,7 +8800,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     cellRenderCacheRef.current.clear();
-  }, [activeSheetIndex, displayColLimit, displayRowLimit, getCellStyle, palette, revision, viewportRowBatch, worksheet, zoomFactor]);
+  }, [activeSheetIndex, cellStyleRevision, displayColLimit, displayRowLimit, getCellStyle, palette, revision, viewportRowBatch, worksheet, zoomFactor]);
 
   React.useEffect(() => {
     setAsyncViewportRowBatch(null);
@@ -9076,6 +9077,10 @@ function XlsxGrid({
   }, [
     activeSheet,
     activeSheetChartHighlights,
+    // `cellStyleRevision` is intentionally a dependency: bumping it gives `getCellData` a new
+    // identity, which clears the cell render cache and repaints both the DOM and canvas renderers
+    // so a stable `getCellStyle` callback can return updated styles over time.
+    cellStyleRevision,
     colIndexByActual,
     colPrefixSums,
     displayDefaultColWidth,
@@ -15014,6 +15019,7 @@ function XlsxGrid({
 
 function XlsxViewerInner({
   allowResizeInReadOnly = false,
+  cellStyleRevision,
   className,
   controller,
   emptyState,
@@ -15088,6 +15094,7 @@ function XlsxViewerInner({
             <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
               <XlsxGrid
                 allowResizeInReadOnly={allowResizeInReadOnly}
+                cellStyleRevision={cellStyleRevision}
                 controller={controller}
                 emptyState={emptyState}
                 enableCanvasSelectionAnimation={enableCanvasSelectionAnimation}

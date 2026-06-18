@@ -1054,6 +1054,26 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   /** Class name applied to the root viewer shell. */
   className?: string;
   /**
+   * Monotonic revision counter that forces the viewer to re-run `getCellStyle` and repaint cells
+   * when it changes. Use this to animate or refresh custom cell styling while keeping a stable
+   * `getCellStyle` callback: store transient styling state in a ref, update it (for example from a
+   * `requestAnimationFrame` loop or a timer), and bump this number to flush the new styles.
+   *
+   * Changing the `getCellStyle` callback identity already triggers a re-resolve, so this prop is
+   * only needed when the callback itself stays stable but its output should change over time.
+   *
+   * @example
+   * ```tsx
+   * const [styleRevision, setStyleRevision] = React.useState(0);
+   * React.useEffect(() => {
+   *   const id = window.setInterval(() => setStyleRevision((value) => value + 1), 16);
+   *   return () => window.clearInterval(id);
+   * }, []);
+   * return <XlsxViewer file={buffer} getCellStyle={getCellStyle} cellStyleRevision={styleRevision} />;
+   * ```
+   */
+  cellStyleRevision?: number;
+  /**
    * Existing controller to render. Takes precedence over provider context and source props on this viewer.
    *
    * @example

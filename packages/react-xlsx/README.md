@@ -345,6 +345,7 @@ Common rendering props:
 - `errorState?: React.ReactNode | ((error: Error) => React.ReactNode)`
 - `fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode)`
 - `getCellStyle?: (context: XlsxCellStyleContext) => React.CSSProperties | null | undefined`
+- `cellStyleRevision?: number`
 - `renderImage?: (props: XlsxImageRenderProps) => React.ReactNode`
 - `renderImageSelection?: (props: XlsxImageSelectionRenderProps) => React.ReactNode`
 - `renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode`
@@ -398,6 +399,35 @@ Notes:
 - The DOM renderer (`experimentalCanvas={false}`) applies every returned CSS property.
 - The canvas renderer (the default) honors the subset it can paint: `backgroundColor`, `backgroundImage` gradients, `color`, the four `border*` sides, `padding`, `textAlign`, `textDecoration`, `textOverflow`, and font properties. CSS-only effects such as `boxShadow`, `outline`, or `animation` apply in the DOM renderer.
 - `getCellStyle` is not applied to worksheet thumbnails painted via `useXlsxViewerThumbnails(...)`.
+
+To animate cell styling while keeping a stable `getCellStyle` callback, store transient styling state in a ref and bump the `cellStyleRevision` prop whenever the styles should change. Each new value forces the viewer to re-run `getCellStyle` and repaint. This is only needed when the callback stays stable but its output changes over time; changing the callback identity already re-resolves cells.
+
+```tsx
+const pulseRef = React.useRef(0);
+const [revision, setRevision] = React.useState(0);
+
+React.useEffect(() => {
+  let frame = 0;
+  const start = performance.now();
+  const tick = (now: number) => {
+    pulseRef.current = (Math.sin((now - start) / 800) + 1) / 2;
+    setRevision((value) => value + 1);
+    frame = window.requestAnimationFrame(tick);
+  };
+  frame = window.requestAnimationFrame(tick);
+  return () => window.cancelAnimationFrame(frame);
+}, []);
+
+const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
+  ({ cell }) =>
+    cell.row === 2 && cell.col === 1
+      ? { backgroundColor: `rgba(37, 99, 235, ${(0.1 + pulseRef.current * 0.2).toFixed(3)})` }
+      : undefined,
+  []
+);
+
+return <XlsxViewer file={buffer} getCellStyle={getCellStyle} cellStyleRevision={revision} />;
+```
 
 ### Custom Scroll Area
 
