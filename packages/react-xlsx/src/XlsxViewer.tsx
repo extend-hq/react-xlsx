@@ -8984,6 +8984,17 @@ function XlsxGrid({
       });
       if (styleOverrides) {
         nextData.style = { ...nextData.style, ...styleOverrides };
+        // getCellStyle is the final styling layer, so a host-provided
+        // background replaces the cell's background fill — including a
+        // conditional color-scale fill, since both target the full-cell
+        // background. Data bars and icon sets are overlays drawn on top and
+        // are intentionally left intact.
+        if (
+          nextData.conditionalColorScale &&
+          (styleOverrides.backgroundColor !== undefined || styleOverrides.background !== undefined)
+        ) {
+          nextData.conditionalColorScale = null;
+        }
       }
     }
 
