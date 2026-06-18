@@ -25,7 +25,7 @@ import {
   type WorkbookTableMetadata
 } from "./images";
 import { safeCalculate, tryRecalculate } from "./safe-calculate";
-import { getSheetsWasmModule } from "./wasm";
+import { canUseConfiguredWasmSourceInWorker, getSheetsWasmModule } from "./wasm";
 import { XlsxWorkerClient } from "./worker-client";
 import type {
   UseXlsxViewerControllerOptions,
@@ -1907,7 +1907,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
   const readOnly = requestedReadOnly || forcedReadOnly;
   const canResizeReadOnly = requestedReadOnly && allowResizeInReadOnly && !forcedReadOnly;
-  const workerSupported = useWorker && typeof Worker !== "undefined";
+  const workerSupported = useWorker && typeof Worker !== "undefined" && canUseConfiguredWasmSourceInWorker();
   const shouldUseWorker = workerSupported && forcedReadOnly;
   const shouldForceReadOnlyForBuffer = React.useCallback((bufferByteLength: number) => (
     !requestedReadOnly && readOnlyAboveBytes > 0 && bufferByteLength > readOnlyAboveBytes

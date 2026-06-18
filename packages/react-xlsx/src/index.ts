@@ -1,4 +1,5 @@
 export { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
+export { initWasm, setWasmSource, type XlsxWasmSource } from "./wasm";
 export {
   DefaultXlsxToolbar,
   useXlsxViewerCharts,

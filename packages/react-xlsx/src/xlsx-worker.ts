@@ -3,7 +3,7 @@ import { loadWorkbookChartAssets } from "./charts";
 import { parseWorkbookChartStyleAssets, parseWorkbookStructureAssets, resolveSheetColumnWidthPixels } from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { safeCalculate } from "./safe-calculate";
-import { getSheetsWasmModule } from "./wasm";
+import { getSheetsWasmModule, setWasmSource, type WorkerWasmSource } from "./wasm";
 import type {
   XlsxChart,
   XlsxChartsheet,
@@ -53,6 +53,7 @@ type WorkerRequest =
         buffer: ArrayBuffer;
         showHiddenSheets?: boolean;
         skipXmlParsing?: boolean;
+        wasmSource?: WorkerWasmSource;
       };
     }
   | {
@@ -62,6 +63,7 @@ type WorkerRequest =
         buffer: ArrayBuffer;
         showHiddenSheets?: boolean;
         skipXmlParsing?: boolean;
+        wasmSource?: WorkerWasmSource;
       };
     }
   | {
@@ -614,9 +616,15 @@ function respond(message: WorkerResponse) {
 async function handleMessage(message: WorkerRequest) {
   switch (message.type) {
     case "load": {
+      if (message.payload.wasmSource !== undefined) {
+        setWasmSource(message.payload.wasmSource);
+      }
       return loadWorkbook(message.payload.buffer, message.payload.skipXmlParsing, message.payload.showHiddenSheets);
     }
     case "parseCharts": {
+      if (message.payload.wasmSource !== undefined) {
+        setWasmSource(message.payload.wasmSource);
+      }
       return parseCharts(message.payload.buffer, message.payload.skipXmlParsing, message.payload.showHiddenSheets);
     }
     case "getCellSnapshot": {

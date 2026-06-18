@@ -1,4 +1,5 @@
 import type { XlsxChart, XlsxChartsheet, XlsxSheetData, XlsxTable, XlsxWorkbookTab } from "./types";
+import { getConfiguredWorkerWasmSource, type WorkerWasmSource } from "./wasm";
 
 type WorkerMessage =
   | {
@@ -8,6 +9,7 @@ type WorkerMessage =
         buffer: ArrayBuffer;
         showHiddenSheets?: boolean;
         skipXmlParsing?: boolean;
+        wasmSource?: WorkerWasmSource;
       };
     }
   | {
@@ -17,6 +19,7 @@ type WorkerMessage =
         buffer: ArrayBuffer;
         showHiddenSheets?: boolean;
         skipXmlParsing?: boolean;
+        wasmSource?: WorkerWasmSource;
       };
     }
   | {
@@ -140,7 +143,8 @@ export class XlsxWorkerClient {
       payload: {
         buffer: workerBuffer,
         showHiddenSheets,
-        skipXmlParsing
+        skipXmlParsing,
+        wasmSource: getConfiguredWorkerWasmSource()
       },
       type: "load"
     }, [workerBuffer]);
@@ -168,7 +172,8 @@ export class XlsxWorkerClient {
       payload: {
         buffer: workerBuffer,
         showHiddenSheets,
-        skipXmlParsing
+        skipXmlParsing,
+        wasmSource: getConfiguredWorkerWasmSource()
       },
       type: "parseCharts"
     }, [workerBuffer]);

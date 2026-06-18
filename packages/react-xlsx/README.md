@@ -24,6 +24,69 @@ pnpm add @extend-ai/react-xlsx react react-dom
 
 `react` and `react-dom` are peer dependencies.
 
+## WebAssembly Asset
+
+Workbook parsing and calculation run through the `@dukelib/sheets-wasm` WebAssembly module. The module loads lazily, on the first workbook parse.
+
+Most apps can use the default loader. If your bundler or deployment needs to host the WASM binary somewhere explicit, configure it before the first parse:
+
+```ts
+import { setWasmSource } from "@extend-ai/react-xlsx";
+
+setWasmSource("https://cdn.example.com/duke_sheets_wasm_bg.wasm");
+// or pass a URL, Request, Response, ArrayBuffer/TypedArray, or compiled WebAssembly.Module
+```
+
+The Duke WASM binary is also exposed as a package subpath:
+
+```ts
+import wasmUrl from "@extend-ai/react-xlsx/duke_sheets_wasm_bg.wasm?url";
+import { setWasmSource } from "@extend-ai/react-xlsx";
+
+setWasmSource(wasmUrl);
+```
+
+### Next.js Turbopack
+
+Turbopack may try to treat `.wasm?url` imports as WebAssembly modules during static analysis. For Turbopack apps, use a plain public or CDN URL instead of importing the WASM file with `?url`.
+
+Copy the WASM file into your app's `public/` directory:
+
+```bash
+cp node_modules/@extend-ai/react-xlsx/dist/duke_sheets_wasm_bg.wasm public/duke_sheets_wasm_bg.wasm
+```
+
+Then configure the source from a shared client module before any workbook is parsed:
+
+```ts
+// app/xlsx-wasm.ts
+"use client";
+
+import { setWasmSource } from "@extend-ai/react-xlsx";
+
+setWasmSource("/duke_sheets_wasm_bg.wasm");
+```
+
+Import that setup module before rendering any XLSX viewer, provider, or controller:
+
+```tsx
+// app/workbook-preview.tsx
+"use client";
+
+import "./xlsx-wasm";
+import { XlsxViewer } from "@extend-ai/react-xlsx";
+
+export function WorkbookPreview({ file }: { file: ArrayBuffer }) {
+  return <XlsxViewer file={file} height={600} />;
+}
+```
+
+If several routes use the viewer, import the same setup module from a shared client boundary such as `app/providers.tsx`. Calling `setWasmSource()` more than once with the same source is fine before initialization, but the source must not change after the first parse because the WASM module is initialized once per JavaScript context.
+
+Configured string, URL, Request URL, bytes, and `WebAssembly.Module` sources are forwarded into the XLSX worker. `Response` sources are supported on the main thread; worker-backed parsing is skipped for that source type.
+
+You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first workbook is opened.
+
 ## Main Entry Points
 
 The package exports three useful levels of API:
