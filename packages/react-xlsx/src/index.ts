@@ -23,6 +23,7 @@ export type {
   XlsxChartSeries,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxCellStyleContext,
   XlsxFileTooLargeRenderProps,
   XlsxImage,
   XlsxImageAnchor,

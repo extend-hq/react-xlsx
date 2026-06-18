@@ -344,11 +344,60 @@ Common rendering props:
 - `loadingState?: React.ReactNode`
 - `errorState?: React.ReactNode | ((error: Error) => React.ReactNode)`
 - `fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode)`
+- `getCellStyle?: (context: XlsxCellStyleContext) => React.CSSProperties | null | undefined`
 - `renderImage?: (props: XlsxImageRenderProps) => React.ReactNode`
 - `renderImageSelection?: (props: XlsxImageSelectionRenderProps) => React.ReactNode`
 - `renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode`
 - `renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode`
 - `renderScroller?: (props: XlsxScrollerRenderProps) => React.ReactNode`
+
+### Custom Cell Styling
+
+`getCellStyle` is an escape hatch for styling individual cells without forking the workbook data. It is called for every rendered cell and returns a partial `React.CSSProperties` that merges on top of the viewer's resolved style. Return `undefined` (or `null`) to leave a cell untouched.
+
+```tsx
+import { XlsxViewer, type XlsxViewerProps } from "@extend-ai/react-xlsx";
+
+function Workbook({ buffer, highlighted }: { buffer: ArrayBuffer; highlighted: Set<string> }) {
+  const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
+    ({ cell, isTableHeader }) => {
+      if (isTableHeader) {
+        return undefined;
+      }
+      if (highlighted.has(`${cell.row}:${cell.col}`)) {
+        return { backgroundColor: "rgba(37, 99, 235, 0.12)", outline: "1px solid #2563eb" };
+      }
+      return undefined;
+    },
+    [highlighted]
+  );
+
+  return <XlsxViewer file={buffer} getCellStyle={getCellStyle} />;
+}
+```
+
+The `context` passed to `getCellStyle` is an `XlsxCellStyleContext`:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `cell` | `XlsxCellAddress` | Address of the cell being styled. |
+| `workbookSheetIndex` | `number` | Workbook sheet index of the cell's sheet. |
+| `sheetName` | `string` | Display name of the cell's sheet. |
+| `resolvedStyle` | `React.CSSProperties` | The style the viewer computed (workbook formatting + built-ins). Read-only. |
+| `value` | `string` | The cell's resolved display value. |
+| `hasValidation` | `boolean` | Cell has a data validation rule. |
+| `hasHyperlink` | `boolean` | Cell has a hyperlink. |
+| `hasConditionalFormat` | `boolean` | Cell is affected by a color scale, data bar, or icon set. |
+| `hasChartHighlight` | `boolean` | Cell is in a selected chart's highlighted source range. |
+| `isMerged` | `boolean` | Cell is the anchor of a merged range. |
+| `isTableHeader` | `boolean` | Cell is a table header cell. |
+
+Notes:
+
+- Keep the callback stable (e.g. `useCallback`) so cell styling is not recomputed every render. When the callback identity changes, the viewer re-resolves and repaints cells.
+- The DOM renderer (`experimentalCanvas={false}`) applies every returned CSS property.
+- The canvas renderer (the default) honors the subset it can paint: `backgroundColor`, `backgroundImage` gradients, `color`, the four `border*` sides, `padding`, `textAlign`, `textDecoration`, `textOverflow`, and font properties. CSS-only effects such as `boxShadow`, `outline`, or `animation` apply in the DOM renderer.
+- `getCellStyle` is not applied to worksheet thumbnails painted via `useXlsxViewerThumbnails(...)`.
 
 ### Custom Scroll Area
 
@@ -415,6 +464,7 @@ The package exports the main types you are likely to use for custom integrations
 - `XlsxViewerCharts`
 - `XlsxViewerThumbnails`
 - `XlsxScrollerRenderProps`
+- `XlsxCellStyleContext`
 - `XlsxSheetThumbnail`
 - `UseXlsxViewerThumbnailsOptions`
 - `XlsxChart`, `XlsxChartSeries`, `XlsxChartAxis`, `XlsxChartsheet`

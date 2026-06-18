@@ -994,6 +994,35 @@ export interface XlsxTableHeaderMenuRenderProps {
   triggerProps: React.ButtonHTMLAttributes<HTMLButtonElement>;
 }
 
+export interface XlsxCellStyleContext {
+  /** Address of the cell being styled. */
+  cell: XlsxCellAddress;
+  /** True when the cell is part of a selected chart's highlighted source range. */
+  hasChartHighlight: boolean;
+  /** True when a conditional format (color scale, data bar, or icon set) applies to the cell. */
+  hasConditionalFormat: boolean;
+  /** True when the cell has a hyperlink. */
+  hasHyperlink: boolean;
+  /** True when the cell has a data validation rule. */
+  hasValidation: boolean;
+  /** True when the cell is the anchor of a merged range. */
+  isMerged: boolean;
+  /** True when the cell is a table header cell. */
+  isTableHeader: boolean;
+  /**
+   * The fully resolved style the viewer computed for this cell, combining the workbook's
+   * own formatting with the viewer's built-in styling. Treat this as read-only; returning
+   * a partial style from `getCellStyle` merges on top of it.
+   */
+  resolvedStyle: React.CSSProperties;
+  /** Display name of the sheet the cell belongs to. */
+  sheetName: string;
+  /** The cell's resolved display value. */
+  value: string;
+  /** Workbook sheet index of the cell's sheet. */
+  workbookSheetIndex: number;
+}
+
 export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions {
   /** Viewer UI and hooks that should share this provider's workbook controller. */
   children: React.ReactNode;
@@ -1062,6 +1091,33 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   errorState?: React.ReactNode | ((error: Error) => React.ReactNode);
   /** Content shown when `maxFileSizeBytes` rejects a file. */
   fileTooLargeState?: React.ReactNode | ((props: XlsxFileTooLargeRenderProps) => React.ReactNode);
+  /**
+   * Returns extra CSS style overrides for an individual cell. Called for every rendered cell
+   * with the cell's address, sheet, resolved style, and contextual flags. Return `undefined`
+   * (or `null`) to leave a cell untouched, or a partial style object that merges on top of the
+   * viewer's resolved style. Use this as an escape hatch for custom per-cell styling such as
+   * highlights, outlines, or status tints, without forking the workbook data.
+   *
+   * The DOM renderer applies every returned CSS property. The canvas renderer
+   * (`experimentalCanvas`, the default) honors the subset it can paint: `backgroundColor`,
+   * `backgroundImage` gradients, `color`, the four `border*` sides, `padding`, `textAlign`,
+   * `textDecoration`, `textOverflow`, and font properties. CSS-only effects such as `boxShadow`,
+   * `outline`, or `animation` apply in the DOM renderer (`experimentalCanvas={false}`).
+   *
+   * Keep this callback stable (e.g. wrap it in `useCallback`) so cell styling is not recomputed
+   * on every render. When the callback identity changes, the viewer re-resolves and repaints
+   * cell styles.
+   *
+   * @example
+   * ```tsx
+   * const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
+   *   ({ cell }) => (cell.row === 3 && cell.col === 1 ? { backgroundColor: "#dbeafe" } : undefined),
+   *   []
+   * );
+   * return <XlsxViewer file={buffer} getCellStyle={getCellStyle} />;
+   * ```
+   */
+  getCellStyle?: (context: XlsxCellStyleContext) => React.CSSProperties | null | undefined;
   /**
    * CSS height for the viewer container.
    *

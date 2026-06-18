@@ -114,6 +114,7 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | Prop | Type | Notes |
 | --- | --- | --- |
 | `emptyState` | `React.ReactNode` | Rendered when no workbook is loaded. |
+| `getCellStyle` | `(context: XlsxCellStyleContext) => React.CSSProperties \| null \| undefined` | Returns extra CSS overrides merged on top of each cell's resolved style. Escape hatch for custom per-cell styling (highlights, outlines, status tints) without forking workbook data. See [Custom Cell Styling](#custom-cell-styling). |
 | `loadingComponent` | `React.ReactElement` | Full loading replacement component. |
 | `loadingState` | `React.ReactNode` | Loading fallback content. |
 | `errorState` | `React.ReactNode \| (error: Error) => React.ReactNode` | Custom error UI. |
@@ -162,6 +163,55 @@ Notes:
 - This render prop is intended for returning the full trigger and menu tree, not just menu items
 - In the default DOM renderer, your returned node replaces the built-in chevron trigger in the table header cell
 - `experimentalCanvas` still uses the built-in canvas affordance for table header menus
+
+## Custom Cell Styling
+
+`getCellStyle` is an escape hatch for styling individual cells without forking the workbook data. The viewer calls it for every rendered cell and merges the returned partial style on top of the cell's resolved style. Return `undefined` (or `null`) to leave a cell untouched.
+
+```tsx
+import * as React from "react";
+import { XlsxViewer, type XlsxViewerProps } from "@extend-ai/react-xlsx";
+
+function Workbook({ buffer, highlighted }: { buffer: ArrayBuffer; highlighted: Set<string> }) {
+  const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
+    ({ cell, isTableHeader }) => {
+      if (isTableHeader) {
+        return undefined;
+      }
+      if (highlighted.has(`${cell.row}:${cell.col}`)) {
+        return { backgroundColor: "rgba(37, 99, 235, 0.12)", outline: "1px solid #2563eb" };
+      }
+      return undefined;
+    },
+    [highlighted]
+  );
+
+  return <XlsxViewer file={buffer} getCellStyle={getCellStyle} />;
+}
+```
+
+The `context` argument is an `XlsxCellStyleContext`:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `cell` | `XlsxCellAddress` | Address of the cell being styled. |
+| `workbookSheetIndex` | `number` | Workbook sheet index of the cell's sheet. |
+| `sheetName` | `string` | Display name of the cell's sheet. |
+| `resolvedStyle` | `React.CSSProperties` | The style the viewer computed (workbook formatting + built-ins). Read-only. |
+| `value` | `string` | The cell's resolved display value. |
+| `hasValidation` | `boolean` | Cell has a data validation rule. |
+| `hasHyperlink` | `boolean` | Cell has a hyperlink. |
+| `hasConditionalFormat` | `boolean` | Cell is affected by a color scale, data bar, or icon set. |
+| `hasChartHighlight` | `boolean` | Cell is in a selected chart's highlighted source range. |
+| `isMerged` | `boolean` | Cell is the anchor of a merged range. |
+| `isTableHeader` | `boolean` | Cell is a table header cell. |
+
+Notes:
+
+- Keep the callback stable (e.g. wrap it in `useCallback`) so cell styling is not recomputed on every render. When the callback identity changes, the viewer re-resolves and repaints cells.
+- The DOM renderer (`experimentalCanvas={false}`) applies every returned CSS property.
+- The canvas renderer (the default) honors the subset it can paint: `backgroundColor`, `backgroundImage` gradients, `color`, the four `border*` sides, `padding`, `textAlign`, `textDecoration`, `textOverflow`, and font properties. CSS-only effects such as `boxShadow`, `outline`, or `animation` apply in the DOM renderer.
+- `getCellStyle` is not applied to worksheet thumbnails painted via `useXlsxViewerThumbnails(...)`.
 
 ## `XlsxViewerProvider` Props
 
@@ -310,7 +360,7 @@ The package also exports the main types you are likely to use for custom integra
 - `XlsxImage`, `XlsxImageRect`, `XlsxImageRenderProps`, `XlsxImageSelectionRenderProps`
 - `XlsxSheetThumbnail`, `XlsxSheetThumbnailResolution`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
-- `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`
+- `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`, `XlsxCellStyleContext`
 
 ## Notes
 

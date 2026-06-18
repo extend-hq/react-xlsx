@@ -7,7 +7,8 @@ import {
   useXlsxViewerThumbnails,
   useXlsxViewerZoom,
   XlsxViewer,
-  XlsxViewerProvider
+  XlsxViewerProvider,
+  type XlsxViewerProps
 } from "@extend-ai/react-xlsx";
 import { Button } from "./components/ui/button";
 import { ButtonGroup } from "./components/ui/button-group";
@@ -93,6 +94,7 @@ function ViewerFileTooLargeState() {
 
 function WorkbookToolbar({
   experimentalCanvas,
+  highlightCells,
   isDocumentDark,
   onClear,
   onLoadExampleUrl,
@@ -101,11 +103,13 @@ function WorkbookToolbar({
   readOnly,
   remoteUrl,
   setExperimentalCanvas,
+  setHighlightCells,
   setIsDocumentDark,
   setReadOnly,
   setRemoteUrl,
 }: {
   experimentalCanvas: boolean;
+  highlightCells: boolean;
   isDocumentDark: boolean;
   onClear: () => void;
   onLoadExampleUrl: () => void;
@@ -114,6 +118,7 @@ function WorkbookToolbar({
   readOnly: boolean;
   remoteUrl: string;
   setExperimentalCanvas: (value: boolean) => void;
+  setHighlightCells: (value: boolean) => void;
   setIsDocumentDark: (value: boolean) => void;
   setReadOnly: (value: boolean) => void;
   setRemoteUrl: (value: string) => void;
@@ -237,6 +242,15 @@ function WorkbookToolbar({
               aria-label="Toggle read only mode"
               checked={isReadOnly}
               onCheckedChange={setReadOnly}
+              size="sm"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
+            <span className="text-muted-foreground text-[11px] font-medium">Highlight</span>
+            <Switch
+              aria-label="Toggle custom cell highlighting via getCellStyle"
+              checked={highlightCells}
+              onCheckedChange={setHighlightCells}
               size="sm"
             />
           </div>
@@ -537,7 +551,21 @@ export function App() {
   const [isDocumentDark, setIsDocumentDark] = React.useState(false);
   const [experimentalCanvas, setExperimentalCanvas] = React.useState(true);
   const [isReadOnly, setIsReadOnly] = React.useState(true);
+  const [highlightCells, setHighlightCells] = React.useState(false);
   const dragDepthRef = React.useRef(0);
+
+  const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
+    ({ cell, isTableHeader }) => {
+      if (!highlightCells || isTableHeader) {
+        return undefined;
+      }
+      if (cell.row % 2 === 1) {
+        return { backgroundColor: isDocumentDark ? "rgba(56, 189, 248, 0.16)" : "rgba(37, 99, 235, 0.08)" };
+      }
+      return undefined;
+    },
+    [highlightCells, isDocumentDark]
+  );
 
   const controller = useXlsxViewerController(
     source?.type === "file"
@@ -708,6 +736,7 @@ export function App() {
           <XlsxViewerProvider controller={controller} isDark={isDocumentDark}>
             <WorkbookToolbar
               experimentalCanvas={experimentalCanvas}
+              highlightCells={highlightCells}
               isDocumentDark={isDocumentDark}
               onClear={handleClear}
               onLoadExampleUrl={handleLoadExampleUrl}
@@ -716,6 +745,7 @@ export function App() {
               readOnly={isReadOnly}
               remoteUrl={remoteUrl}
               setExperimentalCanvas={setExperimentalCanvas}
+              setHighlightCells={setHighlightCells}
               setIsDocumentDark={setIsDocumentDark}
               setReadOnly={setIsReadOnly}
               setRemoteUrl={setRemoteUrl}
@@ -726,6 +756,7 @@ export function App() {
                   className="h-full min-h-0 min-w-0 flex-1"
                   emptyState={<ViewerEmptyState />}
                   fileTooLargeState={<ViewerFileTooLargeState />}
+                  getCellStyle={getCellStyle}
                   height="100%"
                   allowResizeInReadOnly
                   isDark={isDocumentDark}

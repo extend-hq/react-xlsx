@@ -6393,6 +6393,7 @@ function XlsxGrid({
   enableCanvasSelectionAnimation = true,
   errorState,
   fileTooLargeState,
+  getCellStyle,
   loadingComponent,
   loadingState,
   renderChartLoading,
@@ -6409,7 +6410,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "loadingComponent" | "loadingState" | "renderChartLoading" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "loadingComponent" | "loadingState" | "renderChartLoading" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -8798,7 +8799,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     cellRenderCacheRef.current.clear();
-  }, [activeSheetIndex, displayColLimit, displayRowLimit, palette, revision, viewportRowBatch, worksheet, zoomFactor]);
+  }, [activeSheetIndex, displayColLimit, displayRowLimit, getCellStyle, palette, revision, viewportRowBatch, worksheet, zoomFactor]);
 
   React.useEffect(() => {
     setAsyncViewportRowBatch(null);
@@ -8965,6 +8966,27 @@ function XlsxGrid({
             : getCellDisplayValue(worksheet, row, col, activeSheet)
     };
 
+    if (getCellStyle) {
+      const styleOverrides = getCellStyle({
+        cell: { row, col },
+        hasChartHighlight: Boolean(nextData.chartHighlight),
+        hasConditionalFormat: Boolean(
+          nextData.conditionalColorScale || nextData.conditionalDataBar || nextData.conditionalIcon
+        ),
+        hasHyperlink: Boolean(nextData.hyperlink),
+        hasValidation: Boolean(nextData.validation),
+        isMerged: Boolean(nextData.colSpan || nextData.rowSpan),
+        isTableHeader: Boolean(nextData.isTableHeader),
+        resolvedStyle: { ...nextData.style },
+        sheetName: activeSheet?.name ?? "",
+        value: nextData.value,
+        workbookSheetIndex: activeSheet?.workbookSheetIndex ?? -1
+      });
+      if (styleOverrides) {
+        nextData.style = { ...nextData.style, ...styleOverrides };
+      }
+    }
+
     nextData.canvas = buildCanvasCellStyleCache(nextData.style);
 
     if (canCellTextOverflow(nextData)) {
@@ -9059,6 +9081,7 @@ function XlsxGrid({
     displayDefaultColWidth,
     displayEffectiveColWidths,
     effectiveTables,
+    getCellStyle,
     palette,
     sparklinesByCell,
     viewportRowBatch,
@@ -14999,6 +15022,7 @@ function XlsxViewerInner({
   errorState,
   experimentalCanvas = true,
   fileTooLargeState,
+  getCellStyle,
   height,
   isDark = false,
   loadingComponent,
@@ -15071,6 +15095,7 @@ function XlsxViewerInner({
                 errorState={errorState}
                 experimentalCanvas={experimentalCanvas}
                 fileTooLargeState={fileTooLargeState}
+                getCellStyle={getCellStyle}
                 loadingComponent={loadingComponent}
                 loadingState={loadingState}
                 palette={palette}
