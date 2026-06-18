@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "description": "React components and hooks for viewing XLSX workbooks",
   "license": "MIT",
   "keywords": [
@@ -62,7 +62,7 @@
     "world-atlas": "^2.0.2"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --external react,react-dom && tsup src/xlsx-worker.ts --format esm --sourcemap --clean false --out-dir dist && node ../../scripts/copy-duke-wasm.mjs",
+    "build": "tsup --config tsup.config.ts && node ../../scripts/copy-duke-wasm.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },
