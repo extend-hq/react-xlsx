@@ -33,6 +33,7 @@ import type {
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxCellStyleInput,
   XlsxClipboardData,
   XlsxConditionalFormatRule,
   XlsxDataValidation,
@@ -110,6 +111,7 @@ type SnapshotHistoryEntry = {
 
 type CellMutationState = {
   formula: string | null;
+  style: unknown;
   value: unknown;
 };
 
@@ -1062,6 +1064,26 @@ function normalizeCellValue(value: unknown) {
   return value ?? "";
 }
 
+function cloneCellStyle(style: unknown): unknown {
+  if (!style || typeof style !== "object") {
+    return style;
+  }
+
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(style);
+    } catch {
+      // Fall through to the JSON clone below.
+    }
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(style));
+  } catch {
+    return style;
+  }
+}
+
 function coerceUserEnteredValue(value: string): unknown {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -1093,10 +1115,13 @@ function applyCellMutationState(
 ) {
   if (state.formula) {
     worksheet.setFormula(cellAddressToA1(cell), state.formula);
-    return;
+  } else {
+    worksheet.setCell(cellAddressToA1(cell), normalizeCellValue(state.value));
   }
 
-  worksheet.setCell(cellAddressToA1(cell), normalizeCellValue(state.value));
+  if (state.style && typeof state.style === "object") {
+    worksheet.setCellStyleAt(cell.row, cell.col, state.style);
+  }
 }
 
 function escapeHtml(value: string) {
@@ -2005,7 +2030,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     targetWorkbook: Workbook | null,
     targetSheets: XlsxSheetData[]
   ) => {
-    if (chartAssetsRef.current || !targetWorkbook || !imageAssetsRef.current) {
+    const currentAssets = chartAssetsRef.current;
+    if (
+      currentAssets
+      && (
+        currentAssets.chartOriginsById.size > 0
+        || !targetWorkbook
+        || !imageAssetsRef.current
+      )
+    ) {
+      return currentAssets;
+    }
+
+    if (!targetWorkbook || !imageAssetsRef.current) {
       return chartAssetsRef.current;
     }
 
@@ -3136,6 +3173,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     return {
       formula: worksheet.getFormulaAt(cell.row, cell.col) ?? null,
+      style: worksheet.getCellStyleAt(cell.row, cell.col),
       value: worksheet.getCellAt(cell.row, cell.col).toJs()
     };
   }, [getActiveWorksheet]);
@@ -3323,6 +3361,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       for (let col = startCol; col <= endCol; col += 1) {
         cells.push({
           formula: worksheet.getFormulaAt(row, col) ?? null,
+          style: worksheet.getCellStyleAt(row, col),
           value: worksheet.getCellAt(row, col).toJs()
         });
       }
@@ -3527,12 +3566,28 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const setChartRect = React.useCallback((id: string, rect: XlsxImageRect) => {
     const hydratedChartAssets = ensureChartAssetsHydrated(workbook, sheets);
+    console.info("[react-xlsx debug] setChartRect", {
+      hasActiveSheet: Boolean(activeSheet),
+      hasHydratedChartAssets: Boolean(hydratedChartAssets),
+      hasImageAssets: Boolean(imageAssetsRef.current),
+      hasWorkbook: Boolean(workbook),
+      id,
+      readOnly,
+      rect
+    });
     if (readOnly || !workbook || !activeSheet || !imageAssetsRef.current || !hydratedChartAssets) {
       return;
     }
 
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
     const currentChart = getChartById(id);
+    console.info("[react-xlsx debug] currentChart", {
+      activeWorkbookSheetIndex: activeSheet.workbookSheetIndex,
+      editable: currentChart?.editable,
+      found: Boolean(currentChart),
+      originCount: hydratedChartAssets.chartOriginsById.size,
+      workbookSheetIndex: currentChart?.workbookSheetIndex
+    });
     if (!currentChart || currentChart.editable === false || currentChart.workbookSheetIndex !== activeSheet.workbookSheetIndex) {
       return;
     }
@@ -3545,7 +3600,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     });
 
     recordHistoryBeforeMutation();
-    updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, nextAnchor);
+    const didUpdateAnchor = updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, nextAnchor);
+    console.info("[react-xlsx debug] updateWorkbookChartAnchor", { didUpdateAnchor, nextAnchor });
 
     hydratedChartAssets.chartsByWorkbookSheetIndex = hydratedChartAssets.chartsByWorkbookSheetIndex.map((sheetCharts) => (
       sheetCharts.map((chart) => chart.id === id ? { ...chart, anchor: nextAnchor } : chart)
@@ -3830,8 +3886,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         }
 
         worksheet.setCell(cellAddressToA1({ row, col }), "");
+        const after = captureCellMutationState(cell);
+        if (!after) {
+          continue;
+        }
         mutations.push({
-          after: { formula: null, value: "" },
+          after,
           before,
           cell
         });
@@ -3866,9 +3926,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     const nextValue = coerceUserEnteredValue(value);
     worksheet.setCell(cellAddressToA1(cell), nextValue);
+    const after = captureCellMutationState(cell);
+    if (!after) {
+      return;
+    }
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
-    recordCellEditHistory(cell, before, { formula: null, value: nextValue });
+    recordCellEditHistory(cell, before, after);
   }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
   const setCellFormula = React.useCallback((cell: XlsxCellAddress, formula: string) => {
@@ -3888,13 +3952,35 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     } else {
       worksheet.setFormula(cellAddressToA1(cell), formula);
     }
+    const after = captureCellMutationState(cell);
+    if (!after) {
+      return;
+    }
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
-    recordCellEditHistory(cell, before, {
-      formula: trimmedFormula || null,
-      value: trimmedFormula ? null : ""
-    });
+    recordCellEditHistory(cell, before, after);
   }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
+
+  const setCellStyle = React.useCallback((cell: XlsxCellAddress, style: XlsxCellStyleInput) => {
+    const worksheet = getActiveWorksheet();
+    if (readOnly || !worksheet || !workbook) {
+      return;
+    }
+
+    const before = captureCellMutationState(cell);
+    if (!before) {
+      return;
+    }
+
+    worksheet.setCellStyleAt(cell.row, cell.col, style);
+    const after = captureCellMutationState(cell);
+    if (!after) {
+      return;
+    }
+
+    refreshWorkbookState(workbook);
+    recordCellEditHistory(cell, before, after);
+  }, [captureCellMutationState, getActiveWorksheet, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
   const setSelectedCellValue = React.useCallback((value: string) => {
     if (!activeCell) {
@@ -3911,6 +3997,58 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     setCellFormula(activeCell, formula);
   }, [activeCell, setCellFormula]);
+
+  const setSelectedCellStyle = React.useCallback((style: XlsxCellStyleInput) => {
+    if (!activeCell) {
+      return;
+    }
+
+    setCellStyle(activeCell, style);
+  }, [activeCell, setCellStyle]);
+
+  const setRangeStyle = React.useCallback((range: XlsxCellRange, style: XlsxCellStyleInput) => {
+    const worksheet = getActiveWorksheet();
+    if (readOnly || !worksheet || !workbook) {
+      return;
+    }
+
+    const normalized = normalizeRange(range);
+    const beforeStates: Array<{ before: CellMutationState; cell: XlsxCellAddress }> = [];
+    for (let row = normalized.start.row; row <= normalized.end.row; row += 1) {
+      for (let col = normalized.start.col; col <= normalized.end.col; col += 1) {
+        const cell = { row, col };
+        const before = captureCellMutationState(cell);
+        if (!before) {
+          continue;
+        }
+        beforeStates.push({
+          before,
+          cell
+        });
+      }
+    }
+
+    if (beforeStates.length === 0) {
+      return;
+    }
+
+    worksheet.setRangeStyle(rangeToA1(normalized), style);
+    const mutations: RangeCellMutation[] = [];
+    for (const mutation of beforeStates) {
+      const after = captureCellMutationState(mutation.cell);
+      if (!after) {
+        continue;
+      }
+      mutations.push({
+        after,
+        before: mutation.before,
+        cell: mutation.cell
+      });
+    }
+
+    refreshWorkbookState(workbook);
+    recordRangeEditHistory(mutations, selection, activeCell);
+  }, [activeCell, captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
 
   const fillSelection = React.useCallback((targetRange: XlsxCellRange) => {
     const worksheet = getActiveWorksheet();
@@ -3943,21 +4081,25 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         const sourceRow = sourceRange.start.row + ((row - nextRange.start.row) % sourceHeight);
         const sourceCol = sourceRange.start.col + ((col - nextRange.start.col) % sourceWidth);
         const sourceFormula = worksheet.getFormulaAt(sourceRow, sourceCol);
+        const sourceStyle = cloneCellStyle(worksheet.getCellStyleAt(sourceRow, sourceCol));
 
         if (sourceFormula) {
           worksheet.setFormula(cellAddressToA1(targetCell), sourceFormula);
-          mutations.push({
-            after: { formula: sourceFormula, value: null },
-            before,
-            cell: targetCell
-          });
-          continue;
+        } else {
+          const sourceValue = normalizeCellValue(worksheet.getCellAt(sourceRow, sourceCol).toJs());
+          worksheet.setCell(cellAddressToA1(targetCell), sourceValue);
         }
 
-        const sourceValue = normalizeCellValue(worksheet.getCellAt(sourceRow, sourceCol).toJs());
-        worksheet.setCell(cellAddressToA1(targetCell), sourceValue);
+        if (sourceStyle && typeof sourceStyle === "object") {
+          worksheet.setCellStyleAt(targetCell.row, targetCell.col, sourceStyle);
+        }
+
+        const after = captureCellMutationState(targetCell);
+        if (!after) {
+          continue;
+        }
         mutations.push({
-          after: { formula: null, value: sourceValue },
+          after,
           before,
           cell: targetCell
         });
@@ -4116,16 +4258,24 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         }
         if (rawValue.startsWith("=") && rawValue.length > 1) {
           worksheet.setFormula(cellAddressToA1(nextCell), rawValue);
+          const after = captureCellMutationState(nextCell);
+          if (!after) {
+            continue;
+          }
           mutations.push({
-            after: { formula: rawValue, value: null },
+            after,
             before,
             cell: nextCell
           });
         } else {
           const nextValue = coerceUserEnteredValue(rawValue);
           worksheet.setCell(cellAddressToA1(nextCell), nextValue);
+          const after = captureCellMutationState(nextCell);
+          if (!after) {
+            continue;
+          }
           mutations.push({
-            after: { formula: null, value: nextValue },
+            after,
             before,
             cell: nextCell
           });
@@ -4182,8 +4332,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       if (cell.formula) {
         worksheet.setFormula(cellAddressToA1(nextCell), cell.formula);
         if (before) {
+          const after = captureCellMutationState(nextCell);
+          if (!after) {
+            continue;
+          }
           mutations.push({
-            after: { formula: cell.formula, value: null },
+            after,
             before,
             cell: nextCell
           });
@@ -4191,8 +4345,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       } else {
         worksheet.setCell(cellAddressToA1(nextCell), cell.value);
         if (before) {
+          const after = captureCellMutationState(nextCell);
+          if (!after) {
+            continue;
+          }
           mutations.push({
-            after: { formula: null, value: cell.value },
+            after,
             before,
             cell: nextCell
           });
@@ -4430,7 +4588,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeColumn,
       resizeRow,
       setCellFormula,
+      setCellStyle,
       setCellValue,
+      setRangeStyle,
       setZoomScale,
       setChartRect,
       setImageRect,
@@ -4449,6 +4609,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveSheetIndex,
       setActiveTabIndex,
       setSelectedCellFormula,
+      setSelectedCellStyle,
       setSelectedCellValue,
       sheets,
       shapes,
@@ -4532,7 +4693,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeColumn,
       resizeRow,
       setCellFormula,
+      setCellStyle,
       setCellValue,
+      setRangeStyle,
       setZoomScale,
       setChartRect,
       setImageRect,
@@ -4551,6 +4714,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveSheetIndex,
       setActiveTabIndex,
       setSelectedCellFormula,
+      setSelectedCellStyle,
       setSelectedCellValue,
       sheets,
       shapes,

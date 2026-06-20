@@ -70,7 +70,7 @@ export function getSheetsWasmModule() {
   if (!wasmModulePromise) {
     wasmModulePromise = import("@dukelib/sheets-wasm").then(async (mod) => {
       if (configuredWasmSource !== undefined) {
-        await mod.default(configuredWasmSource);
+        await mod.default({ module_or_path: configuredWasmSource });
       } else {
         await mod.default();
       }

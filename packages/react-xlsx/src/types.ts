@@ -143,6 +143,170 @@ export interface XlsxCellRange {
   start: XlsxCellAddress;
 }
 
+/**
+ * Color value accepted by persisted workbook style mutation APIs.
+ *
+ * Use `rgb` with a six-character `hex` value such as `"2563EB"` for the
+ * simplest browser-to-Excel mapping. `argb`, `theme`, and `indexed` are
+ * available for callers that need to preserve Excel-native color references.
+ */
+export interface XlsxCellStyleColorInput {
+  /** Excel color representation to write. Defaults are handled by the workbook engine. */
+  colorType?: "auto" | "rgb" | "argb" | "theme" | "indexed";
+  /** Hex color string, for example `"2563EB"` for RGB or `"FF2563EB"` for ARGB. */
+  hex?: string;
+  /** Red channel, 0-255. */
+  r?: number;
+  /** Green channel, 0-255. */
+  g?: number;
+  /** Blue channel, 0-255. */
+  b?: number;
+  /** Alpha channel, 0-255, used by ARGB colors. */
+  a?: number;
+  /** Theme color index for Excel theme colors. */
+  themeIndex?: number;
+  /** Theme tint/shade adjustment. */
+  tint?: number;
+  /** Indexed color palette entry. */
+  paletteIndex?: number;
+}
+
+/** Font styling to persist on a cell or range. */
+export interface XlsxCellFontStyleInput {
+  /** Font face name, such as `"Aptos"` or `"Calibri"`. */
+  name?: string;
+  /** Font size in points. */
+  size?: number;
+  /** Whether the font is bold. */
+  bold?: boolean;
+  /** Whether the font is italic. */
+  italic?: boolean;
+  /** Underline style. */
+  underline?: "none" | "single" | "double" | "singleAccounting" | "doubleAccounting";
+  /** Whether the font is struck through. */
+  strikethrough?: boolean;
+  /** Font color. */
+  color?: XlsxCellStyleColorInput;
+  /** Baseline, superscript, or subscript positioning. */
+  verticalAlign?: "baseline" | "superscript" | "subscript";
+  /** Excel font family classification. */
+  family?: number;
+  /** Font charset identifier. */
+  charset?: number;
+  /** Excel font scheme value. */
+  scheme?: string;
+}
+
+/** A color stop used by gradient fills. */
+export interface XlsxCellGradientStopInput {
+  /** Stop position from 0 to 1. */
+  position: number;
+  /** Stop color. */
+  color: XlsxCellStyleColorInput;
+}
+
+/** Fill styling to persist on a cell or range. */
+export interface XlsxCellFillStyleInput {
+  /** Fill type. Use `"solid"` with `color` for typical Excel fill color. */
+  fillType?: "none" | "solid" | "pattern" | "gradient";
+  /** Primary fill color. */
+  color?: XlsxCellStyleColorInput;
+  /** Excel pattern name for pattern fills. */
+  pattern?: string;
+  /** Foreground color for pattern fills. */
+  foreground?: XlsxCellStyleColorInput;
+  /** Background color for pattern fills. */
+  background?: XlsxCellStyleColorInput;
+  /** Gradient type for gradient fills. */
+  gradientType?: "linear" | "path";
+  /** Gradient angle in degrees. */
+  angle?: number;
+  /** Gradient color stops. */
+  stops?: XlsxCellGradientStopInput[];
+}
+
+/** A single border edge style. */
+export interface XlsxCellBorderEdgeInput {
+  /** Excel border line style. */
+  style?: "none" | "thin" | "medium" | "thick" | "dashed" | "dotted" | "double" | "hair" | "mediumDashed" | "dashDot" | "mediumDashDot" | "dashDotDot" | "mediumDashDotDot" | "slantDashDot";
+  /** Border line color. */
+  color?: XlsxCellStyleColorInput;
+}
+
+/** Border styling to persist on a cell or range. */
+export interface XlsxCellBorderStyleInput {
+  /** Left border edge. */
+  left?: XlsxCellBorderEdgeInput;
+  /** Right border edge. */
+  right?: XlsxCellBorderEdgeInput;
+  /** Top border edge. */
+  top?: XlsxCellBorderEdgeInput;
+  /** Bottom border edge. */
+  bottom?: XlsxCellBorderEdgeInput;
+  /** Diagonal border edge. */
+  diagonal?: XlsxCellBorderEdgeInput;
+  /** Diagonal border direction. */
+  diagonalDirection?: "none" | "down" | "up" | "both";
+}
+
+/** Alignment styling to persist on a cell or range. */
+export interface XlsxCellAlignmentInput {
+  /** Horizontal alignment. */
+  horizontal?: "general" | "left" | "center" | "right" | "fill" | "justify" | "centerContinuous" | "distributed";
+  /** Vertical alignment. */
+  vertical?: "top" | "center" | "bottom" | "justify" | "distributed";
+  /** Whether text wraps inside the cell. */
+  wrapText?: boolean;
+  /** Whether text shrinks to fit the cell. */
+  shrinkToFit?: boolean;
+  /** Indentation level. */
+  indent?: number;
+  /** Text rotation in degrees. */
+  rotation?: number;
+  /** Text reading order. */
+  readingOrder?: "contextDependent" | "leftToRight" | "rightToLeft";
+}
+
+/** Number format styling to persist on a cell or range. */
+export interface XlsxCellNumberFormatInput {
+  /** Number format source. Use `"custom"` with `formatString` for custom Excel formats. */
+  formatType?: "general" | "builtin" | "custom";
+  /** Built-in Excel number format id. */
+  id?: number;
+  /** Excel number format string, for example `"$#,##0.00"` or `"m/d/yyyy"`. */
+  formatString?: string;
+}
+
+/** Protection flags to persist on a cell or range. */
+export interface XlsxCellProtectionInput {
+  /** Whether the cell is locked when sheet protection is enabled. */
+  locked?: boolean;
+  /** Whether the cell formula is hidden when sheet protection is enabled. */
+  hidden?: boolean;
+}
+
+/**
+ * Persisted Excel cell style patch.
+ *
+ * Passing a partial style updates the supplied style groups on the target cell
+ * or range. Unlike the `getCellStyle` render override prop, this mutates the
+ * workbook and is included in exported XLSX bytes.
+ */
+export interface XlsxCellStyleInput {
+  /** Font formatting such as bold, italic, size, family, and font color. */
+  font?: XlsxCellFontStyleInput;
+  /** Cell fill formatting such as background color or gradient fill. */
+  fill?: XlsxCellFillStyleInput;
+  /** Border formatting for cell edges. */
+  border?: XlsxCellBorderStyleInput;
+  /** Alignment, wrapping, indentation, rotation, and reading order. */
+  alignment?: XlsxCellAlignmentInput;
+  /** Excel number/date/currency/percent format metadata. */
+  numberFormat?: XlsxCellNumberFormatInput;
+  /** Cell protection flags. */
+  protection?: XlsxCellProtectionInput;
+}
+
 export interface XlsxSparkline {
   color?: string;
   firstColor?: string;
@@ -613,7 +777,6 @@ export interface XlsxScrollerRenderProps {
   children: React.ReactNode;
   /** Props that must be applied to the actual scrollable viewport element. */
   viewportProps: React.HTMLAttributes<HTMLDivElement> & {
-    key: React.Key;
     ref: React.Ref<HTMLDivElement>;
     style: React.CSSProperties;
     tabIndex: number;
@@ -789,8 +952,48 @@ export interface XlsxViewerController {
   selectedRangeAddress: string | null;
   selectedValue: string;
   selectedFormula: string;
+  /**
+   * Sets the formula for a cell in the active worksheet.
+   *
+   * Pass an A1-style formula body or formula string, for example `"SUM(A1:A3)"`
+   * or `"=SUM(A1:A3)"`. The mutation is recorded in undo history and is included
+   * in exported workbook bytes.
+   *
+   * @param cell Zero-based row and column address in the active worksheet.
+   * @param formula Formula text to write. Pass an empty string to clear the formula.
+   */
   setCellFormula: (cell: XlsxCellAddress, formula: string) => void;
+  /**
+   * Applies persisted Excel style properties to a cell in the active worksheet.
+   *
+   * This mutates workbook data, records undo history, refreshes the viewer, and
+   * is included in exported XLSX bytes. Use the `getCellStyle` viewer prop only
+   * for render-time CSS overrides that should not modify the workbook.
+   *
+   * @param cell Zero-based row and column address in the active worksheet.
+   * @param style Partial Excel style patch to apply to the target cell.
+   */
+  setCellStyle: (cell: XlsxCellAddress, style: XlsxCellStyleInput) => void;
+  /**
+   * Sets the value for a cell in the active worksheet.
+   *
+   * User-entered strings are coerced to booleans or numbers when they match
+   * Excel-like input. Prefix text with an apostrophe to force literal text.
+   *
+   * @param cell Zero-based row and column address in the active worksheet.
+   * @param value Text entered by the user.
+   */
   setCellValue: (cell: XlsxCellAddress, value: string) => void;
+  /**
+   * Applies persisted Excel style properties to every cell in a range.
+   *
+   * This mutates workbook data, records undo history, refreshes the viewer, and
+   * is included in exported XLSX bytes.
+   *
+   * @param range Zero-based cell range in the active worksheet.
+   * @param style Partial Excel style patch to apply to the target range.
+   */
+  setRangeStyle: (range: XlsxCellRange, style: XlsxCellStyleInput) => void;
   setZoomScale: (zoomScale: number) => void;
   selectCell: (cell: XlsxCellAddress, options?: { extend?: boolean }) => void;
   selectChart: (id: string | null) => void;
@@ -803,6 +1006,16 @@ export interface XlsxViewerController {
   selectedImage: XlsxImage | null;
   selectedImageId: string | null;
   setSelectedCellFormula: (formula: string) => void;
+  /**
+   * Applies persisted Excel style properties to the active cell.
+   *
+   * No-ops when there is no active cell, when editing is disabled, or when no
+   * workbook is loaded. The mutation is recorded in undo history and is included
+   * in exported XLSX bytes.
+   *
+   * @param style Partial Excel style patch to apply to the active cell.
+   */
+  setSelectedCellStyle: (style: XlsxCellStyleInput) => void;
   setSelectedCellValue: (value: string) => void;
   sheets: XlsxSheetData[];
   src?: string;
@@ -868,9 +1081,44 @@ export interface XlsxViewerEditing {
   redo: () => void;
   selectedFormula: string;
   selectedValue: string;
+  /**
+   * Sets the formula for a cell in the active worksheet.
+   *
+   * @param cell Zero-based row and column address in the active worksheet.
+   * @param formula Formula text to write. Pass an empty string to clear the formula.
+   */
   setCellFormula: (cell: XlsxCellAddress, formula: string) => void;
+  /**
+   * Applies persisted Excel style properties to a cell in the active worksheet.
+   *
+   * The mutation is recorded in undo history and is included in exported XLSX
+   * bytes. This is different from the `getCellStyle` render override prop.
+   *
+   * @param cell Zero-based row and column address in the active worksheet.
+   * @param style Partial Excel style patch to apply to the target cell.
+   */
+  setCellStyle: (cell: XlsxCellAddress, style: XlsxCellStyleInput) => void;
+  /**
+   * Sets the value for a cell in the active worksheet.
+   *
+   * @param cell Zero-based row and column address in the active worksheet.
+   * @param value Text entered by the user.
+   */
   setCellValue: (cell: XlsxCellAddress, value: string) => void;
+  /**
+   * Applies persisted Excel style properties to every cell in a range.
+   *
+   * @param range Zero-based cell range in the active worksheet.
+   * @param style Partial Excel style patch to apply to the target range.
+   */
+  setRangeStyle: (range: XlsxCellRange, style: XlsxCellStyleInput) => void;
   setSelectedCellFormula: (formula: string) => void;
+  /**
+   * Applies persisted Excel style properties to the active cell.
+   *
+   * @param style Partial Excel style patch to apply to the active cell.
+   */
+  setSelectedCellStyle: (style: XlsxCellStyleInput) => void;
   setSelectedCellValue: (value: string) => void;
   undo: () => void;
   unmergeSelection: () => void;

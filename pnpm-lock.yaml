@@ -136,8 +136,8 @@ importers:
   packages/react-xlsx:
     dependencies:
       '@dukelib/sheets-wasm':
-        specifier: 0.1.13
-        version: 0.1.13
+        specifier: 0.1.16
+        version: 0.1.16
       '@tanstack/react-virtual':
         specifier: ^3.13.12
         version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -373,8 +373,8 @@ packages:
     resolution: {integrity: sha512-Qg+meC+XFxliuVSDlEPkKnaUjdaJKK6FNx/Wwl2UxhQR8pyPIuLhMavsF7ePdB9qFZUWV1jEK3ckbJir/WmF4w==}
     hasBin: true
 
-  '@dukelib/sheets-wasm@0.1.13':
-    resolution: {integrity: sha512-UX6Kdyo05u5PZEJHLza0BwbGovEai4xolTVPhewxF8RoaYtHa2uy4oWYdHinFyxX3YKoJ1B2mgzdyvdxmUvU2g==}
+  '@dukelib/sheets-wasm@0.1.16':
+    resolution: {integrity: sha512-P6EqltBbYv3z3h/874mUneTjReWCV0nSlYMd62mriBXw2CG1B+rlomK/O17eLsRTDpuP1U8sZl4lQIZxaK+U1Q==}
 
   '@ecies/ciphers@0.2.6':
     resolution: {integrity: sha512-patgsRPKGkhhoBjETV4XxD0En4ui5fbX0hzayqI3M8tvNMGUoUvmyYAIWwlxBc1KX5cturfqByYdj5bYGRpN9g==}
@@ -4054,7 +4054,7 @@ snapshots:
       picomatch: 4.0.4
       which: 4.0.0
 
-  '@dukelib/sheets-wasm@0.1.13': {}
+  '@dukelib/sheets-wasm@0.1.16': {}
 
   '@ecies/ciphers@0.2.6(@noble/ciphers@1.3.0)':
     dependencies:

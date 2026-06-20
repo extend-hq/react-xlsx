@@ -87,6 +87,9 @@ const WHEEL_LINE_DELTA_PX = 16;
 const CHART_SOURCE_HIGHLIGHT_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#059669", "#ea580c", "#db2777"];
 const SHEET_SURFACE = "#ffffff";
 const SHEET_GRIDLINE = "#d9d9d9";
+const DRAWING_SELECTION_STROKE = "#64748b";
+const DRAWING_SELECTION_HANDLE_FILL = "#ffffff";
+const DRAWING_SELECTION_HANDLE_SHADOW = "rgba(15, 23, 42, 0.18)";
 const DEFAULT_CELL_PADDING = "0 4px";
 const IMAGE_HANDLE_POSITIONS: XlsxImageResizeHandlePosition[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 const CANVAS_CELL_STYLE_CACHE_LIMIT = 4096;
@@ -196,6 +199,63 @@ function measureCanvasTextWidth(context: CanvasRenderingContext2D, text: string)
     context.measureText(text).width,
     CANVAS_TEXT_MEASURE_CACHE_LIMIT
   );
+}
+
+function drawCanvasTextDecorations(
+  context: CanvasRenderingContext2D,
+  {
+    align,
+    color,
+    decoration,
+    ellipsize = false,
+    lineThroughY,
+    maxWidth,
+    text,
+    textX,
+    underlineY,
+    zoomFactor
+  }: {
+    align: CanvasTextAlign;
+    color: string;
+    decoration: string | undefined;
+    ellipsize?: boolean;
+    lineThroughY: number;
+    maxWidth?: number;
+    text: string;
+    textX: number;
+    underlineY: number;
+    zoomFactor: number;
+  }
+) {
+  if (!decoration || text.length === 0) {
+    return;
+  }
+
+  const measured = ellipsize && maxWidth !== undefined
+    ? Math.min(maxWidth, measureCanvasTextWidth(context, text))
+    : measureCanvasTextWidth(context, text);
+  const startX = align === "right"
+    ? textX - measured
+    : align === "center"
+      ? textX - (measured / 2)
+      : textX;
+
+  context.strokeStyle = color;
+  context.lineWidth = Math.max(1, zoomFactor * 0.75);
+
+  if (decoration.includes("underline")) {
+    context.beginPath();
+    context.moveTo(startX, underlineY);
+    context.lineTo(startX + measured, underlineY);
+    context.stroke();
+  }
+
+  if (decoration.includes("line-through")) {
+    context.beginPath();
+    context.moveTo(startX, lineThroughY);
+    context.lineTo(startX + measured, lineThroughY);
+    context.stroke();
+  }
 }
 
 function getCachedCanvasPath2D(path: string) {
@@ -2813,7 +2873,9 @@ function resolveImageHandleStyle(
   const style: React.CSSProperties = {
     backgroundColor: surface,
     border: `${Math.max(1, scale)}px solid ${stroke}`,
-    borderRadius: 6 * scale,
+    borderRadius: 3 * scale,
+    boxShadow: `0 1px ${3 * scale}px ${DRAWING_SELECTION_HANDLE_SHADOW}`,
+    boxSizing: "border-box",
     cursor: IMAGE_HANDLE_CURSOR[position],
     height: handleSize,
     pointerEvents: "auto",
@@ -11373,6 +11435,7 @@ function XlsxGrid({
       textDecoration?: string;
       textX: number;
       textY: number;
+      lineThroughY: number;
       underlineY: number;
     }>> = {
       corner: [],
@@ -12229,20 +12292,17 @@ function XlsxGrid({
               wrappedLines.forEach((line, lineIndex) => {
                 const textY = textBlockTop + (lineIndex * lineHeight) + (lineHeight / 2);
                 paneContext.fillText(line, textX, textY);
-                if (canvasCellStyle.textDecoration?.includes("underline") && line.length > 0) {
-                  const measured = Math.min(maxTextWidth, measureCanvasTextWidth(paneContext, line));
-                  const underlineStartX = align === "right"
-                    ? textX - measured
-                    : align === "center"
-                      ? textX - (measured / 2)
-                      : textX;
-                  paneContext.beginPath();
-                  paneContext.moveTo(underlineStartX, textY + Math.max(2, lineHeight * 0.24));
-                  paneContext.lineTo(underlineStartX + measured, textY + Math.max(2, lineHeight * 0.24));
-                  paneContext.strokeStyle = textColor;
-                  paneContext.lineWidth = Math.max(1, zoomFactor * 0.75);
-                  paneContext.stroke();
-                }
+                drawCanvasTextDecorations(paneContext, {
+                  align,
+                  color: textColor,
+                  decoration: canvasCellStyle.textDecoration,
+                  lineThroughY: textY,
+                  maxWidth: maxTextWidth,
+                  text: line,
+                  textX,
+                  underlineY: textY + Math.max(2, lineHeight * 0.24),
+                  zoomFactor
+                });
               });
             } else if (spillMaxWidth != null) {
               const text = shouldEllipsizeText ? truncateCanvasText(paneContext, rawText, maxTextWidth) : rawText;
@@ -12261,6 +12321,7 @@ function XlsxGrid({
                 textDecoration: canvasCellStyle.textDecoration,
                 textX,
                 textY,
+                lineThroughY: textY,
                 underlineY: textY + (6 * zoomFactor)
               });
             } else {
@@ -12271,22 +12332,18 @@ function XlsxGrid({
                   : rawText;
               const textY = contentTop + (contentHeight / 2);
               paneContext.fillText(text, textX, textY);
-              if (canvasCellStyle.textDecoration?.includes("underline") && text.length > 0) {
-                const measured = shouldEllipsizeText
-                  ? Math.min(maxTextWidth, measureCanvasTextWidth(paneContext, text))
-                  : measureCanvasTextWidth(paneContext, text);
-                const underlineStartX = align === "right"
-                  ? textX - measured
-                  : align === "center"
-                    ? textX - (measured / 2)
-                    : textX;
-                paneContext.beginPath();
-                paneContext.moveTo(underlineStartX, textY + 6 * zoomFactor);
-                paneContext.lineTo(underlineStartX + measured, textY + 6 * zoomFactor);
-                paneContext.strokeStyle = textColor;
-                paneContext.lineWidth = Math.max(1, zoomFactor * 0.75);
-                paneContext.stroke();
-              }
+              drawCanvasTextDecorations(paneContext, {
+                align,
+                color: textColor,
+                decoration: canvasCellStyle.textDecoration,
+                ellipsize: shouldEllipsizeText,
+                lineThroughY: textY,
+                maxWidth: maxTextWidth,
+                text,
+                textX,
+                underlineY: textY + 6 * zoomFactor,
+                zoomFactor
+              });
             }
           }
 
@@ -12324,22 +12381,18 @@ function XlsxGrid({
           paneContext.textAlign = spillText.align;
           paneContext.textBaseline = "middle";
           paneContext.fillText(spillText.text, spillText.textX, spillText.textY);
-          if (spillText.textDecoration?.includes("underline") && spillText.text.length > 0) {
-            const measured = spillText.ellipsize
-              ? Math.min(spillText.maxWidth, measureCanvasTextWidth(paneContext, spillText.text))
-              : measureCanvasTextWidth(paneContext, spillText.text);
-            const underlineStartX = spillText.align === "right"
-              ? spillText.textX - measured
-              : spillText.align === "center"
-                ? spillText.textX - (measured / 2)
-                : spillText.textX;
-            paneContext.beginPath();
-            paneContext.moveTo(underlineStartX, spillText.underlineY);
-            paneContext.lineTo(underlineStartX + measured, spillText.underlineY);
-            paneContext.strokeStyle = spillText.color;
-            paneContext.lineWidth = Math.max(1, zoomFactor * 0.75);
-            paneContext.stroke();
-          }
+          drawCanvasTextDecorations(paneContext, {
+            align: spillText.align,
+            color: spillText.color,
+            decoration: spillText.textDecoration,
+            ellipsize: spillText.ellipsize,
+            lineThroughY: spillText.lineThroughY,
+            maxWidth: spillText.maxWidth,
+            text: spillText.text,
+            textX: spillText.textX,
+            underlineY: spillText.underlineY,
+            zoomFactor
+          });
           paneContext.restore();
         }
       }
@@ -13354,6 +13407,7 @@ function XlsxGrid({
 
     const isFrozenDrawing = pane !== "scroll";
     const canEditImage = !readOnly && image.editable !== false;
+    const drawingSelectionSurface = paletteIsDark(palette) ? palette.canvas : DRAWING_SELECTION_HANDLE_FILL;
     const style: React.CSSProperties = {
       contain: "layout paint",
       height: rect.height,
@@ -13383,6 +13437,7 @@ function XlsxGrid({
       <div
         style={{
           ...style,
+          contain: "layout",
           overflow: "visible",
           pointerEvents: "none",
           zIndex: isFrozenDrawing ? image.zIndex + 22 : image.zIndex + 2
@@ -13393,8 +13448,8 @@ function XlsxGrid({
               defaultNode: (
                 <div
                   style={{
-                    border: `${Math.max(1, zoomFactor)}px solid ${selectionStroke}`,
-                    boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${palette.surface}`,
+                    border: `${Math.max(1, zoomFactor)}px solid ${DRAWING_SELECTION_STROKE}`,
+                    boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${drawingSelectionSurface}`,
                     boxSizing: "border-box",
                     inset: 0,
                     pointerEvents: "none",
@@ -13406,7 +13461,7 @@ function XlsxGrid({
                         <div
                           key={position}
                           onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                          style={resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)}
+                          style={resolveImageHandleStyle(position, DRAWING_SELECTION_STROKE, drawingSelectionSurface, zoomFactor)}
                         />
                       ))
                     : null}
@@ -13419,8 +13474,8 @@ function XlsxGrid({
                   }
                 },
                 style: canEditImage
-                  ? resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)
-                  : { ...resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor), display: "none" }
+                  ? resolveImageHandleStyle(position, DRAWING_SELECTION_STROKE, drawingSelectionSurface, zoomFactor)
+                  : { ...resolveImageHandleStyle(position, DRAWING_SELECTION_STROKE, drawingSelectionSurface, zoomFactor), display: "none" }
               }),
               image,
               rect
@@ -13428,8 +13483,8 @@ function XlsxGrid({
           : (
               <div
                 style={{
-                  border: `${Math.max(1, zoomFactor)}px solid ${selectionStroke}`,
-                  boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${palette.surface}`,
+                  border: `${Math.max(1, zoomFactor)}px solid ${DRAWING_SELECTION_STROKE}`,
+                  boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${drawingSelectionSurface}`,
                   boxSizing: "border-box",
                   inset: 0,
                   pointerEvents: "none",
@@ -13441,7 +13496,7 @@ function XlsxGrid({
                       <div
                         key={position}
                         onPointerDown={(event) => startImageResize(event, image, rect, position)}
-                        style={resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)}
+                        style={resolveImageHandleStyle(position, DRAWING_SELECTION_STROKE, drawingSelectionSurface, zoomFactor)}
                       />
                     ))
                   : null}
@@ -13487,6 +13542,7 @@ function XlsxGrid({
 
     const isFrozenDrawing = pane !== "scroll";
     const canEditChart = !readOnly && chart.editable !== false;
+    const drawingSelectionSurface = paletteIsDark(palette) ? palette.canvas : DRAWING_SELECTION_HANDLE_FILL;
     const style: React.CSSProperties = {
       contain: "layout paint",
       height: rect.height,
@@ -13502,6 +13558,7 @@ function XlsxGrid({
       <div
         style={{
           ...style,
+          contain: "layout",
           overflow: "visible",
           pointerEvents: "none",
           zIndex: isFrozenDrawing ? chart.zIndex + 22 : chart.zIndex + 2
@@ -13509,8 +13566,8 @@ function XlsxGrid({
       >
         <div
           style={{
-            border: `${Math.max(1, zoomFactor)}px solid ${selectionStroke}`,
-            boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${palette.surface}`,
+            border: `${Math.max(1, zoomFactor)}px solid ${DRAWING_SELECTION_STROKE}`,
+            boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${drawingSelectionSurface}`,
             boxSizing: "border-box",
             inset: 0,
             pointerEvents: "none",
@@ -13522,7 +13579,7 @@ function XlsxGrid({
                 <div
                   key={position}
                   onPointerDown={(event) => startChartResize(event, chart, rect, position)}
-                  style={resolveImageHandleStyle(position, selectionStroke, palette.surface, zoomFactor)}
+                  style={resolveImageHandleStyle(position, DRAWING_SELECTION_STROKE, drawingSelectionSurface, zoomFactor)}
                 />
               ))
             : null}
@@ -13867,6 +13924,29 @@ function XlsxGrid({
   function installImageInteractionListeners(pointerId: number) {
     imageInteractionCleanupRef.current?.();
 
+    const resolveInteractionRect = (
+      interaction: NonNullable<typeof imageInteractionRef.current>,
+      clientX: number,
+      clientY: number
+    ) => {
+      const deltaX = clientX - interaction.startClientX;
+      const deltaY = clientY - interaction.startClientY;
+      return clampImageRect(
+        interaction.type === "move"
+          ? {
+              ...interaction.baseRect,
+              left: interaction.baseRect.left + deltaX,
+              top: interaction.baseRect.top + deltaY
+            }
+          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, displayImageMinSize),
+        {
+          contentOffsetLeft: displayRowHeaderWidth,
+          contentOffsetTop: displayHeaderHeight,
+          minSizePx: displayImageMinSize
+        }
+      );
+    };
+
     const handlePointerMove = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) {
         return;
@@ -13882,21 +13962,7 @@ function XlsxGrid({
       if (!interaction.didMove && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
         interaction.didMove = true;
       }
-      const nextRect = clampImageRect(
-        interaction.type === "move"
-          ? {
-              ...interaction.baseRect,
-              left: interaction.baseRect.left + deltaX,
-              top: interaction.baseRect.top + deltaY
-            }
-          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, displayImageMinSize),
-        {
-          contentOffsetLeft: displayRowHeaderWidth,
-          contentOffsetTop: displayHeaderHeight,
-          minSizePx: displayImageMinSize
-        }
-      );
-
+      const nextRect = resolveInteractionRect(interaction, event.clientX, event.clientY);
       scheduleImagePreviewRect({ id: interaction.imageId, rect: nextRect });
     };
 
@@ -13922,18 +13988,22 @@ function XlsxGrid({
         imagePreviewRectRef.current = pendingPreview;
         setImagePreviewRect(pendingPreview);
       }
-      const preview = pendingPreview ?? imagePreviewRectRef.current;
+      const finalRect = interaction
+        ? resolveInteractionRect(interaction, event.clientX, event.clientY)
+        : null;
       imageInteractionRef.current = null;
       imageInteractionCleanupRef.current = null;
       setInteractionMode("idle");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       cleanup();
-      if (interaction && preview && preview.id === interaction.imageId) {
+      if (interaction) {
         if (interaction.didMove) {
           skipNextImageClickRef.current = interaction.imageId;
         }
-        setImageRect(interaction.imageId, toLogicalRect(preview.rect));
+        if (interaction.didMove && finalRect) {
+          setImageRect(interaction.imageId, toLogicalRect(finalRect));
+        }
       }
       imagePreviewRectRef.current = null;
       setImagePreviewRect(null);
@@ -13947,6 +14017,29 @@ function XlsxGrid({
 
   function installChartInteractionListeners(pointerId: number) {
     chartInteractionCleanupRef.current?.();
+
+    const resolveInteractionRect = (
+      interaction: NonNullable<typeof chartInteractionRef.current>,
+      clientX: number,
+      clientY: number
+    ) => {
+      const deltaX = clientX - interaction.startClientX;
+      const deltaY = clientY - interaction.startClientY;
+      return clampImageRect(
+        interaction.type === "move"
+          ? {
+              ...interaction.baseRect,
+              left: interaction.baseRect.left + deltaX,
+              top: interaction.baseRect.top + deltaY
+            }
+          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, 48 * zoomFactor),
+        {
+          contentOffsetLeft: displayRowHeaderWidth,
+          contentOffsetTop: displayHeaderHeight,
+          minSizePx: 48 * zoomFactor
+        }
+      );
+    };
 
     const handlePointerMove = (event: PointerEvent) => {
       if (event.pointerId !== pointerId) {
@@ -13963,21 +14056,7 @@ function XlsxGrid({
       if (!interaction.didMove && (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3)) {
         interaction.didMove = true;
       }
-      const nextRect = clampImageRect(
-        interaction.type === "move"
-          ? {
-              ...interaction.baseRect,
-              left: interaction.baseRect.left + deltaX,
-              top: interaction.baseRect.top + deltaY
-            }
-          : resizeImageRect(interaction.baseRect, interaction.handle, deltaX, deltaY, 48 * zoomFactor),
-        {
-          contentOffsetLeft: displayRowHeaderWidth,
-          contentOffsetTop: displayHeaderHeight,
-          minSizePx: 48 * zoomFactor
-        }
-      );
-
+      const nextRect = resolveInteractionRect(interaction, event.clientX, event.clientY);
       scheduleChartPreviewRect({ id: interaction.chartId, rect: nextRect });
     };
 
@@ -14003,18 +14082,22 @@ function XlsxGrid({
         chartPreviewRectRef.current = pendingPreview;
         setChartPreviewRect(pendingPreview);
       }
-      const preview = pendingPreview ?? chartPreviewRectRef.current;
+      const finalRect = interaction
+        ? resolveInteractionRect(interaction, event.clientX, event.clientY)
+        : null;
       chartInteractionRef.current = null;
       chartInteractionCleanupRef.current = null;
       setInteractionMode("idle");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       cleanup();
-      if (interaction && preview && preview.id === interaction.chartId) {
+      if (interaction) {
         if (interaction.didMove) {
           skipNextChartClickRef.current = interaction.chartId;
         }
-        setChartRect(interaction.chartId, toLogicalRect(preview.rect));
+        if (interaction.didMove && finalRect) {
+          setChartRect(interaction.chartId, toLogicalRect(finalRect));
+        }
       }
       chartPreviewRectRef.current = null;
       setChartPreviewRect(null);
@@ -14371,7 +14454,6 @@ function XlsxGrid({
   gridKeyboardHandlerRef.current = handleGridKeyDown;
 
   const scrollerViewportProps: XlsxScrollerRenderProps["viewportProps"] = {
-    key: activeTabIndex,
     ref: scrollRef,
     "aria-colcount": Math.max(activeSheet?.colCount ?? 0, displayColLimit),
     "aria-keyshortcuts": "ArrowUp ArrowDown ArrowLeft ArrowRight Home End PageUp PageDown Control+Home Control+End",
@@ -15018,7 +15100,7 @@ function XlsxGrid({
     <div style={{ backgroundColor: palette.canvas, display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
       {renderScroller
         ? renderScroller({ children: scrollerContent, viewportProps: scrollerViewportProps })
-        : <div {...scrollerViewportProps}>{scrollerContent}</div>}
+        : <div key={activeTabIndex} {...scrollerViewportProps}>{scrollerContent}</div>}
     </div>
   );
 }
@@ -15260,8 +15342,11 @@ export function useXlsxViewerEditing(): XlsxViewerEditing {
     selectedFormula,
     selectedValue,
     setCellFormula,
+    setCellStyle,
     setCellValue,
+    setRangeStyle,
     setSelectedCellFormula,
+    setSelectedCellStyle,
     setSelectedCellValue,
     undo,
     unmergeSelection
@@ -15289,8 +15374,11 @@ export function useXlsxViewerEditing(): XlsxViewerEditing {
       selectedFormula,
       selectedValue,
       setCellFormula,
+      setCellStyle,
       setCellValue,
+      setRangeStyle,
       setSelectedCellFormula,
+      setSelectedCellStyle,
       setSelectedCellValue,
       undo,
       unmergeSelection
@@ -15316,8 +15404,11 @@ export function useXlsxViewerEditing(): XlsxViewerEditing {
       selectedFormula,
       selectedValue,
       setCellFormula,
+      setCellStyle,
       setCellValue,
+      setRangeStyle,
       setSelectedCellFormula,
+      setSelectedCellStyle,
       setSelectedCellValue,
       undo,
       unmergeSelection

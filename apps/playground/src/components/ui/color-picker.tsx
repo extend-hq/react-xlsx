@@ -206,6 +206,7 @@ function parseColorToHsl(color: string): [number, number, number] {
 
 type ColorPickerProps = {
   color: string;
+  disabled?: boolean;
   onChange: (color: string) => void;
   triggerClassName?: string;
   contentClassName?: string;
@@ -217,6 +218,7 @@ type ColorPickerProps = {
 
 export function ColorPicker({
   color,
+  disabled = false,
   onChange,
   triggerClassName,
   contentClassName,
@@ -332,6 +334,7 @@ export function ColorPicker({
       <PopoverTrigger
         render={
           <Button
+            disabled={disabled}
             variant="outline"
             onMouseDown={onTriggerMouseDown}
             onPointerDown={onTriggerPointerDown}

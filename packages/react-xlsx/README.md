@@ -225,7 +225,7 @@ These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 - `useXlsxViewer()` for full controller access
 - `useXlsxViewerSelection()` for active cell and range state
 - `useXlsxViewerZoom()` for zoom controls and limits
-- `useXlsxViewerEditing()` for editing, undo/redo, fill, merge, clipboard, and export actions
+- `useXlsxViewerEditing()` for editing, persisted style writes, undo/redo, fill, merge, clipboard, and export actions
 - `useXlsxViewerTables()` for table metadata and table sorting
 - `useXlsxViewerImages()` for embedded image and chart selection, movement, and resizing
 - `useXlsxViewerCharts()` for chart and chartsheet state
@@ -414,7 +414,54 @@ Common rendering props:
 - `renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode`
 - `renderScroller?: (props: XlsxScrollerRenderProps) => React.ReactNode`
 
-### Custom Cell Styling
+### Persisted Cell Styling
+
+Use `setCellStyle`, `setSelectedCellStyle`, and `setRangeStyle` when a custom toolbar should write Excel formatting into the workbook. These APIs mutate workbook data, participate in undo/redo, refresh the viewer, and are included in `exportXlsx()`.
+
+```tsx
+import {
+  useXlsxViewer,
+  type XlsxCellStyleInput
+} from "@extend-ai/react-xlsx";
+
+const highlightStyle: XlsxCellStyleInput = {
+  font: { bold: true, color: { colorType: "rgb", hex: "1D4ED8" } },
+  fill: { fillType: "solid", color: { colorType: "rgb", hex: "DBEAFE" } },
+  alignment: { horizontal: "center", vertical: "center", wrapText: true }
+};
+
+function FormattingButton() {
+  const { selection, setRangeStyle, setSelectedCellStyle } = useXlsxViewer();
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (selection) {
+          setRangeStyle(selection, highlightStyle);
+          return;
+        }
+        setSelectedCellStyle(highlightStyle);
+      }}
+    >
+      Highlight
+    </button>
+  );
+}
+```
+
+`XlsxCellStyleInput` supports these persisted Excel style groups:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `font` | `XlsxCellFontStyleInput` | Font family, size, bold, italic, underline, strikethrough, color, superscript/subscript. |
+| `fill` | `XlsxCellFillStyleInput` | Solid, pattern, and gradient fills. |
+| `border` | `XlsxCellBorderStyleInput` | Per-edge borders, colors, styles, and diagonal borders. |
+| `alignment` | `XlsxCellAlignmentInput` | Horizontal/vertical alignment, wrap text, shrink to fit, indent, rotation, reading order. |
+| `numberFormat` | `XlsxCellNumberFormatInput` | General, builtin, or custom Excel number format strings. |
+| `protection` | `XlsxCellProtectionInput` | Locked/hidden flags used when sheet protection is enabled. |
+
+### Render-Only Cell Styling
 
 `getCellStyle` is an escape hatch for styling individual cells without forking the workbook data. It is called for every rendered cell and returns a partial `React.CSSProperties` that merges on top of the viewer's resolved style. Return `undefined` (or `null`) to leave a cell untouched.
 
@@ -528,6 +575,7 @@ The package exports the main types you are likely to use for custom integrations
 - `XlsxViewerThumbnails`
 - `XlsxScrollerRenderProps`
 - `XlsxCellStyleContext`
+- `XlsxCellStyleInput`, `XlsxCellFontStyleInput`, `XlsxCellFillStyleInput`, `XlsxCellBorderStyleInput`
 - `XlsxSheetThumbnail`
 - `UseXlsxViewerThumbnailsOptions`
 - `XlsxChart`, `XlsxChartSeries`, `XlsxChartAxis`, `XlsxChartsheet`
