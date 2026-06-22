@@ -594,15 +594,17 @@ function WorkbookToolbar({
                       <PlaygroundIcon name="chevron-down" />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start" className="w-44">
-                      <DropdownMenuLabel>Border color</DropdownMenuLabel>
-                      <div className="px-2 py-1">
-                        <ColorPicker
-                          color={borderColor}
-                          disabled={!canEditSelection}
-                          onChange={setBorderColor}
-                          triggerClassName="h-7 w-full"
-                        />
-                      </div>
+                      <DropdownMenuGroup>
+                        <DropdownMenuLabel>Border color</DropdownMenuLabel>
+                        <div className="px-2 py-1">
+                          <ColorPicker
+                            color={borderColor}
+                            disabled={!canEditSelection}
+                            onChange={setBorderColor}
+                            triggerClassName="h-7 w-full"
+                          />
+                        </div>
+                      </DropdownMenuGroup>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => applyBorderStyle({ bottom: { style: "thin", color: hexToStyleColor(borderColor) } })}>
                         Bottom border
