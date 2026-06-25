@@ -26,6 +26,8 @@ type SurfaceCompositeProps = {
   chart: XlsxChart;
   fontFamily: string;
   layout: SurfaceLayout;
+  onDoubleClick?: React.MouseEventHandler<SVGSVGElement>;
+  onPointerDown?: React.PointerEventHandler<SVGSVGElement>;
   overlay: React.ReactNode;
   palette: SurfacePalette;
   fallback: React.ReactNode;
@@ -929,6 +931,8 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
   chart,
   fontFamily,
   layout,
+  onDoubleClick,
+  onPointerDown,
   overlay,
   palette,
   fallback
@@ -1136,7 +1140,7 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
         fontFamily,
         height: "100%",
         overflow: "hidden",
-        pointerEvents: "none",
+        pointerEvents: "auto",
         position: "relative",
         width: "100%"
       }}
@@ -1152,6 +1156,8 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
         }}
       />
       <svg
+        onDoubleClick={onDoubleClick}
+        onPointerDown={onPointerDown}
         style={{ display: "block", height: "100%", inset: 0, position: "absolute", width: "100%" }}
         viewBox={`0 0 ${layout.width} ${layout.height}`}
       >
@@ -1166,6 +1172,8 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
   && prev.background === next.background
   && prev.borderColor === next.borderColor
   && prev.fontFamily === next.fontFamily
+  && prev.onDoubleClick === next.onDoubleClick
+  && prev.onPointerDown === next.onPointerDown
   && prev.layout.width === next.layout.width
   && prev.layout.height === next.layout.height
   && prev.layout.plot.left === next.layout.plot.left

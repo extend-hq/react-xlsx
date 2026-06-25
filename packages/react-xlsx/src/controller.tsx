@@ -2,6 +2,8 @@ import * as React from "react";
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import {
+  applyChartSeriesFormula,
+  buildChartSeriesFormula,
   loadWorkbookChartAssets,
   updateWorkbookChartAnchor,
   updateWorkbookChartDefinition,
@@ -34,6 +36,7 @@ import { XlsxWorkerClient } from "./worker-client";
 import type {
   UseXlsxViewerControllerOptions,
   XlsxChart,
+  XlsxChartElementSelection,
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
@@ -1925,6 +1928,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [activeCell, setActiveCell] = React.useState<XlsxCellAddress | null>(null);
   const [selection, setSelection] = React.useState<XlsxCellRange | null>(null);
   const [selectedChartId, setSelectedChartId] = React.useState<string | null>(null);
+  const [selectedChartElement, setSelectedChartElement] = React.useState<XlsxChartElementSelection | null>(null);
   const [selectedImageId, setSelectedImageId] = React.useState<string | null>(null);
   const [revision, setRevision] = React.useState(0);
   const selectionAnchorRef = React.useRef<XlsxCellAddress | null>(null);
@@ -2252,6 +2256,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveCell(null);
       setSelection(null);
       setSelectedChartId(null);
+      setSelectedChartElement(null);
       setSelectedImageId(null);
       selectionAnchorRef.current = null;
       undoStackRef.current = [];
@@ -2281,6 +2286,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setActiveCell(null);
     setSelection(null);
     setSelectedChartId(null);
+    setSelectedChartElement(null);
     setSelectedImageId(null);
     selectionAnchorRef.current = null;
     undoStackRef.current = [];
@@ -2450,6 +2456,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setActiveCell(null);
     setSelection(null);
     setSelectedChartId(null);
+    setSelectedChartElement(null);
     setSelectedImageId(null);
     selectionAnchorRef.current = null;
     setSortState(null);
@@ -2822,13 +2829,57 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     [getChartById, selectedChartId]
   );
 
+  React.useEffect(() => {
+    if (!selectedChartId) {
+      if (selectedChartElement) {
+        setSelectedChartElement(null);
+      }
+      return;
+    }
+
+    if (!selectedChart) {
+      setSelectedChartId(null);
+      setSelectedChartElement(null);
+      return;
+    }
+
+    if (!selectedChartElement) {
+      setSelectedChartElement({ chartId: selectedChartId, kind: "chart" });
+      return;
+    }
+
+    if (selectedChartElement.chartId !== selectedChartId) {
+      setSelectedChartElement({ chartId: selectedChartId, kind: "chart" });
+      return;
+    }
+
+    if (selectedChartElement.kind !== "chart") {
+      const selectedSeries = selectedChart.series[selectedChartElement.seriesIndex];
+      if (!selectedSeries || selectedSeries.id !== selectedChartElement.seriesId) {
+        setSelectedChartElement({ chartId: selectedChartId, kind: "chart" });
+      }
+    }
+  }, [selectedChart, selectedChartElement, selectedChartId]);
+
   const selectChart = React.useCallback((id: string | null) => {
     setSelectedImageId(null);
     setSelectedChartId(id);
+    setSelectedChartElement(id ? { chartId: id, kind: "chart" } : null);
   }, []);
 
   const clearSelectedChart = React.useCallback(() => {
     setSelectedChartId(null);
+    setSelectedChartElement(null);
+  }, []);
+
+  const clearSelectedChartElement = React.useCallback(() => {
+    setSelectedChartElement(selectedChartId ? { chartId: selectedChartId, kind: "chart" } : null);
+  }, [selectedChartId]);
+
+  const selectChartElement = React.useCallback((selection: XlsxChartElementSelection | null) => {
+    setSelectedImageId(null);
+    setSelectedChartId(selection?.chartId ?? null);
+    setSelectedChartElement(selection);
   }, []);
 
   const getSheetImages = React.useCallback((sheetIndex = activeSheetIndex) => {
@@ -2888,6 +2939,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const selectImage = React.useCallback((id: string | null) => {
     setSelectedChartId(null);
+    setSelectedChartElement(null);
     setSelectedImageId(id);
   }, []);
 
@@ -3154,10 +3206,40 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     () => getCellDisplayValue(deferredMetadataCell),
     [deferredMetadataCell, getCellDisplayValue, revision, workerCellSnapshotRevision]
   );
-  const selectedFormula = React.useMemo(
+  const selectedCellFormula = React.useMemo(
     () => getCellFormula(deferredMetadataCell),
     [deferredMetadataCell, getCellFormula, revision, workerCellSnapshotRevision]
   );
+  const getChartSeriesFormula = React.useCallback((chartId: string, seriesIndex: number) => (
+    buildChartSeriesFormula(getChartById(chartId), seriesIndex)
+  ), [getChartById]);
+  const selectedChartFormula = React.useMemo(() => {
+    if (
+      !selectedChartElement
+      || selectedChartElement.kind === "chart"
+      || selectedChartElement.seriesIndex < 0
+    ) {
+      return null;
+    }
+
+    return getChartSeriesFormula(selectedChartElement.chartId, selectedChartElement.seriesIndex);
+  }, [getChartSeriesFormula, selectedChartElement]);
+  const selectedFormulaTarget = React.useMemo(() => {
+    if (selectedChartFormula && selectedChartElement && selectedChartElement.kind !== "chart") {
+      return {
+        chartId: selectedChartElement.chartId,
+        kind: "chartSeries" as const,
+        seriesId: selectedChartElement.seriesId,
+        seriesIndex: selectedChartElement.seriesIndex
+      };
+    }
+
+    return {
+      cell: deferredMetadataCell,
+      kind: "cell" as const
+    };
+  }, [deferredMetadataCell, selectedChartElement, selectedChartFormula]);
+  const selectedFormula = selectedChartFormula ?? selectedCellFormula;
   const isLoadDeferred = deferredLoadFileSize !== null;
   const canLoadDeferred = !isLoading && isLoadDeferred;
   const canUndo = !readOnly && undoStackRef.current.length > 0;
@@ -3851,8 +3933,40 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setRevision((current) => current + 1);
   }, [ensureChartAssetsHydrated, getChartById, readOnly, recordHistoryBeforeMutation, sheets, workbook]);
 
+  const setChartSeriesFormula = React.useCallback((chartId: string, seriesIndex: number, formula: string) => {
+    if (readOnly) {
+      return false;
+    }
+
+    const chart = getChartById(chartId);
+    if (!chart || chart.editable === false) {
+      return false;
+    }
+
+    const nextChart = applyChartSeriesFormula(chart, seriesIndex, formula, workbook);
+    if (!nextChart) {
+      return false;
+    }
+
+    updateChart(chartId, { series: nextChart.series });
+    const selectedSeries = nextChart.series[seriesIndex];
+    if (selectedSeries) {
+      setSelectedChartElement((current) => (
+        current && current.chartId === chartId && current.kind !== "chart"
+          ? {
+              ...current,
+              seriesId: selectedSeries.id,
+              seriesIndex
+            }
+          : current
+      ));
+    }
+    return true;
+  }, [getChartById, readOnly, updateChart, workbook]);
+
   const selectCell = React.useCallback((cell: XlsxCellAddress, options?: { extend?: boolean }) => {
     setSelectedChartId(null);
+    setSelectedChartElement(null);
     setSelectedImageId(null);
     setActiveCell(cell);
     if (options?.extend && selectionAnchorRef.current) {
@@ -3867,6 +3981,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const selectRange = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
     setSelectedChartId(null);
+    setSelectedChartElement(null);
     setSelectedImageId(null);
     selectionAnchorRef.current = normalized.start;
     setActiveCell(normalized.end);
@@ -3878,6 +3993,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setActiveCell(null);
     setSelection(null);
     setSelectedChartId(null);
+    setSelectedChartElement(null);
     setSelectedImageId(null);
   }, []);
 
@@ -4014,6 +4130,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     setCellFormula(activeCell, formula);
   }, [activeCell, setCellFormula]);
+
+  const setSelectedFormula = React.useCallback((formula: string) => {
+    if (selectedFormulaTarget?.kind === "chartSeries") {
+      return setChartSeriesFormula(selectedFormulaTarget.chartId, selectedFormulaTarget.seriesIndex, formula);
+    }
+
+    if (!activeCell) {
+      return false;
+    }
+
+    setCellFormula(activeCell, formula);
+    return true;
+  }, [activeCell, selectedFormulaTarget, setCellFormula, setChartSeriesFormula]);
 
   const setSelectedCellStyle = React.useCallback((style: XlsxCellStyleInput) => {
     if (!activeCell) {
@@ -4552,6 +4681,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       charts,
       chartsheets,
       clearSelectedChart,
+      clearSelectedChartElement,
       clearSelectedCells,
       clearSelectedImage,
       clearSelection,
@@ -4568,6 +4698,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       fillSelection,
       formControls,
       getChartById,
+      getChartSeriesFormula,
       getChartsheetById,
       getImageById,
       getSheetCharts,
@@ -4608,18 +4739,25 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setCellStyle,
       setCellValue,
       setRangeStyle,
+      setSelectedFormula,
       setZoomScale,
       setChartRect,
+      setChartSeriesFormula,
       setImageRect,
       selectedChart,
+      selectedChartElement,
+      selectedChartFormula,
       selectedChartId,
+      selectedCellFormula,
       selectedFormula,
+      selectedFormulaTarget,
       selectedImage,
       selectedImageId,
       selectedRangeAddress,
       selectedValue,
       selectCell,
       selectChart,
+      selectChartElement,
       selectImage,
       selectRange,
       selection,
@@ -4659,6 +4797,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       charts,
       chartsheets,
       clearSelectedChart,
+      clearSelectedChartElement,
       clearSelectedCells,
       clearSelectedImage,
       continueDeferredLoad,
@@ -4675,6 +4814,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       fillSelection,
       formControls,
       getChartById,
+      getChartSeriesFormula,
       getChartsheetById,
       getImageById,
       getSheetCharts,
@@ -4713,18 +4853,25 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setCellStyle,
       setCellValue,
       setRangeStyle,
+      setSelectedFormula,
       setZoomScale,
       setChartRect,
+      setChartSeriesFormula,
       setImageRect,
       selectedChart,
+      selectedChartElement,
+      selectedChartFormula,
       selectedChartId,
+      selectedCellFormula,
       selectedFormula,
+      selectedFormulaTarget,
       selectedImage,
       selectedImageId,
       selectedRangeAddress,
       selectedValue,
       selectCell,
       selectChart,
+      selectChartElement,
       selectImage,
       selectRange,
       selection,

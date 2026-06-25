@@ -16,6 +16,7 @@ import {
 } from "./images";
 import type {
   XlsxChart,
+  XlsxChartElementSelection,
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
@@ -85,6 +86,13 @@ const LIVE_ZOOM_COMMIT_IDLE_MS = 48;
 const WHEEL_ZOOM_SENSITIVITY = 0.00025;
 const WHEEL_LINE_DELTA_PX = 16;
 const CHART_SOURCE_HIGHLIGHT_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#059669", "#ea580c", "#db2777"];
+const CHART_SOURCE_HIGHLIGHT_COLOR_BY_ROLE = {
+  bubble: CHART_SOURCE_HIGHLIGHT_COLORS[3] ?? "#059669",
+  category: CHART_SOURCE_HIGHLIGHT_COLORS[2] ?? "#7c3aed",
+  name: CHART_SOURCE_HIGHLIGHT_COLORS[0] ?? "#2563eb",
+  point: CHART_SOURCE_HIGHLIGHT_COLORS[5] ?? "#db2777",
+  value: CHART_SOURCE_HIGHLIGHT_COLORS[4] ?? "#ea580c"
+};
 const SHEET_SURFACE = "#ffffff";
 const SHEET_GRIDLINE = "#d9d9d9";
 const DRAWING_SELECTION_STROKE = "#64748b";
@@ -3911,8 +3919,27 @@ function resolveChartFormulaRange(
   };
 }
 
+function resolveRangePointCell(range: XlsxCellRange, pointIndex: number): XlsxCellRange | null {
+  const normalized = normalizeRange(range);
+  const rowCount = normalized.end.row - normalized.start.row + 1;
+  const colCount = normalized.end.col - normalized.start.col + 1;
+  const cellCount = rowCount * colCount;
+  if (pointIndex < 0 || pointIndex >= cellCount) {
+    return null;
+  }
+
+  const rowOffset = Math.floor(pointIndex / colCount);
+  const colOffset = pointIndex % colCount;
+  const cell = {
+    col: normalized.start.col + colOffset,
+    row: normalized.start.row + rowOffset
+  };
+  return { start: cell, end: cell };
+}
+
 function collectChartRangeHighlights(
   chart: XlsxChart | null,
+  selectedElement: XlsxChartElementSelection | null,
   sheets: XlsxSheetData[],
   workbook: Workbook | null,
   isDark: boolean
@@ -3923,19 +3950,44 @@ function collectChartRangeHighlights(
 
   const highlights: ChartRangeHighlight[] = [];
   const seenRanges = new Set<string>();
-  const references = chart.series.flatMap((series) => [
-    series.categoriesRef?.formula,
-    typeof series.raw?.name === "string" ? series.raw.name : undefined,
-    series.valuesRef?.formula,
-    series.bubbleSizeRef?.formula
+  const selectedSeriesIndex = selectedElement?.chartId === chart.id && selectedElement.kind !== "chart"
+    ? selectedElement.seriesIndex
+    : null;
+  const seriesEntries = chart.series
+    .map((series, seriesIndex) => ({ series, seriesIndex }))
+    .filter(({ series, seriesIndex }) => (
+      series.hidden !== true
+      && (selectedSeriesIndex == null || seriesIndex === selectedSeriesIndex)
+    ));
+  const references = seriesEntries.flatMap(({ series, seriesIndex }) => [
+    {
+      formula: typeof series.raw?.name === "string" ? series.raw.name : undefined,
+      role: "name" as const,
+      seriesIndex
+    },
+    {
+      formula: series.categoriesRef?.formula,
+      role: "category" as const,
+      seriesIndex
+    },
+    {
+      formula: series.valuesRef?.formula,
+      role: "value" as const,
+      seriesIndex
+    },
+    {
+      formula: series.bubbleSizeRef?.formula,
+      role: "bubble" as const,
+      seriesIndex
+    }
   ]);
 
-  references.forEach((formula) => {
-    if (!formula) {
+  references.forEach((reference) => {
+    if (!reference.formula) {
       return;
     }
 
-    const resolved = resolveChartFormulaRange(formula, chart.workbookSheetIndex, sheets, workbook);
+    const resolved = resolveChartFormulaRange(reference.formula, chart.workbookSheetIndex, sheets, workbook);
     if (!resolved) {
       return;
     }
@@ -3952,7 +4004,7 @@ function collectChartRangeHighlights(
     }
 
     seenRanges.add(key);
-    const strokeColor = CHART_SOURCE_HIGHLIGHT_COLORS[highlights.length % CHART_SOURCE_HIGHLIGHT_COLORS.length] ?? "#2563eb";
+    const strokeColor = CHART_SOURCE_HIGHLIGHT_COLOR_BY_ROLE[reference.role];
     highlights.push({
       fillColor: applyAlphaToColor(strokeColor, isDark ? 0.24 : 0.14),
       range: resolved.range,
@@ -3960,6 +4012,32 @@ function collectChartRangeHighlights(
       workbookSheetIndex: resolved.workbookSheetIndex
     });
   });
+
+  if (selectedElement?.chartId === chart.id && selectedElement.kind === "point") {
+    references.forEach((reference) => {
+      if (!reference.formula || reference.role === "name") {
+        return;
+      }
+
+      const resolved = resolveChartFormulaRange(reference.formula, chart.workbookSheetIndex, sheets, workbook);
+      if (!resolved) {
+        return;
+      }
+
+      const range = resolveRangePointCell(resolved.range, selectedElement.pointIndex);
+      if (!range) {
+        return;
+      }
+
+      const strokeColor = CHART_SOURCE_HIGHLIGHT_COLOR_BY_ROLE.point;
+      highlights.push({
+        fillColor: applyAlphaToColor(strokeColor, isDark ? 0.34 : 0.22),
+        range,
+        strokeColor,
+        workbookSheetIndex: resolved.workbookSheetIndex
+      });
+    });
+  }
 
   return highlights;
 }
@@ -6536,11 +6614,13 @@ function XlsxGrid({
     redo,
     revision,
     selectedChart,
+    selectedChartElement,
     selectedChartId,
     selectedImage,
     selectedImageId,
     selectCell,
     selectChart,
+    selectChartElement,
     selectImage,
     selectRange,
     selection,
@@ -6763,8 +6843,9 @@ function XlsxGrid({
     renderChartLoading: XlsxViewerProps["renderChartLoading"];
     renderImage: XlsxViewerProps["renderImage"];
     renderImageSelection: XlsxViewerProps["renderImageSelection"];
-    isChartsLoading: boolean;
-    selectedChartId: string | null;
+      isChartsLoading: boolean;
+      selectedChartElement: XlsxChartElementSelection | null;
+      selectedChartId: string | null;
     selectedImageId: string | null;
     selectionStroke: string;
     shapeRects: Array<{ rect: XlsxImageRect; shape: XlsxShape }>;
@@ -8886,8 +8967,8 @@ function XlsxGrid({
     return map;
   }, [activeSheet?.sparklines]);
   const chartRangeHighlights = React.useMemo(
-    () => collectChartRangeHighlights(selectedChart, sheets, workbook, paletteIsDark(palette)),
-    [palette, selectedChart, sheets, workbook]
+    () => collectChartRangeHighlights(selectedChart, selectedChartElement, sheets, workbook, paletteIsDark(palette)),
+    [palette, selectedChart, selectedChartElement, sheets, workbook]
   );
   const activeSheetChartHighlights = React.useMemo(
     () => activeSheet
@@ -8906,6 +8987,7 @@ function XlsxGrid({
         getCellStyle,
         palette,
         revision,
+        selectedChartElement,
         selectedChartId,
         viewportRowBatch,
         worksheet,
@@ -8919,6 +9001,7 @@ function XlsxGrid({
       getCellStyle,
       palette,
       revision,
+      selectedChartElement,
       selectedChartId,
       viewportRowBatch,
       worksheet,
@@ -12854,6 +12937,15 @@ function XlsxGrid({
     selectChart(chart.id);
   }, [selectChart]);
 
+  const handleChartElementPointerDown = React.useCallback((selection: XlsxChartElementSelection) => {
+    skipNextChartClickRef.current = selection.chartId;
+    selectChartElement(selection);
+  }, [selectChartElement]);
+
+  const handleChartElementDoubleClick = React.useCallback((selection: XlsxChartElementSelection) => {
+    selectChartElement(selection);
+  }, [selectChartElement]);
+
   if (isLoading) {
     return <>{renderLoading(loadingComponent, loadingState, palette)}</>;
   }
@@ -12912,9 +13004,18 @@ function XlsxGrid({
             const chartsheetRect = { height: 320, left: 0, top: 0, width: 640 };
             return (
               <div key={chart.id} style={{ minHeight: 320, position: "relative" }}>
-                {isChartsLoading
-                  ? renderChartLoadingNode(renderChartLoading, chart, chartsheetRect)
-                  : <MemoChartSvg chart={chart} palette={palette} rect={chartsheetRect} />}
+                  {isChartsLoading
+                    ? renderChartLoadingNode(renderChartLoading, chart, chartsheetRect)
+                    : (
+                        <MemoChartSvg
+                          chart={chart}
+                          onChartElementDoubleClick={handleChartElementDoubleClick}
+                          onChartElementPointerDown={handleChartElementPointerDown}
+                          palette={palette}
+                          rect={chartsheetRect}
+                          selectedChartElement={selectedChartElement}
+                        />
+                      )}
               </div>
             );
           }) : (
@@ -13633,27 +13734,33 @@ function XlsxGrid({
       </div>
     ) : null;
 
-    return (
-      <React.Fragment key={`${pane}-${chart.id}`}>
-        <div style={style}>
-          {isChartsLoading
-            ? renderChartLoadingNode(renderChartLoading, chart, rect)
-            : <MemoChartSvg chart={chart} palette={palette} rect={rect} />}
-        </div>
-        <div
-          onClick={() => handleChartClick(chart)}
-          onPointerDown={(event) => startChartMove(event, chart, rect)}
-          style={{
-            ...style,
-            background: "transparent",
-            cursor: canEditChart && selectedChartId === chart.id ? "move" : "cell",
-            pointerEvents: "auto",
-            zIndex: isFrozenDrawing ? chart.zIndex + 21 : chart.zIndex + 1
-          }}
-        />
-        {selectionNode}
-      </React.Fragment>
-    );
+      return (
+        <React.Fragment key={`${pane}-${chart.id}`}>
+          <div
+            onClick={() => handleChartClick(chart)}
+            onPointerDown={(event) => startChartMove(event, chart, rect)}
+            style={{
+              ...style,
+              cursor: canEditChart && selectedChartId === chart.id ? "move" : "cell",
+              pointerEvents: "auto"
+            }}
+          >
+            {isChartsLoading
+              ? renderChartLoadingNode(renderChartLoading, chart, rect)
+              : (
+                  <MemoChartSvg
+                    chart={chart}
+                    onChartElementDoubleClick={handleChartElementDoubleClick}
+                    onChartElementPointerDown={handleChartElementPointerDown}
+                    palette={palette}
+                    rect={rect}
+                    selectedChartElement={selectedChartElement}
+                  />
+                )}
+          </div>
+          {selectionNode}
+        </React.Fragment>
+      );
   }
 
   const scrollOverlayStyle: React.CSSProperties = {
@@ -13747,8 +13854,9 @@ function XlsxGrid({
     && previousPaneDrawingNodes.renderChartLoading === renderChartLoading
     && previousPaneDrawingNodes.renderImage === renderImage
     && previousPaneDrawingNodes.renderImageSelection === renderImageSelection
-    && previousPaneDrawingNodes.isChartsLoading === isChartsLoading
-    && previousPaneDrawingNodes.palette === palette
+      && previousPaneDrawingNodes.isChartsLoading === isChartsLoading
+      && previousPaneDrawingNodes.selectedChartElement === selectedChartElement
+      && previousPaneDrawingNodes.palette === palette
     && previousPaneDrawingNodes.drawingViewportSignature === drawingViewportCacheSignature;
   const paneDrawingNodes = canReusePaneDrawingNodes
     ? previousPaneDrawingNodes.value
@@ -13800,13 +13908,14 @@ function XlsxGrid({
       drawingViewportSignature: drawingViewportCacheSignature,
       formControlRects: domFormControlRects,
       imageRects: domImageRects,
-      isChartsLoading,
-      palette,
-      readOnly,
-      renderChartLoading,
-      renderImage,
-      renderImageSelection,
-      selectedChartId,
+        isChartsLoading,
+        palette,
+        readOnly,
+        renderChartLoading,
+        renderImage,
+        renderImageSelection,
+        selectedChartElement,
+        selectedChartId,
       selectedImageId,
       selectionStroke,
       shapeRects: domShapeRects,
@@ -15385,12 +15494,16 @@ export function useXlsxViewerEditing(): XlsxViewerEditing {
     removeActiveSheet,
     readOnly,
     redo,
+    selectedCellFormula,
+    selectedChartFormula,
     selectedFormula,
+    selectedFormulaTarget,
     selectedValue,
     setCellFormula,
     setCellStyle,
     setCellValue,
     setRangeStyle,
+    setSelectedFormula,
     setSelectedCellFormula,
     setSelectedCellStyle,
     setSelectedCellValue,
@@ -15417,12 +15530,16 @@ export function useXlsxViewerEditing(): XlsxViewerEditing {
       removeActiveSheet,
       readOnly,
       redo,
+      selectedCellFormula,
+      selectedChartFormula,
       selectedFormula,
+      selectedFormulaTarget,
       selectedValue,
       setCellFormula,
       setCellStyle,
       setCellValue,
       setRangeStyle,
+      setSelectedFormula,
       setSelectedCellFormula,
       setSelectedCellStyle,
       setSelectedCellValue,
@@ -15447,12 +15564,16 @@ export function useXlsxViewerEditing(): XlsxViewerEditing {
       removeActiveSheet,
       readOnly,
       redo,
+      selectedCellFormula,
+      selectedChartFormula,
       selectedFormula,
+      selectedFormulaTarget,
       selectedValue,
       setCellFormula,
       setCellStyle,
       setCellValue,
       setRangeStyle,
+      setSelectedFormula,
       setSelectedCellFormula,
       setSelectedCellStyle,
       setSelectedCellValue,
@@ -15479,8 +15600,10 @@ export function useXlsxViewerImages(): XlsxViewerImages {
   const {
     charts,
     clearSelectedChart,
+    clearSelectedChartElement,
     clearSelectedImage,
     getChartById,
+    getChartSeriesFormula,
     getSheetCharts,
     getImageById,
     getSheetImages,
@@ -15492,11 +15615,15 @@ export function useXlsxViewerImages(): XlsxViewerImages {
     resizeChartBy,
     resizeImageBy,
     selectedChart,
+    selectedChartElement,
+    selectedChartFormula,
     selectedChartId,
     selectedImage,
     selectedImageId,
     selectChart,
+    selectChartElement,
     selectImage,
+    setChartSeriesFormula,
     setChartRect,
     setImageRect,
     updateChart
@@ -15506,8 +15633,10 @@ export function useXlsxViewerImages(): XlsxViewerImages {
     () => ({
       charts,
       clearSelectedChart,
+      clearSelectedChartElement,
       clearSelectedImage,
       getChartById,
+      getChartSeriesFormula,
       getSheetCharts,
       getImageById,
       getSheetImages,
@@ -15519,11 +15648,15 @@ export function useXlsxViewerImages(): XlsxViewerImages {
       resizeChartBy,
       resizeImageBy,
       selectedChart,
+      selectedChartElement,
+      selectedChartFormula,
       selectedChartId,
       selectedImage,
       selectedImageId,
       selectChart,
+      selectChartElement,
       selectImage,
+      setChartSeriesFormula,
       setChartRect,
       setImageRect,
       updateChart
@@ -15531,8 +15664,10 @@ export function useXlsxViewerImages(): XlsxViewerImages {
     [
       charts,
       clearSelectedChart,
+      clearSelectedChartElement,
       clearSelectedImage,
       getChartById,
+      getChartSeriesFormula,
       getSheetCharts,
       getImageById,
       getSheetImages,
@@ -15544,11 +15679,15 @@ export function useXlsxViewerImages(): XlsxViewerImages {
       resizeChartBy,
       resizeImageBy,
       selectedChart,
+      selectedChartElement,
+      selectedChartFormula,
       selectedChartId,
       selectedImage,
       selectedImageId,
       selectChart,
+      selectChartElement,
       selectImage,
+      setChartSeriesFormula,
       setChartRect,
       setImageRect,
       updateChart
@@ -15563,7 +15702,9 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
     charts,
     chartsheets,
     clearSelectedChart,
+    clearSelectedChartElement,
     getChartById,
+    getChartSeriesFormula,
     getChartsheetById,
     getSheetCharts,
     isChartsLoading,
@@ -15572,8 +15713,12 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
     resizeChartBy,
     selectChart,
     selectedChart,
+    selectedChartElement,
+    selectedChartFormula,
     selectedChartId,
+    selectChartElement,
     setActiveTabIndex,
+    setChartSeriesFormula,
     setChartRect,
     tabs,
     updateChart
@@ -15586,7 +15731,9 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       charts,
       chartsheets,
       clearSelectedChart,
+      clearSelectedChartElement,
       getChartById,
+      getChartSeriesFormula,
       getChartsheetById,
       getSheetCharts,
       isChartsLoading,
@@ -15595,8 +15742,12 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       resizeChartBy,
       selectChart,
       selectedChart,
+      selectedChartElement,
+      selectedChartFormula,
       selectedChartId,
+      selectChartElement,
       setActiveTabIndex,
+      setChartSeriesFormula,
       setChartRect,
       tabs,
       updateChart
@@ -15607,7 +15758,9 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       charts,
       chartsheets,
       clearSelectedChart,
+      clearSelectedChartElement,
       getChartById,
+      getChartSeriesFormula,
       getChartsheetById,
       getSheetCharts,
       isChartsLoading,
@@ -15616,8 +15769,12 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       resizeChartBy,
       selectChart,
       selectedChart,
+      selectedChartElement,
+      selectedChartFormula,
       selectedChartId,
+      selectChartElement,
       setActiveTabIndex,
+      setChartSeriesFormula,
       setChartRect,
       tabs,
       updateChart

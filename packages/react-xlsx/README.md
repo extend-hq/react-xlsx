@@ -225,11 +225,17 @@ These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 - `useXlsxViewer()` for full controller access
 - `useXlsxViewerSelection()` for active cell and range state
 - `useXlsxViewerZoom()` for zoom controls and limits
-- `useXlsxViewerEditing()` for editing, persisted style writes, undo/redo, fill, merge, clipboard, and export actions
+- `useXlsxViewerEditing()` for editing, persisted style writes, formulas, undo/redo, fill, merge, clipboard, and export actions
 - `useXlsxViewerTables()` for table metadata and table sorting
 - `useXlsxViewerImages()` for embedded image and chart selection, movement, and resizing
-- `useXlsxViewerCharts()` for chart and chartsheet state
+- `useXlsxViewerCharts()` for chart, chart element, formula, and chartsheet state
 - `useXlsxViewerThumbnails(options)` for painting worksheet thumbnails into your own canvases
+
+## Chart Selection And Formulas
+
+Chart interactions follow Excel's selection progression: clicking a chart selects the chart frame, clicking a plotted item or legend entry again selects the series, and clicking an item in an already-selected series selects that point. `selectedChartElement` exposes the current chart, series, legend entry, or point selection through the controller and `useXlsxViewerCharts()`.
+
+When a series, legend entry, or point is selected, `selectedFormula` returns an Excel-style `=SERIES(...)` formula and `selectedFormulaTarget` is `{ kind: "chartSeries", chartId, seriesId, seriesIndex }`. Use `setSelectedFormula(...)` for a formula bar that edits either the active cell formula or the selected chart series formula. Use `getChartSeriesFormula(chartId, seriesIndex)` and `setChartSeriesFormula(chartId, seriesIndex, formula)` when you need direct chart-series formula control.
 
 ## Thumbnail Hook
 
@@ -554,7 +560,7 @@ Supported worksheet features include:
 - Embedded images, shapes, form controls, worksheet charts, and chartsheet tabs
 - Copy, paste, undo, redo, merge, unmerge, fill, CSV export, and XLSX export
 
-Chart rendering supports common Excel chart families including column, bar, line, area, scatter, pie, doughnut, radar, bubble, stock, surface, waterfall, funnel, box-and-whisker, sunburst, treemap, region map, combo charts, and chartsheets.
+Chart rendering supports common Excel chart families including column, bar, line, area, scatter, pie, doughnut, radar, bubble, stock, surface, waterfall, funnel, box-and-whisker, sunburst, treemap, region map, combo charts, and chartsheets. Selecting a chart series highlights its workbook source ranges; point selection keeps the series ranges highlighted and emphasizes the matching point cells when the source references resolve to rectangular ranges.
 
 Legacy `.xls` and macro-enabled `.xlsm` files have limited support. The viewer only displays workbook data that `@dukelib/sheets-wasm` can parse, and format-specific XML features may be missing or skipped.
 
@@ -578,7 +584,8 @@ The package exports the main types you are likely to use for custom integrations
 - `XlsxCellStyleInput`, `XlsxCellFontStyleInput`, `XlsxCellFillStyleInput`, `XlsxCellBorderStyleInput`
 - `XlsxSheetThumbnail`
 - `UseXlsxViewerThumbnailsOptions`
-- `XlsxChart`, `XlsxChartSeries`, `XlsxChartAxis`, `XlsxChartsheet`
+- `XlsxChart`, `XlsxChartSeries`, `XlsxChartAxis`, `XlsxChartElementSelection`, `XlsxChartsheet`
+- `XlsxFormulaTarget`
 - `XlsxImage`, `XlsxImageRect`, `XlsxImageRenderProps`, `XlsxImageSelectionRenderProps`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
 - `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`

@@ -279,7 +279,7 @@ function WorkbookToolbar({
     setActiveSheetIndex,
     sheets,
   } = useXlsxViewer();
-  const { activeCell, activeCellAddress, selection } = useXlsxViewerSelection();
+  const { activeCellAddress, selection } = useXlsxViewerSelection();
   const {
     addSheet,
     canRedo,
@@ -287,12 +287,13 @@ function WorkbookToolbar({
     defineNamedRange,
     mergeSelection,
     removeActiveSheet,
-    readOnly: viewerReadOnly,
-    redo,
-    selectedFormula,
-    setCellFormula,
-    setRangeStyle,
-    setSelectedCellStyle,
+      readOnly: viewerReadOnly,
+      redo,
+      selectedFormula,
+      selectedFormulaTarget,
+      setRangeStyle,
+      setSelectedFormula,
+      setSelectedCellStyle,
     undo,
     unmergeSelection,
   } = useXlsxViewerEditing();
@@ -301,6 +302,10 @@ function WorkbookToolbar({
   const hasSelection = Boolean(selection);
   const hasActiveCell = Boolean(activeCellAddress);
   const isReadOnly = readOnly || viewerReadOnly;
+  const hasFormulaTarget = hasActiveCell || selectedFormulaTarget?.kind === "chartSeries";
+  const formulaNameBoxValue = selectedFormulaTarget?.kind === "chartSeries"
+    ? `SERIES ${selectedFormulaTarget.seriesIndex + 1}`
+    : activeCellAddress ?? "";
   const canEditSelection = hasActiveCell && !isReadOnly;
   const applyStyle = React.useCallback((style: XlsxCellStyleInput) => {
     if (!canEditSelection) {
@@ -334,7 +339,6 @@ function WorkbookToolbar({
   const [formulaDraft, setFormulaDraft] = React.useState("");
   const [namedRangeDraft, setNamedRangeDraft] = React.useState("");
   const [focusedField, setFocusedField] = React.useState<"formula" | null>(null);
-  const formulaEditCellRef = React.useRef<typeof activeCell>(null);
   const formulaInitialValueRef = React.useRef("");
 
   React.useEffect(() => {
@@ -342,12 +346,11 @@ function WorkbookToolbar({
       return;
     }
     setFormulaDraft(selectedFormula);
-  }, [selectedFormula, activeCellAddress, focusedField]);
+  }, [selectedFormula, activeCellAddress, focusedField, selectedFormulaTarget]);
 
-  const commitFormula = React.useCallback((targetCell?: typeof activeCell | null, nextFormula?: string) => {
-    const resolvedCell = targetCell ?? formulaEditCellRef.current;
+  const commitFormula = React.useCallback((nextFormula?: string) => {
     const resolvedFormula = nextFormula ?? formulaDraft;
-    if (!resolvedCell) {
+    if (!hasFormulaTarget) {
       return;
     }
 
@@ -355,8 +358,8 @@ function WorkbookToolbar({
       return;
     }
 
-    setCellFormula(resolvedCell, resolvedFormula);
-  }, [formulaDraft, setCellFormula]);
+    setSelectedFormula(resolvedFormula);
+  }, [formulaDraft, hasFormulaTarget, setSelectedFormula]);
 
   const handleDefineNamedRange = React.useCallback(() => {
     const nextName = namedRangeDraft.trim();
@@ -883,24 +886,23 @@ function WorkbookToolbar({
 
       {/* Formula bar */}
       <div className="flex items-center gap-px border-b bg-background px-2 py-1">
-        <Input
-          className="w-[90px] shrink-0 border-r font-mono text-xs"
-          readOnly
-          value={activeCellAddress ?? ""}
-        />
+          <Input
+            className="w-[90px] shrink-0 border-r font-mono text-xs"
+            readOnly
+            value={formulaNameBoxValue}
+          />
         <div className="text-muted-foreground flex h-7 w-8 shrink-0 items-center justify-center border-r text-[11px] font-semibold italic">
           fx
         </div>
-        <Input
-          className="flex-1 border-0 shadow-none focus-visible:ring-0"
-          disabled={!hasActiveCell || isReadOnly}
+          <Input
+            className="flex-1 border-0 shadow-none focus-visible:ring-0"
+            disabled={!hasFormulaTarget || isReadOnly}
           onBlur={() => {
             commitFormula();
             setFocusedField(null);
           }}
           onChange={(event) => setFormulaDraft(event.target.value)}
           onFocus={() => {
-            formulaEditCellRef.current = activeCell;
             formulaInitialValueRef.current = formulaDraft;
             setFocusedField("formula");
           }}

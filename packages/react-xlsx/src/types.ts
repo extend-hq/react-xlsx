@@ -614,6 +614,17 @@ export interface XlsxChartSeries {
   valuesRef?: XlsxChartReference | null;
 }
 
+export type XlsxChartElementSelection =
+  | { kind: "chart"; chartId: string }
+  | { kind: "series"; chartId: string; seriesId: string; seriesIndex: number }
+  | { kind: "point"; chartId: string; seriesId: string; seriesIndex: number; pointIndex: number }
+  | { kind: "legendEntry"; chartId: string; seriesId: string; seriesIndex: number };
+
+export type XlsxFormulaTarget =
+  | { kind: "cell"; cell: XlsxCellAddress | null }
+  | { kind: "chartSeries"; chartId: string; seriesId: string; seriesIndex: number }
+  | null;
+
 export interface XlsxChartTypeGroup {
   axisIds?: number[];
   chartType: string;
@@ -899,8 +910,10 @@ export interface XlsxViewerController {
   file?: ArrayBuffer;
   fillSelection: (targetRange: XlsxCellRange) => void;
   clearSelectedChart: () => void;
+  clearSelectedChartElement: () => void;
   clearSelectedImage: () => void;
   getChartById: (id: string) => XlsxChart | null;
+  getChartSeriesFormula: (chartId: string, seriesIndex: number) => string;
   getChartsheetById: (id: string) => XlsxChartsheet | null;
   formControls: XlsxFormControl[];
   getSheetCharts: (sheetIndex?: number) => XlsxChart[];
@@ -997,14 +1010,20 @@ export interface XlsxViewerController {
   setZoomScale: (zoomScale: number) => void;
   selectCell: (cell: XlsxCellAddress, options?: { extend?: boolean }) => void;
   selectChart: (id: string | null) => void;
+  selectChartElement: (selection: XlsxChartElementSelection | null) => void;
   selectRange: (range: XlsxCellRange) => void;
   selection: XlsxCellRange | null;
   setActiveSheetIndex: (index: number) => void;
   setActiveTabIndex: (index: number) => void;
   selectedChart: XlsxChart | null;
+  selectedChartElement: XlsxChartElementSelection | null;
+  selectedChartFormula: string | null;
   selectedChartId: string | null;
+  selectedCellFormula: string;
+  selectedFormulaTarget: XlsxFormulaTarget;
   selectedImage: XlsxImage | null;
   selectedImageId: string | null;
+  setSelectedFormula: (formula: string) => boolean;
   setSelectedCellFormula: (formula: string) => void;
   /**
    * Applies persisted Excel style properties to the active cell.
@@ -1021,6 +1040,7 @@ export interface XlsxViewerController {
   src?: string;
   sortState: XlsxTableSortState | null;
   sortTable: (tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => void;
+  setChartSeriesFormula: (chartId: string, seriesIndex: number, formula: string) => boolean;
   selectImage: (id: string | null) => void;
   setChartRect: (id: string, rect: XlsxImageRect) => void;
   setImageRect: (id: string, rect: XlsxImageRect) => void;
@@ -1079,7 +1099,10 @@ export interface XlsxViewerEditing {
   removeActiveSheet: () => void;
   readOnly: boolean;
   redo: () => void;
+  selectedCellFormula: string;
+  selectedChartFormula: string | null;
   selectedFormula: string;
+  selectedFormulaTarget: XlsxFormulaTarget;
   selectedValue: string;
   /**
    * Sets the formula for a cell in the active worksheet.
@@ -1112,6 +1135,7 @@ export interface XlsxViewerEditing {
    * @param style Partial Excel style patch to apply to the target range.
    */
   setRangeStyle: (range: XlsxCellRange, style: XlsxCellStyleInput) => void;
+  setSelectedFormula: (formula: string) => boolean;
   setSelectedCellFormula: (formula: string) => void;
   /**
    * Applies persisted Excel style properties to the active cell.
@@ -1133,8 +1157,10 @@ export interface XlsxViewerTables {
 export interface XlsxViewerImages {
   charts: XlsxChart[];
   clearSelectedChart: () => void;
+  clearSelectedChartElement: () => void;
   clearSelectedImage: () => void;
   getChartById: (id: string) => XlsxChart | null;
+  getChartSeriesFormula: (chartId: string, seriesIndex: number) => string;
   getSheetCharts: (sheetIndex?: number) => XlsxChart[];
   getImageById: (id: string) => XlsxImage | null;
   getSheetImages: (sheetIndex?: number) => XlsxImage[];
@@ -1156,11 +1182,15 @@ export interface XlsxViewerImages {
     deltaY: number
   ) => void;
   selectedChart: XlsxChart | null;
+  selectedChartElement: XlsxChartElementSelection | null;
+  selectedChartFormula: string | null;
   selectedChartId: string | null;
   selectedImage: XlsxImage | null;
   selectedImageId: string | null;
   selectChart: (id: string | null) => void;
+  selectChartElement: (selection: XlsxChartElementSelection | null) => void;
   selectImage: (id: string | null) => void;
+  setChartSeriesFormula: (chartId: string, seriesIndex: number, formula: string) => boolean;
   setChartRect: (id: string, rect: XlsxImageRect) => void;
   setImageRect: (id: string, rect: XlsxImageRect) => void;
   updateChart: (id: string, patch: Partial<XlsxChart>) => void;
@@ -1172,7 +1202,9 @@ export interface XlsxViewerCharts {
   charts: XlsxChart[];
   chartsheets: XlsxChartsheet[];
   clearSelectedChart: () => void;
+  clearSelectedChartElement: () => void;
   getChartById: (id: string) => XlsxChart | null;
+  getChartSeriesFormula: (chartId: string, seriesIndex: number) => string;
   getChartsheetById: (id: string) => XlsxChartsheet | null;
   getSheetCharts: (sheetIndex?: number) => XlsxChart[];
   isChartsLoading: boolean;
@@ -1186,7 +1218,11 @@ export interface XlsxViewerCharts {
   ) => void;
   selectChart: (id: string | null) => void;
   selectedChart: XlsxChart | null;
+  selectedChartElement: XlsxChartElementSelection | null;
+  selectedChartFormula: string | null;
   selectedChartId: string | null;
+  selectChartElement: (selection: XlsxChartElementSelection | null) => void;
+  setChartSeriesFormula: (chartId: string, seriesIndex: number, formula: string) => boolean;
   setActiveTabIndex: (index: number) => void;
   setChartRect: (id: string, rect: XlsxImageRect) => void;
   tabs: XlsxWorkbookTab[];

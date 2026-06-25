@@ -38,6 +38,228 @@ const SERIES_COLORS = [
   "#636363",
   "#997300"
 ];
+
+export type ParsedChartSeriesFormula = {
+  bubbleSizeFormula?: string;
+  categoryFormula: string;
+  nameFormula?: string;
+  nameLiteral?: string;
+  order: number;
+  valueFormula: string;
+};
+
+function quoteSeriesFormulaString(value: string) {
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+function unquoteSeriesFormulaString(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.length < 2 || !trimmed.startsWith("\"") || !trimmed.endsWith("\"")) {
+    return null;
+  }
+
+  return trimmed.slice(1, -1).replace(/""/g, "\"");
+}
+
+function splitTopLevelSeriesArguments(value: string) {
+  const args: string[] = [];
+  let current = "";
+  let doubleQuoted = false;
+  let singleQuoted = false;
+  let depth = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? "";
+    const next = value[index + 1] ?? "";
+
+    if (doubleQuoted) {
+      current += char;
+      if (char === "\"" && next === "\"") {
+        current += next;
+        index += 1;
+      } else if (char === "\"") {
+        doubleQuoted = false;
+      }
+      continue;
+    }
+
+    if (singleQuoted) {
+      current += char;
+      if (char === "'" && next === "'") {
+        current += next;
+        index += 1;
+      } else if (char === "'") {
+        singleQuoted = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      doubleQuoted = true;
+      current += char;
+      continue;
+    }
+
+    if (char === "'") {
+      singleQuoted = true;
+      current += char;
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      current += char;
+      continue;
+    }
+
+    if (char === "," && depth === 0) {
+      args.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  args.push(current.trim());
+  return args;
+}
+
+function readSeriesNameFormula(series: XlsxChartSeries) {
+  const raw = series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : null;
+  return typeof raw?.name === "string" && raw.name.length > 0 ? raw.name : null;
+}
+
+export function buildChartSeriesFormula(chart: XlsxChart | null | undefined, seriesIndex: number) {
+  const series = chart?.series[seriesIndex];
+  if (!chart || !series) {
+    return "";
+  }
+
+  const nameFormula = readSeriesNameFormula(series);
+  const nameArgument = nameFormula ?? quoteSeriesFormulaString(series.name ?? `Series ${seriesIndex + 1}`);
+  const categoryArgument = series.categoriesRef?.formula ?? "";
+  const valueArgument = series.valuesRef?.formula ?? "";
+  const orderArgument = String(seriesIndex + 1);
+  const bubbleArgument = series.bubbleSizeRef?.formula;
+
+  return [
+    `=SERIES(${nameArgument}`,
+    categoryArgument,
+    valueArgument,
+    orderArgument,
+    ...(chart.chartType === "Bubble" || bubbleArgument ? [bubbleArgument ?? ""] : [])
+  ].join(",") + ")";
+}
+
+export function parseChartSeriesFormula(formula: string, chart: XlsxChart | null | undefined): ParsedChartSeriesFormula | null {
+  const trimmed = formula.trim();
+  const withoutEquals = trimmed.startsWith("=") ? trimmed.slice(1).trim() : trimmed;
+  const match = /^SERIES\s*\(([\s\S]*)\)$/i.exec(withoutEquals);
+  if (!match) {
+    return null;
+  }
+
+  const args = splitTopLevelSeriesArguments(match[1]);
+  const isBubble = chart?.chartType === "Bubble";
+  if (args.length < 4 || args.length > 5 || (isBubble && args.length !== 5)) {
+    return null;
+  }
+
+  const [nameArg = "", categoryFormula = "", valueFormula = "", orderArg = "", bubbleSizeFormula] = args;
+  if (!categoryFormula || !valueFormula) {
+    return null;
+  }
+
+  const parsedOrder = Number(orderArg);
+  if (!Number.isFinite(parsedOrder)) {
+    return null;
+  }
+
+  const nameLiteral = unquoteSeriesFormulaString(nameArg);
+  return {
+    bubbleSizeFormula: bubbleSizeFormula && bubbleSizeFormula.length > 0 ? bubbleSizeFormula : undefined,
+    categoryFormula,
+    nameFormula: nameLiteral == null && nameArg.length > 0 ? nameArg : undefined,
+    nameLiteral: nameLiteral ?? undefined,
+    order: parsedOrder,
+    valueFormula
+  };
+}
+
+export function applyChartSeriesFormula(
+  chart: XlsxChart,
+  seriesIndex: number,
+  formula: string,
+  workbook: Workbook | null
+) {
+  const parsed = parseChartSeriesFormula(formula, chart);
+  const currentSeries = chart.series[seriesIndex];
+  if (!parsed || !currentSeries) {
+    return null;
+  }
+
+  const categoriesRef: XlsxChartReference = {
+    ...(currentSeries.categoriesRef ?? {}),
+    formula: parsed.categoryFormula
+  };
+  const valuesRef: XlsxChartReference = {
+    ...(currentSeries.valuesRef ?? {}),
+    formula: parsed.valueFormula
+  };
+  const bubbleSizeRef: XlsxChartReference | null = chart.chartType === "Bubble" || parsed.bubbleSizeFormula
+    ? {
+        ...(currentSeries.bubbleSizeRef ?? {}),
+        formula: parsed.bubbleSizeFormula
+      }
+    : currentSeries.bubbleSizeRef ?? null;
+  const raw = {
+    ...(currentSeries.raw ?? {})
+  };
+  if (parsed.nameFormula) {
+    raw.name = parsed.nameFormula;
+  } else {
+    delete raw.name;
+  }
+
+  const nextSeries: XlsxChartSeries = {
+    ...currentSeries,
+    bubbleSizeRef,
+    bubbleSizes: workbook && bubbleSizeRef?.formula
+      ? resolveReferenceValues(workbook, chart.workbookSheetIndex, bubbleSizeRef, "value").map((value) => (
+          typeof value === "number" && Number.isFinite(value) ? value : null
+        ))
+      : currentSeries.bubbleSizes,
+    categories: workbook
+      ? resolveReferenceValues(workbook, chart.workbookSheetIndex, categoriesRef, "category")
+      : currentSeries.categories,
+    categoriesRef,
+    name: parsed.nameLiteral ?? (
+      parsed.nameFormula && workbook
+        ? resolveSeriesName(workbook, chart.workbookSheetIndex, parsed.nameFormula)
+        : parsed.nameFormula ?? currentSeries.name
+    ),
+    raw,
+    values: workbook
+      ? resolveReferenceValues(workbook, chart.workbookSheetIndex, valuesRef, "value").map((value) => (
+          typeof value === "number" && Number.isFinite(value) ? value : null
+        ))
+      : currentSeries.values,
+    valuesRef
+  };
+
+  return {
+    ...chart,
+    series: chart.series.map((series, index) => index === seriesIndex ? nextSeries : series)
+  };
+}
+
 function normalizeWorksheetVisibility(value: unknown): "hidden" | "veryHidden" | "visible" {
   return value === "hidden" || value === "veryHidden" ? value : "visible";
 }
@@ -1978,6 +2200,10 @@ function getLocalChildren(parent: ParentNode, localName: string) {
   );
 }
 
+function removeLocalChildren(parent: ParentNode, localName: string) {
+  getLocalChildren(parent, localName).forEach((node) => node.parentNode?.removeChild(node));
+}
+
 function getLocalDescendants(parent: ParentNode, localName: string) {
   return Array.from((parent as Element | Document).getElementsByTagName("*")).filter(
     (node) => node.localName === localName
@@ -3883,6 +4109,7 @@ function setChartTitle(chartNode: Element, value: string | undefined) {
 
 function setRefFormula(parent: Element, refNodeName: string, formula: string | undefined) {
   if (!formula) {
+    removeLocalChildren(parent, refNodeName);
     return;
   }
 
@@ -3890,38 +4117,62 @@ function setRefFormula(parent: Element, refNodeName: string, formula: string | u
   setLeafValue(refNode, "f", formula);
 }
 
-function updateSeriesNodes(chartTypeNode: Element, chart: Partial<XlsxChart>) {
+function setSeriesText(seriesNode: Element, series: XlsxChartSeries) {
+  const raw = series.raw && typeof series.raw === "object" ? series.raw as Record<string, unknown> : null;
+  const nameFormula = typeof raw?.name === "string" && raw.name.length > 0 ? raw.name : undefined;
+  if (!nameFormula && series.name === undefined) {
+    return;
+  }
+
+  const tx = ensureChild(seriesNode, "tx");
+  removeLocalChildren(tx, "strRef");
+  removeLocalChildren(tx, "v");
+  if (nameFormula) {
+    const strRef = ensureChild(tx, "strRef");
+    setLeafValue(strRef, "f", nameFormula);
+    return;
+  }
+
+  setLeafValue(tx, "v", series.name ?? "");
+}
+
+function updateSeriesNodes(plotAreaNode: Element, chart: Partial<XlsxChart>) {
   if (!chart.series) {
     return;
   }
 
-  const seriesNodes = getLocalDescendants(chartTypeNode, "ser");
+  const seriesNodes = getLocalDescendants(plotAreaNode, "ser");
   chart.series.forEach((series, index) => {
     const seriesNode = seriesNodes[index];
     if (!seriesNode) {
       return;
     }
 
-    if (series.name !== undefined) {
-      const tx = ensureChild(seriesNode, "tx");
-      const strRef = ensureChild(tx, "strRef");
-      setLeafValue(strRef, "f", series.name);
-    }
+    setSeriesText(seriesNode, series);
     if (series.categoriesRef?.formula) {
-      const target = (
-        chart.chartType === "Scatter" || chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth"
-      )
-        ? ensureChild(seriesNode, "xVal")
-        : ensureChild(seriesNode, "cat");
-      setRefFormula(target, "strRef", series.categoriesRef.formula);
+      const target = getFirstLocalChild(seriesNode, "xVal")
+        ?? getFirstLocalChild(seriesNode, "cat")
+        ?? (
+          chart.chartType === "Scatter" || chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth" || chart.chartType === "Bubble"
+            ? ensureChild(seriesNode, "xVal")
+            : ensureChild(seriesNode, "cat")
+        );
+      const categoryRefName = target.localName === "xVal" || getFirstLocalChild(target, "numRef") ? "numRef" : "strRef";
+      setRefFormula(target, categoryRefName, series.categoriesRef.formula);
     }
     if (series.valuesRef?.formula) {
-      const target = (
-        chart.chartType === "Scatter" || chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth"
-      )
-        ? ensureChild(seriesNode, "yVal")
-        : ensureChild(seriesNode, "val");
+      const target = getFirstLocalChild(seriesNode, "yVal")
+        ?? getFirstLocalChild(seriesNode, "val")
+        ?? (
+          chart.chartType === "Scatter" || chart.chartType === "ScatterLines" || chart.chartType === "ScatterSmooth" || chart.chartType === "Bubble"
+            ? ensureChild(seriesNode, "yVal")
+            : ensureChild(seriesNode, "val")
+        );
       setRefFormula(target, "numRef", series.valuesRef.formula);
+    }
+    if (series.bubbleSizeRef) {
+      const target = getFirstLocalChild(seriesNode, "bubbleSize") ?? ensureChild(seriesNode, "bubbleSize");
+      setRefFormula(target, "numRef", series.bubbleSizeRef.formula);
     }
     if (series.invertIfNegative !== undefined) {
       setBooleanValue(seriesNode, "invertIfNegative", series.invertIfNegative);
@@ -4100,7 +4351,7 @@ export function updateWorkbookChartDefinition(
   if (patch.dataLabels) {
     updateDataLabels(chartTypeNode, patch.dataLabels);
   }
-  updateSeriesNodes(chartTypeNode, patch);
+  updateSeriesNodes(plotAreaNode, patch);
   updateAxisNode(
     getLocalChildren(plotAreaNode, "catAx")[0]
       ?? getLocalChildren(plotAreaNode, "dateAx")[0]

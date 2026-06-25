@@ -25,7 +25,7 @@ import countries50m from "world-atlas/countries-50m.json";
 import { MemoSurfaceChartComposite } from "./surface-regl";
 import type { HierarchyNode, HierarchyRectangularNode } from "d3-hierarchy";
 import type { Feature, FeatureCollection, Geometry } from "geojson";
-import type { XlsxChart, XlsxChartAxis, XlsxChartSeries, XlsxChartTypeGroup, XlsxImageRect } from "./types";
+import type { XlsxChart, XlsxChartAxis, XlsxChartElementSelection, XlsxChartSeries, XlsxChartTypeGroup, XlsxImageRect } from "./types";
 
 type ChartRendererPalette = {
   border: string;
@@ -36,8 +36,11 @@ type ChartRendererPalette = {
 
 type ChartSvgProps = {
   chart: XlsxChart;
+  onChartElementDoubleClick?: (selection: XlsxChartElementSelection, event: React.MouseEvent<SVGSVGElement>) => void;
+  onChartElementPointerDown?: (selection: XlsxChartElementSelection, event: React.PointerEvent<SVGSVGElement>) => void;
   palette: ChartRendererPalette;
   rect: XlsxImageRect;
+  selectedChartElement?: XlsxChartElementSelection | null;
 };
 
 type LegendItem = {
@@ -87,6 +90,163 @@ type BarRect = {
   width: number;
   top: number;
 };
+
+type ChartElementDataOptions = {
+  selectionMode?: "seriesFirst";
+};
+
+function chartElementDataProps(seriesIndex: number, pointIndex?: number, options?: ChartElementDataOptions) {
+  return {
+    "data-xlsx-chart-point-index": typeof pointIndex === "number" ? String(pointIndex) : undefined,
+    "data-xlsx-chart-selection-mode": options?.selectionMode,
+    "data-xlsx-chart-series-index": String(seriesIndex),
+    style: {
+      cursor: "pointer",
+      pointerEvents: "all"
+    } as React.CSSProperties
+  };
+}
+
+function barChartElementDataProps(seriesIndex: number, pointIndex: number) {
+  return chartElementDataProps(seriesIndex, pointIndex, { selectionMode: "seriesFirst" });
+}
+
+function resolveChartElementTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+
+  return target.closest("[data-xlsx-chart-series-index]") as HTMLElement | SVGElement | null;
+}
+
+function resolveChartSelectionFromTarget(
+  chart: XlsxChart,
+  target: EventTarget | null,
+  selectedChartElement: XlsxChartElementSelection | null | undefined
+): XlsxChartElementSelection | null {
+  const element = resolveChartElementTarget(target);
+  if (!element) {
+    return selectedChartElement?.chartId === chart.id
+      ? { chartId: chart.id, kind: "chart" }
+      : { chartId: chart.id, kind: "chart" };
+  }
+
+  const seriesIndex = Number(element.dataset.xlsxChartSeriesIndex);
+  if (!Number.isInteger(seriesIndex) || seriesIndex < 0 || seriesIndex >= chart.series.length) {
+    return null;
+  }
+
+  const series = chart.series[seriesIndex];
+  if (!series) {
+    return null;
+  }
+
+  const rawPointIndex = element.dataset.xlsxChartPointIndex;
+  const rawElementKind = element.dataset.xlsxChartElementKind;
+  const selectionMode = element.dataset.xlsxChartSelectionMode;
+  const pointIndex = rawPointIndex == null || rawPointIndex === "" ? null : Number(rawPointIndex);
+  const hasPoint = pointIndex != null && Number.isInteger(pointIndex) && pointIndex >= 0;
+  const sameSelectedSeries = selectedChartElement?.chartId === chart.id
+    && selectedChartElement.kind !== "chart"
+    && selectedChartElement.seriesIndex === seriesIndex;
+  if (hasPoint && (selectionMode !== "seriesFirst" || sameSelectedSeries)) {
+    return {
+      chartId: chart.id,
+      kind: "point",
+      pointIndex,
+      seriesId: series.id,
+      seriesIndex
+    };
+  }
+
+  return {
+    chartId: chart.id,
+    kind: rawElementKind === "legendEntry" ? "legendEntry" : "series",
+    seriesId: series.id,
+    seriesIndex
+  };
+}
+
+function isSelectedChartSeries(
+  selectedChartElement: XlsxChartElementSelection | null | undefined,
+  chartId: string,
+  seriesIndex: number
+) {
+  return selectedChartElement?.chartId === chartId
+    && selectedChartElement.kind !== "chart"
+    && selectedChartElement.seriesIndex === seriesIndex;
+}
+
+function isSelectedChartPoint(
+  selectedChartElement: XlsxChartElementSelection | null | undefined,
+  chartId: string,
+  seriesIndex: number,
+  pointIndex: number
+) {
+  return selectedChartElement?.chartId === chartId
+    && selectedChartElement.kind === "point"
+    && selectedChartElement.seriesIndex === seriesIndex
+    && selectedChartElement.pointIndex === pointIndex;
+}
+
+function isSelectedChartPointOrSeries(
+  selectedChartElement: XlsxChartElementSelection | null | undefined,
+  chartId: string,
+  seriesIndex: number,
+  pointIndex: number
+) {
+  return isSelectedChartPoint(selectedChartElement, chartId, seriesIndex, pointIndex)
+    || (
+      isSelectedChartSeries(selectedChartElement, chartId, seriesIndex)
+      && selectedChartElement?.kind !== "point"
+    );
+}
+
+function renderSelectionRectHandles(
+  key: string,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  color = "#64748b"
+) {
+  return renderSelectionPointHandles(
+    key,
+    [
+      { x: left, y: top },
+      { x: left + width, y: top },
+      { x: left, y: top + height },
+      { x: left + width, y: top + height }
+    ],
+    color
+  );
+}
+
+function renderSelectionPointHandles(
+  key: string,
+  points: Array<{ x: number; y: number }>,
+  color = "#64748b"
+) {
+  const radius = 3;
+
+  return (
+    <g key={key} pointerEvents="none">
+      {points.map((point, index) => (
+        <circle
+          cx={point.x}
+          cy={point.y}
+          fill="#ffffff"
+          key={`${key}-handle-${index}`}
+          r={radius}
+          stroke={color}
+          strokeWidth={1.1}
+          style={{ filter: "drop-shadow(0 1px 2px rgba(15, 23, 42, 0.18))" }}
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </g>
+  );
+}
 
 type ChartHierarchyDatum = {
   children?: ChartHierarchyDatum[];
@@ -2221,7 +2381,12 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
         {items.map((item, index) => {
           const y = startY + index * 18;
           return (
-            <g key={`legend-${index}`} transform={`translate(${x}, ${y})`}>
+              <g
+                {...(index < chart.series.length ? chartElementDataProps(index) : {})}
+                data-xlsx-chart-element-kind={index < chart.series.length ? "legendEntry" : undefined}
+                key={`legend-${index}`}
+                transform={`translate(${x}, ${y})`}
+              >
               <rect fill={item.color} height={swatchSize} rx={1.2} ry={1.2} width={swatchSize} x={0} y={-7} />
               <text fill={textColor} fontSize={10} x={textOffset} y={0}>
                 {item.label}
@@ -2241,7 +2406,12 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
       {items.map((item, index) => {
         const labelWidth = Math.min(96, item.label.length * 5.4);
         const node = (
-          <g key={`legend-${index}`} transform={`translate(${cursorX}, ${rowY})`}>
+            <g
+              {...(index < chart.series.length ? chartElementDataProps(index) : {})}
+              data-xlsx-chart-element-kind={index < chart.series.length ? "legendEntry" : undefined}
+              key={`legend-${index}`}
+              transform={`translate(${cursorX}, ${rowY})`}
+            >
             <rect fill={item.color} height={swatchSize} rx={1.2} ry={1.2} width={swatchSize} x={0} y={-7} />
             <text fill={textColor} fontSize={10} x={textOffset} y={0}>
               {item.label}
@@ -2650,7 +2820,8 @@ function renderLineOrAreaChart3d(
   minValue: number,
   maxValue: number,
   isAreaChart: boolean,
-  isStackedSeries: boolean
+  isStackedSeries: boolean,
+  selectedChartElement?: XlsxChartElementSelection | null
 ) {
   const plot = layout.plot;
   const valueDomain = resolveAxisDomainWithChartOverrides(
@@ -2737,6 +2908,7 @@ function renderLineOrAreaChart3d(
       return {
         bottom,
         bottomBack,
+        categoryIndex,
         defined: point.defined,
         depth: top.depth,
         depthBack: topBack?.depth ?? top.depth,
@@ -2776,6 +2948,7 @@ function renderLineOrAreaChart3d(
     points: series.map((point) => ({
       bottom: toScreenPoint(point.bottom),
       bottomBack: point.bottomBack ? toScreenPoint(point.bottomBack) : null,
+      categoryIndex: point.categoryIndex,
       defined: point.defined,
       top: toScreenPoint(point.top),
       topBack: point.topBack ? toScreenPoint(point.topBack) : null
@@ -2879,6 +3052,7 @@ function renderLineOrAreaChart3d(
               return (
                 <React.Fragment key={`line3d-area-face-${seriesIndex}-${pointIndex}`}>
                   <path
+                    {...chartElementDataProps(seriesIndex)}
                     d={topFace}
                     fill={lightenColor(fillColor, 0.08)}
                     fillOpacity={0.8}
@@ -2886,6 +3060,7 @@ function renderLineOrAreaChart3d(
                     strokeWidth={0.8}
                   />
                   <path
+                    {...chartElementDataProps(seriesIndex)}
                     d={bottomFace}
                     fill={darkenColor(fillColor, 0.2)}
                     fillOpacity={0.34}
@@ -2919,6 +3094,7 @@ function renderLineOrAreaChart3d(
           <g key={`line3d-series-${seriesIndex}`}>
             {isAreaChart && isStackedSeries && areaBackPoints.length >= 3 ? (
               <path
+                {...chartElementDataProps(seriesIndex)}
                 d={buildLinearSvgPath(areaBackPoints, true)}
                 fill={darkenColor(fillColor, 0.18)}
                 fillOpacity={0.44}
@@ -2929,6 +3105,7 @@ function renderLineOrAreaChart3d(
             {slabFaces}
             {startCap ? (
               <path
+                {...chartElementDataProps(seriesIndex)}
                 d={startCap}
                 fill={darkenColor(fillColor, 0.24)}
                 fillOpacity={0.54}
@@ -2938,6 +3115,7 @@ function renderLineOrAreaChart3d(
             ) : null}
             {endCap ? (
               <path
+                {...chartElementDataProps(seriesIndex)}
                 d={endCap}
                 fill={darkenColor(fillColor, 0.14)}
                 fillOpacity={0.6}
@@ -2947,6 +3125,7 @@ function renderLineOrAreaChart3d(
             ) : null}
             {isAreaChart && areaPoints.length >= 3 ? (
               <path
+                {...chartElementDataProps(seriesIndex)}
                 d={buildLinearSvgPath(areaPoints, true)}
                 fill={fillColor}
                 fillOpacity={0.74}
@@ -2969,6 +3148,7 @@ function renderLineOrAreaChart3d(
                 ))
               : null}
             <path
+              {...chartElementDataProps(seriesIndex)}
               d={buildLinearSvgPath(linePoints)}
               fill="none"
               stroke={strokeColor}
@@ -2982,6 +3162,7 @@ function renderLineOrAreaChart3d(
                     transform={`translate(${toSvgNumber(point.top.x)}, ${toSvgNumber(point.top.y)})`}
                   >
                     <path
+                      {...chartElementDataProps(seriesIndex, point.categoryIndex)}
                       d={markerPath}
                       fill={chart.series[seriesIndex]?.markerColor ?? fillColor}
                       stroke={chart.series[seriesIndex]?.markerLineColor ?? chart.chartAreaFillColor ?? palette.surface}
@@ -2990,6 +3171,25 @@ function renderLineOrAreaChart3d(
                   </g>
                 ))
               : null}
+            {definedPoints.map((point) => (
+              <circle
+                {...chartElementDataProps(seriesIndex, point.categoryIndex)}
+                cx={point.top.x}
+                cy={point.top.y}
+                fill="transparent"
+                key={`line3d-hit-${seriesIndex}-${point.categoryIndex}`}
+                r={7}
+                stroke="none"
+              />
+            ))}
+            {definedPoints.map((point) => (
+              isSelectedChartPointOrSeries(selectedChartElement, chart.id, seriesIndex, point.categoryIndex)
+                ? renderSelectionPointHandles(
+                    `line3d-selection-${seriesIndex}-${point.categoryIndex}`,
+                    [{ x: point.top.x, y: point.top.y }]
+                  )
+                : null
+            ))}
           </g>
         );
       })}
@@ -3021,7 +3221,7 @@ function renderLineOrAreaChart3d(
   );
 }
 
-function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
+function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string, selectedChartElement?: XlsxChartElementSelection | null) {
   if (chart.series.length === 0) {
     return null;
   }
@@ -3492,9 +3692,14 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       {frameNode}
       {depthAxisNode}
       {chart.is3d
-        ? sortedBars.map((bar) => renderExtrudedRect(bar))
+        ? sortedBars.map((bar) => (
+            <g key={`bar-hit-${bar.key}`} {...barChartElementDataProps(bar.seriesIndex, bar.categoryIndex)}>
+              {renderExtrudedRect(bar)}
+            </g>
+          ))
         : renderedBars.map((bar) => (
             <rect
+              {...barChartElementDataProps(bar.seriesIndex, bar.categoryIndex)}
               key={bar.key}
               fill={bar.color}
               height={bar.height}
@@ -3505,11 +3710,20 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
               y={bar.top}
             />
           ))}
+      {renderedBars.map((bar) => (
+        isSelectedChartPoint(selectedChartElement, chart.id, bar.seriesIndex, bar.categoryIndex)
+        || (
+          isSelectedChartSeries(selectedChartElement, chart.id, bar.seriesIndex)
+          && selectedChartElement?.kind !== "point"
+        )
+          ? renderSelectionRectHandles(`bar-selection-${bar.key}`, bar.left, bar.top, bar.width, bar.height)
+          : null
+      ))}
     </g>
   );
 }
 
-function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
+function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string, selectedChartElement?: XlsxChartElementSelection | null) {
   if (chart.series.length === 0) {
     return null;
   }
@@ -3666,7 +3880,8 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
       minValue,
       maxValue,
       isAreaChart,
-      isStackedSeries
+      isStackedSeries,
+      selectedChartElement
     );
   }
 
@@ -3806,6 +4021,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
               : null}
             {isAreaChart ? (
               <path
+                {...chartElementDataProps(seriesIndex)}
                 d={areaPath}
                 fill={seriesFillColor}
                 fillOpacity={1}
@@ -3813,6 +4029,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
               />
             ) : null}
             <path
+              {...chartElementDataProps(seriesIndex)}
               d={linePath}
               fill="none"
               stroke={chartSeriesStrokeColor(chart, seriesIndex)}
@@ -3823,6 +4040,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
             {points.map((point, pointIndex) => (
               point.y == null ? null : (
                 <circle
+                  {...chartElementDataProps(seriesIndex, pointIndex)}
                   key={`line-marker-${seriesIndex}-${pointIndex}`}
                   cx={point.x}
                   cy={yScale(point.y)}
@@ -3833,6 +4051,25 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
                 />
               )
             ))}
+            {points.map((point, pointIndex) => (
+              point.y != null && (
+                isSelectedChartPoint(selectedChartElement, chart.id, seriesIndex, pointIndex)
+                || (
+                  isSelectedChartSeries(selectedChartElement, chart.id, seriesIndex)
+                  && selectedChartElement?.kind !== "point"
+                )
+              )
+                ? isAreaChart
+                  ? renderSelectionPointHandles(`area-selection-${seriesIndex}-${pointIndex}`, [{ x: point.x, y: yScale(point.y) }])
+                  : renderSelectionRectHandles(
+                      `line-selection-${seriesIndex}-${pointIndex}`,
+                      point.x - 4,
+                      yScale(point.y) - 4,
+                      8,
+                      8
+                    )
+                : null
+            ))}
           </g>
         );
       })}
@@ -3840,7 +4077,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
   );
 }
 
-function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const groups = buildComboGroups(chart);
   const columnGroup = groups.find((group) => group.chartType.startsWith("Column"));
   const lineGroup = groups.find((group) => group.chartType.startsWith("Line"));
@@ -3883,6 +4120,10 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
   const categoryPositions = categories.map((category) => (
     (categoryScale(category) ?? plot.left) + categoryScale.bandwidth() / 2
   ));
+  const resolveGlobalSeriesIndex = (series: XlsxChartSeries) => {
+    const index = chart.series.findIndex((candidate) => candidate.id === series.id);
+    return index >= 0 ? index : 0;
+  };
 
   const primaryValues = columnGroup.series.flatMap((series) => (
     series.values.map((value) => safeNumber(value)).filter((value): value is number => value != null)
@@ -3951,6 +4192,7 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         y2={plot.top + plot.height}
       />
       {columnGroup.series.flatMap((series, seriesIndex) => categories.map((category, categoryIndex) => {
+        const globalSeriesIndex = resolveGlobalSeriesIndex(series);
         const value = safeNumber(series.values[categoryIndex]) ?? 0;
         const categoryStart = categoryScale(category) ?? plot.left;
         const barWidth = Math.max(1, histogramColumns ? categoryScale.bandwidth() : seriesScale.bandwidth());
@@ -3958,20 +4200,37 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         const y = primaryScale(Math.max(0, value));
         const zeroY = primaryScale(0);
         const height = Math.max(1, Math.abs(zeroY - primaryScale(value)));
+        const selected = isSelectedChartPoint(selectedChartElement, chart.id, globalSeriesIndex, categoryIndex)
+          || (
+            isSelectedChartSeries(selectedChartElement, chart.id, globalSeriesIndex)
+            && selectedChartElement?.kind !== "point"
+          );
         return (
-          <rect
-            key={`combo-bar-${seriesIndex}-${categoryIndex}`}
-            fill={series.color ?? series.lineColor ?? chartSeriesColor(primaryChart, seriesIndex)}
-            height={height}
-            stroke={histogramColumns ? "none" : (series.lineColor ?? series.color ?? chartSeriesStrokeColor(primaryChart, seriesIndex))}
-            strokeWidth={histogramColumns ? 0 : 1}
-            width={barWidth}
-            x={x}
-            y={Math.min(y, zeroY)}
-          />
+          <React.Fragment key={`combo-bar-${seriesIndex}-${categoryIndex}`}>
+            <rect
+              {...barChartElementDataProps(globalSeriesIndex, categoryIndex)}
+              fill={series.color ?? series.lineColor ?? chartSeriesColor(primaryChart, seriesIndex)}
+              height={height}
+              stroke={selected ? "#64748b" : (histogramColumns ? "none" : (series.lineColor ?? series.color ?? chartSeriesStrokeColor(primaryChart, seriesIndex)))}
+              strokeWidth={selected ? 2 : (histogramColumns ? 0 : 1)}
+              width={barWidth}
+              x={x}
+              y={Math.min(y, zeroY)}
+            />
+            {selected
+              ? renderSelectionRectHandles(
+                  `combo-bar-selection-${globalSeriesIndex}-${categoryIndex}`,
+                  x,
+                  Math.min(y, zeroY),
+                  barWidth,
+                  height
+                )
+              : null}
+          </React.Fragment>
         );
       }))}
       {lineGroup.series.map((series, seriesIndex) => {
+        const globalSeriesIndex = resolveGlobalSeriesIndex(series);
         const points = categories.map((category, categoryIndex) => ({
           x: (categoryScale(category) ?? plot.left) + categoryScale.bandwidth() / 2,
           y: safeNumber(series.values[categoryIndex])
@@ -3987,6 +4246,7 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         return (
           <g key={`combo-line-${seriesIndex}`}>
             <path
+              {...chartElementDataProps(globalSeriesIndex)}
               d={path}
               fill="none"
               stroke={series.lineColor ?? series.color ?? chartSeriesStrokeColor(chart, columnGroup.series.length + seriesIndex)}
@@ -3997,6 +4257,7 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
             {points.map((point, pointIndex) => (
               point.y == null ? null : (
                 <path
+                  {...chartElementDataProps(globalSeriesIndex, pointIndex)}
                   d={markerSymbolPath(normalizeChartMarkerSymbol(series.markerSymbol), Math.max(4, series.markerSize ?? 7)) || markerSymbolPath("circle", 7)}
                   fill={series.markerColor ?? series.color ?? series.lineColor ?? chartSeriesColor(chart, columnGroup.series.length + seriesIndex)}
                   key={`combo-line-marker-${seriesIndex}-${pointIndex}`}
@@ -4006,6 +4267,17 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
                 />
               )
             ))}
+            {points.map((point, pointIndex) => (
+              point.y != null && isSelectedChartPointOrSeries(selectedChartElement, chart.id, globalSeriesIndex, pointIndex)
+                ? renderSelectionRectHandles(
+                    `combo-line-selection-${globalSeriesIndex}-${pointIndex}`,
+                    point.x - 4,
+                    secondaryScale(point.y) - 4,
+                    8,
+                    8
+                  )
+                : null
+            ))}
           </g>
         );
       })}
@@ -4013,7 +4285,7 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
   );
 }
 
-function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, smooth: boolean) {
+function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, smooth: boolean, selectedChartElement?: XlsxChartElementSelection | null) {
   const plot = layout.plot;
   const rawRecord = chart.raw && typeof chart.raw === "object"
     ? chart.raw as Record<string, unknown>
@@ -4258,6 +4530,7 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
           <g key={`scatter-series-${seriesIndex}`}>
             {shouldDrawLine && linePath.length > 0 ? (
               <path
+                {...chartElementDataProps(seriesIndex)}
                 d={linePath}
                 fill="none"
                 stroke={series.lineColor ?? chartSeriesStrokeColor(chart, seriesIndex)}
@@ -4276,6 +4549,7 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
                   transform={`translate(${xScale(point.x)}, ${yScale(point.y)})`}
                 >
                   <path
+                    {...chartElementDataProps(seriesIndex, pointIndex, { selectionMode: "seriesFirst" })}
                     d={markerPath}
                     fill={markerFill}
                     stroke="none"
@@ -4284,6 +4558,18 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
                 </g>
               );
             })}
+            {seriesPoints.points.map((point, pointIndex) => (
+              isSelectedChartPoint(selectedChartElement, chart.id, seriesIndex, pointIndex)
+              || (
+                isSelectedChartSeries(selectedChartElement, chart.id, seriesIndex)
+                && selectedChartElement?.kind !== "point"
+              )
+                ? renderSelectionPointHandles(
+                    `scatter-selection-${seriesIndex}-${pointIndex}`,
+                    [{ x: xScale(point.x), y: yScale(point.y) }]
+                  )
+                : null
+            ))}
           </g>
         );
       })}
@@ -4291,7 +4577,7 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   );
 }
 
-function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const plot = layout.plot;
   const pointsBySeries = chart.series.map((series) => (
     series.values.map((value, index) => {
@@ -4434,6 +4720,7 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
             return (
               <g key={`bubble-${seriesIndex}-${point.index}`}>
                 <circle
+                  {...chartElementDataProps(seriesIndex, point.index, { selectionMode: "seriesFirst" })}
                   cx={xScale(point.x)}
                   cy={yScale(point.y)}
                   fill={isBubble3d ? `url(#bubble3d-grad-${chart.id}-${seriesIndex})` : baseColor}
@@ -4442,6 +4729,19 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
                   stroke={darkenColor(baseColor, 0.18)}
                   strokeWidth={isBubble3d ? 1.2 : 1}
                 />
+                {isSelectedChartPoint(selectedChartElement, chart.id, seriesIndex, point.index)
+                || (
+                  isSelectedChartSeries(selectedChartElement, chart.id, seriesIndex)
+                  && selectedChartElement?.kind !== "point"
+                )
+                  ? renderSelectionRectHandles(
+                      `bubble-selection-${seriesIndex}-${point.index}`,
+                      xScale(point.x) - radius,
+                      yScale(point.y) - radius,
+                      radius * 2,
+                      radius * 2
+                    )
+                  : null}
                 {isBubble3d ? (
                   <ellipse
                     cx={xScale(point.x) - radius * 0.16}
@@ -4472,7 +4772,7 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
   );
 }
 
-function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   if (chart.series.length === 0) {
     return null;
   }
@@ -4573,12 +4873,14 @@ function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layou
           if (rawValue == null) {
             return {
               defined: false,
+              pointIndex: categoryIndex,
               ...radialPoint(categoryIndex, 0)
             };
           }
           const ratio = clamp((rawValue - minValue) / (safeMax - minValue), 0, 1);
           return {
             defined: true,
+            pointIndex: categoryIndex,
             ...radialPoint(categoryIndex, ratio)
           };
         });
@@ -4596,41 +4898,55 @@ function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         const markerSymbol = normalizeChartMarkerSymbol(series.markerSymbol);
         const markerSize = Math.max(4, series.markerSize ?? 6);
         const markerPath = markerSymbolPath(markerSymbol, markerSize * 0.5);
-        const showMarkers = markerSymbol !== "none" && markerPath.length > 0;
-        return (
-          <g key={`radar-series-${seriesIndex}`}>
-            {definedPoints.length >= 2 ? (
-              <path
-                d={polygon}
-                fill={filled && !hasGap && definedPoints.length >= 3 ? color : "none"}
-                fillOpacity={filled ? 0.26 : 0}
-                stroke={chartSeriesStrokeColor(chart, seriesIndex)}
-                strokeWidth={1.8}
-              />
-            ) : null}
-            {showMarkers
-              ? definedPoints.map((point, pointIndex) => (
-                  <g
-                    key={`radar-point-${seriesIndex}-${pointIndex}`}
-                    transform={`translate(${point.x}, ${point.y})`}
-                  >
-                    <path
-                      d={markerPath}
-                      fill={series.markerColor ?? color}
-                      stroke={series.markerLineColor ?? chart.chartAreaFillColor ?? palette.surface}
-                      strokeWidth={1}
-                    />
-                  </g>
-                ))
-              : null}
-          </g>
-        );
+	        const showMarkers = markerSymbol !== "none" && markerPath.length > 0;
+	        return (
+	          <g key={`radar-series-${seriesIndex}`}>
+	            {definedPoints.length >= 2 ? (
+	              <path
+	                {...chartElementDataProps(seriesIndex)}
+	                d={polygon}
+	                fill={filled && !hasGap && definedPoints.length >= 3 ? color : "none"}
+	                fillOpacity={filled ? 0.26 : 0}
+	                stroke={chartSeriesStrokeColor(chart, seriesIndex)}
+	                strokeWidth={1.8}
+	              />
+	            ) : null}
+	            {showMarkers
+	              ? definedPoints.map((point) => (
+	                  <g
+	                    key={`radar-point-${seriesIndex}-${point.pointIndex}`}
+	                    transform={`translate(${point.x}, ${point.y})`}
+	                  >
+	                    <path
+	                      {...chartElementDataProps(seriesIndex, point.pointIndex)}
+	                      d={markerPath}
+	                      fill={series.markerColor ?? color}
+	                      stroke={series.markerLineColor ?? chart.chartAreaFillColor ?? palette.surface}
+	                      strokeWidth={1}
+	                    />
+	                  </g>
+	                ))
+	              : null}
+	            {definedPoints.map((point) => (
+	              isSelectedChartPoint(selectedChartElement, chart.id, seriesIndex, point.pointIndex)
+	              || (
+	                isSelectedChartSeries(selectedChartElement, chart.id, seriesIndex)
+	                && selectedChartElement?.kind !== "point"
+	              )
+	                ? renderSelectionPointHandles(
+	                    `radar-selection-${seriesIndex}-${point.pointIndex}`,
+	                      [{ x: point.x, y: point.y }]
+	                    )
+	                : null
+	            ))}
+	          </g>
+	        );
       })}
     </g>
   );
 }
 
-function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
+function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string, selectedChartElement?: XlsxChartElementSelection | null) {
   const pieSeriesIndex = selectPrimaryPieSeriesIndex(chart);
   const pieSeries = chart.series[pieSeriesIndex];
   const pieData = buildPieEntries(chart, pieSeriesIndex);
@@ -4826,6 +5142,24 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
         const midAngle = (arc.startAngle + arc.endAngle) / 2;
         const explodeX = Math.sin(midAngle) * explosion;
         const explodeY = -Math.cos(midAngle) * explosion * (isPie3d ? tilt : 1);
+        const isSliceSelected = isSelectedChartPoint(selectedChartElement, chart.id, pieSeriesIndex, arc.data.index)
+          || (
+            isSelectedChartSeries(selectedChartElement, chart.id, pieSeriesIndex)
+            && selectedChartElement?.kind !== "point"
+          );
+        const sliceHandlePoints = isSliceSelected
+          ? [
+              pieEllipsePoint(centerX, centerY, outerRadius, isPie3d ? tilt : 1, arc.startAngle),
+              pieEllipsePoint(centerX, centerY, outerRadius, isPie3d ? tilt : 1, midAngle),
+              pieEllipsePoint(centerX, centerY, outerRadius, isPie3d ? tilt : 1, arc.endAngle),
+              innerRadius > 0
+                ? pieEllipsePoint(centerX, centerY, innerRadius, isPie3d ? tilt : 1, midAngle)
+                : { x: centerX, y: centerY }
+            ].map((point) => ({
+              x: point.x + explodeX,
+              y: point.y + explodeY
+            }))
+          : [];
         const labelRadius = outerRadius + (chartType === "PieExploded" ? 8 : 12);
         const labelX = centerX + Math.sin(midAngle) * labelRadius + explodeX;
         const labelY = centerY - Math.cos(midAngle) * labelRadius * (isPie3d ? tilt : 1) + explodeY;
@@ -4859,14 +5193,18 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
           <React.Fragment key={`pie-top-${arc.data.index}`}>
             <g transform={`translate(${explodeX}, ${explodeY})`}>
               <path
+                {...chartElementDataProps(pieSeriesIndex, arc.data.index)}
                 d={(arcPath(arc) ?? "")}
                 fill={arc.data.color}
-                stroke={sliceSeparatorColor}
-                strokeWidth={sliceSeparatorWidth}
-                transform={`translate(${centerX}, ${centerY})${isPie3d ? ` scale(1, ${tilt})` : ""}`}
                 filter={isPie3d ? `url(#${shadowId})` : undefined}
+                stroke={isSliceSelected ? "#64748b" : sliceSeparatorColor}
+                strokeWidth={isSliceSelected ? Math.max(2, sliceSeparatorWidth) : sliceSeparatorWidth}
+                transform={`translate(${centerX}, ${centerY})${isPie3d ? ` scale(1, ${tilt})` : ""}`}
               />
             </g>
+            {isSliceSelected
+              ? renderSelectionPointHandles(`pie-selection-${arc.data.index}`, sliceHandlePoints)
+              : null}
             {dataLabelsEnabled && truncatedLabelText.length > 0 ? (
               <text
                 fill={resolveChartTextColor(chart)}
@@ -4897,7 +5235,7 @@ function renderPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   );
 }
 
-function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const pieSeriesIndex = selectPrimaryPieSeriesIndex(chart);
   const pieSeries = chart.series[pieSeriesIndex];
   const categories = getCategoryLabels(chart);
@@ -4923,10 +5261,11 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
   const secondaryTotal = secondaryIndices.reduce((sum, index) => sum + (values[index] ?? 0), 0);
   const primaryData = values.flatMap((value, index) => secondarySet.has(index)
     ? []
-    : [{ color: chartPointColor(chart, index, pieSeriesIndex), label: categories[index], value }]);
+    : [{ color: chartPointColor(chart, index, pieSeriesIndex), index, label: categories[index], value }]);
   if (secondaryTotal > 0) {
     primaryData.push({
       color: chartPointColor(chart, secondaryIndices[0] ?? 0, pieSeriesIndex),
+      index: secondaryIndices[0] ?? 0,
       label: "Other",
       value: secondaryTotal
     });
@@ -4936,7 +5275,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
   const pieCenterY = layout.plot.top + layout.plot.height * 0.55;
   const pieRadius = Math.max(16, Math.min(layout.plot.height, layout.plot.width * 0.45) * 0.3);
   const arc = d3Arc<{ endAngle: number; startAngle: number }>().innerRadius(0).outerRadius(pieRadius);
-  const pieArcs = d3Pie<{ color: string; label: string; value: number }>()
+  const pieArcs = d3Pie<{ color: string; index: number; label: string; value: number }>()
     .value((entry) => entry.value)
     .sort(null)
     .startAngle(((90 - (chart.firstSliceAngle ?? 0)) * Math.PI) / 180)
@@ -4947,6 +5286,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
   const connectorTargetX = layout.plot.left + layout.plot.width * 0.69;
   const secondaryData = secondaryIndices.map((index) => ({
     color: chartPointColor(chart, index, pieSeriesIndex),
+    index,
     label: categories[index] ?? "",
     value: values[index] ?? 0
   }));
@@ -4954,7 +5294,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
   const secondaryCenterY = pieCenterY;
   const secondaryRadius = pieRadius * clamp(((typeof raw.secondPieSize === "number" ? raw.secondPieSize : 100) / 100), 0.55, 1.5);
   const secondaryArc = d3Arc<{ endAngle: number; startAngle: number }>().innerRadius(0).outerRadius(secondaryRadius);
-  const secondaryPieArcs = d3Pie<{ color: string; label: string; value: number }>()
+  const secondaryPieArcs = d3Pie<{ color: string; index: number; label: string; value: number }>()
     .value((entry) => entry.value)
     .sort(null)
     .startAngle(((90 - (chart.firstSliceAngle ?? 0)) * Math.PI) / 180)
@@ -4968,16 +5308,26 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
 
   return (
     <g>
-      {pieArcs.map((entry, index) => (
-        <path
-          key={`bar-of-pie-main-${index}`}
-          d={arc(entry) ?? ""}
-          fill={entry.data.color}
-          stroke={chart.chartAreaFillColor ?? palette.surface}
-          strokeWidth={1}
-          transform={`translate(${pieCenterX}, ${pieCenterY})`}
-        />
-      ))}
+        {pieArcs.map((entry, index) => {
+          const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, pieSeriesIndex, entry.data.index);
+          const midAngle = (entry.startAngle + entry.endAngle) / 2;
+          const dot = pieEllipsePoint(pieCenterX, pieCenterY, pieRadius * 0.62, 1, midAngle);
+          return (
+            <React.Fragment key={`bar-of-pie-main-${index}`}>
+              <path
+                {...chartElementDataProps(pieSeriesIndex, entry.data.index)}
+                d={arc(entry) ?? ""}
+                fill={entry.data.color}
+                stroke={selected ? "#64748b" : chart.chartAreaFillColor ?? palette.surface}
+                strokeWidth={selected ? 2 : 1}
+                transform={`translate(${pieCenterX}, ${pieCenterY})`}
+              />
+              {selected
+                ? renderSelectionPointHandles(`bar-of-pie-main-selection-${index}`, [dot])
+                : null}
+            </React.Fragment>
+          );
+        })}
       <line
         stroke={chart.chartAreaBorderColor ?? palette.border}
         strokeWidth={1}
@@ -4995,33 +5345,54 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
         y2={layout.plot.top + layout.plot.height - 10}
       />
       {ofPieType === "pie"
-        ? secondaryPieArcs.map((entry, index) => (
-          <path
-            key={`bar-of-pie-secondary-pie-${index}`}
-            d={secondaryArc(entry) ?? ""}
-            fill={entry.data.color}
-            stroke={chart.chartAreaFillColor ?? palette.surface}
-            strokeWidth={1}
-            transform={`translate(${secondaryCenterX}, ${secondaryCenterY})`}
-          />
-        ))
+          ? secondaryPieArcs.map((entry, index) => {
+            const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, pieSeriesIndex, entry.data.index);
+            const midAngle = (entry.startAngle + entry.endAngle) / 2;
+            const dot = pieEllipsePoint(secondaryCenterX, secondaryCenterY, secondaryRadius * 0.62, 1, midAngle);
+            return (
+              <React.Fragment key={`bar-of-pie-secondary-pie-${index}`}>
+                <path
+                  {...chartElementDataProps(pieSeriesIndex, entry.data.index)}
+                  d={secondaryArc(entry) ?? ""}
+                  fill={entry.data.color}
+                  stroke={selected ? "#64748b" : chart.chartAreaFillColor ?? palette.surface}
+                  strokeWidth={selected ? 2 : 1}
+                  transform={`translate(${secondaryCenterX}, ${secondaryCenterY})`}
+                />
+                {selected
+                  ? renderSelectionPointHandles(`bar-of-pie-secondary-pie-selection-${index}`, [dot])
+                  : null}
+              </React.Fragment>
+            );
+          })
         : secondaryData.map((entry, index) => {
           const segmentHeight = index === secondaryData.length - 1
             ? Math.max(1, stackedBarTop + stackedBarHeight - stackCursor)
             : Math.max(1, (entry.value / secondaryTotalSafe) * stackedBarHeight);
           const y = stackCursor;
           stackCursor += segmentHeight;
+          const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, pieSeriesIndex, entry.index);
           return (
             <g key={`bar-of-pie-secondary-bar-${index}`}>
-              <rect
-                fill={entry.color}
-                height={segmentHeight}
-                stroke={chart.chartAreaFillColor ?? palette.surface}
-                strokeWidth={1}
+                <rect
+                  {...chartElementDataProps(pieSeriesIndex, entry.index)}
+                  fill={entry.color}
+                  height={segmentHeight}
+                  stroke={selected ? "#64748b" : chart.chartAreaFillColor ?? palette.surface}
+                  strokeWidth={selected ? 2 : 1}
                 width={stackedBarWidth}
                 x={stackedBarLeft}
                 y={y}
               />
+              {selected
+                ? renderSelectionRectHandles(
+                    `bar-of-pie-secondary-bar-selection-${index}`,
+                    stackedBarLeft,
+                    y,
+                    stackedBarWidth,
+                    segmentHeight
+                  )
+                : null}
               <text
                 fill={resolveChartAxisTextColor(chart)}
                 fontSize={10}
@@ -5038,7 +5409,7 @@ function renderBarOfPieChart(chart: XlsxChart, palette: ChartRendererPalette, la
   );
 }
 
-function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const plot = resolveSurfacePlotRect(chart, layout);
   const categories = getCategoryLabels(chart);
   const rows = chart.series.length;
@@ -5635,12 +6006,65 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   );
 }
 
+function renderSurfaceHitOverlay(
+  chart: XlsxChart,
+  layout: ChartLayout,
+  selectedChartElement?: XlsxChartElementSelection | null
+) {
+  const plot = resolveSurfacePlotRect(chart, layout);
+  const categories = getCategoryLabels(chart);
+  const rows = chart.series.length;
+  const cols = Math.max(
+    categories.length,
+    chart.series.reduce((max, series) => Math.max(max, series.values.length), 0)
+  );
+  if (rows === 0 || cols === 0) {
+    return null;
+  }
+
+  const cellWidth = plot.width / cols;
+  const cellHeight = plot.height / rows;
+  return (
+    <g>
+      {chart.series.flatMap((_, seriesIndex) => (
+        Array.from({ length: cols }, (_, pointIndex) => {
+          const left = plot.left + pointIndex * cellWidth;
+          const top = plot.top + seriesIndex * cellHeight;
+          const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, seriesIndex, pointIndex);
+          return (
+            <React.Fragment key={`surface-hit-${seriesIndex}-${pointIndex}`}>
+              <rect
+                {...chartElementDataProps(seriesIndex, pointIndex)}
+                fill="transparent"
+                height={cellHeight}
+                stroke="none"
+                width={cellWidth}
+                x={left}
+                y={top}
+              />
+              {selected
+                ? renderSelectionRectHandles(
+                    `surface-selection-${seriesIndex}-${pointIndex}`,
+                    left,
+                    top,
+                    cellWidth,
+                    cellHeight
+                  )
+                : null}
+            </React.Fragment>
+          );
+        })
+      ))}
+    </g>
+  );
+}
+
 function indexByName(series: XlsxChart["series"], matcher: RegExp) {
   const index = series.findIndex((entry) => matcher.test((entry.name ?? "").toLowerCase()));
   return index >= 0 ? index : null;
 }
 
-function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const categories = getCategoryLabels(chart);
   if (categories.length === 0 || chart.series.length < 2) {
     return null;
@@ -5765,8 +6189,12 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         const closeY = yScale(entry.close);
         const highY = yScale(entry.high);
         const lowY = yScale(entry.low);
+        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, closeIndex, index);
         return (
-          <g key={`stock-point-${index}`}>
+            <g
+              {...chartElementDataProps(closeIndex, index)}
+              key={`stock-point-${index}`}
+            >
             {hasVolume && entry.volume != null ? (
               <rect
                 fill={stockPalette.volumeFill}
@@ -5799,6 +6227,9 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
             {entry.open != null && openY != null ? (
               <line stroke={openTickColor} strokeWidth={1.8} x1={x - 7} x2={x} y1={openY} y2={openY} />
             ) : null}
+            {selected
+              ? renderSelectionPointHandles(`stock-selection-${index}`, [{ x, y: closeY }])
+              : null}
           </g>
         );
       })}
@@ -5806,7 +6237,7 @@ function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layou
   );
 }
 
-function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const stages = buildChartStages(chart);
   if (stages.length === 0) {
     return null;
@@ -5878,6 +6309,7 @@ function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, l
             : lightenColor(bar.color, 0.22);
         const connectorStart = index > 0 ? bars[index - 1] : null;
         const connectorY = connectorStart ? yScale(connectorStart.end) : 0;
+        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, 0, index);
 
         return (
           <g key={`waterfall-bar-${index}`}>
@@ -5892,17 +6324,21 @@ function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, l
                 y2={connectorY}
               />
             ) : null}
-            <rect
-              fill={fill}
-              rx={2}
-              ry={2}
-              stroke={darkenColor(fill, 0.22)}
-              strokeWidth={1}
+              <rect
+                {...chartElementDataProps(0, index)}
+                fill={fill}
+                rx={2}
+                ry={2}
+                stroke={selected ? "#64748b" : darkenColor(fill, 0.22)}
+                strokeWidth={selected ? 2 : 1}
               x={bandLeft}
               y={top}
               width={bandWidth}
               height={height}
             />
+            {selected
+              ? renderSelectionRectHandles(`waterfall-selection-${index}`, bandLeft, top, bandWidth, height)
+              : null}
             <text
               fill={labelColor}
               fontSize={10}
@@ -5928,7 +6364,7 @@ function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, l
   );
 }
 
-function renderFunnelChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderFunnelChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const stages = buildChartStages(chart)
     .map((stage) => ({ ...stage, value: Math.max(0, stage.value) }))
     .filter((stage) => stage.value > 0);
@@ -5951,20 +6387,25 @@ function renderFunnelChart(chart: XlsxChart, palette: ChartRendererPalette, layo
         const left = centerX - stageWidth * 0.5;
         const fill = stage.isSubtotal ? darkenColor(stage.color, 0.14) : stage.color;
         const labelFitsInside = stageWidth > 90;
+        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, 0, index);
 
         return (
           <g key={`funnel-stage-${index}`}>
-            <rect
-              fill={fill}
-              height={stageHeight}
+              <rect
+                {...chartElementDataProps(0, index)}
+                fill={fill}
+                height={stageHeight}
               rx={0}
               ry={0}
-              stroke={darkenColor(fill, 0.2)}
-              strokeWidth={1}
+                stroke={selected ? "#64748b" : darkenColor(fill, 0.2)}
+                strokeWidth={selected ? 2 : 1}
               width={stageWidth}
               x={left}
               y={topY}
             />
+            {selected
+              ? renderSelectionRectHandles(`funnel-selection-${index}`, left, topY, stageWidth, stageHeight)
+              : null}
             <text
               fill={labelColor}
               fontSize={10}
@@ -5981,7 +6422,7 @@ function renderFunnelChart(chart: XlsxChart, palette: ChartRendererPalette, layo
   );
 }
 
-function renderSunburstChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderSunburstChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const hierarchyData = buildHierarchyData(chart);
   if (!hierarchyData) {
     return null;
@@ -6020,15 +6461,20 @@ function renderSunburstChart(chart: XlsxChart, palette: ChartRendererPalette, la
         const arcSpan = node.x1 - node.x0;
         const canShowLabel = arcSpan * labelRadius > 26;
         const fill = resolveHierarchyNodeColor(chart, node);
+        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, 0, index);
 
         return (
           <g key={`sunburst-node-${index}`}>
-            <path
-              d={path}
-              fill={fill}
-              stroke={palette.surface}
-              strokeWidth={1}
+              <path
+                {...chartElementDataProps(0, index)}
+                d={path}
+                fill={fill}
+                stroke={selected ? "#64748b" : palette.surface}
+                strokeWidth={selected ? 2 : 1}
             />
+            {selected
+              ? renderSelectionPointHandles(`sunburst-selection-${index}`, [{ x: labelX, y: labelY }])
+              : null}
             {canShowLabel ? (
               <text
                 fill={darkenColor(fill, 0.65)}
@@ -6047,7 +6493,7 @@ function renderSunburstChart(chart: XlsxChart, palette: ChartRendererPalette, la
   );
 }
 
-function renderTreemapChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderTreemapChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const hierarchyData = buildHierarchyData(chart);
   if (!hierarchyData) {
     return null;
@@ -6070,20 +6516,25 @@ function renderTreemapChart(chart: XlsxChart, palette: ChartRendererPalette, lay
         const width = Math.max(0, leaf.x1 - leaf.x0);
         const height = Math.max(0, leaf.y1 - leaf.y0);
         const canShowLabel = width > 48 && height > 22;
+        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, 0, index);
 
         return (
           <g key={`treemap-leaf-${index}`}>
-            <rect
-              fill={fill}
-              rx={3}
-              ry={3}
-              stroke={palette.surface}
-              strokeWidth={1}
+              <rect
+                {...chartElementDataProps(0, index)}
+                fill={fill}
+                rx={3}
+                ry={3}
+                stroke={selected ? "#64748b" : palette.surface}
+                strokeWidth={selected ? 2 : 1}
               x={leaf.x0}
               y={leaf.y0}
               width={width}
               height={height}
             />
+            {selected
+              ? renderSelectionRectHandles(`treemap-selection-${index}`, leaf.x0, leaf.y0, width, height)
+              : null}
             {canShowLabel ? (
               <>
                 <text
@@ -6112,7 +6563,7 @@ function renderTreemapChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   );
 }
 
-function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const visibleSeries = chart.series.filter((series) => series.hidden !== true);
   if (visibleSeries.length === 0) {
     return null;
@@ -6232,9 +6683,10 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
         const outliers = entry.visibility.outliers
           ? entry.stats.outliers
           : [];
+        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, index, index);
 
         return (
-          <g key={`box-whisker-series-${index}`}>
+            <g {...chartElementDataProps(index)} key={`box-whisker-series-${index}`}>
             <line
               stroke={entry.lineColor}
               strokeWidth={1.5}
@@ -6267,16 +6719,26 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
               y1={lowerWhiskerY}
               y2={lowerWhiskerY}
             />
-            <rect
-              fill={lightenColor(entry.color, 0.35)}
+              <rect
+                {...chartElementDataProps(index, index)}
+                fill={lightenColor(entry.color, 0.35)}
               fillOpacity={0.72}
               height={Math.max(1, boxBottom - boxTop)}
-              stroke={entry.lineColor}
-              strokeWidth={1.5}
+                stroke={selected ? "#64748b" : entry.lineColor}
+                strokeWidth={selected ? 2 : 1.5}
               width={boxWidth}
               x={x - boxWidth * 0.5}
               y={boxTop}
             />
+            {selected
+              ? renderSelectionRectHandles(
+                  `box-whisker-selection-${index}`,
+                  x - boxWidth * 0.5,
+                  boxTop,
+                  boxWidth,
+                  Math.max(1, boxBottom - boxTop)
+                )
+              : null}
             <line
               stroke={darkenColor(entry.lineColor, 0.15)}
               strokeWidth={2}
@@ -6309,8 +6771,9 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
               const y = yScale(value);
               const jitter = ((pointIndex % 7) - 3) * (boxWidth / 16);
               return (
-                <circle
-                  key={`box-whisker-visible-${index}-${pointIndex}`}
+                  <circle
+                    {...chartElementDataProps(index, pointIndex)}
+                    key={`box-whisker-visible-${index}-${pointIndex}`}
                   cx={x + jitter}
                   cy={y}
                   fill={entry.color}
@@ -6323,8 +6786,9 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
             {outliers.map((value, pointIndex) => {
               const y = yScale(value);
               return (
-                <circle
-                  key={`box-whisker-outlier-${index}-${pointIndex}`}
+                  <circle
+                    {...chartElementDataProps(index, pointIndex)}
+                    key={`box-whisker-outlier-${index}-${pointIndex}`}
                   cx={x}
                   cy={y}
                   fill="#ffffff"
@@ -6350,7 +6814,7 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
   );
 }
 
-function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout) {
+function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
   const primarySeriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
   const primarySeries = chart.series[primarySeriesIndex] ?? null;
   if (!primarySeries) {
@@ -6460,15 +6924,23 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
               return resolveRegionMapValueColor(chart, primarySeriesIndex, ratio);
             })()
           : categoricalColorByLabel?.get(entry.colorLabel ?? "") ?? resolveRegionMapDataColor(chart, primarySeriesIndex);
+        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, primarySeriesIndex, index);
+        const centroid = path.centroid(entry.feature);
+        const canShowSelectionDot = Number.isFinite(centroid[0]) && Number.isFinite(centroid[1]);
         return (
-          <path
-            d={d}
-            fill={fill}
-            key={`region-map-value-${entry.key || index}`}
-            stroke={darkenColor(fill, 0.18)}
-            strokeLinejoin="round"
-            strokeWidth={0.85}
-          />
+          <React.Fragment key={`region-map-value-${entry.key || index}`}>
+            <path
+              {...chartElementDataProps(primarySeriesIndex, index)}
+              d={d}
+              fill={fill}
+              stroke={selected ? "#64748b" : darkenColor(fill, 0.18)}
+              strokeLinejoin="round"
+              strokeWidth={selected ? 1.8 : 0.85}
+            />
+            {selected && canShowSelectionDot
+              ? renderSelectionPointHandles(`region-map-selection-${index}`, [{ x: centroid[0], y: centroid[1] }])
+              : null}
+          </React.Fragment>
         );
       })}
       {showRegionLabels
@@ -6528,9 +7000,15 @@ function renderUnsupported(chart: XlsxChart, palette: ChartRendererPalette, layo
   );
 }
 
-function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
+function renderChartPlot(
+  chart: XlsxChart,
+  palette: ChartRendererPalette,
+  layout: ChartLayout,
+  chartType: string,
+  selectedChartElement?: XlsxChartElementSelection | null
+) {
   if (isComboChart(chart)) {
-    return renderComboChart(chart, palette, layout) ?? renderUnsupported(chart, palette, layout, "Combo");
+    return renderComboChart(chart, palette, layout, selectedChartElement) ?? renderUnsupported(chart, palette, layout, "Combo");
   }
   if (
     chartType === "ColumnClustered"
@@ -6540,7 +7018,7 @@ function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout
     || chartType === "BarStacked"
     || chartType === "BarPercentStacked"
   ) {
-    return renderBarChart(chart, palette, layout, chartType);
+    return renderBarChart(chart, palette, layout, chartType, selectedChartElement);
   }
   if (
     chartType === "Line"
@@ -6550,57 +7028,64 @@ function renderChartPlot(chart: XlsxChart, palette: ChartRendererPalette, layout
     || chartType === "AreaStacked"
     || chartType === "AreaPercentStacked"
   ) {
-    return renderLineOrAreaChart(chart, palette, layout, chartType);
+    return renderLineOrAreaChart(chart, palette, layout, chartType, selectedChartElement);
   }
   if (chartType === "Scatter") {
-    return renderScatterChart(chart, palette, layout, false);
+    return renderScatterChart(chart, palette, layout, false, selectedChartElement);
   }
   if (chartType === "ScatterLines") {
-    return renderScatterChart(chart, palette, layout, false);
+    return renderScatterChart(chart, palette, layout, false, selectedChartElement);
   }
   if (chartType === "ScatterSmooth") {
-    return renderScatterChart(chart, palette, layout, true);
+    return renderScatterChart(chart, palette, layout, true, selectedChartElement);
   }
   if (chartType === "Bubble") {
-    return renderBubbleChart(chart, palette, layout);
+    return renderBubbleChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Radar") {
-    return renderRadarChart(chart, palette, layout);
+    return renderRadarChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Pie" || chartType === "Pie3D" || chartType === "PieExploded" || chartType === "Doughnut") {
-    return renderPieChart(chart, palette, layout, chartType);
+    return renderPieChart(chart, palette, layout, chartType, selectedChartElement);
   }
   if (chartType === "BarOfPie") {
-    return renderBarOfPieChart(chart, palette, layout);
+    return renderBarOfPieChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Surface") {
-    return renderSurfaceChart(chart, palette, layout);
+    return renderSurfaceChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Stock") {
-    return renderStockChart(chart, palette, layout);
+    return renderStockChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Waterfall") {
-    return renderWaterfallChart(chart, palette, layout);
+    return renderWaterfallChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Funnel") {
-    return renderFunnelChart(chart, palette, layout);
+    return renderFunnelChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "BoxWhisker") {
-    return renderBoxWhiskerChart(chart, palette, layout);
+    return renderBoxWhiskerChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Sunburst") {
-    return renderSunburstChart(chart, palette, layout);
+    return renderSunburstChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "Treemap") {
-    return renderTreemapChart(chart, palette, layout);
+    return renderTreemapChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "RegionMap") {
-    return renderRegionMapChart(chart, palette, layout);
+    return renderRegionMapChart(chart, palette, layout, selectedChartElement);
   }
   return renderUnsupported(chart, palette, layout, chartType);
 }
 
-export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, rect }: ChartSvgProps) {
+export const MemoChartSvg = React.memo(function MemoChartSvg({
+  chart,
+  onChartElementDoubleClick,
+  onChartElementPointerDown,
+  palette,
+  rect,
+  selectedChartElement
+}: ChartSvgProps) {
   const renderChartType = normalizeRenderableChartType(chart);
   const legendItems = getLegendItems(chart, renderChartType, palette);
   const layout = buildLayout(chart, rect, legendItems);
@@ -6612,6 +7097,28 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, r
   const normalizedBorderColor = borderColor.trim().toLowerCase();
   const hideBackgroundRect = normalizedBackground === "transparent" && normalizedBorderColor === "transparent";
   const fontFamily = buildChartFontFamily(chart.fontFamily);
+  const handlePointerDown = React.useCallback((event: React.PointerEvent<SVGSVGElement>) => {
+    const selection = resolveChartSelectionFromTarget(chart, event.target, selectedChartElement);
+    if (!selection) {
+      return;
+    }
+
+    if (resolveChartElementTarget(event.target)) {
+      event.stopPropagation();
+    }
+    onChartElementPointerDown?.(selection, event);
+  }, [chart, onChartElementPointerDown, selectedChartElement]);
+  const handleDoubleClick = React.useCallback((event: React.MouseEvent<SVGSVGElement>) => {
+    const selection = resolveChartSelectionFromTarget(chart, event.target, selectedChartElement);
+    if (!selection) {
+      return;
+    }
+
+    if (resolveChartElementTarget(event.target)) {
+      event.stopPropagation();
+    }
+    onChartElementDoubleClick?.(selection, event);
+  }, [chart, onChartElementDoubleClick, selectedChartElement]);
 
   if (renderChartType === "Surface") {
     return (
@@ -6619,13 +7126,16 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, r
         background={background}
         borderColor={borderColor}
         chart={chart}
-        fallback={renderSurfaceChart(chart, palette, layout)}
+        fallback={renderSurfaceChart(chart, palette, layout, selectedChartElement)}
         fontFamily={fontFamily}
-        layout={layout}
-        overlay={
-          <>
-            {renderSurfaceAxes(chart, layout)}
-            {renderTitle(chart, layout, palette)}
+          layout={layout}
+          onDoubleClick={handleDoubleClick}
+          onPointerDown={handlePointerDown}
+          overlay={
+            <>
+              {renderSurfaceHitOverlay(chart, layout, selectedChartElement)}
+              {renderSurfaceAxes(chart, layout)}
+              {renderTitle(chart, layout, palette)}
             {renderLegend(chart, layout, palette)}
           </>
         }
@@ -6637,8 +7147,10 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, r
   return (
     <svg
       aria-label={chart.title ?? chart.name ?? "Chart"}
+      onDoubleClick={handleDoubleClick}
+      onPointerDown={handlePointerDown}
       role="img"
-      style={{ display: "block", fontFamily, height: "100%", pointerEvents: "none", width: "100%" }}
+      style={{ display: "block", fontFamily, height: "100%", pointerEvents: "auto", width: "100%" }}
       viewBox={`0 0 ${layout.width} ${layout.height}`}
     >
       {hideBackgroundRect
@@ -6646,14 +7158,17 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({ chart, palette, r
         : <rect fill={background} height={layout.height} stroke={borderColor} strokeWidth={1} width={layout.width} x={0} y={0} />}
       {renderTitle(chart, layout, palette)}
       {renderLegend(chart, layout, palette)}
-      {renderChartPlot(chart, palette, layout, renderChartType)}
+      {renderChartPlot(chart, palette, layout, renderChartType, selectedChartElement)}
     </svg>
   );
 }, (prev, next) => (
   prev.chart === next.chart
+  && prev.onChartElementDoubleClick === next.onChartElementDoubleClick
+  && prev.onChartElementPointerDown === next.onChartElementPointerDown
   && prev.palette === next.palette
   && prev.rect.height === next.rect.height
   && prev.rect.width === next.rect.width
   && prev.rect.left === next.rect.left
   && prev.rect.top === next.rect.top
+  && prev.selectedChartElement === next.selectedChartElement
 ));
