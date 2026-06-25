@@ -10029,19 +10029,28 @@ function XlsxGrid({
     colHeaderCellRefs.current.delete(actualCol);
   }, [experimentalCanvas, palette.headerSurface]);
 
-  const applyPreviewOverlay = React.useCallback((range: XlsxCellRange | null) => {
+  const applyPreviewOverlay = React.useCallback((
+    range: XlsxCellRange | null,
+    options?: { preferGeometry?: boolean; updateHeaderSelection?: boolean }
+  ) => {
     const overlay = selectionOverlayRef.current;
     if (!overlay || !range) {
-      applyHeaderSelection(range);
+      if (options?.updateHeaderSelection !== false) {
+        applyHeaderSelection(range);
+      }
       return;
     }
 
     const nextRect =
-      selectionDragRef.current?.didDrag || fillDragRef.current
+      options?.preferGeometry
+        ? resolveGeometryOverlayRect(range) ?? resolveOverlayRect(range)
+        : selectionDragRef.current?.didDrag || fillDragRef.current
         ? resolveDragPreviewRect(range) ?? resolveGeometryOverlayRect(range) ?? resolveOverlayRect(range)
         : resolveOverlayRect(range);
     if (!nextRect) {
-      applyHeaderSelection(range);
+      if (options?.updateHeaderSelection !== false) {
+        applyHeaderSelection(range);
+      }
       return;
     }
 
@@ -10056,7 +10065,9 @@ function XlsxGrid({
       fillHandle.style.left = `${nextRect.left + nextRect.width - (4 * zoomFactor)}px`;
       fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
     }
-    applyHeaderSelection(range);
+    if (options?.updateHeaderSelection !== false) {
+      applyHeaderSelection(range);
+    }
   }, [applyHeaderSelection, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect, zoomFactor]);
 
   const applyPreviewOverlayFromElement = React.useCallback((element: HTMLElement, range: XlsxCellRange) => {
@@ -10205,6 +10216,9 @@ function XlsxGrid({
         if (preview.type === "column") {
           columnPreviewRef.current = { actualIndex: preview.actualIndex, size: preview.size };
           rowPreviewRef.current = null;
+          if (displayedSelectionRef.current) {
+            applyPreviewOverlay(displayedSelectionRef.current, { preferGeometry: true, updateHeaderSelection: false });
+          }
           const position = resolveResizeGuidePositionFromClient("column", event.clientX);
           setResizeGuide(position === null ? null : { position, type: "column" });
           setGlobalCursor("col-resize");
@@ -10213,6 +10227,9 @@ function XlsxGrid({
 
         rowPreviewRef.current = { actualIndex: preview.actualIndex, size: preview.size };
         columnPreviewRef.current = null;
+        if (displayedSelectionRef.current) {
+          applyPreviewOverlay(displayedSelectionRef.current, { preferGeometry: true, updateHeaderSelection: false });
+        }
         const position = resolveResizeGuidePositionFromClient("row", event.clientY);
         setResizeGuide(position === null ? null : { position, type: "row" });
         setGlobalCursor("row-resize");
@@ -10262,6 +10279,7 @@ function XlsxGrid({
       }
     };
   }, [
+    applyPreviewOverlay,
     clearGlobalCursor,
     controller,
     displayDefaultColWidth,
