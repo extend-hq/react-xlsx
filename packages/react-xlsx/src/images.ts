@@ -1,3 +1,4 @@
+import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { resolveWorkbookColor } from "./colors";
 import type {
@@ -36,6 +37,7 @@ const DEFAULT_COL_WIDTH_EMU = 64 * EMU_PER_PIXEL;
 const DEFAULT_ROW_HEIGHT_EMU = 20 * EMU_PER_PIXEL;
 const DEFAULT_COLUMN_CHARACTER_WIDTH_PX = 7;
 const columnCharacterWidthCache = new Map<string, number>();
+type DukeWorksheet = ReturnType<Workbook["getSheet"]>;
 
 function resolveDeviceGridlineThicknessPx() {
   if (typeof window === "undefined") {
@@ -95,6 +97,107 @@ function sheetColumnWidthToPixels(width: number, columnCharacterWidthPx = DEFAUL
     ? Math.floor(width * (digitWidth + 5) + 0.5)
     : Math.floor(((256 * width + Math.floor(128 / digitWidth)) / 256) * digitWidth);
   return Math.max(MIN_COL_WIDTH_PX, pixels);
+}
+
+export function resolveWorksheetDefaultColumnWidthPixels(
+  worksheet: DukeWorksheet,
+  columnCharacterWidthPx = DEFAULT_COLUMN_CHARACTER_WIDTH_PX,
+  fallbackPx = sheetColumnWidthToPixels(8.43, columnCharacterWidthPx)
+) {
+  const width = typeof worksheet.defaultColumnWidth === "number" ? worksheet.defaultColumnWidth : Number.NaN;
+  return Number.isFinite(width) && width > 0
+    ? sheetColumnWidthToPixels(width, columnCharacterWidthPx)
+    : fallbackPx;
+}
+
+export function resolveWorksheetDefaultRowHeightPixels(
+  worksheet: DukeWorksheet,
+  fallbackPx = Math.max(MIN_ROW_HEIGHT_PX, Math.round(15 * 1.33))
+) {
+  const height = typeof worksheet.defaultRowHeight === "number" ? worksheet.defaultRowHeight : Number.NaN;
+  return Number.isFinite(height) && height > 0
+    ? Math.max(MIN_ROW_HEIGHT_PX, Math.round(height * 1.33))
+    : fallbackPx;
+}
+
+export function resolveWorksheetHiddenRows(worksheet: DukeWorksheet, maxRow: number) {
+  if (!Number.isFinite(maxRow) || maxRow < 0 || typeof worksheet.isRowHidden !== "function") {
+    return [] as number[];
+  }
+
+  const hiddenRows: number[] = [];
+  for (let row = 0; row <= maxRow; row += 1) {
+    if (worksheet.isRowHidden(row)) {
+      hiddenRows.push(row);
+    }
+  }
+  return hiddenRows;
+}
+
+export function resolveWorksheetHiddenCols(worksheet: DukeWorksheet, maxCol: number) {
+  if (!Number.isFinite(maxCol) || maxCol < 0 || typeof worksheet.isColumnHidden !== "function") {
+    return [] as number[];
+  }
+
+  const hiddenCols: number[] = [];
+  for (let col = 0; col <= maxCol; col += 1) {
+    if (worksheet.isColumnHidden(col)) {
+      hiddenCols.push(col);
+    }
+  }
+  return hiddenCols;
+}
+
+export function resolveWorksheetMergeMetadata(worksheet: DukeWorksheet) {
+  const mergeMetadata = {
+    hasHorizontalMerges: false,
+    hasVerticalMerges: false,
+    maxHorizontalMergeEndCol: -1,
+    maxVerticalMergeEndRow: -1
+  };
+  const mergedRegions = Array.isArray(worksheet.mergedRegions) ? worksheet.mergedRegions : [];
+
+  for (const rawRegion of mergedRegions) {
+    let range: XlsxCellRange | null = null;
+    if (typeof rawRegion === "string") {
+      range = parseA1RangeReference(rawRegion);
+    } else if (rawRegion && typeof rawRegion === "object") {
+      const region = rawRegion as Record<string, unknown>;
+      const startRow = typeof region.startRow === "number" ? region.startRow : Number.NaN;
+      const startCol = typeof region.startCol === "number" ? region.startCol : Number.NaN;
+      const endRow = typeof region.endRow === "number" ? region.endRow : Number.NaN;
+      const endCol = typeof region.endCol === "number" ? region.endCol : Number.NaN;
+      if ([startRow, startCol, endRow, endCol].every((value) => Number.isFinite(value) && value >= 0)) {
+        range = {
+          end: {
+            col: Math.max(startCol, endCol),
+            row: Math.max(startRow, endRow)
+          },
+          start: {
+            col: Math.min(startCol, endCol),
+            row: Math.min(startRow, endRow)
+          }
+        };
+      } else if (typeof region.range === "string") {
+        range = parseA1RangeReference(region.range);
+      }
+    }
+
+    if (!range) {
+      continue;
+    }
+
+    if (range.end.col > range.start.col) {
+      mergeMetadata.hasHorizontalMerges = true;
+      mergeMetadata.maxHorizontalMergeEndCol = Math.max(mergeMetadata.maxHorizontalMergeEndCol, range.end.col);
+    }
+    if (range.end.row > range.start.row) {
+      mergeMetadata.hasVerticalMerges = true;
+      mergeMetadata.maxVerticalMergeEndRow = Math.max(mergeMetadata.maxVerticalMergeEndRow, range.end.row);
+    }
+  }
+
+  return mergeMetadata;
 }
 
 type ArchiveEntries = Record<string, Uint8Array>;
@@ -1149,82 +1252,6 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   };
 }
 
-function parseWorkbookTableMetadata(
-  archive: ArchiveEntries,
-  workbookSheets: WorkbookSheetInfo[]
-) {
-  return workbookSheets.map((sheet) => {
-    const sheetRelationships = parseRelationships(archive, relsPathForDocument(sheet.path), sheet.path);
-    const sheetXml = readArchiveText(archive, sheet.path);
-    if (!sheetXml) {
-      return [];
-    }
-
-    const sheetDocument = parseXml(sheetXml);
-    if (!sheetDocument) {
-      return [];
-    }
-
-    return getLocalElements(sheetDocument, "tablePart").flatMap((tablePartNode) => {
-      const relationshipId = getRelationshipId(tablePartNode);
-      if (!relationshipId) {
-        return [];
-      }
-
-      const relationship = sheetRelationships.get(relationshipId);
-      if (!relationship) {
-        return [];
-      }
-
-      const tableXml = readArchiveText(archive, relationship.target);
-      if (!tableXml) {
-        return [];
-      }
-
-      const tableDocument = parseXml(tableXml);
-      const tableNode = tableDocument?.documentElement;
-      if (!tableNode || tableNode.localName !== "table") {
-        return [];
-      }
-
-      return [{
-        displayName: tableNode.getAttribute("displayName") ?? undefined,
-        headerRowCount: parseWorkbookTableCount(tableNode.getAttribute("headerRowCount"), 1),
-        headerRowCellStyle: tableNode.getAttribute("headerRowCellStyle") ?? undefined,
-        name: tableNode.getAttribute("name") ?? undefined,
-        reference: tableNode.getAttribute("ref") ?? undefined,
-        totalsRowCount: parseWorkbookTableCount(tableNode.getAttribute("totalsRowCount"), 0),
-        totalsRowShown: parseWorkbookTableBoolean(tableNode.getAttribute("totalsRowShown"), false)
-      } satisfies WorkbookTableMetadata];
-    });
-  });
-}
-
-function parseWorkbookTableCount(value: string | null, fallback: number) {
-  if (value === null) {
-    return fallback;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function parseWorkbookTableBoolean(value: string | null, fallback: boolean) {
-  if (value === null) {
-    return fallback;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "0" || normalized === "false" || normalized === "") {
-    return false;
-  }
-  if (normalized === "1" || normalized === "true") {
-    return true;
-  }
-
-  return fallback;
-}
-
 function parseSqrefRanges(sqref: string | null | undefined): XlsxCellRange[] {
   if (!sqref) {
     return [];
@@ -1585,12 +1612,6 @@ function parseSheetState(
   const colWidthOverridesPx: Record<number, number> = {};
   const rowStyleIds: Record<number, number> = {};
   const colStyleIds: Record<number, number> = {};
-  const hiddenRows = new Set<number>();
-  const hiddenCols = new Set<number>();
-  let hasHorizontalMerges = false;
-  let hasVerticalMerges = false;
-  let maxHorizontalMergeEndCol = -1;
-  let maxVerticalMergeEndRow = -1;
   let minContentCol = Number.POSITIVE_INFINITY;
   let minContentRow = Number.POSITIVE_INFINITY;
   let maxContentCol = -1;
@@ -1642,15 +1663,11 @@ function parseSheetState(
     const rowIndex = Number(rowNode.getAttribute("r") ?? 0) - 1;
     const height = Number(rowNode.getAttribute("ht") ?? Number.NaN);
     const styleId = Number(rowNode.getAttribute("s") ?? Number.NaN);
-    const isHidden = (rowNode.getAttribute("hidden") ?? "0") === "1";
     if (rowIndex >= 0 && Number.isFinite(height)) {
       rowHeightOverridesPx[rowIndex] = Math.max(MIN_ROW_HEIGHT_PX, Math.round(height * 1.33));
     }
     if (rowIndex >= 0 && Number.isFinite(styleId)) {
       rowStyleIds[rowIndex] = styleId;
-    }
-    if (rowIndex >= 0 && isHidden) {
-      hiddenRows.add(rowIndex);
     }
 
     getChildElements(rowNode, "c").forEach((cellNode) => {
@@ -1669,30 +1686,12 @@ function parseSheetState(
     });
   });
 
-  getLocalElements(document, "mergeCell").forEach((mergeNode) => {
-    const reference = mergeNode.getAttribute("ref");
-    const range = reference ? parseA1RangeReference(reference) : null;
-    if (!range) {
-      return;
-    }
-
-    if (range.end.col > range.start.col) {
-      hasHorizontalMerges = true;
-      maxHorizontalMergeEndCol = Math.max(maxHorizontalMergeEndCol, range.end.col);
-    }
-    if (range.end.row > range.start.row) {
-      hasVerticalMerges = true;
-      maxVerticalMergeEndRow = Math.max(maxVerticalMergeEndRow, range.end.row);
-    }
-  });
-
-  const maxMetadataCol = Math.max(maxContentCol, maxHorizontalMergeEndCol, 0) + 256;
+  const maxMetadataCol = Math.max(maxContentCol, 0) + 256;
   getLocalElements(document, "col").forEach((colNode) => {
     const min = Number(colNode.getAttribute("min") ?? 0) - 1;
     const max = Number(colNode.getAttribute("max") ?? 0) - 1;
     const width = Number(colNode.getAttribute("width") ?? Number.NaN);
     const styleId = Number(colNode.getAttribute("style") ?? Number.NaN);
-    const isHidden = (colNode.getAttribute("hidden") ?? "0") === "1";
     if (!Number.isFinite(width)) {
       if (!Number.isFinite(styleId)) {
         return;
@@ -1708,9 +1707,6 @@ function parseSheetState(
         if (Number.isFinite(styleId)) {
           colStyleIds[col] = styleId;
         }
-        if (isHidden) {
-          hiddenCols.add(col);
-        }
       }
     }
   });
@@ -1723,16 +1719,16 @@ function parseSheetState(
     conditionalFormatRules,
     defaultColWidthPx: sheetColumnWidthToPixels(defaultColWidth, columnWidthCharacterWidthPx),
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
-    hasHorizontalMerges,
-    hasVerticalMerges,
-    maxHorizontalMergeEndCol,
-    maxVerticalMergeEndRow,
+    hasHorizontalMerges: false,
+    hasVerticalMerges: false,
+    maxHorizontalMergeEndCol: -1,
+    maxVerticalMergeEndRow: -1,
     maxContentCol,
     maxContentRow,
     minContentCol: Number.isFinite(minContentCol) ? minContentCol : -1,
     minContentRow: Number.isFinite(minContentRow) ? minContentRow : -1,
-    hiddenCols: [...hiddenCols].sort((left, right) => left - right),
-    hiddenRows: [...hiddenRows].sort((left, right) => left - right),
+    hiddenCols: [],
+    hiddenRows: [],
     rowHeightOverridesPx,
     rowStyleIds,
     showGridLines: (sheetViewNode?.getAttribute("showGridLines") ?? "1") !== "0",
@@ -3232,7 +3228,6 @@ function parseWorkbookStructureAssetsFromArchive(
   const theme = parseWorkbookTheme(archive);
   const themePalette = buildThemePalette(theme);
   const { defaultFont, namedCellStyleByName, styleById, tableStyleByName } = parseWorkbookStyles(archive);
-  const tableMetadataByWorkbookSheetIndex = parseWorkbookTableMetadata(archive, workbookSheets);
   return {
     contentTypes,
     namedCellStyleByName,
@@ -3242,7 +3237,7 @@ function parseWorkbookStructureAssetsFromArchive(
       themePalette
     })),
     styleById,
-    tableMetadataByWorkbookSheetIndex,
+    tableMetadataByWorkbookSheetIndex: workbookSheets.map(() => [] as WorkbookTableMetadata[]),
     tableStyleByName,
     theme,
     themePalette,

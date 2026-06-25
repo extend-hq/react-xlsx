@@ -1,6 +1,15 @@
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { loadWorkbookChartAssets } from "./charts";
-import { parseWorkbookChartStyleAssets, parseWorkbookStructureAssets, resolveSheetColumnWidthPixels } from "./images";
+import {
+  parseWorkbookChartStyleAssets,
+  parseWorkbookStructureAssets,
+  resolveSheetColumnWidthPixels,
+  resolveWorksheetDefaultColumnWidthPixels,
+  resolveWorksheetDefaultRowHeightPixels,
+  resolveWorksheetHiddenCols,
+  resolveWorksheetHiddenRows,
+  resolveWorksheetMergeMetadata
+} from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { safeCalculate } from "./safe-calculate";
 import { getSheetsWasmModule, setWasmSource, type WorkerWasmSource } from "./wasm";
@@ -248,11 +257,22 @@ function resolveWorksheetZoomScale(
 
 function resolveSheetDisplayUsedRange(
   usedRange: [number, number, number, number],
-  sheetState?: WorkbookStructureAssets["sheetStatesByWorkbookSheetIndex"][number] | null
+  sheetState?: {
+    maxContentCol?: number;
+    maxContentRow?: number;
+    maxHorizontalMergeEndCol?: number;
+    maxVerticalMergeEndRow?: number;
+    minContentCol?: number;
+    minContentRow?: number;
+  } | null
 ): [number, number, number, number] {
   const [minRow, minCol, maxRow, maxCol] = usedRange;
-  const maxMeaningfulRow = Math.max(sheetState?.maxContentRow ?? -1, sheetState?.maxVerticalMergeEndRow ?? -1);
-  const maxMeaningfulCol = Math.max(sheetState?.maxContentCol ?? -1, sheetState?.maxHorizontalMergeEndCol ?? -1);
+  const maxContentRow = sheetState?.maxContentRow ?? -1;
+  const maxContentCol = sheetState?.maxContentCol ?? -1;
+  const maxVerticalMergeEndRow = sheetState?.maxVerticalMergeEndRow ?? -1;
+  const maxHorizontalMergeEndCol = sheetState?.maxHorizontalMergeEndCol ?? -1;
+  const maxMeaningfulRow = Math.max(maxContentRow, maxVerticalMergeEndRow);
+  const maxMeaningfulCol = Math.max(maxContentCol, maxHorizontalMergeEndCol);
 
   if (maxMeaningfulRow < 0 && maxMeaningfulCol < 0) {
     return usedRange;
@@ -261,8 +281,12 @@ function resolveSheetDisplayUsedRange(
   return [
     sheetState?.minContentRow !== undefined && sheetState.minContentRow >= 0 ? Math.min(minRow, sheetState.minContentRow) : minRow,
     sheetState?.minContentCol !== undefined && sheetState.minContentCol >= 0 ? Math.min(minCol, sheetState.minContentCol) : minCol,
-    maxMeaningfulRow >= 0 ? Math.min(maxRow, maxMeaningfulRow) : maxRow,
-    maxMeaningfulCol >= 0 ? Math.min(maxCol, maxMeaningfulCol) : maxCol
+    maxMeaningfulRow >= 0
+      ? (maxContentRow >= 0 ? Math.min(maxRow, maxMeaningfulRow) : Math.max(maxRow, maxMeaningfulRow))
+      : maxRow,
+    maxMeaningfulCol >= 0
+      ? (maxContentCol >= 0 ? Math.min(maxCol, maxMeaningfulCol) : Math.max(maxCol, maxMeaningfulCol))
+      : maxCol
   ];
 }
 
@@ -276,6 +300,20 @@ function buildSheetList(
   for (let index = 0; index < nextWorkbook.sheetCount; index += 1) {
     const worksheet = nextWorkbook.getSheet(index);
     const sheetState = structureAssets?.sheetStatesByWorkbookSheetIndex[index] ?? null;
+    const mergeMetadata = resolveWorksheetMergeMetadata(worksheet);
+    const effectiveSheetState = {
+      ...sheetState,
+      ...mergeMetadata
+    };
+    const defaultColWidthPx = resolveWorksheetDefaultColumnWidthPixels(
+      worksheet,
+      sheetState?.columnWidthCharacterWidthPx,
+      sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH
+    );
+    const defaultRowHeightPx = resolveWorksheetDefaultRowHeightPixels(
+      worksheet,
+      sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT
+    );
     const visibility = normalizeWorksheetVisibility(worksheet.visibility);
     if (!showHiddenSheets && visibility !== "visible") {
       continue;
@@ -287,7 +325,7 @@ function buildSheetList(
         return resolveSheetColumnWidthPixels(width, sheetState?.columnWidthCharacterWidthPx);
       }
 
-      return sheetState?.colWidthOverridesPx?.[col] ?? sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
+      return sheetState?.colWidthOverridesPx?.[col] ?? defaultColWidthPx;
     };
 
     const resolveRowHeightPx = (row: number) => {
@@ -296,7 +334,7 @@ function buildSheetList(
         return Math.max(Math.round(height * 1.33), 16);
       }
 
-      return sheetState?.rowHeightOverridesPx?.[row] ?? sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT;
+      return sheetState?.rowHeightOverridesPx?.[row] ?? defaultRowHeightPx;
     };
 
     const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
@@ -310,13 +348,13 @@ function buildSheetList(
         colWidths: [],
         conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
         dataValidations: parseWorksheetDataValidations(worksheet),
-        defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
-        defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+        defaultColWidthPx,
+        defaultRowHeightPx,
         freezePanes: parseWorksheetFreezePanes(worksheet),
-        hasHorizontalMerges: sheetState?.hasHorizontalMerges ?? false,
-        hasVerticalMerges: sheetState?.hasVerticalMerges ?? false,
-        maxHorizontalMergeEndCol: sheetState?.maxHorizontalMergeEndCol ?? -1,
-        maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
+        hasHorizontalMerges: mergeMetadata.hasHorizontalMerges,
+        hasVerticalMerges: mergeMetadata.hasVerticalMerges,
+        maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
+        maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
         hiddenCols: sheetState?.hiddenCols ?? [],
         hiddenRows: sheetState?.hiddenRows ?? [],
         minUsedCol: -1,
@@ -343,9 +381,9 @@ function buildSheetList(
       continue;
     }
 
-    const [minRow, minCol, maxRow, maxCol] = resolveSheetDisplayUsedRange(usedRange, sheetState);
-    const hiddenRows = (sheetState?.hiddenRows ?? []).filter((row) => row >= 0 && row <= maxRow);
-    const hiddenCols = (sheetState?.hiddenCols ?? []).filter((col) => col >= 0 && col <= maxCol);
+    const [minRow, minCol, maxRow, maxCol] = resolveSheetDisplayUsedRange(usedRange, effectiveSheetState);
+    const hiddenRows = resolveWorksheetHiddenRows(worksheet, maxRow);
+    const hiddenCols = resolveWorksheetHiddenCols(worksheet, maxCol);
 
     sheetsByWorkbookSheetIndex.push({
       cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
@@ -356,13 +394,13 @@ function buildSheetList(
       colWidths: [],
       conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
       dataValidations: parseWorksheetDataValidations(worksheet),
-      defaultColWidthPx: sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH,
-      defaultRowHeightPx: sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+      defaultColWidthPx,
+      defaultRowHeightPx,
       freezePanes: parseWorksheetFreezePanes(worksheet),
-      hasHorizontalMerges: sheetState?.hasHorizontalMerges ?? false,
-      hasVerticalMerges: sheetState?.hasVerticalMerges ?? false,
-      maxHorizontalMergeEndCol: sheetState?.maxHorizontalMergeEndCol ?? -1,
-      maxVerticalMergeEndRow: sheetState?.maxVerticalMergeEndRow ?? -1,
+      hasHorizontalMerges: mergeMetadata.hasHorizontalMerges,
+      hasVerticalMerges: mergeMetadata.hasVerticalMerges,
+      maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
+      maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
       hiddenCols,
       hiddenRows,
       minUsedCol: minCol,
@@ -391,10 +429,7 @@ function buildSheetList(
   return sheetsByWorkbookSheetIndex;
 }
 
-function mapWorksheetTables(
-  worksheet: ReturnType<Workbook["getSheet"]> | null,
-  metadataForSheet?: ReturnType<typeof parseWorkbookStructureAssets>["tableMetadataByWorkbookSheetIndex"][number] | null
-): XlsxTable[] {
+function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null): XlsxTable[] {
   const rawTables = (worksheet?.tables ?? []) as Array<Record<string, unknown>>;
   return rawTables.flatMap((table, index) => {
     const rawColumns = Array.isArray(table.columns) ? table.columns : [];
@@ -405,13 +440,8 @@ function mapWorksheetTables(
         : typeof table.name === "string"
           ? table.name
           : `Table ${index + 1}`;
-    const metadata = metadataForSheet?.find((entry) =>
-      (entry.name && entry.name === rawName)
-      || (entry.displayName && entry.displayName === rawDisplayName)
-      || (entry.reference && entry.reference === table.reference)
-    );
     const rawReference = typeof table.reference === "string" ? table.reference : "";
-    const reference = metadata?.reference ?? rawReference;
+    const reference = rawReference;
     const parsedRange = parseA1RangeReference(reference);
     if (!parsedRange) {
       return [];
@@ -425,14 +455,14 @@ function mapWorksheetTables(
       })),
       displayName: rawDisplayName,
       end: parsedRange.end,
-      headerRowCount: metadata?.headerRowCount ?? resolveWorkbookTableCount(table.headerRowCount, 1),
-      headerRowCellStyle: metadata?.headerRowCellStyle,
+      headerRowCount: resolveWorkbookTableCount(table.headerRowCount, 1),
+      headerRowCellStyle: typeof table.headerRowCellStyle === "string" ? table.headerRowCellStyle : undefined,
       name: rawName,
       reference,
       start: parsedRange.start,
       styleInfo: table.styleInfo as XlsxTable["styleInfo"] | undefined,
-      totalsRowCount: metadata?.totalsRowCount ?? resolveWorkbookTableCount(table.totalsRowCount, 0),
-      totalsRowShown: metadata?.totalsRowShown ?? resolveWorkbookTableBoolean(table.totalsRowShown)
+      totalsRowCount: resolveWorkbookTableCount(table.totalsRowCount, 0),
+      totalsRowShown: resolveWorkbookTableBoolean(table.totalsRowShown)
     }];
   });
 }
@@ -546,10 +576,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
   workbook = nextWorkbook;
   sheets = buildSheetList(nextWorkbook, structureAssets, showHiddenSheets);
   tablesByWorkbookSheetIndex = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) =>
-    mapWorksheetTables(
-      nextWorkbook.getSheet(workbookSheetIndex),
-      structureAssets?.tableMetadataByWorkbookSheetIndex[workbookSheetIndex] ?? null
-    )
+    mapWorksheetTables(nextWorkbook.getSheet(workbookSheetIndex))
   );
   const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
   const hasCharts = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) => {
