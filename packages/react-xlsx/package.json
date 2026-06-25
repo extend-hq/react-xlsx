@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "description": "React components and hooks for viewing XLSX workbooks",
   "license": "MIT",
   "keywords": [
@@ -49,7 +49,7 @@
     "react-dom": ">=18"
   },
   "dependencies": {
-    "@dukelib/sheets-wasm": "0.1.16",
+    "@dukelib/sheets-wasm": "0.1.17",
     "@tanstack/react-virtual": "^3.13.12",
     "d3-geo": "^3.1.1",
     "d3-hierarchy": "^3.1.2",
