@@ -1020,7 +1020,7 @@ function parseChartPointDataLabelsFromXml(labelsNode: Element): XlsxChartPointDa
     }
 
     const layoutNode = getFirstLocalChild(pointLabelNode, "layout");
-    const manualLayoutNode = getFirstLocalChild(layoutNode, "manualLayout");
+    const manualLayoutNode = layoutNode ? getFirstLocalChild(layoutNode, "manualLayout") : null;
     labels.push({
       deleted: readChartBooleanAttribute(pointLabelNode, "delete"),
       fontSizePt: readChartLabelFontSizePt(getFirstLocalChild(pointLabelNode, "txPr")) ?? fallbackFontSizePt,
