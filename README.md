@@ -150,9 +150,24 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `useWorker` | `boolean` | Enables worker-backed parsing. Defaults to `true`. |
 | `deferLoadingAboveBytes` | `number` | Defers parsing above this byte threshold. Defaults to `0` (disabled). |
 | `maxFileSizeBytes` | `number` | Hard parse limit before rendering a too-large state. Defaults to `25 * 1024 * 1024` (`25 MB`). |
+| `onWorkbookChange` | `(revision: number) => void` | Called after any persisted workbook mutation (cell/style writes, paste, fill, merge, undo/redo, chart/image moves, sheet add/remove, named ranges). Not called during initial parsing or for view-only state like selection and zoom, so persistence integrations can react to it directly. |
 | `readOnly` | `boolean` | Forces viewer editing features off. Defaults to `false`. |
 | `readOnlyAboveBytes` | `number` | Automatically switches large workbooks into read-only mode above this threshold. Defaults to `0` (disabled). |
 | `skipXmlParsing` | `boolean` | Skips the OOXML ZIP/XML parsing layer and relies only on `Workbook.fromBytes(...)` metadata from `@dukelib/sheets-wasm`. The viewer also auto-enables this mode for legacy `.xls` files when their OLE magic bytes are detected. This is effectively the limited-support path used for `.xls` and some `.xlsm` content, so only data Duke Sheets can parse will render. Defaults to `false`. |
+
+Autosave example with `onWorkbookChange`:
+
+```tsx
+const controller = useXlsxViewerController({
+  file,
+  onWorkbookChange: () => {
+    const bytes = controller.workbook?.saveXlsxBytes();
+    if (bytes) {
+      persistDraft(bytes);
+    }
+  },
+});
+```
 
 ### Layout And Appearance Props
 

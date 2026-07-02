@@ -1903,6 +1903,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     file,
     fileName,
     maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
+    onWorkbookChange,
     readOnly: requestedReadOnly = false,
     readOnlyAboveBytes = 0,
     showHiddenSheets = false,
@@ -1950,6 +1951,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const sheetOriginsRef = React.useRef<Array<WorkbookImageSheetOrigin | null>>([]);
   const workerClientRef = React.useRef<XlsxWorkerClient | null>(null);
   const workerCellSnapshotCacheRef = React.useRef(new Map<string, { displayValue: string; formula: string }>());
+  const notifiedRevisionRef = React.useRef<number | null>(null);
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
   const readOnly = requestedReadOnly || forcedReadOnly;
@@ -2236,6 +2238,24 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     revokeWorkbookImageAssets(imageAssetsRef.current);
     disposeWorkerClient();
   }, [disposeWorkerClient]);
+
+  // Revision also advances during parsing, so baseline it once loading settles
+  // and only report later bumps; clearing during loading re-baselines on swap.
+  React.useEffect(() => {
+    if (isLoading || isChartsLoading) {
+      notifiedRevisionRef.current = null;
+      return;
+    }
+    if (notifiedRevisionRef.current === null) {
+      notifiedRevisionRef.current = revision;
+      return;
+    }
+    if (revision === notifiedRevisionRef.current) {
+      return;
+    }
+    notifiedRevisionRef.current = revision;
+    onWorkbookChange?.(revision);
+  }, [isChartsLoading, isLoading, onWorkbookChange, revision]);
 
   React.useEffect(() => {
     if (!file && !src) {

@@ -837,6 +837,18 @@ export interface UseXlsxViewerControllerOptions {
    */
   maxFileSizeBytes?: number;
   /**
+   * Called after any persisted workbook mutation: cell value/formula/style writes,
+   * paste, fill, merge, undo/redo, chart/image geometry changes, sheet add/remove,
+   * and named-range definitions. Not called while the workbook (or its charts) is
+   * still parsing, nor for view-only state such as selection, zoom, or sheet
+   * switches — so persistence integrations can act on it (e.g. export and save
+   * bytes) without filtering out load-time refreshes themselves.
+   *
+   * Receives the controller's current `revision`. The callback's identity does
+   * not need to be stable: changing it never re-reports an already-seen revision.
+   */
+  onWorkbookChange?: (revision: number) => void;
+  /**
    * Disables workbook edits, paste, fill, undo/redo, and other mutation actions.
    *
    * @default false
