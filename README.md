@@ -225,6 +225,10 @@ Apply `triggerProps` to the actual trigger button so clicks do not leak into gri
 
 Form controls use the same render-prop pattern. Switch on `control.kind`, apply `style` to the custom root, and call `stopPropagation` from pointer/click handlers. The supplied setters retain linked-cell updates, undo/redo, export, and `onFormControlChange` behavior.
 
+Form-control mutation inputs use the same `XlsxImageAnchor` union as images and charts. Captions can be plain strings or rich text runs with font styling and alignment.
+
+In 0.15, `XlsxFormControlAnchor` is removed and read controls expose `caption` as rich text. Use `control.label` for flattened display text; Duke recomputes option-button grouping on write.
+
 ```tsx
 <XlsxViewer
   file={buffer}
@@ -522,7 +526,7 @@ The package also exports the main types you are likely to use for custom integra
 - `XlsxCellStyleInput`, `XlsxCellFontStyleInput`, `XlsxCellFillStyleInput`, `XlsxCellBorderStyleInput`
 - `XlsxChart`, `XlsxChartSeries`, `XlsxChartAxis`, `XlsxChartsheet`
 - `XlsxImage`, `XlsxImageRect`, `XlsxImageRenderProps`, `XlsxImageSelectionRenderProps`
-- `XlsxFormControl`, `XlsxFormControlRenderProps`
+- `XlsxFormControl`, `XlsxFormControlInput`, `XlsxFormControlCaption`, `XlsxFormControlCaptionInput`, `XlsxFormControlCaptionRun`, `XlsxFormControlRenderProps`
 - `XlsxSheetThumbnail`, `XlsxSheetThumbnailResolution`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
 - `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`, `XlsxCellStyleContext`

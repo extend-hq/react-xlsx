@@ -1,6 +1,9 @@
 import type {
-  FormControl as DukeFormControl,
-  FormControlAnchor as DukeFormControlAnchor,
+  DrawingAnchor as DukeDrawingAnchor,
+  DrawingColor as DukeDrawingColor,
+  DrawingRunFont as DukeDrawingRunFont,
+  DrawingText as DukeDrawingText,
+  FormControlDrawing as DukeFormControlDrawing,
   FormControlKind as DukeFormControlKind,
   Workbook
 } from "@dukelib/sheets-wasm";
@@ -14,8 +17,11 @@ import type {
   XlsxConditionalFormatValueObject,
   XlsxConditionalIconSetRule,
   XlsxCellRange,
+  XlsxCellStyleColorInput,
   XlsxFormControl,
+  XlsxFormControlCaption,
   XlsxImage,
+  XlsxImageAnchor,
   XlsxImageRect,
   XlsxImageResizeHandlePosition,
   XlsxResolvedCellStyle,
@@ -30,7 +36,6 @@ const PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships
 const SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const CONTENT_TYPES_NS = "http://schemas.openxmlformats.org/package/2006/content-types";
 const DRAWING_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing";
-const VML_DRAWING_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
 const IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const DRAWING_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.drawing+xml";
@@ -303,26 +308,6 @@ type WorkbookImageOrigin = {
   workbookSheetIndex: number;
 };
 
-type ParsedSheetFormControl = {
-  anchor: XlsxFormControl["anchor"] | null;
-  name?: string;
-  shapeId: number | null;
-};
-
-type ParsedVmlFormControl = {
-  checked?: boolean;
-  fontFamily?: string;
-  fontSizePt?: number;
-  hidden: boolean;
-  label?: string;
-  linkedCell?: string;
-  objectType?: string;
-  shapeId: number | null;
-  textAlign?: "center" | "left" | "right";
-  textColor?: string;
-  zIndex: number;
-};
-
 export type WorkbookImageSheetOrigin = {
   attachments: XlsxImageAttachment[];
   workbookSheetIndex: number;
@@ -340,6 +325,7 @@ export type WorkbookTableMetadata = {
 
 export type WorkbookImageAssets = {
   archive: ArchiveEntries;
+  dirtyArchivePaths: Set<string>;
   formControlsByWorkbookSheetIndex: XlsxFormControl[][];
   imageOriginsById: Map<string, WorkbookImageOrigin>;
   imagesByWorkbookSheetIndex: XlsxImage[][];
@@ -1965,79 +1951,196 @@ function parseMarker(node: Element | null) {
   };
 }
 
-function parseSpreadsheetBooleanValue(value: string | null | undefined) {
-  if (value === null || value === undefined) {
-    return undefined;
+export function dukeDrawingAnchorToXlsxAnchor(anchor: DukeDrawingAnchor): XlsxImageAnchor {
+  if (anchor.type === "absolute") {
+    return {
+      kind: "absolute",
+      positionEmu: { x: anchor.xEmu, y: anchor.yEmu },
+      sizeEmu: { cx: anchor.widthEmu, cy: anchor.heightEmu }
+    };
   }
 
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) {
-    return true;
+  const from = {
+    col: anchor.from.col,
+    colOffsetEmu: anchor.from.colOffsetEmu ?? 0,
+    row: anchor.from.row,
+    rowOffsetEmu: anchor.from.rowOffsetEmu ?? 0
+  };
+  if (anchor.type === "oneCell") {
+    return {
+      from,
+      kind: "one-cell",
+      sizeEmu: { cx: anchor.widthEmu, cy: anchor.heightEmu }
+    };
   }
 
-  return !["0", "false", "none", "off", "unchecked"].includes(normalized);
-}
-
-function parseSpreadsheetBooleanNode(node: Element | null) {
-  if (!node) {
-    return undefined;
-  }
-
-  return parseSpreadsheetBooleanValue(node.getAttribute("val") ?? node.textContent);
-}
-
-function mapDukeFormControlAnchor(anchor: DukeFormControlAnchor): XlsxFormControl["anchor"] {
   return {
-    from: {
-      col: anchor.fromCol,
-      colOffsetEmu: anchor.fromColOffset,
-      row: anchor.fromRow,
-      rowOffsetEmu: anchor.fromRowOffset
-    },
+    from,
     kind: "two-cell",
     to: {
-      col: anchor.toCol,
-      colOffsetEmu: anchor.toColOffset,
-      row: anchor.toRow,
-      rowOffsetEmu: anchor.toRowOffset
+      col: anchor.to.col,
+      colOffsetEmu: anchor.to.colOffsetEmu ?? 0,
+      row: anchor.to.row,
+      rowOffsetEmu: anchor.to.rowOffsetEmu ?? 0
     }
   };
 }
 
+export function xlsxAnchorToDukeDrawingAnchor(
+  anchor: XlsxImageAnchor,
+  editAs?: "twoCell" | "oneCell" | "absolute"
+): DukeDrawingAnchor {
+  if (anchor.kind === "absolute") {
+    return {
+      heightEmu: anchor.sizeEmu.cy,
+      type: "absolute",
+      widthEmu: anchor.sizeEmu.cx,
+      xEmu: anchor.positionEmu.x,
+      yEmu: anchor.positionEmu.y
+    };
+  }
+
+  const from = {
+    col: anchor.from.col,
+    colOffsetEmu: anchor.from.colOffsetEmu,
+    row: anchor.from.row,
+    rowOffsetEmu: anchor.from.rowOffsetEmu
+  };
+  if (anchor.kind === "one-cell") {
+    return {
+      from,
+      heightEmu: anchor.sizeEmu.cy,
+      type: "oneCell",
+      widthEmu: anchor.sizeEmu.cx
+    };
+  }
+
+  return {
+    editAs,
+    from,
+    to: {
+      col: anchor.to.col,
+      colOffsetEmu: anchor.to.colOffsetEmu,
+      row: anchor.to.row,
+      rowOffsetEmu: anchor.to.rowOffsetEmu
+    },
+    type: "twoCell"
+  };
+}
+
+function mapDukeDrawingColor(color: DukeDrawingColor | undefined): XlsxCellStyleColorInput | undefined {
+  if (!color) {
+    return undefined;
+  }
+  switch (color.colorType) {
+    case "auto":
+      return { colorType: "auto" };
+    case "rgb":
+      return { b: color.b, colorType: "rgb", g: color.g, r: color.r };
+    case "argb":
+      return { a: color.a, b: color.b, colorType: "argb", g: color.g, r: color.r };
+    case "theme":
+      return { colorType: "theme", themeIndex: color.index, tint: color.tint };
+    case "indexed":
+      return { colorType: "indexed", paletteIndex: color.index };
+  }
+}
+
+function mapDukeDrawingFont(font: DukeDrawingRunFont | undefined) {
+  if (!font) {
+    return undefined;
+  }
+  return {
+    bold: font.bold,
+    charset: font.charset,
+    color: mapDukeDrawingColor(font.color),
+    family: font.family,
+    italic: font.italic,
+    name: font.name,
+    scheme: font.scheme,
+    size: font.size,
+    strikethrough: font.strikethrough,
+    underline: font.underline,
+    verticalAlign: font.verticalAlign
+  };
+}
+
+function mapDukeDrawingText(text: DukeDrawingText): XlsxFormControlCaption {
+  return {
+    horizontalAlignment: text.horizontalAlignment,
+    runs: text.runs.map((run) => ({ font: mapDukeDrawingFont(run.font), text: run.text })),
+    verticalAlignment: text.verticalAlignment
+  };
+}
+
+function resolveDukeDrawingColor(color: DukeDrawingColor | undefined, themePalette?: XlsxThemePalette | null) {
+  if (!color) {
+    return undefined;
+  }
+  switch (color.colorType) {
+    case "rgb":
+      return resolveWorkbookColor({ rgb: [color.r, color.g, color.b].map((value) => value.toString(16).padStart(2, "0")).join("") }) ?? undefined;
+    case "argb":
+      return resolveWorkbookColor({ argb: [color.a, color.r, color.g, color.b].map((value) => value.toString(16).padStart(2, "0")).join("") }) ?? undefined;
+    case "theme":
+      return resolveWorkbookColor({ theme: color.index, tint: color.tint }, themePalette) ?? undefined;
+    default:
+      return undefined;
+  }
+}
+
+function resolveDukeDrawingText(
+  text: DukeDrawingText,
+  themePalette?: XlsxThemePalette | null
+) {
+  const caption = mapDukeDrawingText(text);
+  const label = normalizeControlLabel(text.runs.map((run) => run.text).join(""));
+  const firstStyledRun = text.runs.find((run) => run.font)?.font;
+  const horizontalAlignment = text.horizontalAlignment;
+  return {
+    caption,
+    fontFamily: firstStyledRun?.name,
+    fontSizePt: firstStyledRun?.size,
+    label,
+    textAlign: horizontalAlignment === "left" || horizontalAlignment === "center" || horizontalAlignment === "right"
+      ? horizontalAlignment
+      : undefined,
+    textColor: resolveDukeDrawingColor(firstStyledRun?.color, themePalette)
+  };
+}
+
 function mapDukeFormControlKind(
-  kind: DukeFormControlKind
+  kind: DukeFormControlKind,
+  themePalette?: XlsxThemePalette | null
 ): Pick<XlsxFormControl, "kind"> & Partial<XlsxFormControl> {
   switch (kind.kind) {
     case "button":
-      return { caption: kind.caption, kind: "button", label: normalizeControlLabel(kind.caption) };
+      return { ...resolveDukeDrawingText(kind.caption, themePalette), kind: "button" };
     case "checkbox":
       return {
-        caption: kind.caption,
+        ...resolveDukeDrawingText(kind.caption, themePalette),
         checked: kind.state === "checked",
         kind: "checkbox",
-        label: normalizeControlLabel(kind.caption),
         linkedCell: kind.cellLink,
         no3D: kind.no3D,
         state: kind.state
       };
     case "optionButton":
       return {
-        caption: kind.caption,
+        ...resolveDukeDrawingText(kind.caption, themePalette),
         checked: kind.state === "checked",
         firstInGroup: kind.firstInGroup,
         kind: "radio",
-        label: normalizeControlLabel(kind.caption),
         linkedCell: kind.cellLink,
         no3D: kind.no3D,
         state: kind.state
       };
     case "label":
-      return { caption: kind.caption, kind: "label", label: normalizeControlLabel(kind.caption) };
+      return { ...resolveDukeDrawingText(kind.caption, themePalette), kind: "label" };
     case "groupBox":
       return {
-        caption: kind.caption,
+        ...resolveDukeDrawingText(kind.caption, themePalette),
         kind: "group-box",
-        label: normalizeControlLabel(kind.caption),
         no3D: kind.no3D
       };
     case "listBox":
@@ -2078,107 +2181,60 @@ function mapDukeFormControlKind(
         min: kind.min,
         value: kind.value
       };
+    case "unknown":
+      return {
+        ...resolveDukeDrawingText(kind.caption, themePalette),
+        kind: kind.objectType.toLowerCase() === "editbox" ? "editbox" : "unknown",
+        legacyObjectType: kind.legacyObjectType,
+        objectType: kind.objectType,
+        rawObj: kind.rawObj,
+        rawProperties: kind.rawProperties
+      };
   }
 }
 
 function mapDukeFormControl(
-  control: DukeFormControl,
+  control: DukeFormControlDrawing & { anchor: DukeDrawingAnchor },
   controlIndex: number,
-  workbookSheetIndex: number
+  workbookSheetIndex: number,
+  themePalette?: XlsxThemePalette | null
 ): XlsxFormControl {
   return {
-    anchor: mapDukeFormControlAnchor(control.anchor),
+    altText: control.altText,
+    anchor: dukeDrawingAnchorToXlsxAnchor(control.anchor),
     controlIndex,
-    dukeAnchor: { ...control.anchor },
-    editAs: control.anchor.editAs,
-    hidden: false,
+    editAs: control.anchor.type === "twoCell" ? control.anchor.editAs : undefined,
+    hidden: control.hidden,
     id: `form-control-${workbookSheetIndex}-${controlIndex}`,
     locked: control.locked,
+    macroName: control.formControl.macroName,
     name: control.name,
     printable: control.printable,
+    rawClientData: control.formControl.rawClientData,
     sheetIndex: workbookSheetIndex,
+    title: control.title,
     workbookSheetIndex,
-    zIndex: controlIndex + 1,
-    ...mapDukeFormControlKind(control.kind)
+    zIndex: (control.drawingPath[0] ?? controlIndex) + 1,
+    ...mapDukeFormControlKind(control.formControl.kind, themePalette)
   };
 }
 
-export function collectWorkbookFormControls(workbook: Workbook): XlsxFormControl[][] {
+export function collectWorkbookFormControls(
+  workbook: Workbook,
+  themePalette?: XlsxThemePalette | null
+): XlsxFormControl[][] {
   return Array.from({ length: workbook.sheetCount }, (_, workbookSheetIndex) => {
     try {
       const controls = workbook.getSheet(workbookSheetIndex).formControls;
       return Array.isArray(controls)
-        ? controls.map((control, controlIndex) => mapDukeFormControl(control, controlIndex, workbookSheetIndex))
+        ? controls.flatMap((control, controlIndex) => control.anchor
+            ? [mapDukeFormControl(control, controlIndex, workbookSheetIndex, themePalette)]
+            : [])
         : [];
     } catch {
       return [];
     }
   });
-}
-
-function parseFormControlKind(rawType: string | null | undefined): XlsxFormControl["kind"] {
-  const normalized = (rawType ?? "").trim().toLowerCase();
-  switch (normalized) {
-    case "button":
-      return "button";
-    case "checkbox":
-      return "checkbox";
-    case "drop":
-      return "dropdown";
-    case "editbox":
-      return "editbox";
-    case "gbox":
-      return "group-box";
-    case "label":
-      return "label";
-    case "list":
-      return "listbox";
-    case "radio":
-      return "radio";
-    case "scroll":
-      return "scrollbar";
-    case "spin":
-      return "spinner";
-    default:
-      return "unknown";
-  }
-}
-
-function parseFormControlShapeId(value: string | null | undefined) {
-  const match = (value ?? "").match(/(\d+)(?!.*\d)/);
-  if (!match) {
-    return null;
-  }
-
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseCssDeclarationValue(styleText: string | null | undefined, property: string) {
-  if (!styleText) {
-    return null;
-  }
-
-  const pattern = new RegExp(`${property}\\s*:\\s*([^;]+)`, "i");
-  const match = pattern.exec(styleText);
-  return match?.[1]?.trim() ?? null;
-}
-
-function parseControlTextAlign(styleText: string | null | undefined): XlsxFormControl["textAlign"] {
-  const value = parseCssDeclarationValue(styleText, "text-align")?.toLowerCase();
-  if (value === "center" || value === "right") {
-    return value;
-  }
-  return value === "left" ? "left" : undefined;
-}
-
-function parseVmlFontSizePt(value: string | null | undefined) {
-  const parsed = Number(value ?? Number.NaN);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return undefined;
-  }
-
-  return parsed > 40 ? parsed / 20 : parsed;
 }
 
 function normalizeControlLabel(label: string | null | undefined) {
@@ -2191,19 +2247,6 @@ function normalizeControlLabel(label: string | null | undefined) {
     .replace(/\s+/g, " ")
     .trim();
   return normalized.length > 0 ? normalized : undefined;
-}
-
-function isPlaceholderFormControlName(name: string | null | undefined) {
-  const normalized = normalizeControlLabel(name)?.toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  return /^(option button|group box|check box|drop down|dropdown|list box|edit box|scroll bar|spinner|spin button|button)\s+\d+$/.test(normalized);
-}
-
-function resolveNamedFormControlLabel(name: string | null | undefined) {
-  return isPlaceholderFormControlName(name) ? undefined : normalizeControlLabel(name);
 }
 
 function parseAnchor(anchorNode: Element) {
@@ -3070,366 +3113,12 @@ function parseDrawingObjects(
   };
 }
 
-function parseSheetFormControlNodes(
-  archive: ArchiveEntries,
-  sheetPath: string
-) {
-  const sheetXml = readArchiveText(archive, sheetPath);
-  if (!sheetXml) {
-    return [] as ParsedSheetFormControl[];
-  }
-
-  const sheetDocument = parseXml(sheetXml);
-  if (!sheetDocument) {
-    return [] as ParsedSheetFormControl[];
-  }
-
-  return getLocalElements(sheetDocument, "control").map((controlNode) => ({
-    anchor: parseAnchor(getFirstDescendant(controlNode, "anchor") ?? controlNode),
-    name: controlNode.getAttribute("name") ?? undefined,
-    shapeId: parseFormControlShapeId(controlNode.getAttribute("shapeId"))
-  }));
-}
-
-function parseVmlFormControls(
-  archive: ArchiveEntries,
-  vmlDrawingPath: string
-) {
-  const xml = readArchiveText(archive, vmlDrawingPath);
-  if (!xml) {
-    return new Map<number, ParsedVmlFormControl>();
-  }
-
-  const document = parseXml(xml);
-  if (!document) {
-    return new Map<number, ParsedVmlFormControl>();
-  }
-
-  const controls = new Map<number, ParsedVmlFormControl>();
-  for (const shapeNode of getLocalElements(document, "shape")) {
-    const clientDataNode = getFirstChild(shapeNode, "ClientData");
-    if (!clientDataNode) {
-      continue;
-    }
-
-    const shapeId = parseFormControlShapeId(
-      shapeNode.getAttributeNS("urn:schemas-microsoft-com:office:office", "spid")
-      ?? shapeNode.getAttribute("o:spid")
-      ?? shapeNode.getAttribute("spid")
-      ?? shapeNode.getAttribute("id")
-    );
-    if (shapeId === null) {
-      continue;
-    }
-
-    const styleText = shapeNode.getAttribute("style");
-    const textboxNode = getFirstChild(shapeNode, "textbox");
-    const fontNode = textboxNode ? getFirstDescendant(textboxNode, "font") : null;
-    const textContainerNode = textboxNode ? getFirstDescendant(textboxNode, "div") : null;
-    const label = normalizeControlLabel(textboxNode?.textContent);
-    const zIndex = Number(parseCssDeclarationValue(styleText, "z-index") ?? Number.NaN);
-
-    controls.set(shapeId, {
-      checked: parseSpreadsheetBooleanNode(getFirstChild(clientDataNode, "Checked")),
-      fontFamily: fontNode?.getAttribute("face") ?? undefined,
-      fontSizePt: parseVmlFontSizePt(fontNode?.getAttribute("size")),
-      hidden: (parseCssDeclarationValue(styleText, "visibility") ?? "").toLowerCase() === "hidden",
-      label,
-      linkedCell: normalizeControlLabel(getFirstChild(clientDataNode, "FmlaLink")?.textContent),
-      objectType: clientDataNode.getAttribute("ObjectType") ?? undefined,
-      shapeId,
-      textAlign: parseControlTextAlign(textContainerNode?.getAttribute("style")),
-      textColor: fontNode?.getAttribute("color") ?? undefined,
-      zIndex: Number.isFinite(zIndex) ? zIndex : controls.size + 1
-    });
-  }
-
-  return controls;
-}
-
-function parseSheetFormControls(
-  archive: ArchiveEntries,
-  sheetPath: string,
-  sheetRelationships: Map<string, RelationshipRecord>,
-  workbookSheetIndex: number,
-  zIndexBase: number
-) {
-  const controlNodes = parseSheetFormControlNodes(archive, sheetPath);
-  if (controlNodes.length === 0) {
-    return [] as XlsxFormControl[];
-  }
-
-  const legacyDrawingRelationship = [...sheetRelationships.values()].find(
-    (relationship) => relationship.type === VML_DRAWING_REL_TYPE
-  );
-  const vmlControlsByShapeId = legacyDrawingRelationship
-    ? parseVmlFormControls(archive, legacyDrawingRelationship.target)
-    : new Map<number, ParsedVmlFormControl>();
-  const parsedControls: XlsxFormControl[] = [];
-
-  controlNodes.forEach((controlNode, index) => {
-    if (!controlNode.anchor) {
-      return;
-    }
-
-    const vmlControl = controlNode.shapeId !== null
-      ? vmlControlsByShapeId.get(controlNode.shapeId) ?? null
-      : null;
-    const kind = parseFormControlKind(vmlControl?.objectType);
-
-    parsedControls.push({
-      anchor: controlNode.anchor,
-      checked: vmlControl?.checked,
-      fontFamily: vmlControl?.fontFamily,
-      fontSizePt: vmlControl?.fontSizePt,
-      hidden: vmlControl?.hidden ?? false,
-      id: `form-control-${workbookSheetIndex}-${index}`,
-      kind,
-      label: vmlControl?.label,
-      linkedCell: vmlControl?.linkedCell,
-      name: controlNode.name,
-      sheetIndex: workbookSheetIndex,
-      textAlign: vmlControl?.textAlign,
-      textColor: vmlControl?.textColor,
-      workbookSheetIndex,
-      zIndex: zIndexBase + (vmlControl?.zIndex ?? index + 1)
-    });
-  });
-
-  return parsedControls.sort((left, right) => left.zIndex - right.zIndex);
-}
-
-function flattenShapeText(shape: XlsxShape) {
-  const text = shape.paragraphs
-    .flatMap((paragraph) => paragraph.runs.map((run) => run.text))
-    .join(" ");
-  return normalizeControlLabel(text);
-}
-
-function rectArea(rect: DrawingRectEmu) {
-  return Math.max(0, rect.cx) * Math.max(0, rect.cy);
-}
-
-function rectIntersectionArea(left: DrawingRectEmu, right: DrawingRectEmu) {
-  const overlapX = Math.max(0, Math.min(left.x + left.cx, right.x + right.cx) - Math.max(left.x, right.x));
-  const overlapY = Math.max(0, Math.min(left.y + left.cy, right.y + right.cy) - Math.max(left.y, right.y));
-  return overlapX * overlapY;
-}
-
-function rectCenterDistance(left: DrawingRectEmu, right: DrawingRectEmu) {
-  const leftCenterX = left.x + left.cx / 2;
-  const leftCenterY = left.y + left.cy / 2;
-  const rightCenterX = right.x + right.cx / 2;
-  const rightCenterY = right.y + right.cy / 2;
-  return Math.hypot(leftCenterX - rightCenterX, leftCenterY - rightCenterY);
-}
-
-function findHiddenShapeControlMatch(
-  control: XlsxFormControl,
-  shapes: XlsxShape[],
-  sheetState: WorkbookSheetState | null
-): XlsxShape | null {
-  const controlRect = anchorToAbsoluteRect(control.anchor, sheetState);
-  const controlArea = Math.max(1, rectArea(controlRect));
-  const placeholderName = isPlaceholderFormControlName(control.name);
-  let bestMatch: XlsxShape | null = null;
-  let bestScore = Number.NEGATIVE_INFINITY;
-
-  shapes.forEach((shape) => {
-    if (!shape.hidden) {
-      return;
-    }
-
-    const shapeRect = anchorToAbsoluteRect(shape.anchor, sheetState);
-    const shapeArea = Math.max(1, rectArea(shapeRect));
-    const intersectionArea = rectIntersectionArea(controlRect, shapeRect);
-    const overlapScore = intersectionArea / Math.min(controlArea, shapeArea);
-    const distance = rectCenterDistance(controlRect, shapeRect);
-    const maxDimension = Math.max(controlRect.cx, controlRect.cy, shapeRect.cx, shapeRect.cy, 1);
-    const distanceScore = distance / maxDimension;
-    const textLabel = flattenShapeText(shape);
-    const sameName = normalizeControlLabel(shape.name)?.toLowerCase() === normalizeControlLabel(control.name)?.toLowerCase();
-    let score = overlapScore * 4 - distanceScore;
-
-    if (sameName) {
-      score += 1;
-    }
-
-    if (control.kind === "group-box") {
-      score += textLabel ? -3 : 0.5;
-      score += shape.stroke?.none ? -1.5 : 0.75;
-    } else {
-      score += textLabel ? 2 : -1;
-      score += shape.stroke?.none ? 0.2 : -0.5;
-    }
-
-    if (!placeholderName && textLabel && textLabel === resolveNamedFormControlLabel(control.name)) {
-      score += 0.5;
-    }
-
-    if (score > bestScore) {
-      bestMatch = shape;
-      bestScore = score;
-    }
-  });
-
-  return bestScore >= 0.25 ? bestMatch : null;
-}
-
-function enrichFormControlsWithHiddenShapes(
-  formControls: XlsxFormControl[],
-  shapes: XlsxShape[],
-  sheetState: WorkbookSheetState | null
-) {
-  return formControls.map((control) => {
-    const matchedShape = findHiddenShapeControlMatch(control, shapes, sheetState);
-    const matchedLabel = matchedShape ? flattenShapeText(matchedShape) : undefined;
-    const fallbackLabel = resolveNamedFormControlLabel(control.name);
-    let resolvedAnchor = control.anchor;
-    if (matchedShape && (control.kind === "group-box" || matchedLabel || isPlaceholderFormControlName(control.name))) {
-      resolvedAnchor = matchedShape.anchor;
-    }
-
-    return {
-      ...control,
-      anchor: resolvedAnchor,
-      label: control.label ?? matchedLabel ?? fallbackLabel
-    };
-  });
-}
-
-function getFormControlAnchorStart(anchor: XlsxFormControl["anchor"]) {
-  return anchor.kind === "absolute"
-    ? null
-    : { col: anchor.from.col, row: anchor.from.row };
-}
-
-function scoreParsedFormControlMatch(
-  dukeControl: XlsxFormControl,
-  parsedControl: XlsxFormControl,
-  parsedIndex: number
-) {
-  if (dukeControl.kind !== parsedControl.kind && parsedControl.kind !== "unknown") {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  let score = 10;
-  const dukeName = normalizeControlLabel(dukeControl.name)?.toLowerCase();
-  const parsedName = normalizeControlLabel(parsedControl.name)?.toLowerCase();
-  if (dukeName && parsedName) {
-    if (dukeName !== parsedName) {
-      return Number.NEGATIVE_INFINITY;
-    }
-    score += 100;
-  }
-
-  const dukeStart = getFormControlAnchorStart(dukeControl.anchor);
-  const parsedStart = getFormControlAnchorStart(parsedControl.anchor);
-  if (dukeStart && parsedStart && dukeStart.col === parsedStart.col && dukeStart.row === parsedStart.row) {
-    score += 40;
-  }
-  if (dukeControl.controlIndex === parsedIndex) {
-    score += 5;
-  }
-
-  return score;
-}
-
-function areDukeFormControlAnchorsEqual(
-  left: XlsxFormControl["dukeAnchor"],
-  right: XlsxFormControl["dukeAnchor"]
-) {
-  if (!left || !right) {
-    return true;
-  }
-  return (
-    left.editAs === right.editAs &&
-    left.fromCol === right.fromCol &&
-    left.fromColOffset === right.fromColOffset &&
-    left.fromRow === right.fromRow &&
-    left.fromRowOffset === right.fromRowOffset &&
-    left.toCol === right.toCol &&
-    left.toColOffset === right.toColOffset &&
-    left.toRow === right.toRow &&
-    left.toRowOffset === right.toRowOffset
-  );
-}
-
-function mergeDukeAndParsedFormControls(
-  dukeControls: XlsxFormControl[],
-  parsedControls: XlsxFormControl[],
-  keepUnmatchedParsedControl: (control: XlsxFormControl) => boolean = () => true
-) {
-  const usedParsedIndexes = new Set<number>();
-  const mergedControls = dukeControls.map((dukeControl) => {
-    let bestIndex = -1;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
-    parsedControls.forEach((parsedControl, parsedIndex) => {
-      if (usedParsedIndexes.has(parsedIndex)) {
-        return;
-      }
-      const score = scoreParsedFormControlMatch(dukeControl, parsedControl, parsedIndex);
-      if (score > bestScore) {
-        bestIndex = parsedIndex;
-        bestScore = score;
-      }
-    });
-
-    const parsedControl = bestIndex >= 0 && bestScore >= 10
-      ? parsedControls[bestIndex]
-      : null;
-    if (!parsedControl) {
-      return dukeControl;
-    }
-
-    usedParsedIndexes.add(bestIndex);
-    const dukeAnchorChanged = !areDukeFormControlAnchorsEqual(
-      parsedControl.dukeAnchor,
-      dukeControl.dukeAnchor
-    );
-    return {
-      ...parsedControl,
-      ...dukeControl,
-      anchor: dukeAnchorChanged ? dukeControl.anchor : parsedControl.anchor,
-      fontFamily: parsedControl.fontFamily,
-      fontSizePt: parsedControl.fontSizePt,
-      hidden: parsedControl.hidden,
-      id: parsedControl.id,
-      label: dukeControl.label ?? parsedControl.label,
-      name: dukeControl.name ?? parsedControl.name,
-      textAlign: parsedControl.textAlign,
-      textColor: parsedControl.textColor,
-      zIndex: parsedControl.zIndex
-    } satisfies XlsxFormControl;
-  });
-
-  parsedControls.forEach((parsedControl, parsedIndex) => {
-    if (!usedParsedIndexes.has(parsedIndex) && keepUnmatchedParsedControl(parsedControl)) {
-      mergedControls.push(parsedControl);
-    }
-  });
-
-  return mergedControls.sort((left, right) => left.zIndex - right.zIndex);
-}
-
-/**
- * Refreshes Duke-owned form-control semantics after a workbook mutation while
- * retaining the VML-only visual metadata and unsupported controls from the
- * original parse.
- */
 export function refreshWorkbookFormControls(
   workbook: Workbook,
-  currentControlsByWorkbookSheetIndex: XlsxFormControl[][]
+  _currentControlsByWorkbookSheetIndex: XlsxFormControl[][],
+  themePalette?: XlsxThemePalette | null
 ) {
-  const dukeControlsByWorkbookSheetIndex = collectWorkbookFormControls(workbook);
-  return dukeControlsByWorkbookSheetIndex.map((dukeControls, workbookSheetIndex) => (
-    mergeDukeAndParsedFormControls(
-      dukeControls,
-      currentControlsByWorkbookSheetIndex[workbookSheetIndex] ?? [],
-      (control) => control.controlIndex === undefined
-    )
-  ));
+  return collectWorkbookFormControls(workbook, themePalette);
 }
 
 export function revokeWorkbookImageAssets(assets: WorkbookImageAssets | null) {
@@ -3541,7 +3230,7 @@ export function parseWorkbookChartStyleAssets(bytes: Uint8Array): WorkbookChartS
 
 export function parseWorkbookImageAssets(
   bytes: Uint8Array,
-  workbookOrFormControls: Workbook | XlsxFormControl[][]
+  workbook?: Workbook
 ): WorkbookImageAssets {
   const archive = unzipSync(bytes);
   const {
@@ -3561,9 +3250,9 @@ export function parseWorkbookImageAssets(
   const shapesByWorkbookSheetIndex: XlsxShape[][] = [];
   const sheetOrigins: Array<WorkbookImageSheetOrigin | null> = [];
   const imageOriginsById = new Map<string, WorkbookImageOrigin>();
-  const dukeFormControlsByWorkbookSheetIndex = Array.isArray(workbookOrFormControls)
-    ? workbookOrFormControls
-    : collectWorkbookFormControls(workbookOrFormControls);
+  const formControls = workbook
+    ? collectWorkbookFormControls(workbook, themePalette)
+    : [];
 
   workbookSheets.forEach((sheet, workbookSheetIndex) => {
     const sheetRelationships = parseRelationships(archive, relsPathForDocument(sheet.path), sheet.path);
@@ -3600,24 +3289,8 @@ export function parseWorkbookImageAssets(
       });
     }
 
-    const formControlList = parseSheetFormControls(
-      archive,
-      sheet.path,
-      sheetRelationships,
-      workbookSheetIndex,
-      zIndexBase
-    );
     const visibleShapeList = shapeList.filter((shape) => !shape.hidden);
-    const enrichedFormControlList = enrichFormControlsWithHiddenShapes(
-      formControlList,
-      shapeList,
-      sheetStatesByWorkbookSheetIndex[workbookSheetIndex] ?? null
-    );
-
-    formControlsByWorkbookSheetIndex[workbookSheetIndex] = mergeDukeAndParsedFormControls(
-      dukeFormControlsByWorkbookSheetIndex[workbookSheetIndex] ?? [],
-      enrichedFormControlList
-    );
+    formControlsByWorkbookSheetIndex[workbookSheetIndex] = formControls[workbookSheetIndex] ?? [];
     imagesByWorkbookSheetIndex[workbookSheetIndex] = imageList;
     shapesByWorkbookSheetIndex[workbookSheetIndex] = visibleShapeList;
     sheetOrigins[workbookSheetIndex] = attachments.length > 0
@@ -3630,6 +3303,7 @@ export function parseWorkbookImageAssets(
 
   return {
     archive,
+    dirtyArchivePaths: new Set(),
     formControlsByWorkbookSheetIndex,
     imageOriginsById,
     imagesByWorkbookSheetIndex,
@@ -3704,6 +3378,7 @@ export function updateWorkbookImageAnchor(
 
     updateAnchorNode(anchorNode, anchor);
     assets.archive[attachment.drawingPath] = strToU8(serializeXml(drawingDocument));
+    assets.dirtyArchivePaths.add(normalizeArchivePath(attachment.drawingPath));
     const imageList = assets.imagesByWorkbookSheetIndex[origin.workbookSheetIndex] ?? [];
     const imageIndex = imageList.findIndex((image) => image.id === imageId);
     if (imageIndex >= 0) {
@@ -3856,7 +3531,7 @@ export function mergeWorkbookImageAssets(
   sourceAssets: WorkbookImageAssets | null,
   sheetOrigins: Array<WorkbookImageSheetOrigin | null>
 ) {
-  if (!sourceAssets || sheetOrigins.every((origin) => !origin?.attachments.length)) {
+  if (!sourceAssets || sourceAssets.dirtyArchivePaths.size === 0) {
     return cloneBytes(savedBytes);
   }
 
@@ -3870,7 +3545,12 @@ export function mergeWorkbookImageAssets(
     }
 
     sheetOrigins.forEach((origin, workbookSheetIndex) => {
-      if (!origin?.attachments.length) {
+      const hasDirtyAttachment = origin?.attachments.some((attachment) => (
+        sourceAssets.dirtyArchivePaths.has(normalizeArchivePath(attachment.drawingPath))
+        || (attachment.drawingRelsPath && sourceAssets.dirtyArchivePaths.has(normalizeArchivePath(attachment.drawingRelsPath)))
+        || attachment.mediaPaths.some((path) => sourceAssets.dirtyArchivePaths.has(normalizeArchivePath(path)))
+      ));
+      if (!origin?.attachments.length || !hasDirtyAttachment) {
         return;
       }
 
@@ -3933,6 +3613,15 @@ export function mergeWorkbookImageAssets(
       archive[relsPath] = strToU8(serializeXml(relDocument));
       mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, relsPath);
     });
+
+    for (const dirtyPath of sourceAssets.dirtyArchivePaths) {
+      const bytes = sourceAssets.archive[dirtyPath];
+      if (!bytes) {
+        continue;
+      }
+      archive[dirtyPath] = cloneBytes(bytes);
+      mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, dirtyPath);
+    }
 
     const hasDrawingOverride = getLocalElements(targetContentTypesDocument, "Override").some(
       (node) => node.getAttribute("ContentType") === DRAWING_CONTENT_TYPE

@@ -235,7 +235,7 @@ These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 
 When `readOnly={false}`, Duke-backed checkboxes, option buttons, dropdowns, list boxes, scrollbars, and spinners are interactive. Changes update linked cells immediately, participate in undo/redo, and are written by `exportXlsx()` / `download()`.
 
-Buttons do not execute Excel macros. Provide `onFormControlAction` to handle a button activation in your application. Labels and group boxes are display-only, and legacy edit boxes remain render-only because Duke Sheets does not expose them as editable form controls.
+Buttons do not execute Excel macros. Provide `onFormControlAction` to handle a button activation in your application. Labels and group boxes are display-only.
 
 ```tsx
 <XlsxViewer
@@ -249,7 +249,32 @@ Buttons do not execute Excel macros. Provide `onFormControlAction` to handle a b
 />
 ```
 
-The controller also exposes `addFormControl(input, sheetIndex?)`, `updateFormControl(controlIndex, patch, sheetIndex?)`, `removeFormControl(controlIndex, sheetIndex?)`, and `getFormControlItems(controlIndex, sheetIndex?)`. Inputs use Duke's flat two-cell anchor and kind-specific form-control shape, exported as `XlsxFormControlInput` and related types.
+The controller also exposes `addFormControl(input, sheetIndex?)`, `updateFormControl(controlIndex, patch, sheetIndex?)`, `removeFormControl(controlIndex, sheetIndex?)`, and `getFormControlItems(controlIndex, sheetIndex?)`. `XlsxFormControlInput` uses the same `XlsxImageAnchor` union as images and charts, with an optional `editAs` value for two-cell anchors. Captions accept either a string or rich text runs:
+
+```ts
+const controlIndex = controller.addFormControl({
+  anchor: {
+    kind: "two-cell",
+    from: { col: 1, row: 1, colOffsetEmu: 0, rowOffsetEmu: 0 },
+    to: { col: 3, row: 2, colOffsetEmu: 0, rowOffsetEmu: 0 }
+  },
+  editAs: "twoCell",
+  kind: {
+    kind: "checkbox",
+    caption: {
+      runs: [{ text: "Include forecast", font: { bold: true, name: "Aptos", size: 10 } }]
+    },
+    state: "checked"
+  }
+});
+```
+
+### Migrating To 0.15
+
+- `XlsxFormControlAnchor` was removed. Pass an `XlsxImageAnchor` to `XlsxFormControlInput.anchor` instead.
+- Read controls now expose `caption` as `XlsxFormControlCaption`; use `label` when you only need flattened display text.
+- Mutation captions accept either a plain string or `XlsxFormControlCaption` rich text runs.
+- `firstInGroup` is read-only. Duke recomputes option-button grouping when controls are written.
 
 ## Chart Selection And Formulas
 
@@ -633,7 +658,7 @@ The package exports the main types you are likely to use for custom integrations
 - `XlsxChart`, `XlsxChartSeries`, `XlsxChartAxis`, `XlsxChartElementSelection`, `XlsxChartsheet`
 - `XlsxFormulaTarget`
 - `XlsxImage`, `XlsxImageRect`, `XlsxImageRenderProps`, `XlsxImageSelectionRenderProps`
-- `XlsxFormControl`, `XlsxFormControlRenderProps`
+- `XlsxFormControl`, `XlsxFormControlInput`, `XlsxFormControlCaption`, `XlsxFormControlCaptionInput`, `XlsxFormControlCaptionRun`, `XlsxFormControlRenderProps`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
 - `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`
 

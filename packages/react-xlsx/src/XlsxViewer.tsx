@@ -5565,7 +5565,6 @@ function buildFormControlKindInput(control: XlsxFormControl): XlsxFormControlKin
       return {
         caption: control.caption ?? control.label ?? "",
         cellLink: control.linkedCell,
-        firstInGroup: control.firstInGroup,
         kind: "optionButton",
         no3D: control.no3D ?? false,
         state: control.state === "checked" ? "checked" : "unchecked"

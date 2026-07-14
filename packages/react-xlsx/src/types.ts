@@ -500,56 +500,71 @@ export type XlsxFormControlState = "unchecked" | "checked" | "mixed";
 
 export type XlsxFormControlSelectionMode = "single" | "multi" | "extend";
 
-/** Duke Sheets' flat worksheet anchor used when creating or updating form controls. */
-export interface XlsxFormControlAnchor {
-  editAs: "twoCell" | "oneCell" | "absolute";
-  fromCol: number;
-  fromColOffset: number;
-  fromRow: number;
-  fromRowOffset: number;
-  toCol: number;
-  toColOffset: number;
-  toRow: number;
-  toRowOffset: number;
+export interface XlsxFormControlCaptionRun {
+  font?: XlsxCellFontStyleInput;
+  text: string;
 }
 
-/** Kind-specific input accepted by Duke Sheets for form-control mutations. */
-export type XlsxFormControlKindInput =
-  | { kind: "button"; caption: string }
-  | { kind: "checkbox"; caption: string; state: XlsxFormControlState; cellLink?: string; no3D: boolean }
-  | { kind: "optionButton"; caption: string; state: Exclude<XlsxFormControlState, "mixed">; cellLink?: string; firstInGroup?: boolean; no3D: boolean }
-  | { kind: "label"; caption: string }
-  | { kind: "groupBox"; caption: string; no3D: boolean }
-  | { kind: "listBox"; inputRange?: string; cellLink?: string; selection: XlsxFormControlSelectionMode; selected: number[]; no3D: boolean }
-  | { kind: "dropdown"; inputRange?: string; cellLink?: string; selected?: number; lines: number; no3D: boolean }
-  | { kind: "scrollbar"; value: number; min: number; max: number; increment: number; page: number; horizontal: boolean; cellLink?: string }
-  | { kind: "spinner"; value: number; min: number; max: number; increment: number; cellLink?: string };
+export interface XlsxFormControlCaption {
+  horizontalAlignment?: "general" | "left" | "center" | "right" | "fill" | "justify" | "centerContinuous" | "distributed";
+  runs: XlsxFormControlCaptionRun[];
+  verticalAlignment?: "top" | "center" | "bottom" | "justify" | "distributed";
+}
 
-/** Complete Duke Sheets input for adding a worksheet form control. */
-export interface XlsxFormControlInput {
-  anchor: XlsxFormControlAnchor;
+export type XlsxFormControlCaptionInput = string | XlsxFormControlCaption;
+
+export type XlsxFormControlKindInput =
+  | { kind: "button"; caption: XlsxFormControlCaptionInput }
+  | { kind: "checkbox"; caption: XlsxFormControlCaptionInput; state: XlsxFormControlState; cellLink?: string; no3D?: boolean }
+  | { kind: "optionButton"; caption: XlsxFormControlCaptionInput; state: Exclude<XlsxFormControlState, "mixed">; cellLink?: string; no3D?: boolean }
+  | { kind: "label"; caption: XlsxFormControlCaptionInput }
+  | { kind: "groupBox"; caption: XlsxFormControlCaptionInput; no3D?: boolean }
+  | { kind: "listBox"; inputRange?: string; cellLink?: string; selection: XlsxFormControlSelectionMode; selected?: number[]; no3D?: boolean }
+  | { kind: "dropdown"; inputRange?: string; cellLink?: string; selected?: number; lines: number; no3D?: boolean }
+  | { kind: "editbox"; caption: XlsxFormControlCaptionInput; legacyObjectType?: number; rawObj?: Uint8Array | number[]; rawProperties?: Array<[string, string]> }
+  | { kind: "scrollbar"; value: number; min: number; max: number; increment: number; page: number; horizontal?: boolean; cellLink?: string }
+  | { kind: "spinner"; value: number; min: number; max: number; increment: number; cellLink?: string }
+  | { kind: "unknown"; objectType: string; legacyObjectType?: number; caption?: XlsxFormControlCaptionInput; rawObj?: Uint8Array | number[]; rawProperties?: Array<[string, string]> };
+
+interface XlsxFormControlMetadataInput {
+  altText?: string;
+  hidden?: boolean;
   kind: XlsxFormControlKindInput;
   locked?: boolean;
+  macroName?: string;
   name?: string;
   printable?: boolean;
+  rawClientData?: Array<Uint8Array | number[]>;
+  title?: string;
 }
 
-/** Partial Duke Sheets input for changing an existing worksheet form control. */
-export type XlsxFormControlPatch = Partial<Omit<XlsxFormControlInput, "kind">> & {
+export type XlsxFormControlInput = XlsxFormControlMetadataInput & (
+  | {
+      anchor: Extract<XlsxImageAnchor, { kind: "two-cell" }>;
+      editAs?: "twoCell" | "oneCell" | "absolute";
+    }
+  | {
+      anchor: Exclude<XlsxImageAnchor, { kind: "two-cell" }>;
+      editAs?: never;
+    }
+);
+
+export type XlsxFormControlPatch = Partial<Omit<XlsxFormControlMetadataInput, "kind">> & {
+  anchor?: XlsxImageAnchor;
+  editAs?: "twoCell" | "oneCell" | "absolute";
   kind?: XlsxFormControlKindInput;
 };
 
 export interface XlsxFormControl {
   anchor: XlsxImageAnchor;
-  /** Original Excel caption reported by Duke Sheets. */
-  caption?: string;
+  altText?: string;
+  /** Original rich caption reported by Duke Sheets. */
+  caption?: XlsxFormControlCaption;
   checked?: boolean;
   /** Duke Sheets' stable zero-based index for this worksheet load. */
   controlIndex?: number;
-  /** Original anchor behavior when Duke has flattened the anchor to two-cell coordinates. */
+  /** Original two-cell anchor behavior. */
   editAs?: "twoCell" | "oneCell" | "absolute";
-  /** Exact Duke Sheets anchor. Use this when cloning or updating the control through the controller. */
-  dukeAnchor?: XlsxFormControlAnchor;
   firstInGroup?: boolean;
   fontFamily?: string;
   fontSizePt?: number;
@@ -565,12 +580,18 @@ export interface XlsxFormControl {
   lines?: number;
   linkedCell?: string;
   locked?: boolean;
+  macroName?: string;
   max?: number;
   min?: number;
   name?: string;
   no3D?: boolean;
   page?: number;
   printable?: boolean;
+  objectType?: string;
+  legacyObjectType?: number;
+  rawClientData?: number[][];
+  rawObj?: number[];
+  rawProperties?: Array<[string, string]>;
   /** Zero-based selected item index or indexes, matching Duke Sheets. */
   selected?: number | number[];
   selection?: XlsxFormControlSelectionMode;
@@ -578,6 +599,7 @@ export interface XlsxFormControl {
   state?: XlsxFormControlState;
   textAlign?: "center" | "left" | "right";
   textColor?: string;
+  title?: string;
   value?: number;
   workbookSheetIndex: number;
   zIndex: number;

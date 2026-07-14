@@ -761,12 +761,6 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
   }
 
   const nextWorkbook = activeWorkbook;
-  formControlsByWorkbookSheetIndex = collectWorkbookFormControls(nextWorkbook).map(
-    (controls, workbookSheetIndex) => controls.map((control) => ({
-      ...control,
-      items: resolveFormControlItems(nextWorkbook, workbookSheetIndex, control)
-    }))
-  );
   const shouldUseFastStructureParse =
     bytes.byteLength >= FAST_STRUCTURE_PARSE_THRESHOLD_BYTES && totalFormulas <= FORMULA_COUNT_THRESHOLD;
   const structureAssets = effectiveSkipXmlParsing || shouldUseFastStructureParse || !canParseXmlInWorker()
@@ -774,6 +768,15 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
     : parseWorkbookStructureAssets(bytes, {
         includeCachedFormulaValues: true
       });
+  formControlsByWorkbookSheetIndex = collectWorkbookFormControls(
+    nextWorkbook,
+    structureAssets?.themePalette
+  ).map(
+    (controls, workbookSheetIndex) => controls.map((control) => ({
+      ...control,
+      items: resolveFormControlItems(nextWorkbook, workbookSheetIndex, control)
+    }))
+  );
   const sheetLayoutStates = structureAssets ? undefined : parseWorkerSheetLayoutAssets(bytes, nextWorkbook.sheetCount);
   workbook = nextWorkbook;
   sheets = buildSheetList(nextWorkbook, structureAssets, sheetLayoutStates, showHiddenSheets);

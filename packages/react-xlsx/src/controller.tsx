@@ -1,8 +1,14 @@
 import * as React from "react";
 import type {
-  FormControl as DukeFormControl,
+  DrawingAnchor as DukeDrawingAnchor,
+  DrawingColor as DukeDrawingColor,
+  DrawingInput as DukeDrawingInput,
+  DrawingRunFont as DukeDrawingRunFont,
+  DrawingText as DukeDrawingText,
+  FormControlDrawing as DukeFormControlDrawing,
   FormControlKind as DukeFormControlKind,
-  FormControlInput as DukeFormControlInput,
+  FormControlKindInput as DukeFormControlKindInput,
+  ImageDrawing as DukeImageDrawing,
   Workbook
 } from "@dukelib/sheets-wasm";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
@@ -17,6 +23,7 @@ import {
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import {
   collectWorkbookFormControls,
+  dukeDrawingAnchorToXlsxAnchor,
   mergeWorkbookImageAssets,
   parseWorkbookImageAssets,
   pxToSheetColumnWidth,
@@ -34,6 +41,7 @@ import {
   resizeImageRect,
   revokeWorkbookImageAssets,
   updateWorkbookImageAnchor,
+  xlsxAnchorToDukeDrawingAnchor,
   type WorkbookImageAssets,
   type WorkbookImageSheetOrigin
 } from "./images";
@@ -47,11 +55,13 @@ import type {
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxCellStyleColorInput,
   XlsxCellStyleInput,
   XlsxClipboardData,
   XlsxConditionalFormatRule,
   XlsxDataValidation,
   XlsxFormControl,
+  XlsxFormControlCaptionInput,
   XlsxFormControlInput,
   XlsxFormControlPatch,
   XlsxFreezePanes,
@@ -89,7 +99,6 @@ const MAX_INTERACTIVE_WORKSHEET_XML_BYTES = 200 * 1024 * 1024;
 const MAX_INTERACTIVE_SHARED_STRINGS_BYTES = 50 * 1024 * 1024;
 const MAX_INTERACTIVE_TOTAL_XML_BYTES = 256 * 1024 * 1024;
 const EMU_PER_PIXEL = 9525;
-const IMAGE_BATCH_ROW_COUNT = 256;
 const DEFAULT_ZOOM_SCALE = 100;
 const MIN_ZOOM_SCALE = 10;
 const MAX_ZOOM_SCALE = 400;
@@ -204,112 +213,6 @@ function resolveNextZoomScale(currentZoomScale: number, direction: 1 | -1) {
       : Math.floor(currentZoomScale / ZOOM_STEP) * ZOOM_STEP
   );
 }
-
-type WorksheetApiImageInfo = {
-  altText?: unknown;
-  height?: unknown;
-  source?: unknown;
-  width?: unknown;
-};
-
-type WorksheetDirectImageAnchorInfo = {
-  fromCol?: unknown;
-  fromColOffset?: unknown;
-  fromRow?: unknown;
-  fromRowOffset?: unknown;
-  toCol?: unknown;
-  toColOffset?: unknown;
-  toRow?: unknown;
-  toRowOffset?: unknown;
-};
-
-type WorksheetDirectImageInfo = {
-  anchor?: unknown;
-  data?: unknown;
-  format?: unknown;
-  id?: unknown;
-  mediaPath?: unknown;
-  name?: unknown;
-  widthEmu?: unknown;
-  heightEmu?: unknown;
-};
-
-type WorksheetDirectShapeParagraphRunInfo = {
-  bold?: unknown;
-  color?: unknown;
-  fontFamily?: unknown;
-  fontSizePt?: unknown;
-  italic?: unknown;
-  text?: unknown;
-  underline?: unknown;
-};
-
-type WorksheetDirectShapeParagraphInfo = {
-  align?: unknown;
-  runs?: unknown;
-};
-
-type WorksheetDirectShapeTextBoxInfo = {
-  horizontalAlign?: unknown;
-  insetPx?: {
-    bottom?: unknown;
-    left?: unknown;
-    right?: unknown;
-    top?: unknown;
-  } | null;
-  verticalAlign?: unknown;
-};
-
-type WorksheetDirectShapeInfo = {
-  anchor?: unknown;
-  description?: unknown;
-  fill?: {
-    color?: unknown;
-    none?: unknown;
-    opacity?: unknown;
-  } | null;
-  flipH?: unknown;
-  flipV?: unknown;
-  geometry?: unknown;
-  geometryAdjustments?: unknown;
-  hyperlink?: unknown;
-  id?: unknown;
-  name?: unknown;
-  paragraphs?: unknown;
-  rotationDeg?: unknown;
-  scaleX?: unknown;
-  scaleY?: unknown;
-  stroke?: {
-    color?: unknown;
-    dash?: unknown;
-    headEndType?: unknown;
-    none?: unknown;
-    opacity?: unknown;
-    tailEndType?: unknown;
-    widthPx?: unknown;
-  } | null;
-  svgPath?: unknown;
-  svgViewBox?: {
-    height?: unknown;
-    width?: unknown;
-  } | null;
-  text?: unknown;
-  textBox?: WorksheetDirectShapeTextBoxInfo | null;
-};
-
-type WorksheetApiRowCell = {
-  col?: unknown;
-  image?: WorksheetApiImageInfo | null;
-};
-
-type WorksheetApiRow = {
-  cells?: unknown;
-  index?: unknown;
-};
-
-type WorksheetWithRowsBatch = ReturnType<Workbook["getSheet"]> & {
-  getRowsBatch?: (startRow: number, maxRows: number, options?: unknown) => unknown;
-};
 
 type ZipEntryMetadata = {
   compressedSize: number;
@@ -895,132 +798,221 @@ function resolveWorkbookReference(
   }
 }
 
-function formControlInputFromDukeControl(control: DukeFormControl): DukeFormControlInput {
+function parseColorHex(hex: string | undefined) {
+  const normalized = hex?.replace(/^#/, "");
+  return normalized && /^[0-9a-f]{6}$/i.test(normalized)
+    ? [0, 2, 4].map((offset) => Number.parseInt(normalized.slice(offset, offset + 2), 16))
+    : null;
+}
+
+function xlsxColorToDukeColor(color: XlsxCellStyleColorInput | undefined): DukeDrawingColor | undefined {
+  if (!color) {
+    return undefined;
+  }
+  const normalizedHex = color.hex?.replace(/^#/, "");
+  const colorType = color.colorType
+    ?? (normalizedHex?.length === 8 ? "argb" : normalizedHex?.length === 6 ? "rgb" : undefined)
+    ?? (color.r !== undefined && color.g !== undefined && color.b !== undefined
+      ? color.a !== undefined ? "argb" : "rgb"
+      : undefined)
+    ?? (color.themeIndex !== undefined ? "theme" : color.paletteIndex !== undefined ? "indexed" : undefined);
+  switch (colorType) {
+    case "auto":
+      return { colorType: "auto" };
+    case "rgb": {
+      const channels = color.r !== undefined && color.g !== undefined && color.b !== undefined
+        ? [color.r, color.g, color.b]
+        : parseColorHex(color.hex);
+      return channels ? { b: channels[2]!, colorType: "rgb", g: channels[1]!, r: channels[0]! } : undefined;
+    }
+    case "argb": {
+      const normalized = color.hex?.replace(/^#/, "");
+      const channels = normalized && /^[0-9a-f]{8}$/i.test(normalized)
+        ? [0, 2, 4, 6].map((offset) => Number.parseInt(normalized.slice(offset, offset + 2), 16))
+        : color.a !== undefined && color.r !== undefined && color.g !== undefined && color.b !== undefined
+          ? [color.a, color.r, color.g, color.b]
+          : null;
+      return channels
+        ? { a: channels[0]!, b: channels[3]!, colorType: "argb", g: channels[2]!, r: channels[1]! }
+        : undefined;
+    }
+    case "theme":
+      return color.themeIndex === undefined
+        ? undefined
+        : { colorType: "theme", index: color.themeIndex, tint: color.tint ?? 0 };
+    case "indexed":
+      return color.paletteIndex === undefined
+        ? undefined
+        : { colorType: "indexed", index: color.paletteIndex };
+  }
+}
+
+function xlsxFontToDukeFont(font: NonNullable<Exclude<XlsxFormControlCaptionInput, string>["runs"][number]["font"]>): DukeDrawingRunFont {
   return {
-    anchor: { ...control.anchor },
-    kind: { ...control.kind },
-    locked: control.locked,
-    name: control.name,
-    printable: control.printable
+    bold: font.bold,
+    charset: font.charset,
+    color: xlsxColorToDukeColor(font.color),
+    family: font.family,
+    italic: font.italic,
+    name: font.name,
+    scheme: font.scheme,
+    size: font.size,
+    strikethrough: font.strikethrough,
+    underline: font.underline,
+    verticalAlign: font.verticalAlign
   };
 }
 
-function getFormControlCellLink(kind: DukeFormControlKind) {
-  return "cellLink" in kind ? kind.cellLink : undefined;
+function xlsxCaptionToDukeText(caption: XlsxFormControlCaptionInput): DukeDrawingText {
+  if (typeof caption === "string") {
+    return { runs: [{ text: caption }] };
+  }
+  return {
+    horizontalAlignment: caption.horizontalAlignment,
+    runs: caption.runs.map((run) => ({
+      font: run.font ? xlsxFontToDukeFont(run.font) : undefined,
+      text: run.text
+    })),
+    verticalAlignment: caption.verticalAlignment
+  };
 }
 
-function anchorContainsControl(group: DukeFormControl, control: DukeFormControl) {
-  const groupAnchor = group.anchor;
-  const controlAnchor = control.anchor;
-  return (
-    controlAnchor.fromCol >= groupAnchor.fromCol &&
-    controlAnchor.fromCol <= groupAnchor.toCol &&
-    controlAnchor.fromRow >= groupAnchor.fromRow &&
-    controlAnchor.fromRow <= groupAnchor.toRow
-  );
-}
-
-function resolveOptionButtonGroupIndexes(controls: DukeFormControl[], targetIndex: number) {
-  const target = controls[targetIndex];
-  if (!target || target.kind.kind !== "optionButton") {
-    return [];
-  }
-
-  if (target.kind.cellLink) {
-    const targetCellLink = target.kind.cellLink;
-    return controls.flatMap((control, index) => (
-      control.kind.kind === "optionButton" && control.kind.cellLink === targetCellLink ? [index] : []
-    ));
-  }
-
-  const containingGroups = controls
-    .map((control, index) => ({ control, index }))
-    .filter(({ control }) => control.kind.kind === "groupBox" && anchorContainsControl(control, target))
-    .sort((left, right) => {
-      const leftArea = (left.control.anchor.toCol - left.control.anchor.fromCol) * (left.control.anchor.toRow - left.control.anchor.fromRow);
-      const rightArea = (right.control.anchor.toCol - right.control.anchor.fromCol) * (right.control.anchor.toRow - right.control.anchor.fromRow);
-      return leftArea - rightArea;
-    });
-  const containingGroup = containingGroups[0]?.control;
-  if (containingGroup) {
-    return controls.flatMap((control, index) => (
-      control.kind.kind === "optionButton" && anchorContainsControl(containingGroup, control) ? [index] : []
-    ));
-  }
-
-  const optionIndexes = controls.flatMap((control, index) => control.kind.kind === "optionButton" ? [index] : []);
-  const targetPosition = optionIndexes.indexOf(targetIndex);
-  if (targetPosition < 0) {
-    return [];
-  }
-  let startPosition = targetPosition;
-  while (startPosition > 0) {
-    const control = controls[optionIndexes[startPosition] ?? -1];
-    if (control?.kind.kind === "optionButton" && control.kind.firstInGroup) {
-      break;
-    }
-    startPosition -= 1;
-  }
-  let endPosition = targetPosition + 1;
-  while (endPosition < optionIndexes.length) {
-    const control = controls[optionIndexes[endPosition] ?? -1];
-    if (control?.kind.kind === "optionButton" && control.kind.firstInGroup) {
-      break;
-    }
-    endPosition += 1;
-  }
-  return optionIndexes.slice(startPosition, endPosition);
-}
-
-function resolveLinkedCellValue(controls: DukeFormControl[], controlIndex: number) {
-  const control = controls[controlIndex];
-  if (!control) {
-    return undefined;
-  }
-
-  switch (control.kind.kind) {
+function xlsxFormControlKindToDukeKind(kind: XlsxFormControlInput["kind"]): DukeFormControlKindInput {
+  switch (kind.kind) {
+    case "button":
+    case "label":
+      return { caption: xlsxCaptionToDukeText(kind.caption), kind: kind.kind };
     case "checkbox":
-      return control.kind.state === "mixed" ? "#N/A" : control.kind.state === "checked";
-    case "optionButton": {
-      const groupIndexes = resolveOptionButtonGroupIndexes(controls, controlIndex);
-      const checkedIndex = groupIndexes.find((index) => controls[index]?.kind.kind === "optionButton" && controls[index]?.kind.state === "checked");
-      const groupPosition = checkedIndex === undefined ? -1 : groupIndexes.indexOf(checkedIndex);
-      return groupPosition >= 0 ? groupPosition + 1 : "";
+      return { ...kind, caption: xlsxCaptionToDukeText(kind.caption) };
+    case "optionButton":
+      return { ...kind, caption: xlsxCaptionToDukeText(kind.caption) };
+    case "groupBox":
+      return { ...kind, caption: xlsxCaptionToDukeText(kind.caption) };
+    case "editbox":
+      return {
+        caption: xlsxCaptionToDukeText(kind.caption),
+        kind: "unknown",
+        legacyObjectType: kind.legacyObjectType,
+        objectType: "EditBox",
+        rawObj: kind.rawObj,
+        rawProperties: kind.rawProperties
+      };
+    case "unknown":
+      return {
+        caption: kind.caption ? xlsxCaptionToDukeText(kind.caption) : undefined,
+        kind: "unknown",
+        legacyObjectType: kind.legacyObjectType,
+        objectType: kind.objectType,
+        rawObj: kind.rawObj,
+        rawProperties: kind.rawProperties
+      };
+    default:
+      return { ...kind };
+  }
+}
+
+function dukeFormControlKindToInput(kind: DukeFormControlKind): DukeFormControlKindInput {
+  if (kind.kind === "optionButton") {
+    return { ...kind, state: kind.state === "checked" ? "checked" : "unchecked" };
+  }
+  if (kind.kind === "unknown") {
+    return {
+      caption: kind.caption,
+      kind: "unknown",
+      legacyObjectType: kind.legacyObjectType,
+      objectType: kind.objectType,
+      rawObj: kind.rawObj,
+      rawProperties: kind.rawProperties
+    };
+  }
+  return { ...kind };
+}
+
+function formControlInputFromDukeControl(control: DukeFormControlDrawing): DukeDrawingInput {
+  return {
+    altText: control.altText,
+    ...(control.anchor ? { anchor: control.anchor } : { transform: control.transform! }),
+    formControl: {
+      kind: dukeFormControlKindToInput(control.formControl.kind),
+      macroName: control.formControl.macroName,
+      rawClientData: control.formControl.rawClientData
+    },
+    hidden: control.hidden,
+    kind: "formControl",
+    locked: control.locked,
+    name: control.name,
+    printable: control.printable,
+    title: control.title
+  };
+}
+
+type DukeFormControlDrawingInput = Extract<DukeDrawingInput, { kind: "formControl" }> & {
+  anchor: DukeDrawingAnchor;
+};
+
+function xlsxFormControlInputToDukeDrawing(input: XlsxFormControlInput): DukeFormControlDrawingInput {
+  return {
+    altText: input.altText,
+    anchor: xlsxAnchorToDukeDrawingAnchor(input.anchor, input.editAs),
+    formControl: {
+      kind: xlsxFormControlKindToDukeKind(input.kind),
+      macroName: input.macroName,
+      rawClientData: input.rawClientData
+    },
+    hidden: input.hidden,
+    kind: "formControl",
+    locked: input.locked,
+    name: input.name,
+    printable: input.printable,
+    title: input.title
+  };
+}
+
+function reconcileCheckedOptionButtons(worksheet: ReturnType<Workbook["getSheet"]>) {
+  const checkedPaths = worksheet.formControls.flatMap((control) => (
+    control.formControl.kind.kind === "optionButton" && control.formControl.kind.state === "checked"
+      ? [control.drawingPath]
+      : []
+  ));
+  for (const path of checkedPaths) {
+    const current = worksheet.formControls.find((control) => (
+      control.drawingPath.length === path.length
+      && control.drawingPath.every((segment, index) => segment === path[index])
+    ));
+    if (current?.formControl.kind.kind === "optionButton" && current.formControl.kind.state === "checked") {
+      worksheet.setFormControlCheckState(current.drawingPath, "checked");
     }
+  }
+}
+
+function formControlInteractionChanged(
+  current: DukeFormControlKind,
+  next: DukeFormControlKind
+) {
+  if (current.kind !== next.kind) {
+    return true;
+  }
+  if ("cellLink" in current && "cellLink" in next && current.cellLink !== next.cellLink) {
+    return true;
+  }
+  switch (current.kind) {
+    case "checkbox":
+    case "optionButton":
+      return next.kind === current.kind && current.state !== next.state;
     case "dropdown":
-      return control.kind.selected === undefined ? "" : control.kind.selected + 1;
+      return next.kind === "dropdown" && current.selected !== next.selected;
     case "listBox":
-      return control.kind.selection === "single" && control.kind.selected.length === 1
-        ? (control.kind.selected[0] ?? -1) + 1
-        : "";
+      return next.kind === "listBox" && (
+        current.selection !== next.selection
+        || current.selected.length !== next.selected.length
+        || current.selected.some((value, index) => value !== next.selected[index])
+      );
     case "scrollbar":
     case "spinner":
-      return control.kind.value;
+      return next.kind === current.kind && current.value !== next.value;
     default:
-      return undefined;
+      return false;
   }
-}
-
-function syncFormControlLinkedCell(
-  workbook: Workbook,
-  workbookSheetIndex: number,
-  controls: DukeFormControl[],
-  controlIndex: number
-) {
-  const control = controls[controlIndex];
-  if (!control) {
-    return;
-  }
-  const cellLink = getFormControlCellLink(control.kind);
-  const value = resolveLinkedCellValue(controls, controlIndex);
-  if (!cellLink || value === undefined) {
-    return;
-  }
-  const target = resolveWorkbookReference(workbook, workbookSheetIndex, cellLink);
-  if (!target || target.range.start.row !== target.range.end.row || target.range.start.col !== target.range.end.col) {
-    return;
-  }
-  target.worksheet.setCell(cellAddressToA1(target.range.start), value);
 }
 
 function parseWorksheetFreezePanes(worksheet: ReturnType<Workbook["getSheet"]>): XlsxFreezePanes | null {
@@ -1482,19 +1474,28 @@ function inferImageMimeType(source: string) {
   return "image/png";
 }
 
-function inferWorksheetDirectImageMimeType(info: WorksheetDirectImageInfo) {
-  const format = typeof info.format === "string" ? info.format.trim().toLowerCase() : "";
+function inferWorksheetDirectImageMimeType(info: DukeImageDrawing["image"]) {
+  const format = info.format;
   if (format === "gif") {
     return "image/gif";
   }
-  if (format === "jpg" || format === "jpeg") {
+  if (format === "jpeg") {
     return "image/jpeg";
   }
   if (format === "svg") {
     return "image/svg+xml";
   }
-  if (format === "webp") {
-    return "image/webp";
+  if (format === "bmp") {
+    return "image/bmp";
+  }
+  if (format === "tiff") {
+    return "image/tiff";
+  }
+  if (format === "emf") {
+    return "image/emf";
+  }
+  if (format === "wmf") {
+    return "image/wmf";
   }
   if (format === "png") {
     return "image/png";
@@ -1529,247 +1530,42 @@ function createWorksheetDirectImageSource(
   return objectUrl;
 }
 
-function buildWorksheetDirectImageAnchor(
-  rawAnchor: unknown,
-  widthEmu: number,
-  heightEmu: number
-): XlsxImage["anchor"] {
-  const anchor = rawAnchor && typeof rawAnchor === "object" ? rawAnchor as WorksheetDirectImageAnchorInfo : {};
-  const fromCol = asFiniteNumber(anchor.fromCol) ?? 0;
-  const fromRow = asFiniteNumber(anchor.fromRow) ?? 0;
-  const fromColOffset = asFiniteNumber(anchor.fromColOffset) ?? 0;
-  const fromRowOffset = asFiniteNumber(anchor.fromRowOffset) ?? 0;
-  const toCol = asFiniteNumber(anchor.toCol);
-  const toRow = asFiniteNumber(anchor.toRow);
-  const toColOffset = asFiniteNumber(anchor.toColOffset) ?? 0;
-  const toRowOffset = asFiniteNumber(anchor.toRowOffset) ?? 0;
-
-  if (toCol !== null && toRow !== null) {
-    return {
-      from: {
-        col: Math.max(0, Math.round(fromCol)),
-        colOffsetEmu: Math.max(0, Math.round(fromColOffset)),
-        row: Math.max(0, Math.round(fromRow)),
-        rowOffsetEmu: Math.max(0, Math.round(fromRowOffset))
-      },
-      kind: "two-cell",
-      to: {
-        col: Math.max(0, Math.round(toCol)),
-        colOffsetEmu: Math.max(0, Math.round(toColOffset)),
-        row: Math.max(0, Math.round(toRow)),
-        rowOffsetEmu: Math.max(0, Math.round(toRowOffset))
-      }
-    };
-  }
-
-  return {
-    from: {
-      col: Math.max(0, Math.round(fromCol)),
-      colOffsetEmu: Math.max(0, Math.round(fromColOffset)),
-      row: Math.max(0, Math.round(fromRow)),
-      rowOffsetEmu: Math.max(0, Math.round(fromRowOffset))
-    },
-    kind: "one-cell",
-    sizeEmu: {
-      cx: Math.max(EMU_PER_PIXEL, Math.round(widthEmu)),
-      cy: Math.max(EMU_PER_PIXEL, Math.round(heightEmu))
-    }
-  };
-}
-
-function normalizeWorksheetDirectShapeParagraphs(rawParagraphs: unknown, fallbackText: unknown): XlsxShape["paragraphs"] {
-  const normalizedParagraphs: XlsxShape["paragraphs"] = [];
-
-  if (Array.isArray(rawParagraphs)) {
-    for (const entry of rawParagraphs) {
-        const paragraph = entry && typeof entry === "object" ? entry as WorksheetDirectShapeParagraphInfo : {};
-        const runs: XlsxShape["paragraphs"][number]["runs"] = [];
-        if (Array.isArray(paragraph.runs)) {
-          for (const runEntry of paragraph.runs) {
-            const run = runEntry && typeof runEntry === "object" ? runEntry as WorksheetDirectShapeParagraphRunInfo : {};
-            const text = typeof run.text === "string" ? run.text : "";
-            if (!text) {
-              continue;
-            }
-            runs.push({
-              bold: typeof run.bold === "boolean" ? run.bold : undefined,
-              color: typeof run.color === "string" && run.color.trim() ? run.color : undefined,
-              fontFamily: typeof run.fontFamily === "string" && run.fontFamily.trim() ? run.fontFamily : undefined,
-              fontSizePt: asFiniteNumber(run.fontSizePt) ?? undefined,
-              italic: typeof run.italic === "boolean" ? run.italic : undefined,
-              text,
-              underline: typeof run.underline === "boolean" ? run.underline : undefined
-            });
-          }
-        }
-        if (runs.length === 0) {
-          continue;
-        }
-        const align = paragraph.align;
-        normalizedParagraphs.push({
-          align: align === "center" || align === "justify" || align === "left" || align === "right" ? align : undefined,
-          runs
-        });
-    }
-  }
-
-  if (normalizedParagraphs.length > 0) {
-    return normalizedParagraphs;
-  }
-
-  const text = typeof fallbackText === "string" ? fallbackText : "";
-  return text
-    ? [{ runs: [{ text }] }]
-    : [];
-}
-
-function buildWorksheetDirectApiShape(
-  workbookSheetIndex: number,
-  info: WorksheetDirectShapeInfo,
-  zIndex: number
-): XlsxShape {
-  const fill = info.fill && typeof info.fill === "object"
-    ? {
-        color: typeof info.fill.color === "string" && info.fill.color.trim() ? info.fill.color : undefined,
-        none: typeof info.fill.none === "boolean" ? info.fill.none : undefined,
-        opacity: asFiniteNumber(info.fill.opacity) ?? undefined
-      }
-    : undefined;
-  const stroke = info.stroke && typeof info.stroke === "object"
-    ? {
-        color: typeof info.stroke.color === "string" && info.stroke.color.trim() ? info.stroke.color : undefined,
-        dash: typeof info.stroke.dash === "string" && info.stroke.dash.trim() ? info.stroke.dash : undefined,
-        headEndType: typeof info.stroke.headEndType === "string" && info.stroke.headEndType.trim() ? info.stroke.headEndType : undefined,
-        none: typeof info.stroke.none === "boolean" ? info.stroke.none : undefined,
-        opacity: asFiniteNumber(info.stroke.opacity) ?? undefined,
-        tailEndType: typeof info.stroke.tailEndType === "string" && info.stroke.tailEndType.trim() ? info.stroke.tailEndType : undefined,
-        widthPx: asFiniteNumber(info.stroke.widthPx) ?? undefined
-      }
-    : undefined;
-  const rawSvgViewBox = info.svgViewBox && typeof info.svgViewBox === "object" ? info.svgViewBox : null;
-  const rawTextBox = info.textBox && typeof info.textBox === "object" ? info.textBox : null;
-  const rawInset = rawTextBox?.insetPx && typeof rawTextBox.insetPx === "object" ? rawTextBox.insetPx : null;
-
-  return {
-    anchor: buildWorksheetDirectImageAnchor(
-      info.anchor,
-      DEFAULT_COL_WIDTH * EMU_PER_PIXEL,
-      DEFAULT_ROW_HEIGHT * EMU_PER_PIXEL
-    ),
-    description: typeof info.description === "string" && info.description.trim() ? info.description : undefined,
-    fill,
-    flipH: typeof info.flipH === "boolean" ? info.flipH : undefined,
-    flipV: typeof info.flipV === "boolean" ? info.flipV : undefined,
-    geometry: typeof info.geometry === "string" && info.geometry.trim() ? info.geometry : "rect",
-    geometryAdjustments: info.geometryAdjustments && typeof info.geometryAdjustments === "object"
-      ? Object.fromEntries(
-          Object.entries(info.geometryAdjustments as Record<string, unknown>)
-            .map(([key, value]) => [key, asFiniteNumber(value)])
-            .filter((entry): entry is [string, number] => typeof entry[1] === "number")
-        )
-      : undefined,
-    hyperlink: typeof info.hyperlink === "string" && info.hyperlink.trim() ? info.hyperlink : undefined,
-    id: `shape-${workbookSheetIndex}-${String(info.id ?? zIndex)}`,
-    name: typeof info.name === "string" && info.name.trim() ? info.name : undefined,
-    paragraphs: normalizeWorksheetDirectShapeParagraphs(info.paragraphs, info.text),
-    rotationDeg: asFiniteNumber(info.rotationDeg) ?? undefined,
-    scaleX: asFiniteNumber(info.scaleX) ?? undefined,
-    scaleY: asFiniteNumber(info.scaleY) ?? undefined,
-    sheetIndex: workbookSheetIndex,
-    svgPath: typeof info.svgPath === "string" && info.svgPath.trim() ? info.svgPath : undefined,
-    svgViewBox: rawSvgViewBox
-      && asFiniteNumber(rawSvgViewBox.width) !== null
-      && asFiniteNumber(rawSvgViewBox.height) !== null
-      ? {
-          height: asFiniteNumber(rawSvgViewBox.height) ?? 0,
-          width: asFiniteNumber(rawSvgViewBox.width) ?? 0
-        }
-      : undefined,
-    stroke,
-    textBox: rawTextBox
-      ? {
-          horizontalAlign: rawTextBox.horizontalAlign === "center" || rawTextBox.horizontalAlign === "left"
-            ? rawTextBox.horizontalAlign
-            : undefined,
-          insetPx: rawInset
-            ? {
-                bottom: asFiniteNumber(rawInset.bottom) ?? 0,
-                left: asFiniteNumber(rawInset.left) ?? 0,
-                right: asFiniteNumber(rawInset.right) ?? 0,
-                top: asFiniteNumber(rawInset.top) ?? 0
-              }
-            : undefined,
-          verticalAlign: rawTextBox.verticalAlign === "bottom" || rawTextBox.verticalAlign === "middle" || rawTextBox.verticalAlign === "top"
-            ? rawTextBox.verticalAlign
-            : undefined
-        }
-      : undefined,
-    workbookSheetIndex,
-    zIndex
-  };
-}
-
-function buildWorksheetApiImage(
-  workbookSheetIndex: number,
-  row: number,
-  col: number,
-  info: WorksheetApiImageInfo,
-  zIndex: number
-): XlsxImage | null {
-  if (typeof info.source !== "string" || !info.source) {
-    return null;
-  }
-
-  const width = Math.max(1, Math.round(asFiniteNumber(info.width) ?? DEFAULT_COL_WIDTH));
-  const height = Math.max(1, Math.round(asFiniteNumber(info.height) ?? DEFAULT_ROW_HEIGHT));
-  const description = typeof info.altText === "string" && info.altText.trim() ? info.altText : undefined;
-
-  return {
-    anchor: {
-      from: {
-        col,
-        colOffsetEmu: 0,
-        row,
-        rowOffsetEmu: 0
-      },
-      kind: "one-cell",
-      sizeEmu: {
-        cx: width * EMU_PER_PIXEL,
-        cy: height * EMU_PER_PIXEL
-      }
-    },
-    description,
-    editable: false,
-    id: `worksheet-image-${workbookSheetIndex}-${row}-${col}-${zIndex}`,
-    mimeType: inferImageMimeType(info.source),
-    sheetIndex: workbookSheetIndex,
-    src: info.source,
-    workbookSheetIndex,
-    zIndex
-  };
-}
-
 function buildWorksheetDirectApiImage(
+  worksheet: ReturnType<Workbook["getSheet"]>,
   workbookSheetIndex: number,
-  info: WorksheetDirectImageInfo,
-  zIndex: number,
+  drawing: DukeImageDrawing & { anchor: DukeDrawingAnchor },
   objectUrls: string[]
 ): XlsxImage | null {
-  const mimeType = inferWorksheetDirectImageMimeType(info);
-  const src = createWorksheetDirectImageSource(info.data, mimeType, objectUrls);
+  const hasSvgCompanion = Boolean(drawing.image.svgMediaPath);
+  let mimeType = inferWorksheetDirectImageMimeType(drawing.image);
+  let data: Uint8Array;
+  try {
+    const svgData = drawing.image.format === "svg" || hasSvgCompanion
+      ? worksheet.drawingSvgData(drawing.drawingPath)
+      : undefined;
+    if (svgData) {
+      data = svgData;
+      mimeType = "image/svg+xml";
+    } else {
+      data = worksheet.drawingImageData(drawing.drawingPath);
+    }
+  } catch {
+    return null;
+  }
+  const src = createWorksheetDirectImageSource(data, mimeType, objectUrls);
   if (!src) {
     return null;
   }
 
-  const widthEmu = Math.max(EMU_PER_PIXEL, Math.round(asFiniteNumber(info.widthEmu) ?? DEFAULT_COL_WIDTH * EMU_PER_PIXEL));
-  const heightEmu = Math.max(EMU_PER_PIXEL, Math.round(asFiniteNumber(info.heightEmu) ?? DEFAULT_ROW_HEIGHT * EMU_PER_PIXEL));
+  const zIndex = (drawing.drawingPath[0] ?? 0) + 1;
   return {
-    anchor: buildWorksheetDirectImageAnchor(info.anchor, widthEmu, heightEmu),
+    anchor: dukeDrawingAnchorToXlsxAnchor(drawing.anchor),
+    description: drawing.altText,
     editable: false,
-    id: `worksheet-image-${workbookSheetIndex}-${String(info.id ?? zIndex)}`,
-    mediaPath: typeof info.mediaPath === "string" && info.mediaPath.trim() ? info.mediaPath : undefined,
+    id: `worksheet-image-${workbookSheetIndex}-${drawing.drawingPath.join("-")}`,
+    mediaPath: drawing.image.mediaPath || undefined,
     mimeType,
-    name: typeof info.name === "string" && info.name.trim() ? info.name : undefined,
+    name: drawing.name,
     sheetIndex: workbookSheetIndex,
     src,
     workbookSheetIndex,
@@ -1777,155 +1573,91 @@ function buildWorksheetDirectApiImage(
   };
 }
 
-function collectWorksheetBatchImages(workbook: Workbook) {
-  const imagesByWorkbookSheetIndex = Array.from({ length: workbook.sheetCount }, () => [] as XlsxImage[]);
-
-  for (let workbookSheetIndex = 0; workbookSheetIndex < workbook.sheetCount; workbookSheetIndex += 1) {
-    const worksheet = workbook.getSheet(workbookSheetIndex) as WorksheetWithRowsBatch;
-    if (typeof worksheet.getRowsBatch !== "function") {
-      continue;
-    }
-
-    const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
-    const maxRow = usedRange?.[2] ?? -1;
-    if (maxRow < 0) {
-      continue;
-    }
-
-    let zIndex = 1;
-    let sheetFailed = false;
-    for (let startRow = 0; startRow <= maxRow; startRow += IMAGE_BATCH_ROW_COUNT) {
-      let rows: unknown;
-      try {
-        rows = worksheet.getRowsBatch(startRow, IMAGE_BATCH_ROW_COUNT, { includeImages: true });
-      } catch {
-        sheetFailed = true;
-        break;
-      }
-
-      if (!Array.isArray(rows)) {
-        continue;
-      }
-
-      for (const rowEntry of rows as WorksheetApiRow[]) {
-        const row = typeof rowEntry.index === "number" ? rowEntry.index : null;
-        if (row === null || !Array.isArray(rowEntry.cells)) {
-          continue;
-        }
-
-        for (const cellEntry of rowEntry.cells as WorksheetApiRowCell[]) {
-          const col = typeof cellEntry.col === "number" ? cellEntry.col : null;
-          if (col === null || !cellEntry.image || typeof cellEntry.image !== "object") {
-            continue;
-          }
-
-          const image = buildWorksheetApiImage(workbookSheetIndex, row, col, cellEntry.image, zIndex);
-          if (!image) {
-            continue;
-          }
-
-          imagesByWorkbookSheetIndex[workbookSheetIndex].push(image);
-          zIndex += 1;
-        }
-      }
-    }
-
-    if (sheetFailed) {
-      imagesByWorkbookSheetIndex[workbookSheetIndex] = [];
-    }
-  }
-
-  return imagesByWorkbookSheetIndex;
-}
-
 function collectWorksheetApiImages(workbook: Workbook, objectUrls: string[]) {
   const directImagesByWorkbookSheetIndex = Array.from({ length: workbook.sheetCount }, () => [] as XlsxImage[]);
-  let didUseDirectImages = false;
-
   for (let workbookSheetIndex = 0; workbookSheetIndex < workbook.sheetCount; workbookSheetIndex += 1) {
-    const worksheet = workbook.getSheet(workbookSheetIndex) as ReturnType<Workbook["getSheet"]> & {
-      images?: unknown;
-    };
-    const rawImages = Array.isArray(worksheet.images) ? worksheet.images as WorksheetDirectImageInfo[] : [];
+    const worksheet = workbook.getSheet(workbookSheetIndex);
+    const rawImages = worksheet.images;
     if (rawImages.length === 0) {
       continue;
     }
 
     const nextImages = rawImages
-      .map((info, index) => buildWorksheetDirectApiImage(workbookSheetIndex, info, index + 1, objectUrls))
+      .filter((drawing): drawing is DukeImageDrawing & { anchor: DukeDrawingAnchor } => !drawing.hidden && Boolean(drawing.anchor))
+      .map((drawing) => buildWorksheetDirectApiImage(worksheet, workbookSheetIndex, drawing, objectUrls))
       .filter((image): image is XlsxImage => Boolean(image));
     if (nextImages.length > 0) {
       directImagesByWorkbookSheetIndex[workbookSheetIndex] = nextImages;
-      didUseDirectImages = true;
     }
   }
 
-  if (didUseDirectImages) {
-    return directImagesByWorkbookSheetIndex;
-  }
-
-  return collectWorksheetBatchImages(workbook);
+  return directImagesByWorkbookSheetIndex;
 }
 
-function collectWorksheetApiShapes(workbook: Workbook) {
-  return Array.from({ length: workbook.sheetCount }, (_, workbookSheetIndex) => {
-    const worksheet = workbook.getSheet(workbookSheetIndex) as ReturnType<Workbook["getSheet"]> & {
-      shapes?: unknown;
-    };
-    const rawShapes = Array.isArray(worksheet.shapes) ? worksheet.shapes as WorksheetDirectShapeInfo[] : [];
-    return rawShapes
-      .map((shape, index) => buildWorksheetDirectApiShape(workbookSheetIndex, shape, index + 1));
-  });
-}
-
-function mergeParsedAndApiImages(parsedImages: XlsxImage[], apiImages: XlsxImage[]) {
-  if (parsedImages.length === 0) {
-    return apiImages;
-  }
-  if (apiImages.length === 0) {
-    return parsedImages;
-  }
-
-  const normalizeTextKey = (value: string | undefined) => value?.trim().toLowerCase() ?? "";
-  const anchorKey = (anchor: XlsxImage["anchor"]) => {
-    if (anchor.kind === "absolute") {
-      return [
-        "absolute",
-        Math.round(anchor.positionEmu.x),
-        Math.round(anchor.positionEmu.y),
-        Math.round(anchor.sizeEmu.cx),
-        Math.round(anchor.sizeEmu.cy)
-      ].join(":");
-    }
-    if (anchor.kind === "one-cell") {
-      return [
-        "one",
-        anchor.from.col,
-        anchor.from.row,
-        Math.round(anchor.from.colOffsetEmu),
-        Math.round(anchor.from.rowOffsetEmu),
-        Math.round(anchor.sizeEmu.cx),
-        Math.round(anchor.sizeEmu.cy)
-      ].join(":");
-    }
+function imageAnchorKey(anchor: XlsxImage["anchor"]) {
+  if (anchor.kind === "absolute") {
     return [
-      "two",
+      "absolute",
+      Math.round(anchor.positionEmu.x),
+      Math.round(anchor.positionEmu.y),
+      Math.round(anchor.sizeEmu.cx),
+      Math.round(anchor.sizeEmu.cy)
+    ].join(":");
+  }
+  if (anchor.kind === "one-cell") {
+    return [
+      "one",
       anchor.from.col,
       anchor.from.row,
       Math.round(anchor.from.colOffsetEmu),
       Math.round(anchor.from.rowOffsetEmu),
-      anchor.to.col,
-      anchor.to.row,
-      Math.round(anchor.to.colOffsetEmu),
-      Math.round(anchor.to.rowOffsetEmu)
+      Math.round(anchor.sizeEmu.cx),
+      Math.round(anchor.sizeEmu.cy)
     ].join(":");
-  };
+  }
+  return [
+    "two",
+    anchor.from.col,
+    anchor.from.row,
+    Math.round(anchor.from.colOffsetEmu),
+    Math.round(anchor.from.rowOffsetEmu),
+    anchor.to.col,
+    anchor.to.row,
+    Math.round(anchor.to.colOffsetEmu),
+    Math.round(anchor.to.rowOffsetEmu)
+  ].join(":");
+}
+
+function collectHiddenWorksheetImageAnchors(workbook: Workbook) {
+  return Array.from({ length: workbook.sheetCount }, (_, workbookSheetIndex) => new Set(
+    workbook.getSheet(workbookSheetIndex).images.flatMap((drawing) => (
+      drawing.hidden && drawing.anchor
+        ? [imageAnchorKey(dukeDrawingAnchorToXlsxAnchor(drawing.anchor))]
+        : []
+    ))
+  ));
+}
+
+function mergeParsedAndApiImages(
+  parsedImages: XlsxImage[],
+  apiImages: XlsxImage[],
+  hiddenAnchorKeys: Set<string>
+) {
+  const visibleParsedImages = parsedImages.filter((image) => !hiddenAnchorKeys.has(imageAnchorKey(image.anchor)));
+  if (visibleParsedImages.length === 0) {
+    return apiImages;
+  }
+  if (apiImages.length === 0) {
+    return visibleParsedImages;
+  }
+
+  const normalizeTextKey = (value: string | undefined) => value?.trim().toLowerCase() ?? "";
   const imageKeys = (image: XlsxImage) => {
     const keys = [
-      `${normalizeTextKey(image.mediaPath)}|${normalizeTextKey(image.name)}|${anchorKey(image.anchor)}`,
-      `${normalizeTextKey(image.mediaPath)}|${anchorKey(image.anchor)}`,
-      `${normalizeTextKey(image.name)}|${anchorKey(image.anchor)}`,
-      `${anchorKey(image.anchor)}`
+      `${normalizeTextKey(image.mediaPath)}|${normalizeTextKey(image.name)}|${imageAnchorKey(image.anchor)}`,
+      `${normalizeTextKey(image.mediaPath)}|${imageAnchorKey(image.anchor)}`,
+      `${normalizeTextKey(image.name)}|${imageAnchorKey(image.anchor)}`,
+      `${imageAnchorKey(image.anchor)}`
     ];
     return keys.filter((key, index) => key && keys.indexOf(key) === index);
   };
@@ -1958,7 +1690,7 @@ function mergeParsedAndApiImages(parsedImages: XlsxImage[], apiImages: XlsxImage
     return null;
   };
 
-  const merged = parsedImages.map((image) => {
+  const merged = visibleParsedImages.map((image) => {
     const apiImage = takeApiMatch(image);
     if (!apiImage) {
       return image;
@@ -1970,7 +1702,8 @@ function mergeParsedAndApiImages(parsedImages: XlsxImage[], apiImages: XlsxImage
       mediaPath: apiImage.mediaPath ?? image.mediaPath,
       mimeType: apiImage.mimeType,
       name: apiImage.name ?? image.name,
-      src: apiImage.src
+      src: apiImage.src,
+      zIndex: apiImage.zIndex
     };
   });
 
@@ -2001,12 +1734,13 @@ function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
   const objectUrls: string[] = [];
   return {
     archive: {},
+    dirtyArchivePaths: new Set(),
     formControlsByWorkbookSheetIndex: collectWorkbookFormControls(workbook),
     imageOriginsById: new Map(),
     imagesByWorkbookSheetIndex: collectWorksheetApiImages(workbook, objectUrls),
     namedCellStyleByName: {},
     objectUrls,
-    shapesByWorkbookSheetIndex: collectWorksheetApiShapes(workbook),
+    shapesByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => []),
     sheetOrigins: Array.from({ length: workbook.sheetCount }, () => null as WorkbookImageSheetOrigin | null),
     sheetStatesByWorkbookSheetIndex: Array.from({ length: workbook.sheetCount }, () => null),
     styleById: {},
@@ -2023,13 +1757,18 @@ function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook, skipXmlP
 
   const parsedAssets = parseWorkbookImageAssets(bytes, workbook);
   const apiImagesByWorkbookSheetIndex = collectWorksheetApiImages(workbook, parsedAssets.objectUrls);
+  const hiddenImageAnchorsByWorkbookSheetIndex = collectHiddenWorksheetImageAnchors(workbook);
 
   const imagesByWorkbookSheetIndex = Array.from(
     { length: Math.max(workbook.sheetCount, parsedAssets.imagesByWorkbookSheetIndex.length, apiImagesByWorkbookSheetIndex.length) },
     (_, index) => {
       const parsedImages = parsedAssets.imagesByWorkbookSheetIndex[index] ?? [];
       const apiImages = apiImagesByWorkbookSheetIndex[index] ?? [];
-      return mergeParsedAndApiImages(parsedImages, apiImages);
+      return mergeParsedAndApiImages(
+        parsedImages,
+        apiImages,
+        hiddenImageAnchorsByWorkbookSheetIndex[index] ?? new Set()
+      );
     }
   );
 
@@ -2401,7 +2140,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const refreshWorkbookState = React.useCallback((targetWorkbook: Workbook) => {
     const currentFormControls = imageAssetsRef.current?.formControlsByWorkbookSheetIndex ?? [];
-    const nextFormControls = refreshWorkbookFormControls(targetWorkbook, currentFormControls);
+    const nextFormControls = refreshWorkbookFormControls(
+      targetWorkbook,
+      currentFormControls,
+      imageAssetsRef.current?.themePalette
+    );
     if (imageAssetsRef.current) {
       imageAssetsRef.current.formControlsByWorkbookSheetIndex = nextFormControls;
     }
@@ -2540,25 +2283,20 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
             const workerImageAssets = effectiveSkipXmlParsing
               ? null
-              : parseWorkbookImageAssets(
-                  new Uint8Array(buffer),
-                  snapshot.formControlsByWorkbookSheetIndex
-                );
+              : parseWorkbookImageAssets(new Uint8Array(buffer));
             if (!isCurrent || abortController.signal.aborted) {
               revokeWorkbookImageAssets(workerImageAssets);
               return;
             }
 
             setImageAssets(workerImageAssets);
+            setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
             setWorkbook(null);
             setSheets(snapshot.sheets);
             setChartsByWorkbookSheetIndex(snapshot.chartsByWorkbookSheetIndex);
             setChartsheets(snapshot.chartsheets);
             setTabs(snapshot.tabs);
             chartAssetsRef.current = null;
-            if (!workerImageAssets) {
-              setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
-            }
             setWorkerTablesByWorkbookSheetIndex(snapshot.tablesByWorkbookSheetIndex);
             setShouldAutoCalculate(false);
             setIsWorkerBacked(true);
@@ -3142,8 +2880,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return control?.items?.slice() ?? [];
     }
     const control = target.worksheet.formControls[controlIndex];
-    const inputRange = control?.kind.kind === "listBox" || control?.kind.kind === "dropdown"
-      ? control.kind.inputRange
+    const kind = control?.formControl.kind;
+    const inputRange = kind?.kind === "listBox" || kind?.kind === "dropdown"
+      ? kind.inputRange
       : undefined;
     if (!inputRange) {
       return [];
@@ -3647,30 +3386,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     recordHistoryBeforeMutation();
-    const controlIndex = target.worksheet.addFormControl(input as DukeFormControlInput);
-    const controls = target.worksheet.formControls;
-    const addedControl = controls[controlIndex];
-    if (addedControl?.kind.kind === "optionButton" && addedControl.kind.state === "checked") {
-      const groupIndexes = resolveOptionButtonGroupIndexes(controls, controlIndex);
-      for (const siblingIndex of groupIndexes) {
-        if (siblingIndex === controlIndex) {
-          continue;
-        }
-        const sibling = target.worksheet.formControls[siblingIndex];
-        if (sibling?.kind.kind === "optionButton" && sibling.kind.state !== "unchecked") {
-          target.worksheet.setFormControl(siblingIndex, {
-            ...formControlInputFromDukeControl(sibling),
-            kind: { ...sibling.kind, state: "unchecked" }
-          });
-        }
-      }
+    target.worksheet.addDrawing(xlsxFormControlInputToDukeDrawing(input));
+    const controlIndex = target.worksheet.formControlCount - 1;
+    const addedControl = target.worksheet.formControls[controlIndex];
+    const addedKind = addedControl?.formControl.kind;
+    if (addedControl && (addedKind?.kind === "checkbox" || addedKind?.kind === "optionButton")) {
+      target.worksheet.setFormControlCheckState(addedControl.drawingPath, addedKind.state);
+    } else if (addedKind?.kind === "groupBox") {
+      reconcileCheckedOptionButtons(target.worksheet);
+    } else if (addedKind && "cellLink" in addedKind && addedKind.cellLink) {
+      workbook.syncFormControls();
     }
-    syncFormControlLinkedCell(
-      workbook,
-      target.workbookSheetIndex,
-      target.worksheet.formControls,
-      controlIndex
-    );
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     return controlIndex;
@@ -3688,36 +3414,64 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     recordHistoryBeforeMutation();
-    const nextInput: DukeFormControlInput = {
-      ...formControlInputFromDukeControl(currentControl),
-      ...patch,
-      anchor: patch.anchor ? { ...patch.anchor } : { ...currentControl.anchor },
-      kind: patch.kind ? { ...patch.kind } : { ...currentControl.kind }
-    } as DukeFormControlInput;
-
-    if (nextInput.kind.kind === "optionButton" && nextInput.kind.state === "checked") {
-      const groupIndexes = resolveOptionButtonGroupIndexes(target.worksheet.formControls, controlIndex);
-      for (const siblingIndex of groupIndexes) {
-        if (siblingIndex === controlIndex) {
-          continue;
-        }
-        const sibling = target.worksheet.formControls[siblingIndex];
-        if (sibling?.kind.kind === "optionButton" && sibling.kind.state !== "unchecked") {
-          target.worksheet.setFormControl(siblingIndex, {
-            ...formControlInputFromDukeControl(sibling),
-            kind: { ...sibling.kind, state: "unchecked" }
-          });
-        }
-      }
+    const currentInput = formControlInputFromDukeControl(currentControl);
+    if (currentInput.kind !== "formControl" || !currentControl.anchor) {
+      return false;
     }
+    const nextAnchor = patch.anchor
+      ? xlsxAnchorToDukeDrawingAnchor(
+          patch.anchor,
+          patch.editAs ?? (currentControl.anchor.type === "twoCell" ? currentControl.anchor.editAs : undefined)
+        )
+      : patch.editAs !== undefined && currentControl.anchor.type === "twoCell"
+        ? { ...currentControl.anchor, editAs: patch.editAs }
+        : currentControl.anchor;
+    let nextKind = patch.kind
+      ? xlsxFormControlKindToDukeKind(patch.kind)
+      : dukeFormControlKindToInput(currentControl.formControl.kind);
+    if (currentControl.formControl.kind.kind === "unknown" && nextKind.kind === "unknown") {
+      nextKind = {
+        ...nextKind,
+        legacyObjectType: nextKind.legacyObjectType ?? currentControl.formControl.kind.legacyObjectType,
+        rawObj: nextKind.rawObj ?? currentControl.formControl.kind.rawObj,
+        rawProperties: nextKind.rawProperties ?? currentControl.formControl.kind.rawProperties
+      };
+    }
+    const nextInput: DukeFormControlDrawingInput = {
+      altText: "altText" in patch ? patch.altText : currentControl.altText,
+      anchor: nextAnchor,
+      formControl: {
+        ...currentInput.formControl,
+        kind: nextKind,
+        macroName: "macroName" in patch ? patch.macroName : currentControl.formControl.macroName,
+        rawClientData: "rawClientData" in patch ? patch.rawClientData : currentControl.formControl.rawClientData
+      },
+      hidden: "hidden" in patch ? patch.hidden : currentControl.hidden,
+      kind: "formControl",
+      locked: "locked" in patch ? patch.locked : currentControl.locked,
+      name: "name" in patch ? patch.name : currentControl.name,
+      printable: "printable" in patch ? patch.printable : currentControl.printable,
+      title: "title" in patch ? patch.title : currentControl.title
+    };
 
-    target.worksheet.setFormControl(controlIndex, nextInput);
-    syncFormControlLinkedCell(
-      workbook,
-      target.workbookSheetIndex,
-      target.worksheet.formControls,
-      controlIndex
+    target.worksheet.setDrawing(currentControl.drawingPath, nextInput);
+    const updatedControl = target.worksheet.formControls[controlIndex];
+    const updatedKind = updatedControl?.formControl.kind;
+    const interactionChanged = updatedKind
+      ? formControlInteractionChanged(currentControl.formControl.kind, updatedKind)
+      : false;
+    const groupTopologyChanged = patch.anchor !== undefined || (
+      updatedKind !== undefined
+      && updatedKind.kind !== currentControl.formControl.kind.kind
+      && (updatedKind.kind === "groupBox" || currentControl.formControl.kind.kind === "groupBox")
     );
+    if (interactionChanged && updatedControl && (updatedKind?.kind === "checkbox" || updatedKind?.kind === "optionButton")) {
+      target.worksheet.setFormControlCheckState(updatedControl.drawingPath, updatedKind.state);
+    } else if (groupTopologyChanged) {
+      reconcileCheckedOptionButtons(target.worksheet);
+    } else if (interactionChanged && updatedKind && "cellLink" in updatedKind && updatedKind.cellLink) {
+      workbook.syncFormControls();
+    }
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     return true;
@@ -3730,10 +3484,16 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     recordHistoryBeforeMutation();
-    target.worksheet.removeFormControl(controlIndex);
+    const removedControl = target.worksheet.formControls[controlIndex]!;
+    const removedKind = removedControl.formControl.kind.kind;
+    target.worksheet.removeDrawing(removedControl.drawingPath);
+    if (removedKind === "groupBox" || removedKind === "optionButton") {
+      reconcileCheckedOptionButtons(target.worksheet);
+      maybeRecalculateWorkbook(workbook);
+    }
     refreshWorkbookState(workbook);
     return true;
-  }, [activeSheetIndex, getFormControlWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+  }, [activeSheetIndex, getFormControlWorksheet, maybeRecalculateWorkbook, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
   const recordCellEditHistory = React.useCallback((
     cell: XlsxCellAddress,
