@@ -26,6 +26,7 @@ import {
   dukeDrawingAnchorToXlsxAnchor,
   mergeWorkbookImageAssets,
   parseWorkbookImageAssets,
+  parseWorkbookThemePalette,
   pxToSheetColumnWidth,
   rectToImageAnchor,
   refreshWorkbookFormControls,
@@ -37,6 +38,7 @@ import {
   resolveWorksheetMergeMetadata,
   resolveSheetColumnWidthPixels,
   resolveRenderedSheetAxisPixels,
+  resolveWorkbookFormControlThemeColors,
   resolveSheetRowHeightPixels,
   resizeImageRect,
   revokeWorkbookImageAssets,
@@ -946,11 +948,12 @@ function formControlInputFromDukeControl(control: DukeFormControlDrawing): DukeD
   };
 }
 
-type DukeFormControlDrawingInput = Extract<DukeDrawingInput, { kind: "formControl" }> & {
+type DukeFormControlDrawingInput = Extract<DukeDrawingInput, { kind: "formControl" }>;
+type DukeTopLevelFormControlDrawingInput = DukeFormControlDrawingInput & {
   anchor: DukeDrawingAnchor;
 };
 
-function xlsxFormControlInputToDukeDrawing(input: XlsxFormControlInput): DukeFormControlDrawingInput {
+function xlsxFormControlInputToDukeDrawing(input: XlsxFormControlInput): DukeTopLevelFormControlDrawingInput {
   return {
     altText: input.altText,
     anchor: xlsxAnchorToDukeDrawingAnchor(input.anchor, input.editAs),
@@ -2289,8 +2292,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
               return;
             }
 
+            const nextFormControls = resolveWorkbookFormControlThemeColors(
+              snapshot.formControlsByWorkbookSheetIndex,
+              workerImageAssets?.themePalette
+            );
+            if (workerImageAssets) {
+              workerImageAssets.formControlsByWorkbookSheetIndex = nextFormControls;
+            }
             setImageAssets(workerImageAssets);
-            setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
+            if (!workerImageAssets) {
+              setFormControlsByWorkbookSheetIndex(nextFormControls);
+            }
             setWorkbook(null);
             setSheets(snapshot.sheets);
             setChartsByWorkbookSheetIndex(snapshot.chartsByWorkbookSheetIndex);
@@ -2543,7 +2555,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           setChartsheets(snapshot.chartsheets);
           setTabs(snapshot.tabs);
           chartAssetsRef.current = null;
-          setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
+          const themePalette = effectiveSkipXmlParsing
+            ? null
+            : parseWorkbookThemePalette(new Uint8Array(deferredBuffer));
+          setFormControlsByWorkbookSheetIndex(resolveWorkbookFormControlThemeColors(
+            snapshot.formControlsByWorkbookSheetIndex,
+            themePalette
+          ));
           setWorkerTablesByWorkbookSheetIndex(snapshot.tablesByWorkbookSheetIndex);
           setShouldAutoCalculate(false);
           setIsWorkerBacked(true);
@@ -3413,19 +3431,27 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return false;
     }
 
-    recordHistoryBeforeMutation();
     const currentInput = formControlInputFromDukeControl(currentControl);
-    if (currentInput.kind !== "formControl" || !currentControl.anchor) {
+    if (
+      currentInput.kind !== "formControl"
+      || (!currentControl.anchor && !currentControl.transform)
+      || (!currentControl.anchor && (patch.anchor !== undefined || patch.editAs !== undefined))
+    ) {
       return false;
     }
-    const nextAnchor = patch.anchor
-      ? xlsxAnchorToDukeDrawingAnchor(
-          patch.anchor,
-          patch.editAs ?? (currentControl.anchor.type === "twoCell" ? currentControl.anchor.editAs : undefined)
-        )
-      : patch.editAs !== undefined && currentControl.anchor.type === "twoCell"
-        ? { ...currentControl.anchor, editAs: patch.editAs }
-        : currentControl.anchor;
+    recordHistoryBeforeMutation();
+    const nextPlacement = currentControl.anchor
+      ? {
+          anchor: patch.anchor
+            ? xlsxAnchorToDukeDrawingAnchor(
+                patch.anchor,
+                patch.editAs ?? (currentControl.anchor.type === "twoCell" ? currentControl.anchor.editAs : undefined)
+              )
+            : patch.editAs !== undefined && currentControl.anchor.type === "twoCell"
+              ? { ...currentControl.anchor, editAs: patch.editAs }
+              : currentControl.anchor
+        }
+      : { transform: currentControl.transform! };
     let nextKind = patch.kind
       ? xlsxFormControlKindToDukeKind(patch.kind)
       : dukeFormControlKindToInput(currentControl.formControl.kind);
@@ -3439,7 +3465,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
     const nextInput: DukeFormControlDrawingInput = {
       altText: "altText" in patch ? patch.altText : currentControl.altText,
-      anchor: nextAnchor,
+      ...nextPlacement,
       formControl: {
         ...currentInput.formControl,
         kind: nextKind,
