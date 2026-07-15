@@ -1,6 +1,9 @@
 import type {
+  Drawing as DukeDrawing,
   DrawingAnchor as DukeDrawingAnchor,
+  DrawingChildTransform as DukeDrawingChildTransform,
   DrawingColor as DukeDrawingColor,
+  DrawingGroupTransform as DukeDrawingGroupTransform,
   DrawingRunFont as DukeDrawingRunFont,
   DrawingText as DukeDrawingText,
   FormControlDrawing as DukeFormControlDrawing,
@@ -2109,6 +2112,28 @@ function resolveDukeDrawingText(
   };
 }
 
+export function resolveWorkbookFormControlThemeColors(
+  controlsByWorkbookSheetIndex: XlsxFormControl[][],
+  themePalette?: XlsxThemePalette | null
+) {
+  return controlsByWorkbookSheetIndex.map((controls) => controls.map((control) => {
+    if (control.textColor) {
+      return control;
+    }
+
+    const color = control.caption?.runs.find((run) => run.font)?.font?.color;
+    if (color?.colorType !== "theme" || color.themeIndex === undefined) {
+      return control;
+    }
+
+    const textColor = resolveWorkbookColor(
+      { theme: color.themeIndex, tint: color.tint },
+      themePalette
+    ) ?? undefined;
+    return textColor ? { ...control, textColor } : control;
+  }));
+}
+
 function mapDukeFormControlKind(
   kind: DukeFormControlKind,
   themePalette?: XlsxThemePalette | null
@@ -2194,16 +2219,17 @@ function mapDukeFormControlKind(
 }
 
 function mapDukeFormControl(
-  control: DukeFormControlDrawing & { anchor: DukeDrawingAnchor },
+  control: DukeFormControlDrawing,
+  anchor: XlsxImageAnchor,
   controlIndex: number,
   workbookSheetIndex: number,
   themePalette?: XlsxThemePalette | null
 ): XlsxFormControl {
   return {
     altText: control.altText,
-    anchor: dukeDrawingAnchorToXlsxAnchor(control.anchor),
+    anchor,
     controlIndex,
-    editAs: control.anchor.type === "twoCell" ? control.anchor.editAs : undefined,
+    editAs: control.anchor?.type === "twoCell" ? control.anchor.editAs : undefined,
     hidden: control.hidden,
     id: `form-control-${workbookSheetIndex}-${controlIndex}`,
     locked: control.locked,
@@ -2219,17 +2245,216 @@ function mapDukeFormControl(
   };
 }
 
+function columnWidthToEmu(width: number) {
+  if (!Number.isFinite(width) || width <= 0) {
+    return 0;
+  }
+  const pixels = width < 1
+    ? Math.floor(width * 12 + 0.5)
+    : Math.floor(width * 7 + 5);
+  return pixels * EMU_PER_PIXEL;
+}
+
+function rowHeightToEmu(height: number) {
+  return Number.isFinite(height) && height > 0 ? Math.round(height * 12700) : 0;
+}
+
+function createWorksheetDrawingMetrics(worksheet: DukeWorksheet) {
+  const columnPositions = [0];
+  const rowPositions = [0];
+  const columnPosition = (col: number) => {
+    const target = Math.max(0, Math.floor(col));
+    while (columnPositions.length <= target) {
+      const index = columnPositions.length - 1;
+      const width = worksheet.isColumnHidden(index)
+        ? 0
+        : columnWidthToEmu(worksheet.getColumnWidth(index) ?? worksheet.defaultColumnWidth);
+      columnPositions.push(columnPositions[index]! + width);
+    }
+    return columnPositions[target]!;
+  };
+  const rowPosition = (row: number) => {
+    const target = Math.max(0, Math.floor(row));
+    while (rowPositions.length <= target) {
+      const index = rowPositions.length - 1;
+      const height = worksheet.isRowHidden(index)
+        ? 0
+        : rowHeightToEmu(worksheet.getRowHeight(index) ?? worksheet.defaultRowHeight);
+      rowPositions.push(rowPositions[index]! + height);
+    }
+    return rowPositions[target]!;
+  };
+  return { columnPosition, rowPosition };
+}
+
+function dukeDrawingAnchorToAbsoluteRect(
+  anchor: DukeDrawingAnchor,
+  metrics: ReturnType<typeof createWorksheetDrawingMetrics>
+): DrawingRectEmu {
+  if (anchor.type === "absolute") {
+    return {
+      cx: Math.max(0, anchor.widthEmu),
+      cy: Math.max(0, anchor.heightEmu),
+      x: anchor.xEmu,
+      y: anchor.yEmu
+    };
+  }
+
+  const x = metrics.columnPosition(anchor.from.col) + (anchor.from.colOffsetEmu ?? 0);
+  const y = metrics.rowPosition(anchor.from.row) + (anchor.from.rowOffsetEmu ?? 0);
+  if (anchor.type === "oneCell") {
+    return {
+      cx: Math.max(0, anchor.widthEmu),
+      cy: Math.max(0, anchor.heightEmu),
+      x,
+      y
+    };
+  }
+
+  const right = metrics.columnPosition(anchor.to.col) + (anchor.to.colOffsetEmu ?? 0);
+  const bottom = metrics.rowPosition(anchor.to.row) + (anchor.to.rowOffsetEmu ?? 0);
+  return {
+    cx: Math.max(0, right - x),
+    cy: Math.max(0, bottom - y),
+    x,
+    y
+  };
+}
+
+function mapDukeGroupChildRect(
+  outer: DrawingRectEmu,
+  group: DukeDrawingGroupTransform,
+  child: DukeDrawingChildTransform
+): DrawingRectEmu {
+  const outerRight = outer.x + Math.max(0, outer.cx);
+  const outerBottom = outer.y + Math.max(0, outer.cy);
+  const childWidth = Math.max(1, group.childCxEmu ?? 0);
+  const childHeight = Math.max(1, group.childCyEmu ?? 0);
+  const scale = (delta: number, extent: number, childExtent: number) => {
+    const value = delta * extent / childExtent;
+    if (!Number.isFinite(value)) {
+      return delta < 0 ? -Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    }
+    return Math.trunc(Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, value)));
+  };
+  const mapX = (x: number) => outer.x + scale(
+    x - (group.childXEmu ?? 0),
+    Math.max(0, outer.cx),
+    childWidth
+  );
+  const mapY = (y: number) => outer.y + scale(
+    y - (group.childYEmu ?? 0),
+    Math.max(0, outer.cy),
+    childHeight
+  );
+  const x1 = child.xEmu ?? 0;
+  const y1 = child.yEmu ?? 0;
+  const x2 = x1 + Math.max(0, child.cxEmu ?? 0);
+  const y2 = y1 + Math.max(0, child.cyEmu ?? 0);
+  const scaled = {
+    bottom: mapY(y2),
+    left: mapX(x1),
+    right: mapX(x2),
+    top: mapY(y1)
+  };
+  const rotation = group.rotation ?? 0;
+  if (rotation === 0 && !group.flipH && !group.flipV) {
+    return {
+      cx: Math.max(0, scaled.right - scaled.left),
+      cy: Math.max(0, scaled.bottom - scaled.top),
+      x: scaled.left,
+      y: scaled.top
+    };
+  }
+
+  const centerX = (outer.x + outerRight) / 2;
+  const centerY = (outer.y + outerBottom) / 2;
+  const radians = rotation / 60000 * Math.PI / 180;
+  const sin = Math.sin(radians);
+  const cos = Math.cos(radians);
+  const corners = [
+    [scaled.left, scaled.top],
+    [scaled.right, scaled.top],
+    [scaled.left, scaled.bottom],
+    [scaled.right, scaled.bottom]
+  ].map(([x, y]) => {
+    let dx = x! - centerX;
+    let dy = y! - centerY;
+    if (group.flipH) {
+      dx = -dx;
+    }
+    if (group.flipV) {
+      dy = -dy;
+    }
+    return {
+      x: centerX + dx * cos - dy * sin,
+      y: centerY + dx * sin + dy * cos
+    };
+  });
+  const roundCoordinate = (value: number) => (value < 0 ? -Math.round(-value) : Math.round(value)) || 0;
+  const left = roundCoordinate(Math.min(...corners.map((corner) => corner.x)));
+  const top = roundCoordinate(Math.min(...corners.map((corner) => corner.y)));
+  const right = roundCoordinate(Math.max(...corners.map((corner) => corner.x)));
+  const bottom = roundCoordinate(Math.max(...corners.map((corner) => corner.y)));
+  return {
+    cx: Math.max(0, right - left),
+    cy: Math.max(0, bottom - top),
+    x: left,
+    y: top
+  };
+}
+
+function resolveDukeFormControlAnchor(
+  control: DukeFormControlDrawing,
+  metrics: ReturnType<typeof createWorksheetDrawingMetrics>,
+  getDrawings: () => DukeDrawing[]
+) {
+  if (control.anchor) {
+    return dukeDrawingAnchorToXlsxAnchor(control.anchor);
+  }
+
+  const [rootIndex, ...childIndexes] = control.drawingPath;
+  let drawing: DukeDrawing | undefined = rootIndex === undefined
+    ? undefined
+    : getDrawings()[rootIndex];
+  if (!drawing?.anchor) {
+    return null;
+  }
+
+  let rect = dukeDrawingAnchorToAbsoluteRect(drawing.anchor, metrics);
+  for (const childIndex of childIndexes) {
+    if (drawing.kind !== "group") {
+      return null;
+    }
+    const child: DukeDrawing | undefined = drawing.group.children[childIndex];
+    if (!child?.transform) {
+      return null;
+    }
+    rect = mapDukeGroupChildRect(rect, drawing.group.groupTransform, child.transform);
+    drawing = child;
+  }
+
+  return drawing.kind === "formControl" ? rectToAbsoluteAnchor(rect) : null;
+}
+
 export function collectWorkbookFormControls(
   workbook: Workbook,
   themePalette?: XlsxThemePalette | null
 ): XlsxFormControl[][] {
   return Array.from({ length: workbook.sheetCount }, (_, workbookSheetIndex) => {
     try {
-      const controls = workbook.getSheet(workbookSheetIndex).formControls;
+      const worksheet = workbook.getSheet(workbookSheetIndex);
+      const controls = worksheet.formControls;
+      const metrics = createWorksheetDrawingMetrics(worksheet);
+      let drawings: DukeDrawing[] | null = null;
+      const getDrawings = () => drawings ??= worksheet.drawings;
       return Array.isArray(controls)
-        ? controls.flatMap((control, controlIndex) => control.anchor
-            ? [mapDukeFormControl(control, controlIndex, workbookSheetIndex, themePalette)]
-            : [])
+        ? controls.flatMap((control, controlIndex) => {
+            const anchor = resolveDukeFormControlAnchor(control, metrics, getDrawings);
+            return anchor
+              ? [mapDukeFormControl(control, anchor, controlIndex, workbookSheetIndex, themePalette)]
+              : [];
+          })
         : [];
     } catch {
       return [];
@@ -3185,6 +3410,17 @@ export function parseWorkbookStructureAssets(
     tableStyleByName,
     themePalette
   };
+}
+
+export function parseWorkbookThemePalette(bytes: Uint8Array) {
+  try {
+    const archive = unzipSync(bytes, {
+      filter: (file) => normalizeArchivePath(file.name).toLowerCase() === "xl/theme/theme1.xml"
+    });
+    return buildThemePalette(parseWorkbookTheme(archive));
+  } catch {
+    return null;
+  }
 }
 
 export function parseWorkbookChartStyleAssets(bytes: Uint8Array): WorkbookChartStyleAssets {
