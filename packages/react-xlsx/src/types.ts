@@ -1551,6 +1551,10 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
    * ```
    */
   getCellStyle?: (context: XlsxCellStyleContext) => React.CSSProperties | null | undefined;
+  /** Background color used for row-number, column-letter, and corner headers. */
+  headerBackgroundColor?: string;
+  /** Text color used for row-number and column-letter headers. */
+  headerTextColor?: string;
   /**
    * CSS height for the viewer container.
    *

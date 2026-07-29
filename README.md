@@ -162,6 +162,8 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `className` | `string` | Applied to the root viewer shell. |
 | `height` | `React.CSSProperties["height"]` | Fixed or fluid height for the viewer container. |
 | `isDark` | `boolean` | Enables the built-in dark viewer palette. |
+| `headerBackgroundColor` | `string` | Background color for row-number, column-letter, and corner headers. |
+| `headerTextColor` | `string` | Text color for row-number and column-letter headers. |
 | `rounded` | `boolean` | Toggles the default rounded outer shell. Defaults to `true`. |
 | `showDefaultToolbar` | `boolean` | Shows or hides the built-in toolbar. Defaults to `true`. |
 | `enableGestureZoom` | `boolean` | Enables pinch-to-zoom and modifier-key (`Cmd`/`Ctrl`) scroll-to-zoom inside the viewer. Defaults to `true`. |

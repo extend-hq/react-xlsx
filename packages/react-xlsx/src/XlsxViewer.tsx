@@ -14,6 +14,11 @@ import {
   resolveSheetColumnWidthPixels,
   resolveSheetRowHeightPixels
 } from "./images";
+import {
+  isDarkViewerPalette,
+  resolveViewerPalette,
+  type ViewerPalette
+} from "./viewer-palette";
 import type {
   XlsxChart,
   XlsxChartElementSelection,
@@ -1030,72 +1035,6 @@ function resolveTouchDistance(firstTouch: Touch, secondTouch: Touch) {
   return Math.hypot(firstTouch.clientX - secondTouch.clientX, firstTouch.clientY - secondTouch.clientY);
 }
 
-type ViewerPalette = {
-  border: string;
-  buttonSurface: string;
-  buttonText: string;
-  canvas: string;
-  danger: string;
-  headerSurface: string;
-  mutedSurface: string;
-  mutedText: string;
-  rowHeaderSurface: string;
-  shadow: string;
-  sheetActiveSurface: string;
-  sheetActiveText: string;
-  sheetInactiveSurface: string;
-  sheetInactiveText: string;
-  strongBorder: string;
-  subtleSurface: string;
-  surface: string;
-  text: string;
-  toolbarSurface: string;
-};
-
-const LIGHT_PALETTE: ViewerPalette = {
-  border: "#e4e4e7",
-  buttonSurface: "#ffffff",
-  buttonText: "#18181b",
-  canvas: "#fafafa",
-  danger: "#dc2626",
-  headerSurface: "#f4f4f5",
-  mutedSurface: "#f5f5f5",
-  mutedText: "#71717a",
-  rowHeaderSurface: "#f4f4f5",
-  shadow: "0 1px 2px rgba(0, 0, 0, 0.04)",
-  sheetActiveSurface: "#ffffff",
-  sheetActiveText: "#18181b",
-  sheetInactiveSurface: "#e4e4e7",
-  sheetInactiveText: "#52525b",
-  strongBorder: "#d4d4d8",
-  subtleSurface: "#fafafa",
-  surface: "#ffffff",
-  text: "#18181b",
-  toolbarSurface: "#f5f5f5"
-};
-
-const DARK_PALETTE: ViewerPalette = {
-  border: "rgba(255, 255, 255, 0.10)",
-  buttonSurface: "rgba(255, 255, 255, 0.06)",
-  buttonText: "#f4f4f5",
-  canvas: "#09090b",
-  danger: "#f87171",
-  headerSurface: "#18181b",
-  mutedSurface: "#111113",
-  mutedText: "#a1a1aa",
-  rowHeaderSurface: "#18181b",
-  shadow: "0 1px 2px rgba(0, 0, 0, 0.28)",
-  sheetActiveSurface: "#27272a",
-  sheetActiveText: "#fafafa",
-  sheetInactiveSurface: "#18181b",
-  sheetInactiveText: "#a1a1aa",
-  strongBorder: "rgba(255, 255, 255, 0.16)",
-  subtleSurface: "#101012",
-  surface: "#111113",
-  text: "#f4f4f5",
-  toolbarSurface: "#101012"
-};
-
 function parseRgbColor(color: string) {
   const match = /^#?([0-9a-f]{6})$/i.exec(color);
   if (!match) {
@@ -1132,7 +1071,11 @@ function darkenColor(color: string, ratio: number) {
 }
 
 const ViewerContext = React.createContext<XlsxViewerController | null>(null);
-const ViewerAppearanceContext = React.createContext<{ isDark: boolean }>({ isDark: false });
+const ViewerAppearanceContext = React.createContext<{
+  headerBackgroundColor?: string;
+  headerTextColor?: string;
+  isDark: boolean;
+}>({ isDark: false });
 
 type ZoomAnchor = {
   x: number;
@@ -2937,8 +2880,15 @@ function resolveImageHandleStyle(
   return style;
 }
 
-function useViewerPalette(isDark = false) {
-  return isDark ? DARK_PALETTE : LIGHT_PALETTE;
+function useViewerPalette(
+  isDark = false,
+  headerBackgroundColor?: string,
+  headerTextColor?: string
+) {
+  return React.useMemo(
+    () => resolveViewerPalette(isDark, headerBackgroundColor, headerTextColor),
+    [headerBackgroundColor, headerTextColor, isDark]
+  );
 }
 
 type SheetThumbnailAxisItem = {
@@ -3299,7 +3249,7 @@ function mapBorder(edge: { style: string; color?: Record<string, unknown> }, the
 }
 
 function paletteIsDark(palette: ViewerPalette) {
-  return palette.surface === DARK_PALETTE.surface;
+  return isDarkViewerPalette(palette);
 }
 
 function parseHexColor(color: string): [number, number, number] | null {
@@ -6276,7 +6226,7 @@ function GridRow({
           borderRight: "none",
           boxSizing: "border-box",
           boxShadow: gutterSeparatorShadow,
-          color: palette.mutedText,
+          color: palette.headerText,
           fontSize: scaleCssLengthExpression("11px", zoomFactor),
           height: rowHeight,
           left: 0,
@@ -12897,7 +12847,7 @@ function XlsxGrid({
         paneContext.lineTo(column.localLeft + column.width, column.height - 0.5);
         paneContext.stroke();
         paneContext.font = `600 ${11 * zoomFactor}px ui-sans-serif, system-ui, sans-serif`;
-        paneContext.fillStyle = palette.mutedText;
+        paneContext.fillStyle = palette.headerText;
         paneContext.textAlign = "center";
         paneContext.textBaseline = "middle";
         paneContext.fillText(
@@ -12956,7 +12906,7 @@ function XlsxGrid({
         paneContext.lineTo(rowHeaderWidth - 0.5, row.localTop + row.height);
         paneContext.stroke();
         paneContext.font = `600 ${11 * zoomFactor}px ui-sans-serif, system-ui, sans-serif`;
-        paneContext.fillStyle = palette.mutedText;
+        paneContext.fillStyle = palette.headerText;
         paneContext.textAlign = "center";
         paneContext.textBaseline = "middle";
         paneContext.fillText(`${row.actualRow + 1}`, rowHeaderWidth / 2, row.localTop + (row.height / 2));
@@ -13361,7 +13311,7 @@ function XlsxGrid({
     borderBottom: "none",
     borderRight: "none",
     boxShadow: gutterSeparatorShadow,
-    color: palette.mutedText,
+    color: palette.headerText,
     fontSize: "11px",
     fontWeight: 600,
     height: HEADER_HEIGHT,
@@ -15837,6 +15787,8 @@ function XlsxViewerInner({
   experimentalCanvas = true,
   fileTooLargeState,
   getCellStyle,
+  headerBackgroundColor,
+  headerTextColor,
   height,
   isDark = false,
   loadingComponent,
@@ -15859,7 +15811,7 @@ function XlsxViewerInner({
 }: XlsxViewerProps & {
   controller: XlsxViewerController;
 }) {
-  const palette = useViewerPalette(isDark);
+  const palette = useViewerPalette(isDark, headerBackgroundColor, headerTextColor);
   const { displayFileName, error } = controller;
   const customFileTooLarge =
     error instanceof XlsxFileSizeLimitExceededError
@@ -15875,7 +15827,7 @@ function XlsxViewerInner({
       : undefined;
 
   return (
-    <ViewerAppearanceContext.Provider value={{ isDark }}>
+    <ViewerAppearanceContext.Provider value={{ headerBackgroundColor, headerTextColor, isDark }}>
       <ViewerContext.Provider value={controller}>
         {customFileTooLarge !== undefined ? (
           customFileTooLarge
@@ -16383,8 +16335,8 @@ export function useXlsxViewerThumbnails(
     workbook,
     sheets
   } = useXlsxViewer();
-  const { isDark } = React.useContext(ViewerAppearanceContext);
-  const palette = useViewerPalette(isDark);
+  const { headerBackgroundColor, headerTextColor, isDark } = React.useContext(ViewerAppearanceContext);
+  const palette = useViewerPalette(isDark, headerBackgroundColor, headerTextColor);
   const includeHeaders = options.includeHeaders ?? true;
   const resolution = options.resolution;
   const thumbnailImageCacheRef = React.useRef(new Map<string, {
@@ -17127,7 +17079,7 @@ export function useXlsxViewerThumbnails(
           context.strokeStyle = palette.border;
           context.lineWidth = 1;
           context.font = "600 11px ui-sans-serif, system-ui, sans-serif";
-          context.fillStyle = palette.mutedText;
+          context.fillStyle = palette.headerText;
           context.textBaseline = "middle";
 
           for (const colItem of colAxis.items) {
@@ -17227,7 +17179,7 @@ export function XlsxViewer(props: XlsxViewerProps) {
 
 export function DefaultXlsxToolbar() {
   const controller = useXlsxViewer();
-  const { isDark } = React.useContext(ViewerAppearanceContext);
-  const palette = useViewerPalette(isDark);
+  const { headerBackgroundColor, headerTextColor, isDark } = React.useContext(ViewerAppearanceContext);
+  const palette = useViewerPalette(isDark, headerBackgroundColor, headerTextColor);
   return <DefaultToolbar controller={controller} palette={palette} />;
 }

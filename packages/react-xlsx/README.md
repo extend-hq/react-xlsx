@@ -468,6 +468,8 @@ Common rendering props:
 - `height?: React.CSSProperties["height"]`
 - `className?: string`
 - `isDark?: boolean`
+- `headerBackgroundColor?: string`
+- `headerTextColor?: string`
 - `rounded?: boolean`
 - `showDefaultToolbar?: boolean`
 - `toolbar?: React.ReactNode | ((controller: XlsxViewerController) => React.ReactNode)`
