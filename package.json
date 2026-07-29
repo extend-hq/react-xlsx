@@ -10,6 +10,7 @@
     "build:playground": "pnpm --filter @react-xlsx/playground build",
     "clean": "pnpm -r --filter './packages/*' run clean",
     "dev": "pnpm --filter @react-xlsx/playground dev",
+    "test": "pnpm --filter @extend-ai/react-xlsx test",
     "typecheck": "pnpm -r --filter './packages/*' run typecheck && pnpm --filter @react-xlsx/playground typecheck"
   },
   "devDependencies": {

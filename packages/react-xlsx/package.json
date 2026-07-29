@@ -63,6 +63,7 @@
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts && node ../../scripts/copy-duke-wasm.mjs",
+    "test": "node --experimental-strip-types --test src/zip-entry-names.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },

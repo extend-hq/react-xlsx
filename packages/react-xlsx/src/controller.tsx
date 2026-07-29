@@ -1396,7 +1396,7 @@ async function resolveWorkbookBuffer(
     throw new Error("Either `file` or `src` must be provided.");
   }
 
-  return normalizeWorkbookArrayBuffer(buffer);
+  return buffer;
 }
 
 async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<{
@@ -2250,6 +2250,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         if (maxFileSizeBytes > 0 && buffer.byteLength > maxFileSizeBytes) {
           throw new XlsxFileSizeLimitExceededError(buffer.byteLength, maxFileSizeBytes);
         }
+
+        buffer = normalizeWorkbookArrayBuffer(buffer);
 
         const preflight = preflightWorkbookBuffer(buffer);
         if (preflight?.tooLarge) {
