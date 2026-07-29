@@ -48,6 +48,7 @@ import {
 import { safeCalculate, tryRecalculate } from "./safe-calculate";
 import { canUseConfiguredWasmSourceInWorker, getSheetsWasmModule } from "./wasm";
 import { XlsxWorkerClient } from "./worker-client";
+import { normalizeWorkbookArrayBuffer } from "./zip-entry-names";
 import type {
   UseXlsxViewerControllerOptions,
   XlsxChart,
@@ -1395,7 +1396,7 @@ async function resolveWorkbookBuffer(
     throw new Error("Either `file` or `src` must be provided.");
   }
 
-  return buffer;
+  return normalizeWorkbookArrayBuffer(buffer);
 }
 
 async function parseWorkbookBuffer(buffer: ArrayBuffer): Promise<{
