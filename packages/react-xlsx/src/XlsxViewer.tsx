@@ -4,6 +4,7 @@ import {
   type VirtualItem,
   useVirtualizer
 } from "@tanstack/react-virtual";
+import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
 import { MemoChartSvg } from "./chart-renderer";
@@ -6356,6 +6357,18 @@ function GridRow({
           width: "100%",
           wordBreak: "inherit"
         };
+        const usesWrappedText = cellData.style.whiteSpace === "pre-wrap" || cellData.value.includes("\n");
+        const wrappedTextStyle = usesWrappedText
+          ? {
+              display: "block",
+              flex: "0 0 auto",
+              maxWidth: "100%",
+              minWidth: 0
+            } satisfies React.CSSProperties
+          : null;
+        if (usesWrappedText) {
+          cellContentStyle.overflow = "clip";
+        }
         const trailingInset = (adornment ? 20 : 0) + (cellData.conditionalIcon ? 18 : 0);
         if (cellData.conditionalDataBar) {
           cellContentStyle.position = "relative";
@@ -6565,7 +6578,11 @@ function GridRow({
               </div>
             ) : (
               <div style={cellContentStyle}>
-                {rotatedTextStyle ? <span style={rotatedTextStyle}>{cellData.value}</span> : cellData.value}
+                {rotatedTextStyle
+                  ? <span style={rotatedTextStyle}>{cellData.value}</span>
+                  : wrappedTextStyle
+                    ? <span style={wrappedTextStyle}>{cellData.value}</span>
+                    : cellData.value}
               </div>
             )}
           </td>
@@ -12450,15 +12467,19 @@ function XlsxGrid({
             zoomFactor * 1.5,
             activeFontSizePx * (cellData.textRotationDeg ? 0.75 : 0.18)
           );
+          const textClip = resolveCellTextClipOverscan(
+            textClipOverscan,
+            canvasCellStyle.usesWrappedText || rawText.includes("\n")
+          );
 
           flushPendingGridlines();
           paneContext.save();
           paneContext.beginPath();
           paneContext.rect(
-            contentLeft - textClipOverscan,
-            contentTop - textClipOverscan,
-            contentWidth + (textClipOverscan * 2),
-            contentHeight + (textClipOverscan * 2)
+            contentLeft - textClip.horizontal,
+            contentTop - textClip.vertical,
+            contentWidth + (textClip.horizontal * 2),
+            contentHeight + (textClip.vertical * 2)
           );
           paneContext.clip();
           paneContext.font = cellData.shrinkToFitFontSizePx
