@@ -2186,9 +2186,7 @@ function mapDukeFormControlKind(
         ...resolveDukeDrawingText(kind.caption, themePalette),
         kind: kind.objectType.toLowerCase() === "editbox" ? "editbox" : "unknown",
         legacyObjectType: kind.legacyObjectType,
-        objectType: kind.objectType,
-        rawObj: kind.rawObj,
-        rawProperties: kind.rawProperties
+        objectType: kind.objectType
       };
   }
 }
@@ -2211,6 +2209,8 @@ function mapDukeFormControl(
     name: control.name,
     printable: control.printable,
     rawClientData: control.formControl.rawClientData,
+    rawObj: control.formControl.rawObj,
+    rawProperties: control.formControl.rawProperties,
     sheetIndex: workbookSheetIndex,
     title: control.title,
     workbookSheetIndex,

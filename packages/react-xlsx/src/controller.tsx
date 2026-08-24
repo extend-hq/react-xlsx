@@ -894,18 +894,14 @@ function xlsxFormControlKindToDukeKind(kind: XlsxFormControlInput["kind"]): Duke
         caption: xlsxCaptionToDukeText(kind.caption),
         kind: "unknown",
         legacyObjectType: kind.legacyObjectType,
-        objectType: "EditBox",
-        rawObj: kind.rawObj,
-        rawProperties: kind.rawProperties
+        objectType: "EditBox"
       };
     case "unknown":
       return {
         caption: kind.caption ? xlsxCaptionToDukeText(kind.caption) : undefined,
         kind: "unknown",
         legacyObjectType: kind.legacyObjectType,
-        objectType: kind.objectType,
-        rawObj: kind.rawObj,
-        rawProperties: kind.rawProperties
+        objectType: kind.objectType
       };
     default:
       return { ...kind };
@@ -921,9 +917,7 @@ function dukeFormControlKindToInput(kind: DukeFormControlKind): DukeFormControlK
       caption: kind.caption,
       kind: "unknown",
       legacyObjectType: kind.legacyObjectType,
-      objectType: kind.objectType,
-      rawObj: kind.rawObj,
-      rawProperties: kind.rawProperties
+      objectType: kind.objectType
     };
   }
   return { ...kind };
@@ -936,7 +930,9 @@ function formControlInputFromDukeControl(control: DukeFormControlDrawing): DukeD
     formControl: {
       kind: dukeFormControlKindToInput(control.formControl.kind),
       macroName: control.formControl.macroName,
-      rawClientData: control.formControl.rawClientData
+      rawClientData: control.formControl.rawClientData,
+      rawObj: control.formControl.rawObj,
+      rawProperties: control.formControl.rawProperties
     },
     hidden: control.hidden,
     kind: "formControl",
@@ -958,7 +954,9 @@ function xlsxFormControlInputToDukeDrawing(input: XlsxFormControlInput): DukeFor
     formControl: {
       kind: xlsxFormControlKindToDukeKind(input.kind),
       macroName: input.macroName,
-      rawClientData: input.rawClientData
+      rawClientData: input.rawClientData,
+      rawObj: input.kind.kind === "editbox" || input.kind.kind === "unknown" ? input.kind.rawObj : undefined,
+      rawProperties: input.kind.kind === "editbox" || input.kind.kind === "unknown" ? input.kind.rawProperties : undefined
     },
     hidden: input.hidden,
     kind: "formControl",
@@ -3435,11 +3433,15 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (currentControl.formControl.kind.kind === "unknown" && nextKind.kind === "unknown") {
       nextKind = {
         ...nextKind,
-        legacyObjectType: nextKind.legacyObjectType ?? currentControl.formControl.kind.legacyObjectType,
-        rawObj: nextKind.rawObj ?? currentControl.formControl.kind.rawObj,
-        rawProperties: nextKind.rawProperties ?? currentControl.formControl.kind.rawProperties
+        legacyObjectType: nextKind.legacyObjectType ?? currentControl.formControl.kind.legacyObjectType
       };
     }
+    const patchedRawObj = patch.kind?.kind === "editbox" || patch.kind?.kind === "unknown"
+      ? patch.kind.rawObj
+      : undefined;
+    const patchedRawProperties = patch.kind?.kind === "editbox" || patch.kind?.kind === "unknown"
+      ? patch.kind.rawProperties
+      : undefined;
     const nextInput: DukeFormControlDrawingInput = {
       altText: "altText" in patch ? patch.altText : currentControl.altText,
       anchor: nextAnchor,
@@ -3447,7 +3449,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         ...currentInput.formControl,
         kind: nextKind,
         macroName: "macroName" in patch ? patch.macroName : currentControl.formControl.macroName,
-        rawClientData: "rawClientData" in patch ? patch.rawClientData : currentControl.formControl.rawClientData
+        rawClientData: "rawClientData" in patch ? patch.rawClientData : currentControl.formControl.rawClientData,
+        rawObj: patchedRawObj ?? currentControl.formControl.rawObj,
+        rawProperties: patchedRawProperties ?? currentControl.formControl.rawProperties
       },
       hidden: "hidden" in patch ? patch.hidden : currentControl.hidden,
       kind: "formControl",
