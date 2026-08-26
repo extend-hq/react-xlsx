@@ -5334,7 +5334,8 @@ function resolveConditionalRuleThreshold(
   }
 
   const fallbackValue = typeof threshold.value === "number" ? threshold.value : null;
-  if (threshold.type === "num" || threshold.type === "formula") {
+  const thresholdType = threshold.type.trim().toLowerCase();
+  if (thresholdType === "num" || thresholdType === "formula") {
     return fallbackValue;
   }
 
@@ -5344,14 +5345,14 @@ function resolveConditionalRuleThreshold(
 
   const minValue = Math.min(...numericValues);
   const maxValue = Math.max(...numericValues);
-  if (threshold.type === "min") {
+  if (thresholdType === "min" || thresholdType === "automin" || thresholdType === "automaticmin") {
     return minValue;
   }
-  if (threshold.type === "max") {
+  if (thresholdType === "max" || thresholdType === "automax" || thresholdType === "automaticmax") {
     return maxValue;
   }
 
-  if ((threshold.type === "percent" || threshold.type === "percentile") && fallbackValue !== null) {
+  if ((thresholdType === "percent" || thresholdType === "percentile") && fallbackValue !== null) {
     return minValue + (maxValue - minValue) * (fallbackValue / 100);
   }
 
