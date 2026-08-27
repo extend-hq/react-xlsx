@@ -4,6 +4,7 @@ import {
   type VirtualItem,
   useVirtualizer
 } from "@tanstack/react-virtual";
+import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
@@ -4384,7 +4385,8 @@ function resolveTableCellStyle(
     return null;
   }
 
-  const tableStyle = activeSheet.tableStyleByName[styleName];
+  const tableStyle = resolveBuiltinTableStyle(styleName, activeSheet.themePalette)
+    ?? activeSheet.tableStyleByName[styleName];
   if (!tableStyle) {
     return null;
   }
@@ -4403,8 +4405,6 @@ function resolveTableCellStyle(
   };
 
   applyElement("wholeTable");
-  applyElement("firstColumn", Boolean(table.styleInfo?.showFirstColumn) && col === table.start.col);
-  applyElement("lastColumn", Boolean(table.styleInfo?.showLastColumn) && col === table.end.col);
 
   const headerRowCount = Math.max(table.headerRowCount, 1);
   const isHeaderRow = row >= table.start.row && row < table.start.row + headerRowCount;
@@ -4417,10 +4417,32 @@ function resolveTableCellStyle(
     }
   }
 
-  if (table.totalsRowShown) {
-    const totalsRowCount = Math.max(table.totalsRowCount, 1);
-    applyElement("totalRow", row > table.end.row - totalsRowCount);
+  const totalsRowCount = table.totalsRowShown
+    ? Math.max(table.totalsRowCount, 1)
+    : 0;
+  const isTotalsRow = totalsRowCount > 0 && row > table.end.row - totalsRowCount;
+  applyElement("totalRow", isTotalsRow);
+
+  const bodyStartRow = table.start.row + headerRowCount;
+  const bodyEndRow = table.end.row - totalsRowCount;
+  const isBodyRow = row >= bodyStartRow && row <= bodyEndRow;
+
+  if (isBodyRow && table.styleInfo?.showRowStripes) {
+    const relativeRow = row - bodyStartRow;
+    const isFirstStripe = relativeRow % 2 === 0;
+    applyElement("firstRowStripe", isFirstStripe);
+    applyElement("secondRowStripe", !isFirstStripe);
   }
+
+  if (isBodyRow && table.styleInfo?.showColumnStripes) {
+    const relativeCol = col - table.start.col;
+    const isFirstStripe = relativeCol % 2 === 0;
+    applyElement("firstColumnStripe", isFirstStripe);
+    applyElement("secondColumnStripe", !isFirstStripe);
+  }
+
+  applyElement("firstColumn", Boolean(table.styleInfo?.showFirstColumn) && col === table.start.col);
+  applyElement("lastColumn", Boolean(table.styleInfo?.showLastColumn) && col === table.end.col);
 
   return resolved;
 }
