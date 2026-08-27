@@ -450,6 +450,7 @@ function resolveSheetDisplayUsedRange(
 function buildSheetList(
   workbook: Workbook,
   sheetStatesByWorkbookSheetIndex?: Array<{
+    autoFilterRanges?: XlsxCellRange[];
     cachedFormulaValues?: Record<string, string>;
     columnWidthCharacterWidthPx?: number;
     colWidthOverridesPx?: Record<number, number>;
@@ -523,6 +524,7 @@ function buildSheetList(
     const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
     if (!usedRange) {
       sheets.push({
+        autoFilterRanges: sheetState?.autoFilterRanges ?? [],
         cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
         columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
         colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
@@ -621,6 +623,7 @@ function buildSheetList(
     };
 
     const sheet: XlsxSheetData = {
+      autoFilterRanges: sheetState?.autoFilterRanges ?? [],
       cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
       columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
       colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
@@ -1097,9 +1100,12 @@ function rangeContainsCell(range: XlsxCellRange, cell: XlsxCellAddress): boolean
   );
 }
 
-function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null): XlsxTable[] {
+function mapWorksheetTables(
+  worksheet: ReturnType<Workbook["getSheet"]> | null,
+  autoFilterRanges: XlsxCellRange[] = []
+): XlsxTable[] {
   const rawTables = (worksheet?.tables ?? []) as Array<Record<string, unknown>>;
-  return rawTables.flatMap((table, index) => {
+  const mappedTables = rawTables.flatMap((table, index) => {
     const rawColumns = Array.isArray(table.columns) ? table.columns : [];
     const rawName = typeof table.name === "string" ? table.name : `Table${index + 1}`;
     const rawDisplayName =
@@ -1133,6 +1139,40 @@ function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null):
       totalsRowShown: resolveWorkbookTableBoolean(table.totalsRowShown)
     }];
   });
+
+  const existingReferences = new Set(mappedTables.map((table) => table.reference));
+  const mappedAutoFilterTables = autoFilterRanges.flatMap((range, index) => {
+    const reference = rangeToA1(range);
+    if (existingReferences.has(reference)) {
+      return [];
+    }
+
+    const columnCount = Math.max(0, range.end.col - range.start.col + 1);
+    const columns = Array.from({ length: columnCount }, (_, columnIndex) => {
+      const headerValue = worksheet
+        ? decodeHtmlEntities(worksheet.getFormattedValueAt(range.start.row, range.start.col + columnIndex) ?? "")
+        : "";
+      return {
+        id: columnIndex + 1,
+        index: columnIndex,
+        name: headerValue.trim().length > 0 ? headerValue : `Column ${columnIndex + 1}`
+      };
+    });
+
+    return [{
+      columns,
+      displayName: `AutoFilter ${index + 1}`,
+      end: range.end,
+      headerRowCount: 1,
+      name: `__autofilter_${index + 1}_${reference}`,
+      reference,
+      start: range.start,
+      totalsRowCount: 0,
+      totalsRowShown: false
+    } satisfies XlsxTable];
+  });
+
+  return [...mappedTables, ...mappedAutoFilterTables];
 }
 
 function resolveWorkbookTableCount(value: unknown, fallback: number) {
@@ -2696,9 +2736,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     () => (
       isWorkerBacked
         ? workerTablesByWorkbookSheetIndex[activeSheet?.workbookSheetIndex ?? -1] ?? []
-        : mapWorksheetTables(getActiveWorksheet())
+        : mapWorksheetTables(getActiveWorksheet(), activeSheet?.autoFilterRanges ?? [])
     ),
-    [activeSheet?.workbookSheetIndex, getActiveWorksheet, isWorkerBacked, revision, workerTablesByWorkbookSheetIndex]
+    [activeSheet?.autoFilterRanges, activeSheet?.workbookSheetIndex, getActiveWorksheet, isWorkerBacked, revision, workerTablesByWorkbookSheetIndex]
   );
 
   const getCellSnapshotAsync = React.useCallback((workbookSheetIndex: number, row: number, col: number) => {
