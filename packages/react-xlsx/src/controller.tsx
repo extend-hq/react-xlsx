@@ -11,7 +11,6 @@ import type {
   ImageDrawing as DukeImageDrawing,
   Workbook
 } from "@dukelib/sheets-wasm";
-import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import {
   applyChartSeriesFormula,
   buildChartSeriesFormula,
@@ -45,6 +44,13 @@ import {
   type WorkbookImageAssets,
   type WorkbookImageSheetOrigin
 } from "./images";
+import {
+  advanceMutationNotificationState,
+  cloneBytes,
+  createMutationNotificationState,
+  createSavedWorkbookBytes as createPersistedWorkbookBytes,
+  type MutationNotificationState
+} from "./persistence";
 import { safeCalculate, tryRecalculate } from "./safe-calculate";
 import { canUseConfiguredWasmSourceInWorker, getSheetsWasmModule } from "./wasm";
 import { XlsxWorkerClient } from "./worker-client";
@@ -1233,29 +1239,6 @@ function decodeHtmlEntities(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
-function cloneBytes(bytes: Uint8Array): Uint8Array {
-  const nextBytes = new Uint8Array(bytes.byteLength);
-  nextBytes.set(bytes);
-  return nextBytes;
-}
-
-function sanitizeSavedWorkbookBytes(bytes: Uint8Array): Uint8Array {
-  try {
-    const archive = unzipSync(bytes);
-    const stylesEntry = archive["xl/styles.xml"];
-    if (stylesEntry) {
-      const stylesXml = strFromU8(stylesEntry)
-        .replace(/&amp;quot;/g, "&quot;")
-        .replace(/&amp;apos;/g, "&apos;");
-      archive["xl/styles.xml"] = strToU8(stylesXml);
-    }
-
-    return zipSync(archive, { level: 6 });
-  } catch {
-    return cloneBytes(bytes);
-  }
-}
-
 function pushHistoryEntry(stack: HistoryEntry[], entry: HistoryEntry) {
   stack.push(entry);
   if (stack.length > HISTORY_LIMIT) {
@@ -1832,6 +1815,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     file,
     fileName,
     maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
+    onMutation,
     readOnly: requestedReadOnly = false,
     readOnlyAboveBytes = 0,
     showHiddenSheets = false,
@@ -1878,6 +1862,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const chartDisplayFallbackCleanupRef = React.useRef<(() => void) | null>(null);
   const sheetOriginsRef = React.useRef<Array<WorkbookImageSheetOrigin | null>>([]);
   const workerClientRef = React.useRef<XlsxWorkerClient | null>(null);
+  const mutationNotificationStateRef = React.useRef<MutationNotificationState>(
+    createMutationNotificationState()
+  );
   const workerCellSnapshotCacheRef = React.useRef(new Map<string, { displayValue: string; formula: string }>());
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
@@ -2175,6 +2162,22 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     revokeWorkbookImageAssets(imageAssetsRef.current);
     disposeWorkerClient();
   }, [disposeWorkerClient]);
+
+  React.useEffect(() => {
+    const transition = advanceMutationNotificationState(
+      mutationNotificationStateRef.current,
+      {
+        hasWorkbook: Boolean(workbook),
+        isChartsLoading,
+        isLoading,
+        revision
+      }
+    );
+    mutationNotificationStateRef.current = transition.state;
+    if (transition.notificationRevision !== null) {
+      onMutation?.({ revision: transition.notificationRevision });
+    }
+  }, [isChartsLoading, isLoading, onMutation, revision, workbook]);
 
   React.useEffect(() => {
     if (!file && !src) {
@@ -3244,9 +3247,23 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const canRedo = !readOnly && redoStackRef.current.length > 0;
 
   const createSavedWorkbookBytes = React.useCallback((targetWorkbook: Workbook) => {
-    const sanitizedBytes = sanitizeSavedWorkbookBytes(targetWorkbook.saveXlsxBytes());
-    return mergeWorkbookImageAssets(sanitizedBytes, imageAssetsRef.current, sheetOriginsRef.current);
+    return createPersistedWorkbookBytes(
+      targetWorkbook,
+      (savedBytes) => mergeWorkbookImageAssets(
+        savedBytes,
+        imageAssetsRef.current,
+        sheetOriginsRef.current
+      )
+    );
   }, []);
+
+  const serializeXlsx = React.useCallback(async (): Promise<Uint8Array> => {
+    if (!workbook) {
+      throw new Error("Workbook is not ready.");
+    }
+
+    return createSavedWorkbookBytes(workbook);
+  }, [createSavedWorkbookBytes, workbook]);
 
   const createHistoryEntry = React.useCallback((): SnapshotHistoryEntry | null => {
     if (!workbook) {
@@ -4954,6 +4971,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       redo,
       resetZoom,
       revision,
+      serializeXlsx,
       resizeChartBy,
       resizeImageBy,
       resizeColumn,
@@ -5072,6 +5090,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       recalculate,
       redo,
       revision,
+      serializeXlsx,
       resizeChartBy,
       resizeImageBy,
       resizeColumn,

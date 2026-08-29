@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.16.2",
+  "version": "0.16.2-erstan.1",
   "description": "React components and hooks for viewing XLSX workbooks",
   "license": "MIT",
   "keywords": [
@@ -63,7 +63,7 @@
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts && node ../../scripts/copy-duke-wasm.mjs",
-    "test": "node --experimental-strip-types --test src/cell-text-clip.test.ts src/zip-entry-names.test.ts src/viewer-palette.test.ts",
+    "test": "node --experimental-strip-types --test src/cell-text-clip.test.ts src/persistence.test.ts src/zip-entry-names.test.ts src/viewer-palette.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   },
