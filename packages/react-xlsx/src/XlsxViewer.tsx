@@ -5520,11 +5520,21 @@ function resolveConditionalRuleThreshold(
 
   const minValue = Math.min(...numericValues);
   const maxValue = Math.max(...numericValues);
-  if (thresholdType === "min" || thresholdType === "automin" || thresholdType === "automaticmin") {
+  if (thresholdType === "min") {
     return minValue;
   }
-  if (thresholdType === "max" || thresholdType === "automax" || thresholdType === "automaticmax") {
+  if (thresholdType === "max") {
     return maxValue;
+  }
+  // Excel's automatic data bar axis anchors the scale at zero: the minimum is
+  // zero unless the range holds negative values and the maximum is zero unless
+  // it holds positive values, so all-positive data gets bars proportional to
+  // the cell value rather than to its distance from the smallest value.
+  if (thresholdType === "automin" || thresholdType === "automaticmin") {
+    return Math.min(0, minValue);
+  }
+  if (thresholdType === "automax" || thresholdType === "automaticmax") {
+    return Math.max(0, maxValue);
   }
 
   if ((thresholdType === "percent" || thresholdType === "percentile") && fallbackValue !== null) {
@@ -5576,14 +5586,9 @@ function resolveConditionalCellIsMatch(
     }
 
     if (cellIsTextComparable) {
-      // Excel compares non-numeric text as greater than numbers.
-      if (predicate(1, 0)) {
-        return true;
-      }
-      if (predicate(0, 0)) {
-        return false;
-      }
-      return false;
+      // Excel orders text after every number, so text satisfies "greater than"
+      // comparisons and fails "less than" ones.
+      return predicate(1, 0);
     }
 
     return false;
@@ -5621,7 +5626,9 @@ function resolveConditionalCellIsMatch(
         }
         return cellIsTextComparable;
       }
-      return normalizedText !== String(left ?? "");
+      // Excel compares text case-insensitively; a rule without an operand
+      // matches nothing.
+      return left !== null && normalizedText.toLowerCase() !== String(left).toLowerCase();
     case "equal":
     default:
       if (typeof left === "number") {
@@ -5630,7 +5637,7 @@ function resolveConditionalCellIsMatch(
         }
         return false;
       }
-      return normalizedText === String(left ?? "");
+      return left !== null && normalizedText.toLowerCase() === String(left).toLowerCase();
   }
 }
 
@@ -5728,34 +5735,79 @@ function resolveConditionalStyledRuleMatch(
   }
 }
 
+type XlsxConditionalStyledRuleEntry = Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "styled" }>;
+
+// Styled rules are usually a small subset of a sheet's conditional formats, or
+// absent entirely, and this lookup runs for every rendered cell, so the subset
+// is computed once per rule list instead of being filtered per cell.
+const styledConditionalRulesByRuleList = new WeakMap<
+  XlsxSheetData["conditionalFormatRules"],
+  XlsxConditionalStyledRuleEntry[]
+>();
+
+function getStyledConditionalRules(rules: XlsxSheetData["conditionalFormatRules"]) {
+  let styledRules = styledConditionalRulesByRuleList.get(rules);
+  if (!styledRules) {
+    styledRules = rules.filter((rule): rule is XlsxConditionalStyledRuleEntry => rule.kind === "styled");
+    styledConditionalRulesByRuleList.set(rules, styledRules);
+  }
+  return styledRules;
+}
+
 function resolveConditionalCellStyleForCell(
   row: number,
   col: number,
   sheet: XlsxSheetData | null | undefined,
-  numericValue: number | null,
-  textValue: string,
+  readNumericValue: () => number | null,
+  readTextValue: () => string,
   worksheet?: Worksheet | null,
   batchedCells?: Map<string, BatchedCellData>
 ) {
-  const rules = sheet?.conditionalFormatRules ?? [];
-  const matchingRules = rules.filter(
-    (rule): rule is Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "styled" }> =>
-      rule.kind === "styled"
-      && rule.ranges.some((range) => isCellInRange({ row, col }, range))
-  );
-  if (matchingRules.length === 0) {
+  const rules = sheet?.conditionalFormatRules;
+  if (!sheet || !rules || rules.length === 0) {
     return null;
   }
 
-  let resolved: Record<string, unknown> | null = null;
-  // Lower priority number in Excel should take precedence; apply from lowest precedence to highest.
-  for (let index = matchingRules.length - 1; index >= 0; index -= 1) {
-    const rule = matchingRules[index];
+  const styledRules = getStyledConditionalRules(rules);
+  if (styledRules.length === 0) {
+    return null;
+  }
+
+  // Rules are sorted by ascending priority number, i.e. highest precedence
+  // first. The cell's values are only read once a rule actually covers it.
+  const matchedStyles: Array<Record<string, unknown>> = [];
+  let numericValue: number | null | undefined;
+  let textValue: string | undefined;
+  for (const rule of styledRules) {
+    if (!rule.ranges.some((range) => isCellInRange({ row, col }, range))) {
+      continue;
+    }
+
+    if (numericValue === undefined) {
+      numericValue = readNumericValue();
+    }
+    if (textValue === undefined) {
+      textValue = readTextValue();
+    }
     if (!resolveConditionalStyledRuleMatch(rule, numericValue, textValue, worksheet, sheet, batchedCells)) {
       continue;
     }
 
-    resolved = mergeResolvedCellStyle(resolved, rule.style ?? null);
+    matchedStyles.push(rule.style);
+    if (rule.stopIfTrue) {
+      break;
+    }
+  }
+
+  if (matchedStyles.length === 0) {
+    return null;
+  }
+
+  // Apply from lowest precedence to highest so that a higher-precedence rule
+  // wins wherever two matching rules set the same property.
+  let resolved: Record<string, unknown> | null = null;
+  for (let index = matchedStyles.length - 1; index >= 0; index -= 1) {
+    resolved = mergeResolvedCellStyle(resolved, matchedStyles[index]);
   }
 
   return resolved;
@@ -9842,12 +9894,21 @@ function XlsxGrid({
 
     const baseResolvedStyle = resolveBaseResolvedStyle(row, col);
     const resolvedMergedStyle = mergeResolvedCellStyle(baseResolvedStyle, mergedBorderOverlay);
+    let displayValue: string | null = null;
+    const readDisplayValue = () => {
+      if (displayValue === null) {
+        displayValue = batchCoversRow || !worksheet
+          ? batchedCell?.value ?? ""
+          : getCellDisplayValue(worksheet, row, col, activeSheet);
+      }
+      return displayValue;
+    };
     const conditionalCellStyle = resolveConditionalCellStyleForCell(
       row,
       col,
       activeSheet,
-      worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell),
-      worksheet ? getCellDisplayValue(worksheet, row, col, activeSheet) : (batchedCell?.value ?? ""),
+      () => (worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell)),
+      readDisplayValue,
       worksheet,
       viewportRowBatch?.cells
     );
@@ -9934,9 +9995,7 @@ function XlsxGrid({
         ? ""
         : checkboxState !== null
           ? ""
-          : batchCoversRow || !worksheet
-            ? batchedCell?.value ?? ""
-            : getCellDisplayValue(worksheet, row, col, activeSheet)
+          : readDisplayValue()
     };
 
     if (getCellStyle) {
@@ -9972,6 +10031,13 @@ function XlsxGrid({
     }
 
     nextData.canvas = buildCanvasCellStyleCache(nextData.style);
+
+    // Publish the base render data before resolving text overflow. The overflow
+    // walk asks neighbouring cells for their data, and a neighbour whose text
+    // overflows towards this cell asks for ours in turn; caching first turns
+    // that mutual lookup into a cache hit instead of unbounded recursion. The
+    // spill fields below are attached to this same cached object.
+    cellRenderCacheRef.current.set(cacheKey, nextData);
 
     if (canCellTextOverflow(nextData)) {
       const startColIndex = colIndexByActual.get(col);
@@ -10065,7 +10131,6 @@ function XlsxGrid({
       }
     }
 
-    cellRenderCacheRef.current.set(cacheKey, nextData);
     return nextData;
   }, [
     activeSheet,
@@ -17290,8 +17355,8 @@ export function useXlsxViewerThumbnails(
             row,
             col,
             sheet,
-            worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell),
-            worksheet ? getCellDisplayValue(worksheet, row, col, sheet) : (batchedCell?.value ?? ""),
+            () => (worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell)),
+            () => (worksheet ? getCellDisplayValue(worksheet, row, col, sheet) : (batchedCell?.value ?? "")),
             worksheet,
             workerRowBatch?.cells
           );
