@@ -94,6 +94,7 @@ export interface XlsxFreezePanes {
 export type XlsxSheetVisibility = "hidden" | "veryHidden" | "visible";
 
 export interface XlsxSheetData {
+  autoFilterRanges: XlsxCellRange[];
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
   colStyleIds: Record<number, number>;

@@ -229,6 +229,7 @@ type WorkbookSheetInfo = {
 };
 
 type WorkbookSheetState = {
+  autoFilterRanges: XlsxCellRange[];
   cachedFormulaValues: Record<string, string>;
   columnWidthCharacterWidthPx?: number;
   colWidthOverridesPx: Record<number, number>;
@@ -1586,6 +1587,7 @@ function parseSheetState(
   }
 
   const includeCachedFormulaValues = options?.includeCachedFormulaValues ?? true;
+  const autoFilterRanges = parseSqrefRanges(getLocalElements(document, "autoFilter")[0]?.getAttribute("ref"));
   const cachedFormulaValues: Record<string, string> = {};
   const conditionalFormatRules = parseConditionalFormatRules(document);
   const sparklines = parseSheetSparklines(document, options?.themePalette);
@@ -1695,6 +1697,7 @@ function parseSheetState(
   });
 
   return {
+    autoFilterRanges,
     cachedFormulaValues,
     columnWidthCharacterWidthPx,
     colWidthOverridesPx,
