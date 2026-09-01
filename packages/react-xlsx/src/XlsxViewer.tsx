@@ -4,6 +4,7 @@ import {
   type VirtualItem,
   useVirtualizer
 } from "@tanstack/react-virtual";
+import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
@@ -4442,9 +4443,16 @@ function resolveMergedRegionBorderOverlay(
   return { border } satisfies Record<string, unknown>;
 }
 
+type TableStyleRegion = {
+  endCol: number;
+  endRow: number;
+  startCol: number;
+  startRow: number;
+};
+
 function normalizeTableStyleEdges(
   style: Record<string, unknown> | null | undefined,
-  table: XlsxTable,
+  region: TableStyleRegion,
   row: number,
   col: number
 ) {
@@ -4457,24 +4465,36 @@ function normalizeTableStyleEdges(
     return style;
   }
 
-  const nextBorder: Record<string, Record<string, unknown>> = { ...border };
-  if (nextBorder.horizontal) {
-    if (row < table.end.row) {
-      nextBorder.bottom = nextBorder.bottom ?? nextBorder.horizontal;
-    }
-    delete nextBorder.horizontal;
+  // A table style element's border describes the region that element covers:
+  // top/right/bottom/left are the region's outer edges and only apply to cells
+  // on that boundary, while horizontal/vertical describe the inner grid lines.
+  const nextBorder: Record<string, Record<string, unknown>> = {};
+  if (border.top && row === region.startRow) {
+    nextBorder.top = border.top;
   }
-  if (nextBorder.vertical) {
-    if (col < table.end.col) {
-      nextBorder.right = nextBorder.right ?? nextBorder.vertical;
-    }
-    delete nextBorder.vertical;
+  if (border.bottom && row === region.endRow) {
+    nextBorder.bottom = border.bottom;
+  }
+  if (border.left && col === region.startCol) {
+    nextBorder.left = border.left;
+  }
+  if (border.right && col === region.endCol) {
+    nextBorder.right = border.right;
+  }
+  if (border.horizontal && row < region.endRow) {
+    nextBorder.bottom = nextBorder.bottom ?? border.horizontal;
+  }
+  if (border.vertical && col < region.endCol) {
+    nextBorder.right = nextBorder.right ?? border.vertical;
   }
 
-  return {
-    ...style,
-    border: nextBorder
-  };
+  const nextStyle: Record<string, unknown> = { ...style };
+  if (Object.keys(nextBorder).length === 0) {
+    delete nextStyle.border;
+  } else {
+    nextStyle.border = nextBorder;
+  }
+  return nextStyle;
 }
 
 function resolveTableCellStyle(
@@ -4492,32 +4512,75 @@ function resolveTableCellStyle(
     return null;
   }
 
-  const tableStyle = activeSheet.tableStyleByName[styleName];
+  // A workbook may define its own table style under any name, including a
+  // built-in one, so the workbook's definition wins over the shipped preset.
+  const tableStyle = activeSheet.tableStyleByName[styleName] ?? resolveBuiltinTableStyle(styleName);
   if (!tableStyle) {
     return null;
   }
 
+  const headerRowCount = Math.max(table.headerRowCount, 1);
+  const totalsRowCount = table.totalsRowShown ? Math.max(table.totalsRowCount, 1) : 0;
+  const headerEndRow = table.start.row + headerRowCount - 1;
+  const totalsStartRow = table.end.row - totalsRowCount + 1;
+  const bodyStartRow = headerEndRow + 1;
+  const bodyEndRow = totalsStartRow - 1;
+  const isHeaderRow = row >= table.start.row && row <= headerEndRow;
+  const isTotalsRow = totalsRowCount > 0 && row >= totalsStartRow && row <= table.end.row;
+  const isBodyRow = row >= bodyStartRow && row <= bodyEndRow;
+  const isFirstColumn = col === table.start.col;
+  const isLastColumn = col === table.end.col;
+
+  const tableRegion: TableStyleRegion = {
+    endCol: table.end.col,
+    endRow: table.end.row,
+    startCol: table.start.col,
+    startRow: table.start.row
+  };
+  const headerRegion: TableStyleRegion = { ...tableRegion, endRow: headerEndRow };
+  const totalsRegion: TableStyleRegion = { ...tableRegion, startRow: totalsStartRow };
+
   let resolved: Record<string, unknown> | null = null;
-  const applyElement = (elementType: string, enabled = true) => {
+  const applyElement = (elementType: string, region: TableStyleRegion, enabled = true) => {
     if (!enabled) {
       return;
     }
 
-    const nextStyle = normalizeTableStyleEdges(tableStyle[elementType] ?? null, table, row, col);
+    const nextStyle = normalizeTableStyleEdges(tableStyle[elementType] ?? null, region, row, col);
     if (!nextStyle) {
       return;
     }
     resolved = mergeResolvedCellStyle(resolved, nextStyle);
   };
 
-  applyElement("wholeTable");
-  applyElement("firstColumn", Boolean(table.styleInfo?.showFirstColumn) && col === table.start.col);
-  applyElement("lastColumn", Boolean(table.styleInfo?.showLastColumn) && col === table.end.col);
+  // Excel layers table style elements from lowest to highest precedence: whole
+  // table, column stripes, row stripes, last column, first column, header row,
+  // total row, and finally the corner header/total cells.
+  applyElement("wholeTable", tableRegion);
 
-  const headerRowCount = Math.max(table.headerRowCount, 1);
-  const isHeaderRow = row >= table.start.row && row < table.start.row + headerRowCount;
-  applyElement("headerRow", isHeaderRow);
+  if (isBodyRow && table.styleInfo?.showColumnStripes) {
+    const isFirstStripe = (col - table.start.col) % 2 === 0;
+    applyElement(isFirstStripe ? "firstColumnStripe" : "secondColumnStripe", {
+      endCol: col,
+      endRow: bodyEndRow,
+      startCol: col,
+      startRow: bodyStartRow
+    });
+  }
 
+  if (isBodyRow && table.styleInfo?.showRowStripes) {
+    const isFirstStripe = (row - bodyStartRow) % 2 === 0;
+    applyElement(isFirstStripe ? "firstRowStripe" : "secondRowStripe", {
+      ...tableRegion,
+      endRow: row,
+      startRow: row
+    });
+  }
+
+  applyElement("lastColumn", { ...tableRegion, startCol: table.end.col }, Boolean(table.styleInfo?.showLastColumn) && isLastColumn);
+  applyElement("firstColumn", { ...tableRegion, endCol: table.start.col }, Boolean(table.styleInfo?.showFirstColumn) && isFirstColumn);
+
+  applyElement("headerRow", headerRegion, isHeaderRow);
   if (isHeaderRow && table.headerRowCellStyle) {
     const namedHeaderStyle = activeSheet.namedCellStyleByName[table.headerRowCellStyle];
     if (namedHeaderStyle) {
@@ -4525,10 +4588,12 @@ function resolveTableCellStyle(
     }
   }
 
-  if (table.totalsRowShown) {
-    const totalsRowCount = Math.max(table.totalsRowCount, 1);
-    applyElement("totalRow", row > table.end.row - totalsRowCount);
-  }
+  applyElement("totalRow", totalsRegion, isTotalsRow);
+
+  applyElement("firstHeaderCell", { ...headerRegion, endCol: table.start.col }, isHeaderRow && isFirstColumn);
+  applyElement("lastHeaderCell", { ...headerRegion, startCol: table.end.col }, isHeaderRow && isLastColumn);
+  applyElement("firstTotalCell", { ...totalsRegion, endCol: table.start.col }, isTotalsRow && isFirstColumn);
+  applyElement("lastTotalCell", { ...totalsRegion, startCol: table.end.col }, isTotalsRow && isLastColumn);
 
   return resolved;
 }
