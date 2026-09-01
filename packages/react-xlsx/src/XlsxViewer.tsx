@@ -26,6 +26,7 @@ import type {
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxConditionalFormatValueObject,
   XlsxFormControl,
   XlsxFormControlKindInput,
   XlsxImage,
@@ -5435,7 +5436,7 @@ function buildConditionalFormatRuleKey(rule: XlsxSheetData["conditionalFormatRul
 }
 
 function resolveConditionalRuleThreshold(
-  threshold: XlsxSheetData["conditionalFormatRules"][number]["cfvos"][number] | undefined,
+  threshold: XlsxConditionalFormatValueObject | undefined,
   numericValues: number[]
 ) {
   if (!threshold) {
@@ -5466,6 +5467,233 @@ function resolveConditionalRuleThreshold(
   }
 
   return fallbackValue;
+}
+
+function parseConditionalFormulaLiteral(formula: string) {
+  const trimmed = formula.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const withoutEquals = trimmed.startsWith("=") ? trimmed.slice(1).trim() : trimmed;
+  if (withoutEquals.startsWith("\"") && withoutEquals.endsWith("\"") && withoutEquals.length >= 2) {
+    return withoutEquals.slice(1, -1).replace(/\"\"/g, "\"");
+  }
+
+  const numeric = Number(withoutEquals.replace(/,/g, ""));
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+
+  return withoutEquals;
+}
+
+function resolveConditionalCellIsMatch(
+  operator: string,
+  left: string | number | null,
+  right: string | number | null,
+  numericValue: number | null,
+  textValue: string
+) {
+  const normalizedOperator = operator.trim();
+  const normalizedText = textValue.trim();
+  const parsedNumericText = Number(normalizedText.replace(/,/g, ""));
+  const effectiveNumericValue = numericValue ?? (Number.isFinite(parsedNumericText) ? parsedNumericText : null);
+  const cellIsTextComparable = effectiveNumericValue === null && normalizedText.length > 0;
+
+  const compareComparable = (literal: string | number | null, predicate: (cell: number, value: number) => boolean) => {
+    if (typeof literal !== "number") {
+      return false;
+    }
+
+    if (effectiveNumericValue !== null) {
+      return predicate(effectiveNumericValue, literal);
+    }
+
+    if (cellIsTextComparable) {
+      // Excel compares non-numeric text as greater than numbers.
+      if (predicate(1, 0)) {
+        return true;
+      }
+      if (predicate(0, 0)) {
+        return false;
+      }
+      return false;
+    }
+
+    return false;
+  };
+
+  switch (normalizedOperator) {
+    case "greaterThan":
+      return compareComparable(left, (cell, value) => cell > value);
+    case "greaterThanOrEqual":
+      return compareComparable(left, (cell, value) => cell >= value);
+    case "lessThan":
+      return compareComparable(left, (cell, value) => cell < value);
+    case "lessThanOrEqual":
+      return compareComparable(left, (cell, value) => cell <= value);
+    case "between":
+      if (typeof left !== "number" || typeof right !== "number") {
+        return false;
+      }
+      if (effectiveNumericValue === null) {
+        return false;
+      }
+      return effectiveNumericValue >= left && effectiveNumericValue <= right;
+    case "notBetween":
+      if (typeof left !== "number" || typeof right !== "number") {
+        return false;
+      }
+      if (effectiveNumericValue === null) {
+        return cellIsTextComparable;
+      }
+      return effectiveNumericValue < left || effectiveNumericValue > right;
+    case "notEqual":
+      if (typeof left === "number") {
+        if (effectiveNumericValue !== null) {
+          return effectiveNumericValue !== left;
+        }
+        return cellIsTextComparable;
+      }
+      return normalizedText !== String(left ?? "");
+    case "equal":
+    default:
+      if (typeof left === "number") {
+        if (effectiveNumericValue !== null) {
+          return effectiveNumericValue === left;
+        }
+        return false;
+      }
+      return normalizedText === String(left ?? "");
+  }
+}
+
+function resolveConditionalFormulaComparable(
+  formula: string,
+  worksheet: Worksheet | null | undefined,
+  sheet: XlsxSheetData | null | undefined,
+  batchedCells?: Map<string, BatchedCellData>
+) {
+  const literal = parseConditionalFormulaLiteral(formula);
+  if (typeof literal === "number") {
+    return literal;
+  }
+
+  const normalized = formula.trim().replace(/^=/, "").trim();
+  if (normalized.length === 0) {
+    return literal;
+  }
+
+  const splitReference = splitSheetFormulaReference(normalized);
+  const targetSheetName = splitReference?.sheetName ?? null;
+  if (targetSheetName && sheet?.name && targetSheetName !== sheet.name) {
+    return literal;
+  }
+
+  const cellRef = splitReference?.range ?? normalized;
+  const cell = parseA1CellReference(cellRef.replace(/\$/g, ""));
+  if (!cell) {
+    return literal;
+  }
+
+  if (worksheet) {
+    const numeric = getCellNumericValue(worksheet, cell.row, cell.col);
+    if (numeric !== null) {
+      return numeric;
+    }
+    return getCellDisplayValue(worksheet, cell.row, cell.col, sheet);
+  }
+
+  if (batchedCells) {
+    const batched = batchedCells.get(`${cell.row}:${cell.col}`);
+    if (batched) {
+      const numeric = getBatchedCellNumericValue(batched);
+      if (numeric !== null) {
+        return numeric;
+      }
+      return batched.value;
+    }
+  }
+
+  return literal;
+}
+
+function normalizeConditionalTextOperand(value: string | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return String(value).trim().toLowerCase();
+}
+
+function resolveConditionalStyledRuleMatch(
+  rule: Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "styled" }>,
+  numericValue: number | null,
+  textValue: string,
+  worksheet: Worksheet | null | undefined,
+  sheet: XlsxSheetData | null | undefined,
+  batchedCells?: Map<string, BatchedCellData>
+) {
+  const normalizedRuleType = rule.ruleType.trim().toLowerCase();
+  const left = resolveConditionalFormulaComparable(rule.formulas?.[0] ?? "", worksheet, sheet, batchedCells);
+  const right = resolveConditionalFormulaComparable(rule.formulas?.[1] ?? "", worksheet, sheet, batchedCells);
+
+  if (normalizedRuleType === "cellis") {
+    return resolveConditionalCellIsMatch(rule.operator ?? "equal", left, right, numericValue, textValue);
+  }
+
+  const normalizedCellText = textValue.trim().toLowerCase();
+  const normalizedOperand = normalizeConditionalTextOperand(rule.text)
+    || normalizeConditionalTextOperand(left);
+
+  switch (normalizedRuleType) {
+    case "beginwith":
+    case "beginswith":
+      return normalizedOperand.length > 0 && normalizedCellText.startsWith(normalizedOperand);
+    case "endwith":
+    case "endswith":
+      return normalizedOperand.length > 0 && normalizedCellText.endsWith(normalizedOperand);
+    case "containstext":
+      return normalizedOperand.length > 0 && normalizedCellText.includes(normalizedOperand);
+    case "notcontainstext":
+      return normalizedOperand.length > 0 && !normalizedCellText.includes(normalizedOperand);
+    default:
+      return false;
+  }
+}
+
+function resolveConditionalCellStyleForCell(
+  row: number,
+  col: number,
+  sheet: XlsxSheetData | null | undefined,
+  numericValue: number | null,
+  textValue: string,
+  worksheet?: Worksheet | null,
+  batchedCells?: Map<string, BatchedCellData>
+) {
+  const rules = sheet?.conditionalFormatRules ?? [];
+  const matchingRules = rules.filter(
+    (rule): rule is Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "styled" }> =>
+      rule.kind === "styled"
+      && rule.ranges.some((range) => isCellInRange({ row, col }, range))
+  );
+  if (matchingRules.length === 0) {
+    return null;
+  }
+
+  let resolved: Record<string, unknown> | null = null;
+  // Lower priority number in Excel should take precedence; apply from lowest precedence to highest.
+  for (let index = matchingRules.length - 1; index >= 0; index -= 1) {
+    const rule = matchingRules[index];
+    if (!resolveConditionalStyledRuleMatch(rule, numericValue, textValue, worksheet, sheet, batchedCells)) {
+      continue;
+    }
+
+    resolved = mergeResolvedCellStyle(resolved, rule.style ?? null);
+  }
+
+  return resolved;
 }
 
 function buildConditionalIcon(iconSet: string, iconId: number): NonNullable<CellRenderData["conditionalIcon"]> | null {
@@ -9549,7 +9777,17 @@ function XlsxGrid({
 
     const baseResolvedStyle = resolveBaseResolvedStyle(row, col);
     const resolvedMergedStyle = mergeResolvedCellStyle(baseResolvedStyle, mergedBorderOverlay);
-    const alignment = resolvedMergedStyle?.alignment as Record<string, unknown> | undefined;
+    const conditionalCellStyle = resolveConditionalCellStyleForCell(
+      row,
+      col,
+      activeSheet,
+      worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell),
+      worksheet ? getCellDisplayValue(worksheet, row, col, activeSheet) : (batchedCell?.value ?? ""),
+      worksheet,
+      viewportRowBatch?.cells
+    );
+    const finalResolvedStyle = mergeResolvedCellStyle(resolvedMergedStyle, conditionalCellStyle);
+    const alignment = finalResolvedStyle?.alignment as Record<string, unknown> | undefined;
     const textRotationDeg = resolveSpreadsheetTextRotation(alignment?.textRotation);
     const headerRowCount = table ? Math.max(table.headerRowCount, 1) : 0;
     const rawHyperlink = batchCoversRow
@@ -9580,7 +9818,7 @@ function XlsxGrid({
               )
         )
       : null;
-    const checkboxState = resolvedMergedStyle?.cellControl && worksheet
+    const checkboxState = finalResolvedStyle?.cellControl && worksheet
       ? getCellBooleanValue(worksheet, row, col)
       : null;
     const chartHighlight = resolveCellChartHighlight({ row, col }, activeSheetChartHighlights);
@@ -9622,7 +9860,7 @@ function XlsxGrid({
       isTableHeader: Boolean(table && row >= table.start.row && row < table.start.row + headerRowCount),
       rowSpan: merge?.rowSpan,
       sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
-      style: scaleCssProperties(buildCellStyle(resolvedMergedStyle, palette, activeSheet?.themePalette, {
+      style: scaleCssProperties(buildCellStyle(finalResolvedStyle, palette, activeSheet?.themePalette, {
         showGridLines: activeSheet?.showGridLines
       }), zoomFactor),
       textRotationDeg,
@@ -16983,7 +17221,17 @@ export function useXlsxViewerThumbnails(
             ? (worksheet.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined) ?? null
             : batchedCell?.style ?? null;
           const mergedStyle = mergeResolvedCellStyle(inheritedStyle, worksheetStyle, { replaceXfSubtrees: true });
-          const alignment = mergedStyle?.alignment as Record<string, unknown> | undefined;
+          const conditionalCellStyle = resolveConditionalCellStyleForCell(
+            row,
+            col,
+            sheet,
+            worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell),
+            worksheet ? getCellDisplayValue(worksheet, row, col, sheet) : (batchedCell?.value ?? ""),
+            worksheet,
+            workerRowBatch?.cells
+          );
+          const finalResolvedStyle = mergeResolvedCellStyle(mergedStyle, conditionalCellStyle);
+          const alignment = finalResolvedStyle?.alignment as Record<string, unknown> | undefined;
           const sparkline = sparklineByCell.get(cacheKey) ?? null;
           const getNumericValue = (targetRow: number, targetCol: number) => (
             worksheet
@@ -17009,7 +17257,7 @@ export function useXlsxViewerThumbnails(
                     )
               )
             : null;
-          const checkboxState = mergedStyle?.cellControl
+          const checkboxState = finalResolvedStyle?.cellControl
             ? worksheet
               ? getCellBooleanValue(worksheet, row, col)
               : getBatchedCellBooleanValue(batchedCell)
@@ -17030,7 +17278,7 @@ export function useXlsxViewerThumbnails(
             isMergedSecondary: false,
             rowSpan: merge?.rowSpan,
             sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
-            style: buildCellStyle(mergedStyle, palette, sheet.themePalette, {
+            style: buildCellStyle(finalResolvedStyle, palette, sheet.themePalette, {
               showGridLines
             }),
             textRotationDeg: resolveSpreadsheetTextRotation(alignment?.textRotation),

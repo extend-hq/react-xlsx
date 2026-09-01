@@ -1137,6 +1137,7 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   const xml = readArchiveText(archive, "xl/styles.xml");
   if (!xml) {
     return {
+      differentialStyles: [] as XlsxResolvedCellStyle[],
       defaultFont: null,
       namedCellStyleByName: {},
       styleById: {},
@@ -1147,6 +1148,7 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   const document = parseXml(xml);
   if (!document) {
     return {
+      differentialStyles: [] as XlsxResolvedCellStyle[],
       defaultFont: null,
       namedCellStyleByName: {},
       styleById: {},
@@ -1164,6 +1166,7 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   const tableStylesNode = getFirstDescendant(document, "tableStyles");
   if (!cellXfsNode) {
     return {
+      differentialStyles: [] as XlsxResolvedCellStyle[],
       defaultFont: null,
       namedCellStyleByName: {},
       styleById: {},
@@ -1229,6 +1232,7 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   } : null;
 
   return {
+    differentialStyles,
     defaultFont,
     namedCellStyleByName,
     styleById,
@@ -1283,11 +1287,15 @@ function parseSpreadsheetBooleanAttribute(node: Element | null, name: string) {
 
 function parseStandardConditionalFormatRule(
   cfRuleNode: Element,
-  ranges: XlsxCellRange[]
+  ranges: XlsxCellRange[],
+  differentialStyles: XlsxResolvedCellStyle[] = []
 ): (XlsxConditionalFormatRule & { id?: string }) | null {
   const type = cfRuleNode.getAttribute("type");
   const rawPriority = Number(cfRuleNode.getAttribute("priority") ?? Number.NaN);
   const priority = Number.isFinite(rawPriority) ? rawPriority : Number.MAX_SAFE_INTEGER;
+  const formulas = getChildElements(cfRuleNode, "formula")
+    .map((formulaNode) => (formulaNode.textContent ?? "").trim())
+    .filter((formula) => formula.length > 0);
 
   if (type === "colorScale") {
     const colorScaleNode = getFirstChild(cfRuleNode, "colorScale");
@@ -1366,7 +1374,36 @@ function parseStandardConditionalFormatRule(
     };
   }
 
-  return null;
+  const rawDxfId = Number(cfRuleNode.getAttribute("dxfId") ?? Number.NaN);
+  if (!type || !Number.isFinite(rawDxfId)) {
+    return null;
+  }
+
+  const style = differentialStyles[rawDxfId];
+  if (!style) {
+    return null;
+  }
+
+  const rawRank = Number(cfRuleNode.getAttribute("rank") ?? Number.NaN);
+  const rawStdDev = Number(cfRuleNode.getAttribute("stdDev") ?? Number.NaN);
+  return {
+    aboveAverage: parseSpreadsheetBooleanAttribute(cfRuleNode, "aboveAverage"),
+    bottom: parseSpreadsheetBooleanAttribute(cfRuleNode, "bottom"),
+    equalAverage: parseSpreadsheetBooleanAttribute(cfRuleNode, "equalAverage"),
+    formulas,
+    kind: "styled",
+    operator: cfRuleNode.getAttribute("operator") ?? undefined,
+    percent: parseSpreadsheetBooleanAttribute(cfRuleNode, "percent"),
+    priority,
+    rank: Number.isFinite(rawRank) ? rawRank : undefined,
+    ranges,
+    ruleType: type,
+    stdDev: Number.isFinite(rawStdDev) ? rawStdDev : undefined,
+    stopIfTrue: parseSpreadsheetBooleanAttribute(cfRuleNode, "stopIfTrue"),
+    style,
+    text: cfRuleNode.getAttribute("text") ?? undefined,
+    timePeriod: cfRuleNode.getAttribute("timePeriod") ?? undefined
+  };
 }
 
 function parseExtendedConditionalFormatRule(
@@ -1505,7 +1542,7 @@ function mergeConditionalFormatRule(
   return baseRule;
 }
 
-function parseConditionalFormatRules(document: Document) {
+function parseConditionalFormatRules(document: Document, differentialStyles: XlsxResolvedCellStyle[] = []) {
   const standardRules: Array<XlsxConditionalFormatRule & { id?: string }> = [];
   const extendedRules: Array<XlsxConditionalFormatRule & { id?: string }> = [];
 
@@ -1518,7 +1555,7 @@ function parseConditionalFormatRules(document: Document) {
     getChildElements(conditionalFormattingNode, "cfRule").forEach((cfRuleNode) => {
       const parsedRule = isExtended
         ? parseExtendedConditionalFormatRule(cfRuleNode, ranges)
-        : parseStandardConditionalFormatRule(cfRuleNode, ranges);
+        : parseStandardConditionalFormatRule(cfRuleNode, ranges, differentialStyles);
       if (parsedRule) {
         if (isExtended) {
           extendedRules.push(parsedRule);
@@ -1570,6 +1607,7 @@ function parseSheetState(
   archive: ArchiveEntries,
   path: string,
   options?: ParseWorkbookStructureOptions & {
+    differentialStyles?: XlsxResolvedCellStyle[];
     defaultFont?: {
       family?: string;
       sizePt?: number;
@@ -1589,7 +1627,7 @@ function parseSheetState(
   const includeCachedFormulaValues = options?.includeCachedFormulaValues ?? true;
   const autoFilterRanges = parseSqrefRanges(getLocalElements(document, "autoFilter")[0]?.getAttribute("ref"));
   const cachedFormulaValues: Record<string, string> = {};
-  const conditionalFormatRules = parseConditionalFormatRules(document);
+  const conditionalFormatRules = parseConditionalFormatRules(document, options?.differentialStyles ?? []);
   const sparklines = parseSheetSparklines(document, options?.themePalette);
   const sheetFormatNode = getLocalElements(document, "sheetFormatPr")[0] ?? null;
   const sheetViewNode = getLocalElements(document, "sheetView")[0] ?? null;
@@ -3148,12 +3186,13 @@ function parseWorkbookStructureAssetsFromArchive(
   const workbookSheets = parseWorkbookSheets(archive);
   const theme = parseWorkbookTheme(archive);
   const themePalette = buildThemePalette(theme);
-  const { defaultFont, namedCellStyleByName, styleById, tableStyleByName } = parseWorkbookStyles(archive);
+  const { defaultFont, differentialStyles, namedCellStyleByName, styleById, tableStyleByName } = parseWorkbookStyles(archive);
   return {
     contentTypes,
     namedCellStyleByName,
     sheetStatesByWorkbookSheetIndex: workbookSheets.map((sheet) => parseSheetState(archive, sheet.path, {
       ...options,
+      differentialStyles,
       defaultFont,
       themePalette
     })),
