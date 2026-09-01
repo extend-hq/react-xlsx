@@ -3728,8 +3728,15 @@ function canCellTextOverflow(data: CellRenderData) {
   }
 
   const textAlign = data.style.textAlign;
-  if (textAlign && textAlign !== "left" && textAlign !== "start" && textAlign !== "center") {
-    return false;
+  if (
+    textAlign &&
+    textAlign !== "left" &&
+    textAlign !== "start" &&
+    textAlign !== "center" &&
+    textAlign !== "right" &&
+    textAlign !== "end"
+  ) {
+      return false;
   }
 
   return true;
@@ -5210,6 +5217,8 @@ type CellRenderData = {
   shrinkToFitFontSizePx?: number;
   isTableHeader?: boolean;
   rowSpan?: number;
+  spillOffsetX?: number;
+  spillSide?: "left" | "right";
   sparkline?: {
     config: XlsxSheetData["sparklines"][number];
     values: Array<number | null>;
@@ -6640,6 +6649,7 @@ function GridRow({
             ) : isSpilling ? (
               <div
                 style={{
+                  left: cellData.spillOffsetX ?? 0,
                   maxWidth: cellData.spillWidth,
                   overflow: "visible",
                   pointerEvents: "none",
@@ -9671,10 +9681,14 @@ function XlsxGrid({
           displayEffectiveColWidths[startColIndex] ?? displayDefaultColWidth,
           sumPrefixRange(colPrefixSums, startColIndex, endColIndex)
         );
+        const align = nextData.style.textAlign;
+        const spillSide = align === "right" || align === "end" ? "left" : "right";
         let availableWidth = baseWidth;
 
         if (requiredWidth > availableWidth) {
-          for (let nextColIndex = endColIndex + 1; nextColIndex < visibleCols.length; nextColIndex += 1) {
+          const nextColStep = spillSide === "left" ? -1 : 1;
+          let nextColIndex = spillSide === "left" ? startColIndex - 1 : endColIndex + 1;
+          while (nextColIndex >= 0 && nextColIndex < visibleCols.length) {
             const nextActualCol = visibleCols[nextColIndex];
             if (nextActualCol === undefined) {
               break;
@@ -9689,10 +9703,16 @@ function XlsxGrid({
             if (requiredWidth <= availableWidth) {
               break;
             }
+
+            nextColIndex += nextColStep;
           }
 
           if (availableWidth > baseWidth) {
             nextData.spillWidth = Math.max(0, availableWidth - horizontalPadding);
+            nextData.spillSide = spillSide;
+            nextData.spillOffsetX = spillSide === "left"
+              ? Math.min(0, baseWidth - availableWidth)
+              : 0;
           }
         }
       }
@@ -12454,17 +12474,19 @@ function XlsxGrid({
             ) - paneBoundsForCell.top,
             width: displayRect?.width ?? (displayEffectiveColWidths[drawColIndex] ?? colItem.size)
           };
+          const spillOffsetX = Math.min(0, cellData.spillOffsetX ?? 0);
+          const drawableLeft = localRect.left + spillOffsetX;
           const drawableWidth = Math.max(localRect.width, cellData.spillWidth ?? 0);
 
           if (
-            localRect.left + drawableWidth < 0
+            drawableLeft + drawableWidth < 0
             || localRect.top + localRect.height < 0
-            || localRect.left > paneBoundsForCell.width
+            || drawableLeft > paneBoundsForCell.width
             || localRect.top > paneBoundsForCell.height
           ) {
             continue;
           }
-          if (!intersectsCanvasDirtyRects(localRect.left, localRect.top, drawableWidth, localRect.height, paneDirtyRects)) {
+          if (!intersectsCanvasDirtyRects(drawableLeft, localRect.top, drawableWidth, localRect.height, paneDirtyRects)) {
             canvasProfileCulledCells += 1;
             continue;
           }
@@ -12846,10 +12868,13 @@ function XlsxGrid({
             } else if (spillMaxWidth != null) {
               const text = shouldEllipsizeText ? truncateCanvasText(paneContext, rawText, maxTextWidth) : rawText;
               const textY = resolveCanvasTextMiddleY(cellStyle.verticalAlign, contentTop, contentHeight, singleLineHeight);
+              const spillClipLeft = cellData.spillSide === "left"
+                ? contentLeft + contentWidth - spillMaxWidth - textClipOverscan
+                : contentLeft - textClipOverscan;
               deferredSpillTextsByPane[pane].push({
                 align,
                 clipHeight: contentHeight + (textClipOverscan * 2),
-                clipLeft: contentLeft - textClipOverscan,
+                clipLeft: spillClipLeft,
                 clipTop: contentTop - textClipOverscan,
                 clipWidth: spillMaxWidth + (textClipOverscan * 2),
                 color: textColor,
