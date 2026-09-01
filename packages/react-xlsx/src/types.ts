@@ -616,6 +616,12 @@ export interface XlsxFormControlChangeEvent {
   type: "change";
 }
 
+/** A persisted workbook mutation observed after initial workbook hydration. */
+export interface XlsxMutationEvent {
+  /** The controller revision containing the mutation. */
+  revision: number;
+}
+
 export interface XlsxFormControlRenderProps {
   /** Activates a button control. No-ops in read-only mode. */
   activate: () => void;
@@ -972,6 +978,12 @@ export interface UseXlsxViewerControllerOptions {
    */
   maxFileSizeBytes?: number;
   /**
+   * Called after a persisted workbook mutation. Initial workbook and chart
+   * hydration, selection, zoom, and other view-only changes do not notify.
+   * Mutations made while chart assets hydrate are delivered after hydration.
+   */
+  onMutation?: (event: XlsxMutationEvent) => void;
+  /**
    * Disables workbook edits, paste, fill, undo/redo, and other mutation actions.
    *
    * @default false
@@ -1084,6 +1096,11 @@ export interface XlsxViewerController {
   readOnly: boolean;
   recalculate: () => void;
   revision: number;
+  /**
+   * Serializes the current workbook through the same sanitization and
+   * image/chart asset merge path used by `exportXlsx()`.
+   */
+  serializeXlsx: () => Promise<Uint8Array>;
   resetZoom: () => void;
   resizeChartBy: (
     id: string,

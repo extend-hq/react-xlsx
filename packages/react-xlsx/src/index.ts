@@ -57,6 +57,7 @@ export type {
   XlsxImageRenderProps,
   XlsxImageResizeHandlePosition,
   XlsxImageSelectionRenderProps,
+  XlsxMutationEvent,
   XlsxScrollerRenderProps,
   XlsxShape,
   XlsxShapeFill,

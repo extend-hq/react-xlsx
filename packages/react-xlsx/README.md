@@ -218,6 +218,45 @@ export function ControlledWorkbook({ file }: { file: ArrayBuffer }) {
 }
 ```
 
+### Persisting workbook changes
+
+Use `onMutation` to mark a hydrated workbook dirty, then call
+`serializeXlsx()` to obtain the same sanitized, asset-merged bytes used by the
+built-in XLSX export:
+
+```tsx
+import * as React from "react";
+import { XlsxViewer, useXlsxViewerController } from "@extend-ai/react-xlsx";
+
+export function PersistedWorkbook({ file }: { file: ArrayBuffer }) {
+  const [dirtyRevision, setDirtyRevision] = React.useState<number | null>(null);
+  const controller = useXlsxViewerController({
+    file,
+    onMutation: ({ revision }) => setDirtyRevision(revision),
+  });
+
+  const save = async () => {
+    const bytes = await controller.serializeXlsx();
+    await persistWorkbook(bytes, dirtyRevision);
+    setDirtyRevision(null);
+  };
+
+  return (
+    <>
+      <button type="button" onClick={save} disabled={dirtyRevision === null}>
+        Save
+      </button>
+      <XlsxViewer controller={controller} height={640} />
+    </>
+  );
+}
+```
+
+Initial workbook/chart hydration, selection, zoom, and other view-only changes
+do not call `onMutation`. Mutations made while chart assets are still hydrating
+are delivered once hydration completes. `serializeXlsx()` rejects until a
+workbook is ready.
+
 ## Useful Hooks
 
 These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
