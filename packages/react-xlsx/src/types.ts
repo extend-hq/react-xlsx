@@ -68,8 +68,28 @@ export interface XlsxConditionalIconSetRule {
   showValue?: boolean;
 }
 
+export interface XlsxConditionalStyledRule {
+  aboveAverage?: boolean;
+  bottom?: boolean;
+  equalAverage?: boolean;
+  formulas: string[];
+  kind: "styled";
+  operator?: string;
+  percent?: boolean;
+  priority: number;
+  rank?: number;
+  ranges: XlsxCellRange[];
+  ruleType: string;
+  stdDev?: number;
+  stopIfTrue?: boolean;
+  style: XlsxResolvedCellStyle;
+  text?: string;
+  timePeriod?: string;
+}
+
 export type XlsxConditionalFormatRule =
   | XlsxConditionalColorScaleRule
+  | XlsxConditionalStyledRule
   | XlsxConditionalDataBarRule
   | XlsxConditionalIconSetRule;
 
@@ -94,6 +114,7 @@ export interface XlsxFreezePanes {
 export type XlsxSheetVisibility = "hidden" | "veryHidden" | "visible";
 
 export interface XlsxSheetData {
+  autoFilterRanges: XlsxCellRange[];
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;
   colStyleIds: Record<number, number>;

@@ -27,6 +27,7 @@ import type {
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxConditionalFormatValueObject,
   XlsxFormControl,
   XlsxFormControlKindInput,
   XlsxImage,
@@ -3729,8 +3730,15 @@ function canCellTextOverflow(data: CellRenderData) {
   }
 
   const textAlign = data.style.textAlign;
-  if (textAlign && textAlign !== "left" && textAlign !== "start" && textAlign !== "center") {
-    return false;
+  if (
+    textAlign &&
+    textAlign !== "left" &&
+    textAlign !== "start" &&
+    textAlign !== "center" &&
+    textAlign !== "right" &&
+    textAlign !== "end"
+  ) {
+      return false;
   }
 
   return true;
@@ -4333,6 +4341,106 @@ function mergeResolvedCellStyle(
   }
 
   return nextStyle;
+}
+
+function resolveBorderEdgePriority(edge: Record<string, unknown> | null | undefined) {
+  const style = typeof edge?.style === "string" ? edge.style : "none";
+  const stylePriority: Record<string, number> = {
+    dashed: 2,
+    dashDot: 3,
+    dashDotDot: 3,
+    dotted: 1,
+    double: 8,
+    hair: 0,
+    medium: 6,
+    mediumDashDot: 5,
+    mediumDashDotDot: 5,
+    mediumDashed: 5,
+    none: -1,
+    slantDashDot: 4,
+    thick: 7,
+    thin: 4
+  };
+  return stylePriority[style] ?? -1;
+}
+
+function resolvePreferredBorderEdge(
+  current: Record<string, unknown> | null | undefined,
+  candidate: Record<string, unknown> | null | undefined
+) {
+  if (!candidate || typeof candidate.style !== "string" || candidate.style === "none") {
+    return current ?? null;
+  }
+  if (!current) {
+    return candidate;
+  }
+
+  const currentPriority = resolveBorderEdgePriority(current);
+  const candidatePriority = resolveBorderEdgePriority(candidate);
+  if (candidatePriority > currentPriority) {
+    return candidate;
+  }
+  return current;
+}
+
+function resolveMergedRegionBorderOverlay(
+  row: number,
+  col: number,
+  merge: { colSpan?: number; rowSpan?: number } | null | undefined,
+  resolveBaseCellStyle: (targetRow: number, targetCol: number) => Record<string, unknown> | null
+) {
+  const rowSpan = Math.max(1, merge?.rowSpan ?? 1);
+  const colSpan = Math.max(1, merge?.colSpan ?? 1);
+  if (rowSpan === 1 && colSpan === 1) {
+    return null;
+  }
+
+  const endRow = row + rowSpan - 1;
+  const endCol = col + colSpan - 1;
+  let top: Record<string, unknown> | null = null;
+  let right: Record<string, unknown> | null = null;
+  let bottom: Record<string, unknown> | null = null;
+  let left: Record<string, unknown> | null = null;
+
+  for (let targetCol = col; targetCol <= endCol; targetCol += 1) {
+    const topStyle = resolveBaseCellStyle(row, targetCol);
+    const topBorder = topStyle?.border as Record<string, Record<string, unknown>> | undefined;
+    top = resolvePreferredBorderEdge(top, topBorder?.top ?? null);
+
+    const bottomStyle = resolveBaseCellStyle(endRow, targetCol);
+    const bottomBorder = bottomStyle?.border as Record<string, Record<string, unknown>> | undefined;
+    bottom = resolvePreferredBorderEdge(bottom, bottomBorder?.bottom ?? null);
+  }
+
+  for (let targetRow = row; targetRow <= endRow; targetRow += 1) {
+    const leftStyle = resolveBaseCellStyle(targetRow, col);
+    const leftBorder = leftStyle?.border as Record<string, Record<string, unknown>> | undefined;
+    left = resolvePreferredBorderEdge(left, leftBorder?.left ?? null);
+
+    const rightStyle = resolveBaseCellStyle(targetRow, endCol);
+    const rightBorder = rightStyle?.border as Record<string, Record<string, unknown>> | undefined;
+    right = resolvePreferredBorderEdge(right, rightBorder?.right ?? null);
+  }
+
+  const border: Record<string, Record<string, unknown>> = {};
+  if (top) {
+    border.top = top;
+  }
+  if (right) {
+    border.right = right;
+  }
+  if (bottom) {
+    border.bottom = bottom;
+  }
+  if (left) {
+    border.left = left;
+  }
+
+  if (Object.keys(border).length === 0) {
+    return null;
+  }
+
+  return { border } satisfies Record<string, unknown>;
 }
 
 function normalizeTableStyleEdges(
@@ -5132,6 +5240,8 @@ type CellRenderData = {
   shrinkToFitFontSizePx?: number;
   isTableHeader?: boolean;
   rowSpan?: number;
+  spillOffsetX?: number;
+  spillSide?: "left" | "right";
   sparkline?: {
     config: XlsxSheetData["sparklines"][number];
     values: Array<number | null>;
@@ -5348,7 +5458,7 @@ function buildConditionalFormatRuleKey(rule: XlsxSheetData["conditionalFormatRul
 }
 
 function resolveConditionalRuleThreshold(
-  threshold: XlsxSheetData["conditionalFormatRules"][number]["cfvos"][number] | undefined,
+  threshold: XlsxConditionalFormatValueObject | undefined,
   numericValues: number[]
 ) {
   if (!threshold) {
@@ -5356,7 +5466,8 @@ function resolveConditionalRuleThreshold(
   }
 
   const fallbackValue = typeof threshold.value === "number" ? threshold.value : null;
-  if (threshold.type === "num" || threshold.type === "formula") {
+  const thresholdType = threshold.type.trim().toLowerCase();
+  if (thresholdType === "num" || thresholdType === "formula") {
     return fallbackValue;
   }
 
@@ -5366,18 +5477,245 @@ function resolveConditionalRuleThreshold(
 
   const minValue = Math.min(...numericValues);
   const maxValue = Math.max(...numericValues);
-  if (threshold.type === "min") {
+  if (thresholdType === "min" || thresholdType === "automin" || thresholdType === "automaticmin") {
     return minValue;
   }
-  if (threshold.type === "max") {
+  if (thresholdType === "max" || thresholdType === "automax" || thresholdType === "automaticmax") {
     return maxValue;
   }
 
-  if ((threshold.type === "percent" || threshold.type === "percentile") && fallbackValue !== null) {
+  if ((thresholdType === "percent" || thresholdType === "percentile") && fallbackValue !== null) {
     return minValue + (maxValue - minValue) * (fallbackValue / 100);
   }
 
   return fallbackValue;
+}
+
+function parseConditionalFormulaLiteral(formula: string) {
+  const trimmed = formula.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const withoutEquals = trimmed.startsWith("=") ? trimmed.slice(1).trim() : trimmed;
+  if (withoutEquals.startsWith("\"") && withoutEquals.endsWith("\"") && withoutEquals.length >= 2) {
+    return withoutEquals.slice(1, -1).replace(/\"\"/g, "\"");
+  }
+
+  const numeric = Number(withoutEquals.replace(/,/g, ""));
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+
+  return withoutEquals;
+}
+
+function resolveConditionalCellIsMatch(
+  operator: string,
+  left: string | number | null,
+  right: string | number | null,
+  numericValue: number | null,
+  textValue: string
+) {
+  const normalizedOperator = operator.trim();
+  const normalizedText = textValue.trim();
+  const parsedNumericText = Number(normalizedText.replace(/,/g, ""));
+  const effectiveNumericValue = numericValue ?? (Number.isFinite(parsedNumericText) ? parsedNumericText : null);
+  const cellIsTextComparable = effectiveNumericValue === null && normalizedText.length > 0;
+
+  const compareComparable = (literal: string | number | null, predicate: (cell: number, value: number) => boolean) => {
+    if (typeof literal !== "number") {
+      return false;
+    }
+
+    if (effectiveNumericValue !== null) {
+      return predicate(effectiveNumericValue, literal);
+    }
+
+    if (cellIsTextComparable) {
+      // Excel compares non-numeric text as greater than numbers.
+      if (predicate(1, 0)) {
+        return true;
+      }
+      if (predicate(0, 0)) {
+        return false;
+      }
+      return false;
+    }
+
+    return false;
+  };
+
+  switch (normalizedOperator) {
+    case "greaterThan":
+      return compareComparable(left, (cell, value) => cell > value);
+    case "greaterThanOrEqual":
+      return compareComparable(left, (cell, value) => cell >= value);
+    case "lessThan":
+      return compareComparable(left, (cell, value) => cell < value);
+    case "lessThanOrEqual":
+      return compareComparable(left, (cell, value) => cell <= value);
+    case "between":
+      if (typeof left !== "number" || typeof right !== "number") {
+        return false;
+      }
+      if (effectiveNumericValue === null) {
+        return false;
+      }
+      return effectiveNumericValue >= left && effectiveNumericValue <= right;
+    case "notBetween":
+      if (typeof left !== "number" || typeof right !== "number") {
+        return false;
+      }
+      if (effectiveNumericValue === null) {
+        return cellIsTextComparable;
+      }
+      return effectiveNumericValue < left || effectiveNumericValue > right;
+    case "notEqual":
+      if (typeof left === "number") {
+        if (effectiveNumericValue !== null) {
+          return effectiveNumericValue !== left;
+        }
+        return cellIsTextComparable;
+      }
+      return normalizedText !== String(left ?? "");
+    case "equal":
+    default:
+      if (typeof left === "number") {
+        if (effectiveNumericValue !== null) {
+          return effectiveNumericValue === left;
+        }
+        return false;
+      }
+      return normalizedText === String(left ?? "");
+  }
+}
+
+function resolveConditionalFormulaComparable(
+  formula: string,
+  worksheet: Worksheet | null | undefined,
+  sheet: XlsxSheetData | null | undefined,
+  batchedCells?: Map<string, BatchedCellData>
+) {
+  const literal = parseConditionalFormulaLiteral(formula);
+  if (typeof literal === "number") {
+    return literal;
+  }
+
+  const normalized = formula.trim().replace(/^=/, "").trim();
+  if (normalized.length === 0) {
+    return literal;
+  }
+
+  const splitReference = splitSheetFormulaReference(normalized);
+  const targetSheetName = splitReference?.sheetName ?? null;
+  if (targetSheetName && sheet?.name && targetSheetName !== sheet.name) {
+    return literal;
+  }
+
+  const cellRef = splitReference?.range ?? normalized;
+  const cell = parseA1CellReference(cellRef.replace(/\$/g, ""));
+  if (!cell) {
+    return literal;
+  }
+
+  if (worksheet) {
+    const numeric = getCellNumericValue(worksheet, cell.row, cell.col);
+    if (numeric !== null) {
+      return numeric;
+    }
+    return getCellDisplayValue(worksheet, cell.row, cell.col, sheet);
+  }
+
+  if (batchedCells) {
+    const batched = batchedCells.get(`${cell.row}:${cell.col}`);
+    if (batched) {
+      const numeric = getBatchedCellNumericValue(batched);
+      if (numeric !== null) {
+        return numeric;
+      }
+      return batched.value;
+    }
+  }
+
+  return literal;
+}
+
+function normalizeConditionalTextOperand(value: string | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return String(value).trim().toLowerCase();
+}
+
+function resolveConditionalStyledRuleMatch(
+  rule: Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "styled" }>,
+  numericValue: number | null,
+  textValue: string,
+  worksheet: Worksheet | null | undefined,
+  sheet: XlsxSheetData | null | undefined,
+  batchedCells?: Map<string, BatchedCellData>
+) {
+  const normalizedRuleType = rule.ruleType.trim().toLowerCase();
+  const left = resolveConditionalFormulaComparable(rule.formulas?.[0] ?? "", worksheet, sheet, batchedCells);
+  const right = resolveConditionalFormulaComparable(rule.formulas?.[1] ?? "", worksheet, sheet, batchedCells);
+
+  if (normalizedRuleType === "cellis") {
+    return resolveConditionalCellIsMatch(rule.operator ?? "equal", left, right, numericValue, textValue);
+  }
+
+  const normalizedCellText = textValue.trim().toLowerCase();
+  const normalizedOperand = normalizeConditionalTextOperand(rule.text)
+    || normalizeConditionalTextOperand(left);
+
+  switch (normalizedRuleType) {
+    case "beginwith":
+    case "beginswith":
+      return normalizedOperand.length > 0 && normalizedCellText.startsWith(normalizedOperand);
+    case "endwith":
+    case "endswith":
+      return normalizedOperand.length > 0 && normalizedCellText.endsWith(normalizedOperand);
+    case "containstext":
+      return normalizedOperand.length > 0 && normalizedCellText.includes(normalizedOperand);
+    case "notcontainstext":
+      return normalizedOperand.length > 0 && !normalizedCellText.includes(normalizedOperand);
+    default:
+      return false;
+  }
+}
+
+function resolveConditionalCellStyleForCell(
+  row: number,
+  col: number,
+  sheet: XlsxSheetData | null | undefined,
+  numericValue: number | null,
+  textValue: string,
+  worksheet?: Worksheet | null,
+  batchedCells?: Map<string, BatchedCellData>
+) {
+  const rules = sheet?.conditionalFormatRules ?? [];
+  const matchingRules = rules.filter(
+    (rule): rule is Extract<XlsxSheetData["conditionalFormatRules"][number], { kind: "styled" }> =>
+      rule.kind === "styled"
+      && rule.ranges.some((range) => isCellInRange({ row, col }, range))
+  );
+  if (matchingRules.length === 0) {
+    return null;
+  }
+
+  let resolved: Record<string, unknown> | null = null;
+  // Lower priority number in Excel should take precedence; apply from lowest precedence to highest.
+  for (let index = matchingRules.length - 1; index >= 0; index -= 1) {
+    const rule = matchingRules[index];
+    if (!resolveConditionalStyledRuleMatch(rule, numericValue, textValue, worksheet, sheet, batchedCells)) {
+      continue;
+    }
+
+    resolved = mergeResolvedCellStyle(resolved, rule.style ?? null);
+  }
+
+  return resolved;
 }
 
 function buildConditionalIcon(iconSet: string, iconId: number): NonNullable<CellRenderData["conditionalIcon"]> | null {
@@ -6562,6 +6900,7 @@ function GridRow({
             ) : isSpilling ? (
               <div
                 style={{
+                  left: cellData.spillOffsetX ?? 0,
                   maxWidth: cellData.spillWidth,
                   overflow: "visible",
                   pointerEvents: "none",
@@ -6862,6 +7201,8 @@ function XlsxGrid({
   const firstVisibleRowRef = React.useRef<number | undefined>(undefined);
   const lastVisibleRowRef = React.useRef<number | undefined>(undefined);
   const cellRenderCacheRef = React.useRef(new Map<string, CellRenderData>());
+  const cellBaseRawStyleCacheRef = React.useRef(new Map<string, Record<string, unknown> | null>());
+  const mergedBorderOverlayCacheRef = React.useRef(new Map<string, Record<string, unknown> | null>());
   const conditionalFormatMetricsCacheRef = React.useRef(new Map<string, number[]>());
   const resizeStateRef = React.useRef<
     | {
@@ -9360,6 +9701,8 @@ function XlsxGrid({
   const cellRenderCacheInvalidationRef = React.useRef<typeof cellRenderCacheInvalidationKey | null>(null);
   if (cellRenderCacheInvalidationRef.current !== cellRenderCacheInvalidationKey) {
     cellRenderCacheRef.current.clear();
+    cellBaseRawStyleCacheRef.current.clear();
+    mergedBorderOverlayCacheRef.current.clear();
     cellRenderCacheInvalidationRef.current = cellRenderCacheInvalidationKey;
   }
 
@@ -9407,15 +9750,66 @@ function XlsxGrid({
       : batchCoversRow
         ? batchedCell?.mergeSpan
         : null;
-    const inheritedStyle = resolveInheritedCellStyle(activeSheet, row, col);
-    const worksheetStyle = batchCoversRow
-      ? batchedCell?.style ?? null
-      : (worksheet?.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined) ?? null;
-    const rawStyle = mergeResolvedCellStyle(inheritedStyle, worksheetStyle, { replaceXfSubtrees: true });
+    const resolveBaseResolvedStyle = (targetRow: number, targetCol: number) => {
+      const targetCacheKey = `${targetRow}:${targetCol}`;
+      const cachedBaseStyle = cellBaseRawStyleCacheRef.current.get(targetCacheKey);
+      if (cachedBaseStyle !== undefined) {
+        return cachedBaseStyle;
+      }
+
+      const targetBatchCoversRow = viewportRowBatch
+        ? targetRow >= viewportRowBatch.startRow && targetRow <= viewportRowBatch.endRow
+        : false;
+      const targetBatchedCell = targetBatchCoversRow
+        ? viewportRowBatch?.cells.get(targetCacheKey)
+        : undefined;
+      const targetInheritedStyle = resolveInheritedCellStyle(activeSheet, targetRow, targetCol);
+      const targetWorksheetStyle = targetBatchCoversRow
+        ? targetBatchedCell?.style ?? null
+        : (worksheet?.getCellStyleAt(targetRow, targetCol) as Record<string, unknown> | null | undefined) ?? null;
+      const targetRawStyle = mergeResolvedCellStyle(targetInheritedStyle, targetWorksheetStyle, {
+        replaceXfSubtrees: true
+      });
+      const targetTable = getTableAtCell(effectiveTables, targetRow, targetCol);
+      const targetTableStyle = resolveTableCellStyle(targetTable, targetRow, targetCol, activeSheet);
+      const resolvedStyle = mergeResolvedCellStyle(targetRawStyle, targetTableStyle);
+      cellBaseRawStyleCacheRef.current.set(targetCacheKey, resolvedStyle);
+      return resolvedStyle;
+    };
+
     const table = getTableAtCell(effectiveTables, row, col);
-    const tableStyle = resolveTableCellStyle(table, row, col, activeSheet);
-    const mergedStyle = mergeResolvedCellStyle(rawStyle, tableStyle);
-    const alignment = mergedStyle?.alignment as Record<string, unknown> | undefined;
+    const mergeRowSpan = Math.max(1, merge?.rowSpan ?? 1);
+    const mergeColSpan = Math.max(1, merge?.colSpan ?? 1);
+    let mergedBorderOverlay: Record<string, unknown> | null = null;
+    if (mergeRowSpan > 1 || mergeColSpan > 1) {
+      const mergedBorderOverlayCacheKey = `${row}:${col}:${mergeRowSpan}:${mergeColSpan}`;
+      const cachedOverlay = mergedBorderOverlayCacheRef.current.get(mergedBorderOverlayCacheKey);
+      if (cachedOverlay !== undefined) {
+        mergedBorderOverlay = cachedOverlay;
+      } else {
+        mergedBorderOverlay = resolveMergedRegionBorderOverlay(
+          row,
+          col,
+          merge,
+          (targetRow, targetCol) => resolveBaseResolvedStyle(targetRow, targetCol)
+        );
+        mergedBorderOverlayCacheRef.current.set(mergedBorderOverlayCacheKey, mergedBorderOverlay);
+      }
+    }
+
+    const baseResolvedStyle = resolveBaseResolvedStyle(row, col);
+    const resolvedMergedStyle = mergeResolvedCellStyle(baseResolvedStyle, mergedBorderOverlay);
+    const conditionalCellStyle = resolveConditionalCellStyleForCell(
+      row,
+      col,
+      activeSheet,
+      worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell),
+      worksheet ? getCellDisplayValue(worksheet, row, col, activeSheet) : (batchedCell?.value ?? ""),
+      worksheet,
+      viewportRowBatch?.cells
+    );
+    const finalResolvedStyle = mergeResolvedCellStyle(resolvedMergedStyle, conditionalCellStyle);
+    const alignment = finalResolvedStyle?.alignment as Record<string, unknown> | undefined;
     const textRotationDeg = resolveSpreadsheetTextRotation(alignment?.textRotation);
     const headerRowCount = table ? Math.max(table.headerRowCount, 1) : 0;
     const rawHyperlink = batchCoversRow
@@ -9446,7 +9840,7 @@ function XlsxGrid({
               )
         )
       : null;
-    const checkboxState = mergedStyle?.cellControl && worksheet
+    const checkboxState = finalResolvedStyle?.cellControl && worksheet
       ? getCellBooleanValue(worksheet, row, col)
       : null;
     const chartHighlight = resolveCellChartHighlight({ row, col }, activeSheetChartHighlights);
@@ -9488,7 +9882,7 @@ function XlsxGrid({
       isTableHeader: Boolean(table && row >= table.start.row && row < table.start.row + headerRowCount),
       rowSpan: merge?.rowSpan,
       sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
-      style: scaleCssProperties(buildCellStyle(mergedStyle, palette, activeSheet?.themePalette, {
+      style: scaleCssProperties(buildCellStyle(finalResolvedStyle, palette, activeSheet?.themePalette, {
         showGridLines: activeSheet?.showGridLines
       }), zoomFactor),
       textRotationDeg,
@@ -9548,10 +9942,14 @@ function XlsxGrid({
           displayEffectiveColWidths[startColIndex] ?? displayDefaultColWidth,
           sumPrefixRange(colPrefixSums, startColIndex, endColIndex)
         );
+        const align = nextData.style.textAlign;
+        const spillSide = align === "right" || align === "end" ? "left" : "right";
         let availableWidth = baseWidth;
 
         if (requiredWidth > availableWidth) {
-          for (let nextColIndex = endColIndex + 1; nextColIndex < visibleCols.length; nextColIndex += 1) {
+          const nextColStep = spillSide === "left" ? -1 : 1;
+          let nextColIndex = spillSide === "left" ? startColIndex - 1 : endColIndex + 1;
+          while (nextColIndex >= 0 && nextColIndex < visibleCols.length) {
             const nextActualCol = visibleCols[nextColIndex];
             if (nextActualCol === undefined) {
               break;
@@ -9566,10 +9964,16 @@ function XlsxGrid({
             if (requiredWidth <= availableWidth) {
               break;
             }
+
+            nextColIndex += nextColStep;
           }
 
           if (availableWidth > baseWidth) {
             nextData.spillWidth = Math.max(0, availableWidth - horizontalPadding);
+            nextData.spillSide = spillSide;
+            nextData.spillOffsetX = spillSide === "left"
+              ? Math.min(0, baseWidth - availableWidth)
+              : 0;
           }
         }
       }
@@ -12331,17 +12735,19 @@ function XlsxGrid({
             ) - paneBoundsForCell.top,
             width: displayRect?.width ?? (displayEffectiveColWidths[drawColIndex] ?? colItem.size)
           };
+          const spillOffsetX = Math.min(0, cellData.spillOffsetX ?? 0);
+          const drawableLeft = localRect.left + spillOffsetX;
           const drawableWidth = Math.max(localRect.width, cellData.spillWidth ?? 0);
 
           if (
-            localRect.left + drawableWidth < 0
+            drawableLeft + drawableWidth < 0
             || localRect.top + localRect.height < 0
-            || localRect.left > paneBoundsForCell.width
+            || drawableLeft > paneBoundsForCell.width
             || localRect.top > paneBoundsForCell.height
           ) {
             continue;
           }
-          if (!intersectsCanvasDirtyRects(localRect.left, localRect.top, drawableWidth, localRect.height, paneDirtyRects)) {
+          if (!intersectsCanvasDirtyRects(drawableLeft, localRect.top, drawableWidth, localRect.height, paneDirtyRects)) {
             canvasProfileCulledCells += 1;
             continue;
           }
@@ -12397,19 +12803,45 @@ function XlsxGrid({
           const bottomBorder = canvasCellStyle.bottomBorder;
           const leftBorder = canvasCellStyle.leftBorder;
           const rightNeighborCol = visibleCols[drawColIndex + Math.max(1, cellData.colSpan ?? 1)];
-          const rightNeighborData = rightNeighborCol === undefined
+          const rightNeighborCell = rightNeighborCol === undefined
             ? null
-            : getCellData(drawCell.row, rightNeighborCol);
-          const rightNeighborLeftBorder = rightNeighborData?.isMergedSecondary
+            : { row: drawCell.row, col: rightNeighborCol };
+          const rightNeighborData = rightNeighborCell
+            ? getCellData(rightNeighborCell.row, rightNeighborCell.col)
+            : null;
+          let rightNeighborLeftBorder = rightNeighborData?.isMergedSecondary
             ? null
             : (rightNeighborData?.canvas?.leftBorder ?? parseCanvasBorderDeclaration(rightNeighborData?.style.borderLeft));
+          if (rightNeighborLeftBorder == null && rightNeighborCell && rightNeighborData?.isMergedSecondary) {
+            const rightNeighborAnchorCell = resolveMergeAnchorCell(rightNeighborCell);
+            if (rightNeighborAnchorCell.col === rightNeighborCell.col) {
+              const rightNeighborAnchorData = getCellData(rightNeighborAnchorCell.row, rightNeighborAnchorCell.col);
+              rightNeighborLeftBorder = rightNeighborAnchorData.isMergedSecondary
+                ? null
+                : (rightNeighborAnchorData.canvas?.leftBorder
+                    ?? parseCanvasBorderDeclaration(rightNeighborAnchorData.style.borderLeft));
+            }
+          }
           const bottomNeighborRow = visibleRows[drawRowIndex + Math.max(1, cellData.rowSpan ?? 1)];
-          const bottomNeighborData = bottomNeighborRow === undefined
+          const bottomNeighborCell = bottomNeighborRow === undefined
             ? null
-            : getCellData(bottomNeighborRow, drawCell.col);
-          const bottomNeighborTopBorder = bottomNeighborData?.isMergedSecondary
+            : { row: bottomNeighborRow, col: drawCell.col };
+          const bottomNeighborData = bottomNeighborCell
+            ? getCellData(bottomNeighborCell.row, bottomNeighborCell.col)
+            : null;
+          let bottomNeighborTopBorder = bottomNeighborData?.isMergedSecondary
             ? null
             : (bottomNeighborData?.canvas?.topBorder ?? parseCanvasBorderDeclaration(bottomNeighborData?.style.borderTop));
+          if (bottomNeighborTopBorder == null && bottomNeighborCell && bottomNeighborData?.isMergedSecondary) {
+            const bottomNeighborAnchorCell = resolveMergeAnchorCell(bottomNeighborCell);
+            if (bottomNeighborAnchorCell.row === bottomNeighborCell.row) {
+              const bottomNeighborAnchorData = getCellData(bottomNeighborAnchorCell.row, bottomNeighborAnchorCell.col);
+              bottomNeighborTopBorder = bottomNeighborAnchorData.isMergedSecondary
+                ? null
+                : (bottomNeighborAnchorData.canvas?.topBorder
+                    ?? parseCanvasBorderDeclaration(bottomNeighborAnchorData.style.borderTop));
+            }
+          }
           const resolvedRightBorder = resolveCanvasBoundaryBorder(rightBorder, rightNeighborLeftBorder);
           const resolvedBottomBorder = resolveCanvasBoundaryBorder(bottomBorder, bottomNeighborTopBorder);
 
@@ -12697,10 +13129,13 @@ function XlsxGrid({
             } else if (spillMaxWidth != null) {
               const text = shouldEllipsizeText ? truncateCanvasText(paneContext, rawText, maxTextWidth) : rawText;
               const textY = resolveCanvasTextMiddleY(cellStyle.verticalAlign, contentTop, contentHeight, singleLineHeight);
+              const spillClipLeft = cellData.spillSide === "left"
+                ? contentLeft + contentWidth - spillMaxWidth - textClipOverscan
+                : contentLeft - textClipOverscan;
               deferredSpillTextsByPane[pane].push({
                 align,
                 clipHeight: contentHeight + (textClipOverscan * 2),
-                clipLeft: contentLeft - textClipOverscan,
+                clipLeft: spillClipLeft,
                 clipTop: contentTop - textClipOverscan,
                 clipWidth: spillMaxWidth + (textClipOverscan * 2),
                 color: textColor,
@@ -16808,7 +17243,17 @@ export function useXlsxViewerThumbnails(
             ? (worksheet.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined) ?? null
             : batchedCell?.style ?? null;
           const mergedStyle = mergeResolvedCellStyle(inheritedStyle, worksheetStyle, { replaceXfSubtrees: true });
-          const alignment = mergedStyle?.alignment as Record<string, unknown> | undefined;
+          const conditionalCellStyle = resolveConditionalCellStyleForCell(
+            row,
+            col,
+            sheet,
+            worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell),
+            worksheet ? getCellDisplayValue(worksheet, row, col, sheet) : (batchedCell?.value ?? ""),
+            worksheet,
+            workerRowBatch?.cells
+          );
+          const finalResolvedStyle = mergeResolvedCellStyle(mergedStyle, conditionalCellStyle);
+          const alignment = finalResolvedStyle?.alignment as Record<string, unknown> | undefined;
           const sparkline = sparklineByCell.get(cacheKey) ?? null;
           const getNumericValue = (targetRow: number, targetCol: number) => (
             worksheet
@@ -16834,7 +17279,7 @@ export function useXlsxViewerThumbnails(
                     )
               )
             : null;
-          const checkboxState = mergedStyle?.cellControl
+          const checkboxState = finalResolvedStyle?.cellControl
             ? worksheet
               ? getCellBooleanValue(worksheet, row, col)
               : getBatchedCellBooleanValue(batchedCell)
@@ -16855,7 +17300,7 @@ export function useXlsxViewerThumbnails(
             isMergedSecondary: false,
             rowSpan: merge?.rowSpan,
             sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
-            style: buildCellStyle(mergedStyle, palette, sheet.themePalette, {
+            style: buildCellStyle(finalResolvedStyle, palette, sheet.themePalette, {
               showGridLines
             }),
             textRotationDeg: resolveSpreadsheetTextRotation(alignment?.textRotation),

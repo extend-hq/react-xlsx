@@ -518,6 +518,7 @@ function buildSheetList(
     const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
     if (!usedRange) {
       sheetsByWorkbookSheetIndex.push({
+        autoFilterRanges: sheetState?.autoFilterRanges ?? [],
         cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
         columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
         colCount: 0,
@@ -581,6 +582,7 @@ function buildSheetList(
     }
 
     sheetsByWorkbookSheetIndex.push({
+      autoFilterRanges: sheetState?.autoFilterRanges ?? [],
       cachedFormulaValues: sheetState?.cachedFormulaValues ?? {},
       columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
       colCount: visibleCols.length,
@@ -624,9 +626,12 @@ function buildSheetList(
   return sheetsByWorkbookSheetIndex;
 }
 
-function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null): XlsxTable[] {
+function mapWorksheetTables(
+  worksheet: ReturnType<Workbook["getSheet"]> | null,
+  autoFilterRanges: XlsxCellRange[] = []
+): XlsxTable[] {
   const rawTables = (worksheet?.tables ?? []) as Array<Record<string, unknown>>;
-  return rawTables.flatMap((table, index) => {
+  const mappedTables = rawTables.flatMap((table, index) => {
     const rawColumns = Array.isArray(table.columns) ? table.columns : [];
     const rawName = typeof table.name === "string" ? table.name : `Table${index + 1}`;
     const rawDisplayName =
@@ -660,6 +665,40 @@ function mapWorksheetTables(worksheet: ReturnType<Workbook["getSheet"]> | null):
       totalsRowShown: resolveWorkbookTableBoolean(table.totalsRowShown)
     }];
   });
+
+  const existingReferences = new Set(mappedTables.map((table) => table.reference));
+  const mappedAutoFilterTables = autoFilterRanges.flatMap((range, index) => {
+    const reference = `${cellAddressToA1(range.start)}:${cellAddressToA1(range.end)}`;
+    if (existingReferences.has(reference)) {
+      return [];
+    }
+
+    const columnCount = Math.max(0, range.end.col - range.start.col + 1);
+    const columns = Array.from({ length: columnCount }, (_, columnIndex) => {
+      const headerValue = worksheet
+        ? decodeHtmlEntities(worksheet.getFormattedValueAt(range.start.row, range.start.col + columnIndex) ?? "")
+        : "";
+      return {
+        id: columnIndex + 1,
+        index: columnIndex,
+        name: headerValue.trim().length > 0 ? headerValue : `Column ${columnIndex + 1}`
+      };
+    });
+
+    return [{
+      columns,
+      displayName: `AutoFilter ${index + 1}`,
+      end: range.end,
+      headerRowCount: 1,
+      name: `__autofilter_${index + 1}_${reference}`,
+      reference,
+      start: range.start,
+      totalsRowCount: 0,
+      totalsRowShown: false
+    } satisfies XlsxTable];
+  });
+
+  return [...mappedTables, ...mappedAutoFilterTables];
 }
 
 function resolveWorkbookTableCount(value: unknown, fallback: number) {
@@ -781,7 +820,10 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
   workbook = nextWorkbook;
   sheets = buildSheetList(nextWorkbook, structureAssets, sheetLayoutStates, showHiddenSheets);
   tablesByWorkbookSheetIndex = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) =>
-    mapWorksheetTables(nextWorkbook.getSheet(workbookSheetIndex))
+    mapWorksheetTables(
+      nextWorkbook.getSheet(workbookSheetIndex),
+      structureAssets?.sheetStatesByWorkbookSheetIndex[workbookSheetIndex]?.autoFilterRanges ?? []
+    )
   );
   const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
   const hasCharts = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) => {
