@@ -55,7 +55,7 @@
     "d3-hierarchy": "^3.1.2",
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
-    "fflate": "^0.8.2",
+    "fflate": "^0.8.3",
     "regl": "^2.1.1",
     "topojson-client": "^3.1.0",
     "us-atlas": "^3.0.1",
