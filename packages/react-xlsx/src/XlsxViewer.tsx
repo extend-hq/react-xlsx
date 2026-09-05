@@ -7334,6 +7334,8 @@ function XlsxGrid({
   const pendingSelectionDragCleanupRef = React.useRef<(() => void) | null>(null);
   const fillDragCleanupRef = React.useRef<(() => void) | null>(null);
   const cachedScrollerRectRef = React.useRef<DOMRect | null>(null);
+  const installImageInteractionListenersRef = React.useRef(installImageInteractionListeners);
+  const installChartInteractionListenersRef = React.useRef(installChartInteractionListeners);
   const imageInteractionCleanupRef = React.useRef<(() => void) | null>(null);
   const imageInteractionRef = React.useRef<
     | {
@@ -8565,6 +8567,11 @@ function XlsxGrid({
   React.useEffect(() => {
     readOnlyRef.current = readOnly;
   }, [readOnly]);
+
+  React.useLayoutEffect(() => {
+    installImageInteractionListenersRef.current = installImageInteractionListeners;
+    installChartInteractionListenersRef.current = installChartInteractionListeners;
+  });
 
   React.useEffect(() => {
     chartPreviewRectRef.current = chartPreviewRect;
@@ -13609,7 +13616,7 @@ function XlsxGrid({
     setInteractionMode("select");
     document.body.style.cursor = "move";
     document.body.style.userSelect = "none";
-    installChartInteractionListeners(event.pointerId);
+    installChartInteractionListenersRef.current(event.pointerId);
   }, [focusGrid, selectChart]);
 
   const startChartResize = React.useCallback((
@@ -13642,7 +13649,7 @@ function XlsxGrid({
     setInteractionMode("select");
     document.body.style.cursor = String(IMAGE_HANDLE_CURSOR[handle]);
     document.body.style.userSelect = "none";
-    installChartInteractionListeners(event.pointerId);
+    installChartInteractionListenersRef.current(event.pointerId);
   }, [focusGrid, selectChart]);
 
   const startImageMove = React.useCallback((
@@ -13678,7 +13685,7 @@ function XlsxGrid({
     setInteractionMode("select");
     document.body.style.cursor = "move";
     document.body.style.userSelect = "none";
-    installImageInteractionListeners(event.pointerId);
+    installImageInteractionListenersRef.current(event.pointerId);
   }, [focusGrid, selectImage]);
 
   const startImageResize = React.useCallback((
@@ -13711,7 +13718,7 @@ function XlsxGrid({
     setInteractionMode("select");
     document.body.style.cursor = String(IMAGE_HANDLE_CURSOR[handle]);
     document.body.style.userSelect = "none";
-    installImageInteractionListeners(event.pointerId);
+    installImageInteractionListenersRef.current(event.pointerId);
   }, [focusGrid, selectImage]);
 
   const handleImageClick = React.useCallback((image: XlsxImage) => {
@@ -15243,7 +15250,10 @@ function XlsxGrid({
           skipNextImageClickRef.current = interaction.imageId;
         }
         if (interaction.didMove && finalRect) {
-          setImageRect(interaction.imageId, toLogicalRect(finalRect));
+          setImageRect(interaction.imageId, toLogicalRect(finalRect), {
+            columnWidths: actualColWidths,
+            rowHeights: actualRowHeights
+          });
         }
       }
       imagePreviewRectRef.current = null;
@@ -15337,7 +15347,10 @@ function XlsxGrid({
           skipNextChartClickRef.current = interaction.chartId;
         }
         if (interaction.didMove && finalRect) {
-          setChartRect(interaction.chartId, toLogicalRect(finalRect));
+          setChartRect(interaction.chartId, toLogicalRect(finalRect), {
+            columnWidths: actualColWidths,
+            rowHeights: actualRowHeights
+          });
         }
       }
       chartPreviewRectRef.current = null;

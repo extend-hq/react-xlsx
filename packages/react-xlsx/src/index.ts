@@ -38,6 +38,7 @@ export type {
   XlsxCellStyleInput,
   XlsxFileTooLargeRenderProps,
   XlsxFormulaTarget,
+  XlsxDrawingLayout,
   XlsxFormControl,
   XlsxFormControlActionEvent,
   XlsxFormControlCaption,

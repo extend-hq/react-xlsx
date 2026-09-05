@@ -890,6 +890,12 @@ export interface XlsxImageRect {
   width: number;
 }
 
+/** Rendered column widths and row heights in logical pixels, indexed by worksheet coordinates. */
+export interface XlsxDrawingLayout {
+  columnWidths: readonly number[];
+  rowHeights: readonly number[];
+}
+
 export type XlsxImageResizeHandlePosition = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 export interface XlsxImageRenderProps {
@@ -1204,8 +1210,8 @@ export interface XlsxViewerController {
   sortTable: (tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => void;
   setChartSeriesFormula: (chartId: string, seriesIndex: number, formula: string) => boolean;
   selectImage: (id: string | null) => void;
-  setChartRect: (id: string, rect: XlsxImageRect) => void;
-  setImageRect: (id: string, rect: XlsxImageRect) => void;
+  setChartRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
+  setImageRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
   getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<unknown[] | null>;
   tables: XlsxTable[];
   tabs: XlsxWorkbookTab[];
@@ -1361,8 +1367,8 @@ export interface XlsxViewerImages {
   selectChartElement: (selection: XlsxChartElementSelection | null) => void;
   selectImage: (id: string | null) => void;
   setChartSeriesFormula: (chartId: string, seriesIndex: number, formula: string) => boolean;
-  setChartRect: (id: string, rect: XlsxImageRect) => void;
-  setImageRect: (id: string, rect: XlsxImageRect) => void;
+  setChartRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
+  setImageRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
   updateChart: (id: string, patch: Partial<XlsxChart>) => void;
 }
 
@@ -1394,7 +1400,7 @@ export interface XlsxViewerCharts {
   selectChartElement: (selection: XlsxChartElementSelection | null) => void;
   setChartSeriesFormula: (chartId: string, seriesIndex: number, formula: string) => boolean;
   setActiveTabIndex: (index: number) => void;
-  setChartRect: (id: string, rect: XlsxImageRect) => void;
+  setChartRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
   tabs: XlsxWorkbookTab[];
   updateChart: (id: string, patch: Partial<XlsxChart>) => void;
 }

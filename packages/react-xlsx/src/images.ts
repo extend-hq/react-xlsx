@@ -306,6 +306,8 @@ type XlsxImageAttachment = {
 
 type WorkbookImageOrigin = {
   anchorIndex: number;
+  drawingPath: string;
+  picturePath: number[];
   workbookSheetIndex: number;
 };
 
@@ -2978,13 +2980,15 @@ function parseAnchorContents(
   imageOriginsById: Map<string, WorkbookImageOrigin>,
   anchorIndex: number,
   sheetState: WorkbookSheetState | null,
-  parentGroup: GroupTransform | null = null
+  drawingPath: string,
+  parentGroup: GroupTransform | null = null,
+  picturePath: number[] = []
 ) {
   const images: XlsxImage[] = [];
   const shapes: XlsxShape[] = [];
   const mediaPaths = new Set<string>();
 
-  Array.from(anchorNode.childNodes).filter(isElementNode).forEach((child) => {
+  Array.from(anchorNode.childNodes).filter(isElementNode).forEach((child, childIndex) => {
     if (child.localName === "pic") {
       const imageId = `sheet-${workbookSheetIndex}-${ids.image}`;
       const parsed = parsePictureNode(
@@ -3005,6 +3009,8 @@ function parseAnchorContents(
         mediaPaths.add(parsed.mediaPath);
         imageOriginsById.set(imageId, {
           anchorIndex,
+          drawingPath,
+          picturePath: [...picturePath, childIndex],
           workbookSheetIndex
         });
       }
@@ -3068,7 +3074,9 @@ function parseAnchorContents(
       imageOriginsById,
       anchorIndex,
       sheetState,
-      nextGroup
+      drawingPath,
+      nextGroup,
+      [...picturePath, childIndex]
     );
     parsedGroup.images.forEach((image) => images.push(image));
     parsedGroup.shapes.forEach((shape) => shapes.push(shape));
@@ -3140,7 +3148,8 @@ function parseDrawingObjects(
       ids,
       imageOriginsById,
       anchorIndex,
-      sheetState
+      sheetState,
+      drawingPath
     );
     parsed.images.forEach((image) => images.push(image));
     parsed.shapes.forEach((shape) => shapes.push(shape));
@@ -3402,6 +3411,9 @@ export function updateWorkbookImageAnchor(
 
   const attachments = assets.sheetOrigins[origin.workbookSheetIndex]?.attachments ?? [];
   for (const attachment of attachments) {
+    if (attachment.drawingPath !== origin.drawingPath) {
+      continue;
+    }
     const drawingXml = readArchiveText(assets.archive, attachment.drawingPath);
     if (!drawingXml) {
       continue;
@@ -3414,11 +3426,47 @@ export function updateWorkbookImageAnchor(
 
     const anchorNodes = createImageAnchorNodes(drawingDocument);
     const anchorNode = anchorNodes[origin.anchorIndex];
-    if (!anchorNode || !getFirstChild(anchorNode, "pic")) {
+    if (!anchorNode) {
       continue;
     }
 
-    updateAnchorNode(anchorNode, anchor);
+    let pictureNode = anchorNode;
+    let parentGroup: GroupTransform | null = null;
+    let groupAnchor = parseAnchor(anchorNode);
+    for (const childIndex of origin.picturePath) {
+      const child = Array.from(pictureNode.childNodes).filter(isElementNode)[childIndex];
+      if (!child || !groupAnchor) {
+        break;
+      }
+      pictureNode = child;
+      if (child.localName === "grpSp") {
+        parentGroup = parseGroupTransform(
+          child,
+          parentGroup,
+          groupAnchor,
+          assets.sheetStatesByWorkbookSheetIndex[origin.workbookSheetIndex] ?? null
+        );
+        groupAnchor = rectToAbsoluteAnchor(parentGroup);
+      }
+    }
+    if (pictureNode.localName !== "pic") {
+      continue;
+    }
+
+    if (parentGroup) {
+      const transform = getFirstDescendant(pictureNode, "xfrm");
+      const off = transform ? getFirstChild(transform, "off") : null;
+      const ext = transform ? getFirstChild(transform, "ext") : null;
+      if (anchor.kind !== "absolute" || !off || !ext || !parentGroup.scaleX || !parentGroup.scaleY) {
+        continue;
+      }
+      off.setAttribute("x", String(Math.round(parentGroup.chX + (anchor.positionEmu.x - parentGroup.x) / parentGroup.scaleX)));
+      off.setAttribute("y", String(Math.round(parentGroup.chY + (anchor.positionEmu.y - parentGroup.y) / parentGroup.scaleY)));
+      ext.setAttribute("cx", String(Math.max(0, Math.round(anchor.sizeEmu.cx / parentGroup.scaleX))));
+      ext.setAttribute("cy", String(Math.max(0, Math.round(anchor.sizeEmu.cy / parentGroup.scaleY))));
+    } else {
+      updateAnchorNode(anchorNode, anchor);
+    }
     assets.archive[attachment.drawingPath] = strToU8(serializeXml(drawingDocument));
     assets.dirtyArchivePaths.add(normalizeArchivePath(attachment.drawingPath));
     const imageList = assets.imagesByWorkbookSheetIndex[origin.workbookSheetIndex] ?? [];
@@ -3559,13 +3607,20 @@ function appendSheetDrawingReference(
   const drawingNode = sheetDocument.createElementNS(SPREADSHEET_NS, "drawing");
   drawingNode.setAttributeNS(REL_NS, "r:id", relationshipId);
 
-  const extLst = getFirstChild(worksheet, "extLst");
-  if (extLst) {
-    worksheet.insertBefore(drawingNode, extLst);
-    return;
-  }
-
-  worksheet.appendChild(drawingNode);
+  const successorNames = new Set([
+    "legacyDrawing",
+    "legacyDrawingHF",
+    "picture",
+    "oleObjects",
+    "controls",
+    "webPublishItems",
+    "tableParts",
+    "extLst"
+  ]);
+  const successor = Array.from(worksheet.childNodes).find((node) => (
+    isElementNode(node) && node.namespaceURI === SPREADSHEET_NS && successorNames.has(node.localName)
+  ));
+  worksheet.insertBefore(drawingNode, successor ?? null);
 }
 
 export function mergeWorkbookImageAssets(
@@ -3573,7 +3628,7 @@ export function mergeWorkbookImageAssets(
   sourceAssets: WorkbookImageAssets | null,
   sheetOrigins: Array<WorkbookImageSheetOrigin | null>
 ) {
-  if (!sourceAssets || sourceAssets.dirtyArchivePaths.size === 0) {
+  if (!sourceAssets) {
     return cloneBytes(savedBytes);
   }
 
@@ -3586,13 +3641,33 @@ export function mergeWorkbookImageAssets(
       return cloneBytes(savedBytes);
     }
 
+    const copiedParts = new Set<string>();
+    const copyDrawingPart = (path: string) => {
+      const normalizedPath = normalizeArchivePath(path);
+      const bytes = sourceAssets.archive[normalizedPath];
+      if (!bytes || copiedParts.has(normalizedPath)) {
+        return;
+      }
+      copiedParts.add(normalizedPath);
+      archive[normalizedPath] = cloneBytes(bytes);
+      mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, normalizedPath);
+
+      const relsPath = relsPathForDocument(normalizedPath);
+      const relsBytes = sourceAssets.archive[relsPath];
+      if (!relsBytes) {
+        return;
+      }
+      archive[relsPath] = cloneBytes(relsBytes);
+      mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, relsPath);
+      for (const relationship of parseRelationships(sourceAssets.archive, relsPath, normalizedPath).values()) {
+        if (relationship.targetMode !== "External" && !relationship.type.endsWith("/hyperlink")) {
+          copyDrawingPart(relationship.target);
+        }
+      }
+    };
+
     sheetOrigins.forEach((origin, workbookSheetIndex) => {
-      const hasDirtyAttachment = origin?.attachments.some((attachment) => (
-        sourceAssets.dirtyArchivePaths.has(normalizeArchivePath(attachment.drawingPath))
-        || (attachment.drawingRelsPath && sourceAssets.dirtyArchivePaths.has(normalizeArchivePath(attachment.drawingRelsPath)))
-        || attachment.mediaPaths.some((path) => sourceAssets.dirtyArchivePaths.has(normalizeArchivePath(path)))
-      ));
-      if (!origin?.attachments.length || !hasDirtyAttachment) {
+      if (!origin?.attachments.length) {
         return;
       }
 
@@ -3621,26 +3696,7 @@ export function mergeWorkbookImageAssets(
           return;
         }
 
-        archive[attachment.drawingPath] = cloneBytes(drawingBytes);
-        mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, attachment.drawingPath);
-
-        if (attachment.drawingRelsPath) {
-          const drawingRelsBytes = sourceAssets.archive[attachment.drawingRelsPath];
-          if (drawingRelsBytes) {
-            archive[attachment.drawingRelsPath] = cloneBytes(drawingRelsBytes);
-            mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, attachment.drawingRelsPath);
-          }
-        }
-
-        attachment.mediaPaths.forEach((mediaPath) => {
-          const mediaBytes = sourceAssets.archive[mediaPath];
-          if (!mediaBytes) {
-            return;
-          }
-
-          archive[mediaPath] = cloneBytes(mediaBytes);
-          mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, mediaPath);
-        });
+        copyDrawingPart(attachment.drawingPath);
 
         const relationshipId = nextRelationshipId(relDocument);
         const relationshipNode = relDocument.createElementNS(PKG_REL_NS, "Relationship");
@@ -3715,7 +3771,7 @@ function markerFromOffset(offsetPx: number, getSizePx: (index: number) => number
   let remaining = Math.max(0, offsetPx);
   let index = 0;
   while (remaining > 0) {
-    const size = Math.max(1, getSizePx(index));
+    const size = Math.max(0, getSizePx(index));
     if (remaining < size) {
       break;
     }

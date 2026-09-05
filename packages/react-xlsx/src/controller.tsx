@@ -15,6 +15,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import {
   applyChartSeriesFormula,
   buildChartSeriesFormula,
+  hydrateWorkbookChartStyles,
   loadWorkbookChartAssets,
   updateWorkbookChartAnchor,
   updateWorkbookChartDefinition,
@@ -61,6 +62,7 @@ import type {
   XlsxClipboardData,
   XlsxConditionalFormatRule,
   XlsxDataValidation,
+  XlsxDrawingLayout,
   XlsxFormControl,
   XlsxFormControlCaptionInput,
   XlsxFormControlInput,
@@ -2094,6 +2096,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       if (requestToken !== chartLoadRequestTokenRef.current) {
         return;
       }
+      if (imageAssetsRef.current && !effectiveSkipXmlParsing) {
+        const chartOriginsById = hydrateWorkbookChartStyles(result.chartsByWorkbookSheetIndex, imageAssetsRef.current);
+        chartAssetsRef.current = { ...result, chartOriginsById };
+      }
       setChartsByWorkbookSheetIndex(result.chartsByWorkbookSheetIndex);
       setChartsheets(result.chartsheets);
       setTabs(result.tabs);
@@ -2331,13 +2337,16 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             }
 
             setImageAssets(workerImageAssets);
+            const chartOriginsById = workerImageAssets
+              ? hydrateWorkbookChartStyles(snapshot.chartsByWorkbookSheetIndex, workerImageAssets)
+              : new Map();
             setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
             setWorkbook(null);
             setSheets(snapshot.sheets);
             setChartsByWorkbookSheetIndex(snapshot.chartsByWorkbookSheetIndex);
             setChartsheets(snapshot.chartsheets);
             setTabs(snapshot.tabs);
-            chartAssetsRef.current = null;
+            chartAssetsRef.current = { ...snapshot, chartOriginsById };
             setWorkerTablesByWorkbookSheetIndex(snapshot.tablesByWorkbookSheetIndex);
             setShouldAutoCalculate(false);
             setIsWorkerBacked(true);
@@ -2576,6 +2585,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           if (!effectiveSkipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
             throw new Error("Worker chart payload incomplete");
           }
+          const workerImageAssets = effectiveSkipXmlParsing
+            ? null
+            : parseWorkbookImageAssets(new Uint8Array(deferredBuffer));
+          setImageAssets(workerImageAssets);
+          const chartOriginsById = workerImageAssets
+            ? hydrateWorkbookChartStyles(snapshot.chartsByWorkbookSheetIndex, workerImageAssets)
+            : new Map();
           deferredBufferRef.current = null;
           setDeferredLoadFileSize(null);
           setWorkbook(null);
@@ -2583,7 +2599,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           setChartsByWorkbookSheetIndex(snapshot.chartsByWorkbookSheetIndex);
           setChartsheets(snapshot.chartsheets);
           setTabs(snapshot.tabs);
-          chartAssetsRef.current = null;
+          chartAssetsRef.current = { ...snapshot, chartOriginsById };
           setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
           setWorkerTablesByWorkbookSheetIndex(snapshot.tablesByWorkbookSheetIndex);
           setShouldAutoCalculate(false);
@@ -3912,7 +3928,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     };
   }, [getColumnWidthPx, getRowHeightPx]);
 
-  const setChartRect = React.useCallback((id: string, rect: XlsxImageRect) => {
+  const setChartRect = React.useCallback((id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => {
     const hydratedChartAssets = ensureChartAssetsHydrated(workbook, sheets);
     console.info("[react-xlsx debug] setChartRect", {
       hasActiveSheet: Boolean(activeSheet),
@@ -3943,8 +3959,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const nextAnchor = rectToImageAnchor(rect, currentChart.anchor, {
       contentOffsetLeft: GRID_ROW_HEADER_WIDTH,
       contentOffsetTop: GRID_HEADER_HEIGHT,
-      getColumnWidthPx: (col) => getColumnWidthPx(worksheet, col),
-      getRowHeightPx: (row) => getRowHeightPx(worksheet, row)
+      getColumnWidthPx: (col) => layout?.columnWidths[col] ?? getColumnWidthPx(worksheet, col),
+      getRowHeightPx: (row) => layout?.rowHeights[row] ?? getRowHeightPx(worksheet, row)
     });
 
     recordHistoryBeforeMutation();
@@ -3971,7 +3987,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     workbook
   ]);
 
-  const setImageRect = React.useCallback((id: string, rect: XlsxImageRect) => {
+  const setImageRect = React.useCallback((id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => {
     if (readOnly || !workbook || !activeSheet || !imageAssetsRef.current) {
       return;
     }
@@ -3985,8 +4001,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const nextAnchor = rectToImageAnchor(rect, currentImage.anchor, {
       contentOffsetLeft: GRID_ROW_HEADER_WIDTH,
       contentOffsetTop: GRID_HEADER_HEIGHT,
-      getColumnWidthPx: (col) => getColumnWidthPx(worksheet, col),
-      getRowHeightPx: (row) => getRowHeightPx(worksheet, row)
+      getColumnWidthPx: (col) => layout?.columnWidths[col] ?? getColumnWidthPx(worksheet, col),
+      getRowHeightPx: (row) => layout?.rowHeights[row] ?? getRowHeightPx(worksheet, row)
     });
 
     recordHistoryBeforeMutation();

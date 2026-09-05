@@ -3912,6 +3912,21 @@ function applyChartOrigins(
   }
 }
 
+export function hydrateWorkbookChartStyles(
+  chartsByWorkbookSheetIndex: XlsxChart[][],
+  imageAssets: Pick<WorkbookImageAssets, "archive" | "sheetOrigins" | "themePalette">
+) {
+  const chartOriginsById = new Map<string, WorkbookChartOrigin>();
+  applyChartOrigins(chartsByWorkbookSheetIndex, chartOriginsById, imageAssets.archive, imageAssets.sheetOrigins);
+  for (const charts of chartsByWorkbookSheetIndex) {
+    for (const chart of charts) {
+      applyChartStyleFromXml(chart, chart.chartPath, imageAssets.archive, imageAssets.themePalette);
+      applyBuiltinChartDefaults(chart, imageAssets.themePalette);
+    }
+  }
+  return chartOriginsById;
+}
+
 export function loadWorkbookChartAssets(
   workbook: Workbook,
   imageAssets: Pick<WorkbookImageAssets, "archive" | "sheetOrigins" | "themePalette"> | null,
@@ -4055,22 +4070,17 @@ export function loadWorkbookChartAssets(
     ? workbook.chartsheets.map((entry, index) => normalizeChartsheet(entry, index))
     : [];
   const tabs = buildTabs(workbook, chartsheets, visibleSheetIndexByWorkbookSheetIndex, showHiddenSheets);
-  const chartOriginsById = new Map<string, WorkbookChartOrigin>();
+  const chartOriginsById = imageAssets
+    ? hydrateWorkbookChartStyles(chartsByWorkbookSheetIndex, imageAssets)
+    : new Map<string, WorkbookChartOrigin>();
 
   if (imageAssets) {
-    applyChartOrigins(chartsByWorkbookSheetIndex, chartOriginsById, imageAssets.archive, imageAssets.sheetOrigins);
     for (let index = 0; index < chartsByWorkbookSheetIndex.length; index += 1) {
       chartsByWorkbookSheetIndex[index] = (chartsByWorkbookSheetIndex[index] ?? [])
         .filter((chart) => !excludedChartIds.has(chart.id));
     }
     for (const id of excludedChartIds) {
       chartOriginsById.delete(id);
-    }
-    for (const charts of chartsByWorkbookSheetIndex) {
-      for (const chart of charts) {
-        applyChartStyleFromXml(chart, chart.chartPath, imageAssets.archive, imageAssets.themePalette);
-        applyBuiltinChartDefaults(chart, imageAssets.themePalette);
-      }
     }
   } else {
     for (let index = 0; index < chartsByWorkbookSheetIndex.length; index += 1) {
