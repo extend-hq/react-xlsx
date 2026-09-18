@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-virtual";
 import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
+import { growScrollDisplayLimit } from "./scroll-display-limit";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
 import { MemoChartSvg } from "./chart-renderer";
@@ -8895,20 +8896,18 @@ function XlsxGrid({
       currentScroller.scrollHeight - (currentScroller.scrollTop + currentScroller.clientHeight) <
       OPEN_GRID_VERTICAL_EDGE_PX
     ) {
-      setDisplayRowLimit((current) => {
-        const nextLimit = current + OPEN_GRID_ROW_GROWTH;
-        return readOnly && current < maxRowDisplayLimit ? Math.min(maxRowDisplayLimit, nextLimit) : nextLimit;
-      });
+      setDisplayRowLimit((current) =>
+        growScrollDisplayLimit(current, OPEN_GRID_ROW_GROWTH, maxRowDisplayLimit, readOnly)
+      );
     }
 
     if (
       currentScroller.scrollWidth - (currentScroller.scrollLeft + currentScroller.clientWidth) <
       OPEN_GRID_HORIZONTAL_EDGE_PX
     ) {
-      setDisplayColLimit((current) => {
-        const nextLimit = current + OPEN_GRID_COL_GROWTH;
-        return readOnly && current < maxColDisplayLimit ? Math.min(maxColDisplayLimit, nextLimit) : nextLimit;
-      });
+      setDisplayColLimit((current) =>
+        growScrollDisplayLimit(current, OPEN_GRID_COL_GROWTH, maxColDisplayLimit, readOnly)
+      );
     }
   }, [maxColDisplayLimit, maxRowDisplayLimit, readOnly, syncDrawingViewport]);
 
