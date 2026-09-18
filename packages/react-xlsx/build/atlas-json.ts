@@ -8,7 +8,7 @@ export function atlasJsonPlugin(): NonNullable<Options["esbuildPlugins"]>[number
       build.onLoad({ filter: /[\\/]node_modules[\\/](?:us-atlas|world-atlas)[\\/].*\.json$/ }, async ({ path }) => {
         const json = JSON.stringify(JSON.parse(await readFile(path, "utf8")));
         return {
-          contents: `export default JSON.parse(${JSON.stringify(json)});`,
+          contents: `export default /* @__PURE__ */ JSON.parse(${JSON.stringify(json)});`,
           loader: "js"
         };
       });

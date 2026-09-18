@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { build } from "tsup";
+import { build, type Options } from "tsup";
 import ts from "typescript";
 import configuration from "../tsup.config.ts";
 
@@ -22,7 +22,7 @@ test("atlas bundles preserve geography with a bounded JavaScript syntax tree in 
     ].join("\n"));
 
     assert.ok(Array.isArray(configuration));
-    await build({
+    const buildOptions: Options = {
       ...configuration[0],
       config: false,
       entry: { atlas: entry },
@@ -31,7 +31,8 @@ test("atlas bundles preserve geography with a bounded JavaScript syntax tree in 
       clean: false,
       dts: false,
       silent: true
-    });
+    };
+    await build(buildOptions);
 
     const loadCommonJs = createRequire(import.meta.url);
     for (const extension of ["mjs", "cjs"]) {
@@ -47,6 +48,16 @@ test("atlas bundles preserve geography with a bounded JavaScript syntax tree in 
       assert.ok(nodeCount < 1000, `${extension} bundle expands geographic data into ${nodeCount} syntax nodes`);
       const module = extension === "mjs" ? await import(pathToFileURL(output).href) : loadCommonJs(output);
       assert.deepEqual(module.default, expected);
+    }
+
+    await writeFile(entry, [
+      ...paths.map((path, index) => `import atlas${index} from ${JSON.stringify(path)};`),
+      "export default null;"
+    ].join("\n"));
+    await build(buildOptions);
+    for (const extension of ["mjs", "cjs"]) {
+      const source = await readFile(join(temporary, `atlas.${extension}`), "utf8");
+      assert.ok(source.length < 10000, `${extension} bundle retains unused atlas data`);
     }
   } finally {
     await rm(temporary, { recursive: true, force: true });
