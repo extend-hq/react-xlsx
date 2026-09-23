@@ -83,6 +83,7 @@ You can also call `initWasm()` (optionally with a source) ahead of time to warm 
 - Excel form controls with editable defaults and a `renderFormControl(...)` customization hook
 - Worksheet thumbnail painting via `useXlsxViewerThumbnails(...)`
 - Custom table header trigger rendering via `renderTableHeaderMenu(...)`
+- Custom content anchored to the active cell via `renderActiveCellOverlay(...)`
 - Inline controller usage or provider-driven composition with hooks
 - Large-file safeguards, deferred loading, and worker-backed parsing
 - Optional editing, copy/paste, CSV/XLSX export, chart/image manipulation, and zoom controls
@@ -190,6 +191,7 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `renderImage` | `(props: XlsxImageRenderProps) => React.ReactNode` | Replaces how worksheet images render. |
 | `renderImageSelection` | `(props: XlsxImageSelectionRenderProps) => React.ReactNode` | Replaces the selected-image overlay and resize handles. |
 | `renderTableHeaderMenu` | `(props: XlsxTableHeaderMenuRenderProps) => React.ReactNode` | Replaces the built-in table-header trigger. Return your full trigger + menu UI, such as a Radix `DropdownMenu`. |
+| `renderActiveCellOverlay` | `(props: XlsxActiveCellOverlayRenderProps) => React.ReactNode` | Renders custom content in a container that exactly covers the active cell. Use it to attach classes, data attributes, or a ref for measuring the cell. See [Active Cell Overlay](#active-cell-overlay). |
 
 Example:
 
@@ -283,6 +285,37 @@ Notes:
 - This render prop is intended for returning the full trigger and menu tree, not just menu items
 - In the default DOM renderer, your returned node replaces the built-in chevron trigger in the table header cell
 - `experimentalCanvas` still uses the built-in canvas affordance for table header menus
+
+### Active Cell Overlay
+
+`renderActiveCellOverlay` renders your node inside a container positioned over the active cell. For merged cells the container spans the full merge and `cell` is the merge anchor. It follows scrolling and zoom and uses the same geometry as the built-in selection overlay, in both the canvas and DOM renderers.
+
+This is the supported way to locate the active cell on screen, for example to draw a connector line from a side panel to the selected cell:
+
+```tsx
+const anchorRef = React.useRef<HTMLDivElement>(null);
+
+<XlsxViewer
+  file={buffer}
+  renderActiveCellOverlay={({ cell }) => (
+    <div
+      ref={anchorRef}
+      className="active-cell-anchor"
+      data-active-cell={`${cell.row}:${cell.col}`}
+      style={{ height: "100%", width: "100%" }}
+    />
+  )}
+/>;
+
+// Later, e.g. in a requestAnimationFrame loop or scroll listener:
+const rect = anchorRef.current?.getBoundingClientRect();
+```
+
+Notes:
+
+- The callback receives `cell` and `rect`. `rect` is the cell's position in the grid's scroll content, in pixels at the current zoom. Use `getBoundingClientRect()` on your node when you need viewport coordinates.
+- The container sets `pointerEvents: "none"` so clicks still reach the grid. Set `pointerEvents: "auto"` on your own elements to make them interactive.
+- Return `null` to render nothing for a given cell.
 
 ## Custom Cell Styling
 
@@ -531,6 +564,7 @@ The package also exports the main types you are likely to use for custom integra
 - `XlsxFormControl`, `XlsxFormControlInput`, `XlsxFormControlCaption`, `XlsxFormControlCaptionInput`, `XlsxFormControlCaptionRun`, `XlsxFormControlRenderProps`
 - `XlsxSheetThumbnail`, `XlsxSheetThumbnailResolution`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
+- `XlsxActiveCellOverlayRenderProps`
 - `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`, `XlsxCellStyleContext`
 
 ## Notes

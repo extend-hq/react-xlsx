@@ -385,6 +385,22 @@ export function CustomWorkbook({ file }: { file: ArrayBuffer }) {
 
 Apply `triggerProps` to the table-header trigger button so clicks do not leak into grid selection.
 
+Use `renderActiveCellOverlay` to render your own content over the active cell. The returned node sits in a container that exactly covers the cell (the full merge for merged cells) and moves with scrolling and zoom, so you can attach classes, data attributes, or a ref and measure it with `getBoundingClientRect()`. The container ignores pointer events; set `pointerEvents: "auto"` on your own elements to make them interactive.
+
+```tsx
+<XlsxViewer
+  file={file}
+  renderActiveCellOverlay={({ cell }) => (
+    <div
+      ref={activeCellRef}
+      className="active-cell-anchor"
+      data-active-cell={`${cell.row}:${cell.col}`}
+      style={{ height: "100%", width: "100%" }}
+    />
+  )}
+/>
+```
+
 Use `renderFormControl` to replace the built-in worksheet widgets. The callback receives the parsed `control`, resolved `items` and `label`, calculated `style`, read-only state, and `activate`, `setState`, `setSelected`, and `setValue` helpers. Apply `style` to the custom root and call `stopPropagation` from pointer/click handlers. The helpers keep Duke mutations, linked cells, undo/redo, export, and `onFormControlChange` in sync.
 
 ```tsx
@@ -491,6 +507,7 @@ Common rendering props:
 - `renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode`
 - `renderFormControl?: (props: XlsxFormControlRenderProps) => React.ReactNode`
 - `renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode`
+- `renderActiveCellOverlay?: (props: XlsxActiveCellOverlayRenderProps) => React.ReactNode`
 - `renderScroller?: (props: XlsxScrollerRenderProps) => React.ReactNode`
 
 ### Persisted Cell Styling
@@ -662,6 +679,7 @@ The package exports the main types you are likely to use for custom integrations
 - `XlsxImage`, `XlsxImageRect`, `XlsxImageRenderProps`, `XlsxImageSelectionRenderProps`
 - `XlsxFormControl`, `XlsxFormControlInput`, `XlsxFormControlCaption`, `XlsxFormControlCaptionInput`, `XlsxFormControlCaptionRun`, `XlsxFormControlRenderProps`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
+- `XlsxActiveCellOverlayRenderProps`
 - `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`
 
 ## License

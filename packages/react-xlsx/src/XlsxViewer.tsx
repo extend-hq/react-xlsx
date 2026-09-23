@@ -7122,6 +7122,7 @@ function XlsxGrid({
   renderImage,
   renderImageSelection,
   renderTableHeaderMenu,
+  renderActiveCellOverlay,
   renderScroller,
   enableGestureZoom = true,
   experimentalCanvas = true,
@@ -7131,7 +7132,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -14032,6 +14033,15 @@ function XlsxGrid({
   const activeCellAdornmentRect = activeCell && activeCellAdornment
     ? resolveCellDisplayRect(activeCell)
     : null;
+  const activeCellOverlayCell = renderActiveCellOverlay && activeCell
+    ? resolveMergeAnchorCell(activeCell)
+    : null;
+  const activeCellOverlayRect = activeCellOverlayCell
+    ? resolveCellDisplayRect(activeCellOverlayCell)
+    : null;
+  const activeCellOverlay = activeCellOverlayCell && activeCellOverlayRect
+    ? renderActiveCellOverlay?.({ cell: activeCellOverlayCell, rect: activeCellOverlayRect })
+    : null;
   function resolveDrawingPane(rect: XlsxImageRect) {
     return resolveFrozenDrawingPane(
       rect,
@@ -16252,6 +16262,22 @@ function XlsxGrid({
                   zIndex: 24
                 }}
               />
+              {activeCellOverlay != null && activeCellOverlayRect ? (
+                <div
+                  data-xlsx-active-cell-overlay=""
+                  style={{
+                    height: activeCellOverlayRect.height,
+                    left: activeCellOverlayRect.left,
+                    pointerEvents: "none",
+                    position: "absolute",
+                    top: activeCellOverlayRect.top,
+                    width: activeCellOverlayRect.width,
+                    zIndex: 24
+                  }}
+                >
+                  {activeCellOverlay}
+                </div>
+              ) : null}
               <div
                 ref={activeValidationOverlayRef}
                 aria-hidden="true"
@@ -16399,6 +16425,7 @@ function XlsxViewerInner({
   renderImageSelection,
   renderScroller,
   renderTableHeaderMenu,
+  renderActiveCellOverlay,
   rounded = true,
   selectionColor,
   selectionFillColor,
@@ -16474,6 +16501,7 @@ function XlsxViewerInner({
                 renderImageSelection={renderImageSelection}
                 renderScroller={renderScroller}
                 renderTableHeaderMenu={renderTableHeaderMenu}
+                renderActiveCellOverlay={renderActiveCellOverlay}
                 selectionColor={selectionColor}
                 selectionFillColor={selectionFillColor}
                 selectionHeaderColor={selectionHeaderColor}

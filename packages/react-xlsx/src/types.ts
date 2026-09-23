@@ -1454,6 +1454,16 @@ export interface XlsxTableHeaderMenuRenderProps {
   triggerProps: React.ButtonHTMLAttributes<HTMLButtonElement>;
 }
 
+export interface XlsxActiveCellOverlayRenderProps {
+  /** Address of the active cell. For merged cells this is the merge anchor. */
+  cell: XlsxCellAddress;
+  /**
+   * Pixel rect of the active cell (spanning the full merge) within the grid's scroll content,
+   * at the current zoom. The rendered node is already positioned to fill this rect.
+   */
+  rect: XlsxImageRect;
+}
+
 export interface XlsxCellStyleContext {
   /** Address of the cell being styled. */
   cell: XlsxCellAddress;
@@ -1671,6 +1681,24 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
    * Apply `triggerProps` to your actual trigger button so clicks do not leak into grid selection.
    */
   renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode;
+  /**
+   * Renders custom content positioned over the active cell. The returned node is placed in a
+   * container that exactly covers the cell, so it can carry classes, data attributes, or refs
+   * for measuring the cell with `getBoundingClientRect()`.
+   *
+   * The container ignores pointer events so grid interaction is unaffected; set
+   * `pointerEvents: "auto"` on your own elements to make them interactive.
+   *
+   * @example
+   * ```tsx
+   * <XlsxViewer
+   *   renderActiveCellOverlay={({ cell }) => (
+   *     <div data-active-cell={`${cell.row}:${cell.col}`} style={{ height: "100%", width: "100%" }} />
+   *   )}
+   * />
+   * ```
+   */
+  renderActiveCellOverlay?: (props: XlsxActiveCellOverlayRenderProps) => React.ReactNode;
   /**
    * Shows worksheet images, charts, shapes, and form controls.
    *

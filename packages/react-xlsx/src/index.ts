@@ -15,6 +15,7 @@ export {
 } from "./XlsxViewer";
 export type {
   UseXlsxViewerControllerOptions,
+  XlsxActiveCellOverlayRenderProps,
   XlsxChart,
   XlsxChartAxis,
   XlsxChartDataLabels,
