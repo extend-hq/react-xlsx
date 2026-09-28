@@ -72,7 +72,12 @@ function collectFormulaCellsWithSavedValues(workbook: Workbook): CellPosition[] 
       if (typeof cell?.row !== "number" || typeof cell?.col !== "number") {
         continue;
       }
-      const saved = sheet.getCalculatedValueAt(cell.row, cell.col);
+      let saved;
+      try {
+        saved = sheet.getCalculatedValueAt(cell.row, cell.col);
+      } catch {
+        continue;
+      }
       if (!saved.is_empty && !saved.is_error) {
         positions.push({ sheetIdx, row: cell.row, col: cell.col });
       }
