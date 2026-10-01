@@ -128,7 +128,7 @@ export function resolveWorkbookColor(
     return normalizeHexColor(directHex);
   }
 
-  const themeValue = color.theme;
+  const themeValue = color.theme ?? color.themeIndex;
   const numericTheme = typeof themeValue === "number"
     ? themeValue
     : typeof themeValue === "string" && themeValue.trim().length > 0
