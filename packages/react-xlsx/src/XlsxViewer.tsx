@@ -4521,7 +4521,7 @@ function resolveTableCellStyle(
   }
 
   const headerRowCount = Math.max(table.headerRowCount, 1);
-  const totalsRowCount = table.totalsRowShown ? Math.max(table.totalsRowCount, 1) : 0;
+  const totalsRowCount = table.totalsRowCount;
   const headerEndRow = table.start.row + headerRowCount - 1;
   const totalsStartRow = table.end.row - totalsRowCount + 1;
   const bodyStartRow = headerEndRow + 1;

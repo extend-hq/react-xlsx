@@ -3612,7 +3612,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     const dataStartRow = targetTable.start.row + Math.max(targetTable.headerRowCount, 1);
-    const totalsRowOffset = targetTable.totalsRowShown ? Math.max(targetTable.totalsRowCount, 1) : 0;
+    const totalsRowOffset = targetTable.totalsRowCount;
     const dataEndRow = targetTable.end.row - totalsRowOffset;
     const startCol = targetTable.start.col;
     const endCol = targetTable.end.col;
