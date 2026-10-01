@@ -113,6 +113,17 @@ function applyExcelTint(baseColor: string, tint: number) {
   return rgbToHex(nextRed, nextGreen, nextBlue);
 }
 
+export function buildThemePaletteFromHex(hexColors: readonly string[]): XlsxThemePalette {
+  const colorsByIndex: Record<number, string> = {};
+  hexColors.forEach((hex, index) => {
+    const color = normalizeHexColor(hex);
+    if (color) {
+      colorsByIndex[index] = color;
+    }
+  });
+  return { colorsByIndex };
+}
+
 export function resolveWorkbookColor(
   color: Record<string, unknown> | undefined,
   themePalette?: XlsxThemePalette | null
