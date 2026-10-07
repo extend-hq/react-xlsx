@@ -16,6 +16,7 @@ export interface XlsxResolvedCellStyle {
   };
   fill?: Record<string, unknown>;
   font?: Record<string, unknown>;
+  tableStyleOverrides?: XlsxResolvedCellStyle;
 }
 
 export interface XlsxTableStyleDefinition {
@@ -114,6 +115,7 @@ export interface XlsxFreezePanes {
 export type XlsxSheetVisibility = "hidden" | "veryHidden" | "visible";
 
 export interface XlsxSheetData {
+  cellStyleIds?: Record<string, number>;
   autoFilterRanges: XlsxCellRange[];
   cachedFormulaValues: Record<string, string>;
   colWidthOverridesPx: Record<number, number>;

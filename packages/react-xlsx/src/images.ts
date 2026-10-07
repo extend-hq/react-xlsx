@@ -231,6 +231,7 @@ type WorkbookSheetInfo = {
 };
 
 type WorkbookSheetState = {
+  cellStyleIds: Record<string, number>;
   autoFilterRanges: XlsxCellRange[];
   cachedFormulaValues: Record<string, string>;
   columnWidthCharacterWidthPx?: number;
@@ -888,6 +889,12 @@ function parseSpreadsheetFont(node: Element | null): XlsxResolvedCellStyle["font
   }
 
   const font: Record<string, unknown> = {};
+  for (const [tag, property] of [["b", "bold"], ["i", "italic"], ["strike", "strikethrough"]]) {
+    const flag = getFirstChild(node, tag);
+    if (flag) {
+      font[property] = hasEnabledSpreadsheetFlag(flag);
+    }
+  }
   const size = getFirstChild(node, "sz")?.getAttribute("val");
   const name = getFirstChild(node, "name")?.getAttribute("val");
   const family = getFirstChild(node, "family")?.getAttribute("val");
@@ -895,15 +902,6 @@ function parseSpreadsheetFont(node: Element | null): XlsxResolvedCellStyle["font
   const charset = getFirstChild(node, "charset")?.getAttribute("val");
   const verticalAlign = getFirstChild(node, "vertAlign")?.getAttribute("val");
   const color = parseSpreadsheetColor(getFirstChild(node, "color"));
-  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "b"))) {
-    font.bold = true;
-  }
-  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "i"))) {
-    font.italic = true;
-  }
-  if (hasEnabledSpreadsheetFlag(getFirstChild(node, "strike"))) {
-    font.strikethrough = true;
-  }
   if (getFirstChild(node, "u")) {
     font.underline = getFirstChild(node, "u")?.getAttribute("val") ?? "single";
   }
@@ -1191,7 +1189,15 @@ function parseWorkbookStyles(archive: ArchiveEntries) {
   const tableStyleByName: Record<string, XlsxTableStyleDefinition> = {};
 
   getChildElements(cellXfsNode, "xf").forEach((xfNode, index) => {
-    styleById[index] = parseResolvedXfStyle(xfNode, fonts, fills, borders, checkboxComplementIndices);
+    const style = parseResolvedXfStyle(xfNode, fonts, fills, borders, checkboxComplementIndices);
+    const overrides: XlsxResolvedCellStyle = {};
+    for (const component of ["font", "fill", "border"] as const) {
+      if (Number(xfNode.getAttribute(`${component}Id`) ?? 0) > 0
+        && xfNode.getAttribute(`apply${component[0].toUpperCase()}${component.slice(1)}`) !== "0") {
+        Object.assign(overrides, { [component]: style[component] });
+      }
+    }
+    styleById[index] = { ...style, tableStyleOverrides: overrides };
   });
 
   getChildElements(cellStylesNode ?? document.documentElement, "cellStyle").forEach((cellStyleNode) => {
@@ -1638,6 +1644,7 @@ function parseSheetState(
   const rowHeightOverridesPx: Record<number, number> = {};
   const colWidthOverridesPx: Record<number, number> = {};
   const rowStyleIds: Record<number, number> = {};
+  const cellStyleIds: Record<string, number> = {};
   const colStyleIds: Record<number, number> = {};
   let minContentCol = Number.POSITIVE_INFINITY;
   let minContentRow = Number.POSITIVE_INFINITY;
@@ -1699,6 +1706,10 @@ function parseSheetState(
 
     getChildElements(rowNode, "c").forEach((cellNode) => {
       const cellRef = cellNode.getAttribute("r");
+      const cellStyleId = Number(cellNode.getAttribute("s") ?? Number.NaN);
+      if (cellRef && Number.isFinite(cellStyleId)) {
+        cellStyleIds[cellRef] = cellStyleId;
+      }
       if (isMeaningfulCellNode(cellNode)) {
         trackContentCell(cellRef);
       }
@@ -1741,6 +1752,7 @@ function parseSheetState(
   return {
     autoFilterRanges,
     cachedFormulaValues,
+    cellStyleIds,
     columnWidthCharacterWidthPx,
     colWidthOverridesPx,
     colStyleIds,

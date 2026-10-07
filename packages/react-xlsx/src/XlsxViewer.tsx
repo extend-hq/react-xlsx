@@ -549,7 +549,8 @@ function strokeCanvasBorderSide(
   rect: { left: number; top: number; width: number; height: number },
   border: CanvasBorderDeclaration
 ) {
-  const halfWidth = border.width / 2;
+  const strokeWidth = border.style === "double" ? border.width / 3 : border.width;
+  const halfWidth = strokeWidth / 2;
   const left = rect.left;
   const right = rect.left + rect.width;
   const top = rect.top;
@@ -578,8 +579,8 @@ function strokeCanvasBorderSide(
   };
 
   if (border.style === "double") {
-    const inset = Math.max(1, border.width);
-    context.lineWidth = Math.max(1, border.width / 3);
+    const inset = border.width - strokeWidth;
+    context.lineWidth = strokeWidth;
     context.setLineDash([]);
     strokeLine(0);
     strokeLine(inset);
@@ -4356,6 +4357,50 @@ function mergeResolvedCellStyle(
   }
 
   return nextStyle;
+}
+
+function resolveCellTableOverrides(
+  rawStyle: Record<string, unknown> | null,
+  sheet: XlsxSheetData | null | undefined,
+  row: number,
+  col: number
+) {
+  const styleId = sheet?.cellStyleIds?.[cellAddressToA1({ row, col })]
+    ?? sheet?.rowStyleIds[row]
+    ?? sheet?.colStyleIds[col];
+  const declared = styleId === undefined ? undefined : sheet?.styleById[styleId]?.tableStyleOverrides;
+  const overrides: Record<string, unknown> = {};
+  const font = asRecord(rawStyle?.font);
+  if (font) {
+    const explicitFont: Record<string, unknown> = {};
+    const fontDefaults: Record<string, unknown> = {
+      name: "Calibri", size: 11, bold: false, italic: false, underline: "none",
+      strikethrough: false, verticalAlign: "baseline"
+    };
+    for (const [key, value] of Object.entries(font)) {
+      const isExplicit = declared
+        ? Object.hasOwn(declared.font ?? {}, key)
+        : key === "color"
+          ? asRecord(value)?.colorType !== "auto"
+          : value !== fontDefaults[key];
+      if (isExplicit) {
+        explicitFont[key] = value;
+      }
+    }
+    overrides.font = explicitFont;
+  }
+  const fill = asRecord(rawStyle?.fill);
+  if (fill && fill.fillType !== "none") {
+    overrides.fill = fill;
+  }
+  const border = asRecord(rawStyle?.border);
+  if (border) {
+    overrides.border = Object.fromEntries(Object.entries(border).filter(([, edge]) => {
+      const style = asRecord(edge)?.style;
+      return typeof style === "string" && style !== "none";
+    }));
+  }
+  return overrides;
 }
 
 function resolveBorderEdgePriority(edge: Record<string, unknown> | null | undefined) {
@@ -9897,7 +9942,12 @@ function XlsxGrid({
       });
       const targetTable = getTableAtCell(effectiveTables, targetRow, targetCol);
       const targetTableStyle = resolveTableCellStyle(targetTable, targetRow, targetCol, activeSheet);
-      const resolvedStyle = mergeResolvedCellStyle(targetRawStyle, targetTableStyle);
+      const resolvedStyle = targetTableStyle
+        ? mergeResolvedCellStyle(
+            mergeResolvedCellStyle(targetRawStyle, targetTableStyle),
+            resolveCellTableOverrides(targetRawStyle, activeSheet, targetRow, targetCol)
+          )
+        : targetRawStyle;
       cellBaseRawStyleCacheRef.current.set(targetCacheKey, resolvedStyle);
       return resolvedStyle;
     };
@@ -12846,6 +12896,22 @@ function XlsxGrid({
           hasPendingGridlinePath = false;
         };
         const drawnMergedAnchorKeys = new Set<string>();
+        const deferredDoubleBorders: Array<{
+          side: "top" | "right" | "bottom" | "left";
+          rect: { left: number; top: number; width: number; height: number };
+          border: CanvasBorderDeclaration;
+        }> = [];
+        const drawCellBorder = (
+          side: "top" | "right" | "bottom" | "left",
+          rect: { left: number; top: number; width: number; height: number },
+          border: CanvasBorderDeclaration
+        ) => {
+          if (border.style === "double") {
+            deferredDoubleBorders.push({ side, rect, border });
+          } else {
+            strokeCanvasBorderSide(paneContext, side, rect, border);
+          }
+        };
         for (const rowItem of paneAxisItems.rows) {
           for (const colItem of paneAxisItems.cols) {
           const cell = { row: rowItem.actualRow, col: colItem.actualCol };
@@ -13050,16 +13116,24 @@ function XlsxGrid({
           }
 
           if (topBorder && drawRowIndex === 0) {
-            strokeCanvasBorderSide(paneContext, "top", localRect, topBorder);
+            drawCellBorder("top", localRect, topBorder);
           }
           if (resolvedRightBorder) {
-            strokeCanvasBorderSide(paneContext, "right", localRect, resolvedRightBorder);
+            if (resolvedRightBorder.style === "double" && resolvedRightBorder === rightNeighborLeftBorder) {
+              drawCellBorder("left", { ...localRect, left: localRect.left + localRect.width }, resolvedRightBorder);
+            } else {
+              drawCellBorder("right", localRect, resolvedRightBorder);
+            }
           }
           if (resolvedBottomBorder) {
-            strokeCanvasBorderSide(paneContext, "bottom", localRect, resolvedBottomBorder);
+            if (resolvedBottomBorder.style === "double" && resolvedBottomBorder === bottomNeighborTopBorder) {
+              drawCellBorder("top", { ...localRect, top: localRect.top + localRect.height }, resolvedBottomBorder);
+            } else {
+              drawCellBorder("bottom", localRect, resolvedBottomBorder);
+            }
           }
           if (leftBorder && drawColIndex === 0) {
-            strokeCanvasBorderSide(paneContext, "left", localRect, leftBorder);
+            drawCellBorder("left", localRect, leftBorder);
           }
           if (cellData.chartHighlight) {
             const highlightBorder = {
@@ -13377,6 +13451,9 @@ function XlsxGrid({
         }
       }
         flushPendingGridlines();
+        for (const { side, rect, border } of deferredDoubleBorders) {
+          strokeCanvasBorderSide(paneContext, side, rect, border);
+        }
       }
 
       for (const pane of cellPaneOrder) {

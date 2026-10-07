@@ -455,6 +455,7 @@ function resolveSheetDisplayUsedRange(
 function buildSheetList(
   workbook: Workbook,
   sheetStatesByWorkbookSheetIndex?: Array<{
+    cellStyleIds?: Record<string, number>;
     autoFilterRanges?: XlsxCellRange[];
     cachedFormulaValues?: Record<string, string>;
     columnWidthCharacterWidthPx?: number;
@@ -557,6 +558,7 @@ function buildSheetList(
         colCount: 0,
         rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
         rowStyleIds: sheetState?.rowStyleIds ?? {},
+        cellStyleIds: sheetState?.cellStyleIds ?? {},
         styleById: styleById ?? {},
         sparklines: sheetState?.sparklines ?? [],
         tableStyleByName: tableStyleByName ?? {},
@@ -655,6 +657,7 @@ function buildSheetList(
       namedCellStyleByName: namedCellStyleByName ?? {},
       rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
       rowStyleIds: sheetState?.rowStyleIds ?? {},
+      cellStyleIds: sheetState?.cellStyleIds ?? {},
       showGridLines: sheetState?.showGridLines ?? true,
       styleById: styleById ?? {},
       sparklines: sheetState?.sparklines ?? [],
