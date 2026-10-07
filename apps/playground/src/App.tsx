@@ -34,12 +34,13 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 import { Input } from "./components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
+import { HIGHLIGHT_DEMO_RANGES, HIGHLIGHT_DEMO_URL, RangeHighlightDemo } from "./components/range-highlight-demo";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
 
 const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
 const PLAYGROUND_SAMPLE_URL = "/examples/welcome.xlsx";
 
-const RIBBON_TABS = ["Home", "Insert", "Page Layout", "Formulas", "Data", "View"] as const;
+const RIBBON_TABS = ["Home", "Insert", "Page Layout", "Formulas", "Data", "View", "Highlights"] as const;
 const FONT_FAMILIES = ["Aptos", "Calibri", "Arial", "Georgia", "Times New Roman", "Courier New"] as const;
 const FONT_SIZES = [9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36] as const;
 const NUMBER_FORMATS = [
@@ -259,6 +260,9 @@ function useXlsxWorkerScriptDebug() {
 }
 
 function WorkbookToolbar({
+  customRangeHighlightStyle,
+  onCustomRangeHighlightStyleChange,
+  onLoadHighlightSample,
   experimentalCanvas,
   allowResizeInReadOnly,
   highlightCells,
@@ -278,6 +282,9 @@ function WorkbookToolbar({
   setUseWorker,
   useWorker,
 }: {
+  customRangeHighlightStyle: boolean;
+  onCustomRangeHighlightStyleChange: (enabled: boolean) => void;
+  onLoadHighlightSample: (autoScroll: boolean) => void;
   allowResizeInReadOnly: boolean;
   experimentalCanvas: boolean;
   highlightCells: boolean;
@@ -496,6 +503,13 @@ function WorkbookToolbar({
         </div>
 
         <div className="flex min-h-[92px] items-stretch gap-2 overflow-x-auto px-2 py-2">
+          {activeRibbonTab === "Highlights" ? (
+            <RangeHighlightDemo
+              customStyle={customRangeHighlightStyle}
+              onCustomStyleChange={onCustomRangeHighlightStyleChange}
+              onLoadSample={onLoadHighlightSample}
+            />
+          ) : null}
           {activeRibbonTab === "Home" ? (
             <>
               <RibbonGroup label="Clipboard">
@@ -1126,6 +1140,8 @@ export function App() {
   const [useWorker, setUseWorker] = React.useState(true);
   const [allowResizeInReadOnly, setAllowResizeInReadOnly] = React.useState(false);
   const [highlightCells, setHighlightCells] = React.useState(false);
+  const [customRangeHighlightStyle, setCustomRangeHighlightStyle] = React.useState(false);
+  const pendingHighlightSampleRef = React.useRef<{ autoScroll: boolean } | null>(null);
   const dragDepthRef = React.useRef(0);
 
   const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
@@ -1168,6 +1184,18 @@ export function App() {
           }
   );
   const zoomInitializedForSourceRef = React.useRef<string | null>(null);
+  const handleLoadHighlightSample = (autoScroll: boolean) => {
+    pendingHighlightSampleRef.current = { autoScroll };
+    setSource({ type: "url", src: HIGHLIGHT_DEMO_URL, fileName: "Range highlights.xlsx" });
+  };
+  React.useEffect(() => {
+    const pending = pendingHighlightSampleRef.current;
+    if (pending && controller.src === HIGHLIGHT_DEMO_URL && !controller.isLoading
+      && controller.sheets.some((sheet) => sheet.name === "Overview")
+      && controller.highlightRanges(HIGHLIGHT_DEMO_RANGES, pending)) {
+      pendingHighlightSampleRef.current = null;
+    }
+  }, [controller.highlightRanges, controller.isLoading, controller.sheets, controller.src, source]);
   const sourceKey = React.useMemo(() => {
     if (!source) {
       return null;
@@ -1312,6 +1340,9 @@ export function App() {
         >
           <XlsxViewerProvider controller={controller} isDark={isDocumentDark}>
             <WorkbookToolbar
+              customRangeHighlightStyle={customRangeHighlightStyle}
+              onCustomRangeHighlightStyleChange={setCustomRangeHighlightStyle}
+              onLoadHighlightSample={handleLoadHighlightSample}
               allowResizeInReadOnly={allowResizeInReadOnly}
               experimentalCanvas={experimentalCanvas}
               highlightCells={highlightCells}
@@ -1338,6 +1369,7 @@ export function App() {
                   emptyState={<ViewerEmptyState />}
                   fileTooLargeState={<ViewerFileTooLargeState />}
                   getCellStyle={getCellStyle}
+                  highlightClassName={customRangeHighlightStyle ? "playground-range-highlight" : undefined}
                   height="100%"
                   allowResizeInReadOnly={allowResizeInReadOnly}
                   isDark={isDocumentDark}

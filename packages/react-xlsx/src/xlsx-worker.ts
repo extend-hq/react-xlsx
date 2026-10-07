@@ -1,6 +1,7 @@
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, unzipSync } from "fflate";
 import { loadWorkbookChartAssets } from "./charts";
+import { buildThemePaletteFromHex } from "./colors";
 import {
   collectWorkbookFormControls,
   parseWorkbookChartStyleAssets,
@@ -26,6 +27,7 @@ import type {
   XlsxSheetVisibility,
   XlsxTable,
   XlsxTableStyleDefinition,
+  XlsxThemePalette,
   XlsxWorkbookTab
 } from "./types";
 
@@ -469,6 +471,7 @@ function resolveSheetDisplayUsedRange(
 
 function buildSheetList(
   nextWorkbook: Workbook,
+  themePalette: XlsxThemePalette,
   structureAssets?: WorkbookStructureAssets | null,
   sheetLayoutStates?: Array<WorkerSheetState | null>,
   showHiddenSheets = false
@@ -534,6 +537,7 @@ function buildSheetList(
         hasVerticalMerges: mergeMetadata.hasVerticalMerges,
         maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
         maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
+        mergedRanges: mergeMetadata.mergedRanges,
         hiddenCols: sheetState?.hiddenCols ?? [],
         hiddenRows: sheetState?.hiddenRows ?? [],
         minUsedCol: -1,
@@ -547,11 +551,12 @@ function buildSheetList(
         rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
         rowHeights: [],
         rowStyleIds: sheetState?.rowStyleIds ?? {},
+        cellStyleIds: sheetState?.cellStyleIds ?? {},
         showGridLines: sheetState?.showGridLines ?? true,
         sparklines: sheetState?.sparklines ?? [],
         styleById: structureAssets?.styleById ?? {},
         tableStyleByName: structureAssets?.tableStyleByName ?? {},
-        themePalette: structureAssets?.themePalette ?? { colorsByIndex: {} },
+        themePalette,
         visibleCols: [],
         visibleRows: [],
         workbookSheetIndex: index,
@@ -598,6 +603,7 @@ function buildSheetList(
       hasVerticalMerges: mergeMetadata.hasVerticalMerges,
       maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
       maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
+      mergedRanges: mergeMetadata.mergedRanges,
       hiddenCols,
       hiddenRows,
       minUsedCol: minCol,
@@ -611,11 +617,12 @@ function buildSheetList(
       rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
       rowHeights: visibleRows.map(resolveRowHeightPx),
       rowStyleIds: sheetState?.rowStyleIds ?? {},
+      cellStyleIds: sheetState?.cellStyleIds ?? {},
       showGridLines: sheetState?.showGridLines ?? true,
       sparklines: sheetState?.sparklines ?? [],
       styleById: structureAssets?.styleById ?? {},
       tableStyleByName: structureAssets?.tableStyleByName ?? {},
-      themePalette: structureAssets?.themePalette ?? { colorsByIndex: {} },
+      themePalette,
       visibleCols,
       visibleRows,
       workbookSheetIndex: index,
@@ -807,9 +814,12 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
     : parseWorkbookStructureAssets(bytes, {
         includeCachedFormulaValues: true
       });
+  // Workers have no DOMParser, so theme1.xml is not parsed there; the engine
+  // reads the same palette.
+  const themePalette = structureAssets?.themePalette ?? buildThemePaletteFromHex(nextWorkbook.themePalette);
   formControlsByWorkbookSheetIndex = collectWorkbookFormControls(
     nextWorkbook,
-    structureAssets?.themePalette
+    themePalette
   ).map(
     (controls, workbookSheetIndex) => controls.map((control) => ({
       ...control,
@@ -818,7 +828,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
   );
   const sheetLayoutStates = structureAssets ? undefined : parseWorkerSheetLayoutAssets(bytes, nextWorkbook.sheetCount);
   workbook = nextWorkbook;
-  sheets = buildSheetList(nextWorkbook, structureAssets, sheetLayoutStates, showHiddenSheets);
+  sheets = buildSheetList(nextWorkbook, themePalette, structureAssets, sheetLayoutStates, showHiddenSheets);
   tablesByWorkbookSheetIndex = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) =>
     mapWorksheetTables(
       nextWorkbook.getSheet(workbookSheetIndex),

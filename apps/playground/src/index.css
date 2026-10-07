@@ -135,3 +135,9 @@
     min-height: 100vh;
   }
 }
+
+.playground-range-highlight {
+  border: 1px dashed #d97706;
+  background: rgb(245 158 11 / 10%);
+  border-radius: 4px;
+}

@@ -1,0 +1,26 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { buildThemePaletteFromHex, resolveWorkbookColor, resolveWorkbookFillColor } from "./colors.ts";
+
+const themePalette = { colorsByIndex: { 0: "#ffffff", 1: "#000000", 4: "#4f81bd" } };
+
+test("resolves theme colors in the shape getCellStyleAt returns", () => {
+  assert.equal(resolveWorkbookColor({ colorType: "theme", themeIndex: 4, tint: 0 }, themePalette), "#4f81bd");
+  assert.equal(
+    resolveWorkbookFillColor({ fillType: "solid", color: { colorType: "theme", themeIndex: 4, tint: 0 } }, themePalette),
+    "#4f81bd"
+  );
+});
+
+test("applies the tint the same way for both theme color shapes", () => {
+  assert.equal(resolveWorkbookColor({ colorType: "theme", themeIndex: 4, tint: 0.8 }, themePalette), "#dce6f2");
+  assert.equal(resolveWorkbookColor({ theme: 4, tint: 0.8 }, themePalette), "#dce6f2");
+});
+
+test("builds a theme palette from the engine's themePalette hex list", () => {
+  const palette = buildThemePaletteFromHex(["FFFFFF", "000000", "EEECE1", "1F497D", "4F81BD", "C0504D"]);
+
+  assert.equal(palette.colorsByIndex[0], "#ffffff");
+  assert.equal(palette.colorsByIndex[4], "#4f81bd");
+  assert.equal(resolveWorkbookColor({ theme: 4, tint: 0.8 }, palette), "#dce6f2");
+});
