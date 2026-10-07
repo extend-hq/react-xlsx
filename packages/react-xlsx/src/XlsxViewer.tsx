@@ -7,6 +7,8 @@ import {
 import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { growScrollDisplayLimit } from "./scroll-display-limit";
+import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffset } from "./range-highlight";
+import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
 import { MemoChartSvg } from "./chart-renderer";
@@ -56,6 +58,18 @@ import type {
   XlsxViewerThumbnails,
   XlsxViewerZoom
 } from "./types";
+
+const RANGE_HIGHLIGHT_STYLES = `
+:where(.react-xlsx-range-highlight) {
+  background: var(--xlsx-highlight-fill, rgb(59 130 246 / 8%));
+  border: var(--xlsx-highlight-border, var(--xlsx-highlight-default-border-width, 1px) solid #3b82f6);
+  border-radius: var(--xlsx-highlight-radius, 2px);
+}
+:where(.react-xlsx-range-highlight[data-dark="true"]) {
+  background: var(--xlsx-highlight-fill, rgb(147 197 253 / 12%));
+  border: var(--xlsx-highlight-border, var(--xlsx-highlight-default-border-width, 1px) solid #93c5fd);
+}
+`;
 
 const DEFAULT_ROW_HEIGHT = 24;
 const DEFAULT_COL_WIDTH = 80;
@@ -7112,6 +7126,7 @@ function XlsxGrid({
   errorState,
   fileTooLargeState,
   getCellStyle,
+  highlightClassName,
   loadingComponent,
   loadingState,
   onFormControlAction,
@@ -7132,7 +7147,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -7166,6 +7181,7 @@ function XlsxGrid({
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
     getFormControlItems,
+    highlightedRanges,
     images,
     shapes,
     isLoadDeferred,
@@ -7216,6 +7232,7 @@ function XlsxGrid({
   ), [formControls, getFormControlItems]);
   const canResizeHeaders = !readOnly || allowResizeInReadOnly;
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const scrolledHighlightRef = React.useRef<XlsxViewerController["highlightedRanges"][number] | null>(null);
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const tableRef = React.useRef<HTMLTableElement>(null);
   const gridKeyboardActiveRef = React.useRef(false);
@@ -7511,6 +7528,12 @@ function XlsxGrid({
   const resolveMergeAnchorCell = React.useCallback((cell: XlsxCellAddress): XlsxCellAddress => {
     return mergedSecondaryAnchorMap.get(`${cell.row}:${cell.col}`) ?? cell;
   }, [mergedSecondaryAnchorMap]);
+  const highlightedCellRanges = React.useMemo(
+    () => highlightedRanges.flatMap((highlight, index) => activeSheet?.workbookSheetIndex === highlight.workbookSheetIndex
+      ? [{ highlight, index, range: expandHighlightedRange(highlight.range, activeSheet?.mergedRanges ?? mergedRegions) }]
+      : []),
+    [activeSheet?.mergedRanges, activeSheet?.workbookSheetIndex, highlightedRanges, mergedRegions]
+  );
   const normalizedSelection = React.useMemo(() => (selection ? normalizeRange(selection) : null), [selection]);
   const zoomFactor = React.useMemo(() => Math.max(0.1, zoomScale / 100), [zoomScale]);
   const previousZoomFactorRef = React.useRef(zoomFactor);
@@ -7550,7 +7573,7 @@ function XlsxGrid({
       frozenPaneRight: liveFrozenPaneRight
     } = canvasLayoutMetricsRef.current;
     const currentLiveGestureZoom = liveGestureZoomRef.current;
-    const isLiveZooming = currentLiveGestureZoom !== null && zoomScale === currentLiveGestureZoom.baseZoomScale;
+    const isLiveZooming = experimentalCanvas && currentLiveGestureZoom !== null && zoomScale === currentLiveGestureZoom.baseZoomScale;
     const liveZoomScale = isLiveZooming
       ? Math.max(0.1, currentLiveGestureZoom.targetZoomScale / currentLiveGestureZoom.baseZoomScale)
       : 1;
@@ -8710,7 +8733,7 @@ function XlsxGrid({
 
   React.useLayoutEffect(() => {
     syncDrawingViewport(scrollRef.current, { immediate: true });
-  }, [activeSheet, activeTabIndex, displayColLimit, displayRowLimit, syncDrawingViewport, zoomFactor]);
+  }, [activeSheet, activeTabIndex, displayColLimit, displayRowLimit, highlightedCellRanges, syncDrawingViewport, zoomFactor]);
 
   React.useLayoutEffect(() => {
     const scroller = scrollRef.current;
@@ -10189,6 +10212,56 @@ function XlsxGrid({
     };
   }, [colIndexByActual, colPrefixSums, displayHeaderHeight, displayRowHeaderWidth, displayedSelection, rowIndexByActual, rowPrefixSums]);
   const resolvedSelectionOverlay = selectionOverlay;
+  const rangeHighlightRects = React.useMemo(() => highlightedCellRanges.map(({ highlight, index, range }) => {
+    const rows = getHighlightAxisExtent(visibleRows, rowPrefixSums, range.start.row, range.end.row);
+    const cols = getHighlightAxisExtent(visibleCols, colPrefixSums, range.start.col, range.end.col);
+    return {
+      highlight,
+      index,
+      range,
+      rect: rows && cols ? {
+        height: rows.end - rows.start,
+        left: displayRowHeaderWidth + cols.start,
+        top: displayHeaderHeight + rows.start,
+        width: cols.end - cols.start
+      } : null
+    };
+  }), [colPrefixSums, displayHeaderHeight, displayRowHeaderWidth, highlightedCellRanges, rowPrefixSums, visibleCols, visibleRows]);
+
+  React.useEffect(() => {
+    let requiredRows = 0;
+    let requiredCols = 0;
+    for (const { highlight, range } of highlightedCellRanges) {
+      if (highlight.kind !== "columns") {
+        requiredRows = Math.max(requiredRows, Math.min(XLSX_MAX_ROWS, range.end.row + OPEN_GRID_ROW_PADDING + 1));
+      }
+      if (highlight.kind !== "rows") {
+        requiredCols = Math.max(requiredCols, Math.min(XLSX_MAX_COLUMNS, range.end.col + OPEN_GRID_COL_PADDING + 1));
+      }
+    }
+    setDisplayRowLimit((current) => Math.max(current, requiredRows));
+    setDisplayColLimit((current) => Math.max(current, requiredCols));
+  }, [activeSheet?.maxUsedCol, activeSheet?.maxUsedRow, highlightedCellRanges, activeSheetIndex, isWorkerBacked]);
+
+  React.useEffect(() => {
+    const scroller = scrollRef.current;
+    const target = rangeHighlightRects.find(({ highlight }) => highlight.autoScroll);
+    if (!scroller || !target?.rect || scrolledHighlightRef.current === target.highlight || isLoading
+      || scroller.clientWidth === 0 || scroller.clientHeight === 0
+      || (target.highlight.kind !== "columns" && displayRowLimit <= target.range.end.row)
+      || (target.highlight.kind !== "rows" && displayColLimit <= target.range.end.col)) {
+      return;
+    }
+    const { highlight, rect } = target;
+    if (highlight.kind !== "columns") {
+      scroller.scrollTop = getHighlightScrollOffset(rect.top, rect.top + rect.height, frozenPaneBottom, scroller.clientHeight, scroller.scrollTop);
+    }
+    if (highlight.kind !== "rows") {
+      scroller.scrollLeft = getHighlightScrollOffset(rect.left, rect.left + rect.width, frozenPaneRight, scroller.clientWidth, scroller.scrollLeft);
+    }
+    scrolledHighlightRef.current = highlight;
+    syncDrawingViewport(scroller, { immediate: true });
+  }, [displayColLimit, displayRowLimit, drawingViewport.height, drawingViewport.width, frozenPaneBottom, frozenPaneRight, isLoading, rangeHighlightRects, syncDrawingViewport]);
   const { fill: selectionFill, header: selectionHeaderSurface, stroke: selectionStroke } = React.useMemo(() => resolveSelectionColors({
     palette,
     selectionColor,
@@ -13903,6 +13976,7 @@ function XlsxGrid({
     backgroundColor: palette.headerSurface,
     borderBottom: "none",
     borderRight: "none",
+    boxSizing: "border-box",
     boxShadow: gutterSeparatorShadow,
     color: palette.headerText,
     fontSize: "11px",
@@ -15814,6 +15888,53 @@ function XlsxGrid({
     }
   };
 
+  const rangeHighlightNodes = rangeHighlightRects.flatMap(({ index, rect }) => rect ? [
+    <div
+      key={index}
+      aria-hidden="true"
+      className={classNames("react-xlsx-range-highlight", highlightClassName)}
+      data-dark={paletteIsDark(palette) ? "true" : undefined}
+      data-xlsx-range-highlight={index}
+      style={{
+        ...rect,
+        ["--xlsx-highlight-default-border-width" as string]: `${selectionBorderWidth}px`,
+        boxSizing: "border-box",
+        pointerEvents: "none",
+        position: "absolute",
+        zIndex: maxDrawingOverlayZIndex + 1
+      }}
+    />
+  ] : []);
+  const drawingOverlayPanes = (experimentalCanvas && hasCanvasDomDrawingOverlays) || rangeHighlightNodes.length > 0 ? (
+    <div style={{ ...canvasBodyViewportLayerStyle, zIndex: experimentalCanvas ? 23 : 34 }}>
+      {([
+        { pane: "scroll", style: canvasScrollOverlayPaneStyle, ref: canvasScrollOverlayContentRef, left: -drawingViewport.left - frozenPaneRight, top: -drawingViewport.top - frozenPaneBottom },
+        { pane: "top", style: canvasTopOverlayPaneStyle, ref: canvasTopOverlayContentRef, left: -drawingViewport.left - frozenPaneRight, top: -displayHeaderHeight },
+        { pane: "left", style: canvasLeftOverlayPaneStyle, ref: canvasLeftOverlayContentRef, left: -displayRowHeaderWidth, top: -drawingViewport.top - frozenPaneBottom },
+        { pane: "corner", style: canvasCornerOverlayPaneStyle, ref: canvasCornerOverlayContentRef, left: -displayRowHeaderWidth, top: -displayHeaderHeight }
+      ] as const).map(({ pane, style, ref, left, top }) => (
+        <div key={pane} style={style}>
+          <div
+            ref={ref}
+            style={{
+              height: sheetContentHeight,
+              left: 0,
+              pointerEvents: "none",
+              position: "absolute",
+              top: 0,
+              transform: `translate(${left}px, ${top}px)`,
+              transformOrigin: "0 0",
+              width: totalWidth
+            }}
+          >
+            {experimentalCanvas ? paneDrawingNodes[pane] : null}
+            {rangeHighlightNodes}
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : null;
+
   const scrollerContent = (
     <div
           style={{
@@ -15849,6 +15970,7 @@ function XlsxGrid({
                 <div style={scrollOverlayStyle}>{paneDrawingNodes.scroll}</div>
               </>
             ) : null}
+            {drawingOverlayPanes}
             {experimentalCanvas ? (
               <>
                 <div style={canvasBodyViewportLayerStyle}>
@@ -15880,78 +16002,6 @@ function XlsxGrid({
                     onPointerDown={handleCanvasBodyPointerDown}
                     style={canvasCornerBodyStyle}
                   />
-                  {hasCanvasDomDrawingOverlays ? (
-                    <>
-                      <div style={canvasScrollOverlayPaneStyle}>
-                        <div
-                          ref={canvasScrollOverlayContentRef}
-                          style={{
-                            height: sheetContentHeight,
-                            left: 0,
-                            pointerEvents: "none",
-                            position: "absolute",
-                            top: 0,
-                            transform: `translate(${-drawingViewport.left - frozenPaneRight}px, ${-drawingViewport.top - frozenPaneBottom}px)`,
-                            transformOrigin: "0 0",
-                            width: totalWidth
-                          }}
-                        >
-                          {paneDrawingNodes.scroll}
-                        </div>
-                      </div>
-                      <div style={canvasTopOverlayPaneStyle}>
-                        <div
-                          ref={canvasTopOverlayContentRef}
-                          style={{
-                            height: sheetContentHeight,
-                            left: 0,
-                            pointerEvents: "none",
-                            position: "absolute",
-                            top: 0,
-                            transform: `translate(${-drawingViewport.left - frozenPaneRight}px, ${-displayHeaderHeight}px)`,
-                            transformOrigin: "0 0",
-                            width: totalWidth
-                          }}
-                        >
-                          {paneDrawingNodes.top}
-                        </div>
-                      </div>
-                      <div style={canvasLeftOverlayPaneStyle}>
-                        <div
-                          ref={canvasLeftOverlayContentRef}
-                          style={{
-                            height: sheetContentHeight,
-                            left: 0,
-                            pointerEvents: "none",
-                            position: "absolute",
-                            top: 0,
-                            transform: `translate(${-displayRowHeaderWidth}px, ${-drawingViewport.top - frozenPaneBottom}px)`,
-                            transformOrigin: "0 0",
-                            width: totalWidth
-                          }}
-                        >
-                          {paneDrawingNodes.left}
-                        </div>
-                      </div>
-                      <div style={canvasCornerOverlayPaneStyle}>
-                        <div
-                          ref={canvasCornerOverlayContentRef}
-                          style={{
-                            height: sheetContentHeight,
-                            left: 0,
-                            pointerEvents: "none",
-                            position: "absolute",
-                            top: 0,
-                            transform: `translate(${-displayRowHeaderWidth}px, ${-displayHeaderHeight}px)`,
-                            transformOrigin: "0 0",
-                            width: totalWidth
-                          }}
-                        >
-                          {paneDrawingNodes.corner}
-                        </div>
-                      </div>
-                    </>
-                  ) : null}
                 </div>
                 <div style={canvasHeaderViewportLayerStyle}>
                   <canvas
@@ -16402,6 +16452,7 @@ function XlsxGrid({
 
 function XlsxViewerInner({
   allowResizeInReadOnly = false,
+  autoScrollToHighlightedRanges = true,
   className,
   controller,
   emptyState,
@@ -16414,6 +16465,8 @@ function XlsxViewerInner({
   headerBackgroundColor,
   headerTextColor,
   height,
+  highlightClassName,
+  highlightedRanges,
   isDark = false,
   loadingComponent,
   loadingState,
@@ -16438,6 +16491,33 @@ function XlsxViewerInner({
 }) {
   const palette = useViewerPalette(isDark, headerBackgroundColor, headerTextColor);
   const { displayFileName, error } = controller;
+  const appliedHighlightRef = React.useRef<{
+    autoScroll: boolean;
+    clear: XlsxViewerController["clearHighlightedRanges"];
+    file: ArrayBuffer | undefined;
+    referenceKey: string;
+    src: string | undefined;
+  } | null>(null);
+  const { clearHighlightedRanges, file, highlightRanges, isLoading, sheets, src } = controller;
+  React.useEffect(() => {
+    if (isLoading || highlightedRanges === undefined) {
+      appliedHighlightRef.current = null;
+      return;
+    }
+    if (highlightedRanges !== null && sheets.length === 0) {
+      return;
+    }
+    const referenceKey = JSON.stringify(typeof highlightedRanges === "string" ? [highlightedRanges] : highlightedRanges ?? []);
+    const previous = appliedHighlightRef.current;
+    if (previous && previous.referenceKey === referenceKey && previous.autoScroll === autoScrollToHighlightedRanges
+      && previous.file === file && previous.src === src && previous.clear === clearHighlightedRanges) {
+      return;
+    }
+    appliedHighlightRef.current = { autoScroll: autoScrollToHighlightedRanges, clear: clearHighlightedRanges, file, referenceKey, src };
+    if (highlightedRanges === null || !highlightRanges(highlightedRanges, { autoScroll: autoScrollToHighlightedRanges })) {
+      clearHighlightedRanges();
+    }
+  }, [autoScrollToHighlightedRanges, clearHighlightedRanges, file, highlightRanges, highlightedRanges, isLoading, sheets.length, src]);
   const customFileTooLarge =
     error instanceof XlsxFileSizeLimitExceededError
       ? renderCustomFileTooLarge(
@@ -16478,6 +16558,7 @@ function XlsxViewerInner({
               width: "100%"
             }}
           >
+            <style>{RANGE_HIGHLIGHT_STYLES}</style>
             {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
             <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
               <XlsxGrid
@@ -16490,6 +16571,7 @@ function XlsxViewerInner({
                 experimentalCanvas={experimentalCanvas}
                 fileTooLargeState={fileTooLargeState}
                 getCellStyle={getCellStyle}
+                highlightClassName={highlightClassName}
                 loadingComponent={loadingComponent}
                 loadingState={loadingState}
                 onFormControlAction={onFormControlAction}

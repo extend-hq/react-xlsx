@@ -171,6 +171,9 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `allowResizeInReadOnly` | `boolean` | Allows row and column resizing even when `readOnly` is enabled. Defaults to `false`. |
 | `experimentalCanvas` | `boolean` | Routes the worksheet renderer through the canvas implementation. Defaults to `true`. |
 | `toolbar` | `React.ReactNode \| (controller: XlsxViewerController) => React.ReactNode` | Replaces the toolbar area with a custom node or render function. |
+| `highlightedRanges` | `string \| readonly string[] \| null` | Render-only A1 range highlights. Set to `null` or `[]` to clear. |
+| `autoScrollToHighlightedRanges` | `boolean` | Reveals the first range and its worksheet. Defaults to `true`. |
+| `highlightClassName` | `string` | Additional CSS class on the range highlight. |
 | `selectionColor` | `string` | Border/accent color for the current selection. |
 | `selectionFillColor` | `string` | Fill color used for selection overlays. |
 | `selectionHeaderColor` | `string` | Accent color used for selected row/column headers. |
@@ -316,6 +319,60 @@ Notes:
 - The callback receives `cell` and `rect`. `rect` is the cell's position in the grid's scroll content, in pixels at the current zoom. Use `getBoundingClientRect()` on your node when you need viewport coordinates.
 - The container sets `pointerEvents: "none"` so clicks still reach the grid. Set `pointerEvents: "auto"` on your own elements to make them interactive.
 - Return `null` to render nothing for a given cell.
+
+## Range Highlighting
+
+Pass an A1 reference or an array of references to `highlightedRanges` to draw blue bounding boxes with a thin border matching the selection outline and a subtle fill. The highlights are separate from the current selection and do not change workbook formatting. It works in both canvas and DOM rendering, including frozen panes, hidden rows/columns, merged cells, and zoom.
+
+```tsx
+<XlsxViewer
+  file={file}
+  highlightedRanges={["'Sheet 1'!$B$3:$E$8", "'Sheet 1'!G3:J8", "'Sheet 2'!B10:D14"]}
+  autoScrollToHighlightedRanges={true}
+  highlightClassName="my-range-highlight"
+/>
+```
+
+`autoScrollToHighlightedRanges` defaults to `true`: a new set of ranges reveals the first range and switches to its worksheet. Other ranges remain highlighted on their respective sheets. Set it to `false` to leave both the current scroll position and active sheet unchanged. Navigation happens once per set of ranges or auto-scroll option change, so manual scrolling remains free afterward. A range larger than the viewport reveals its top-left portion; whole-row and whole-column references scroll only the relevant axis.
+
+Set `highlightedRanges={null}` or `highlightedRanges={[]}` to clear all highlights. Omit the prop to manage highlighting through the controller instead. If any prop reference is invalid or unresolved, the previous highlights are cleared. Equivalent arrays do not repeat navigation on parent re-renders. An unqualified reference is bound to the active worksheet when applied, and stays on that worksheet when the user switches tabs.
+
+In the playground, open the **Highlights** tab and click **Load highlight demo**. It loads a sample workbook and applies three ranges across two sheets. Edit one range per line, toggle **Scroll to first range** or **Custom CSS**, then click **Apply ranges**. **Clear highlights** removes all overlays.
+
+### Controller API
+
+The same API is available through `useXlsxViewer()` and `useXlsxViewerController()`:
+
+```tsx
+const accepted = controller.highlightRanges(["B3:E8", "G3:J8"], { autoScroll: false });
+controller.highlightRanges("'Sheet 1'!A40:D48");
+controller.highlightRanges("B3:E8", { sheetIndex: 1 });
+controller.clearHighlightedRanges();
+```
+
+`highlightRanges(references, options?)` accepts a string or a readonly array of strings and returns `true` when every reference resolves to a loaded, visible worksheet. It returns `false` for invalid references, unavailable worksheets, or a workbook that is still loading, leaving all current highlights and navigation unchanged. Validation is atomic; a partially valid array is never applied. `autoScroll` defaults to `true`; `sheetIndex` is a zero-based index into `controller.sheets` and applies only to unqualified references. Each successful call replaces all previous highlights; an empty array clears them. Calling again can reveal the same first range again. `controller.highlightedRanges` is an array of parsed references with their resolved sheet names and workbook sheet indexes. Only its first entry can have `autoScroll: true`. Loading another workbook clears the array.
+
+### CSS Customization
+
+Style `.react-xlsx-range-highlight` globally, or use `highlightClassName` for a scoped override. Appearance is CSS in both renderers, so ordinary CSS properties work without `!important`:
+
+```css
+.my-range-highlight {
+  border: 1px solid #0284c7;
+  background: rgb(2 132 199 / 10%);
+  border-radius: 3px;
+}
+```
+
+The defaults also accept inherited `--xlsx-highlight-border`, `--xlsx-highlight-fill`, and `--xlsx-highlight-radius` custom properties on the viewer or any ancestor. Position and dimensions are managed by the viewer; the overlay ignores pointer events. Use `[data-xlsx-range-highlight="1"]` to style a particular range by its zero-based index in the input array. A range crossing frozen panes may have several clipped overlay elements, each carrying the same class and index.
+
+### Parsing References
+
+`parseXlsxRange(reference)` validates a reference without loading a workbook. It returns `{ kind, range: { start, end }, sheetName }` with normalized, zero-based coordinates, or `null` for invalid input. `kind` is `"cells"`, `"rows"`, or `"columns"`; `sheetName` is `null` for an unqualified reference.
+
+Supported references include single cells (`A1`), rectangles (`B2:E8`), absolute or mixed references (`$B2:E$8`), entire rows (`2:8`), entire columns (`B:E`), and optional worksheet prefixes. Sheet names with spaces or punctuation must be single-quoted; embedded apostrophes are doubled (`'Owner''s Data'!A1`). Letter case, reversed endpoints, surrounding whitespace, and an optional leading `=` are accepted. Coordinates are checked against [Excel's worksheet limits](https://support.microsoft.com/en-us/excel/excel-specifications-and-limits).
+
+Each string must contain one rectangular A1 reference, not named ranges, structured table references, unions, R1C1 notation, external workbooks, or references spanning multiple worksheets. Whole-row/column highlights cover the displayed grid and extend as it grows.
 
 ## Custom Cell Styling
 
@@ -565,7 +622,8 @@ The package also exports the main types you are likely to use for custom integra
 - `XlsxSheetThumbnail`, `XlsxSheetThumbnailResolution`
 - `XlsxTable`, `XlsxTableColumn`, `XlsxTableHeaderMenuRenderProps`
 - `XlsxActiveCellOverlayRenderProps`
-- `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`, `XlsxCellStyleContext`
+- `XlsxWorkbookTab`, `XlsxCellAddress`, `XlsxCellRange`
+- `XlsxParsedRange`, `XlsxRangeHighlight`, `XlsxHighlightRangeOptions`, `XlsxCellStyleContext`
 
 ## Notes
 

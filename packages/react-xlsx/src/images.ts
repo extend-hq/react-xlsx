@@ -162,7 +162,8 @@ export function resolveWorksheetMergeMetadata(worksheet: DukeWorksheet) {
     hasHorizontalMerges: false,
     hasVerticalMerges: false,
     maxHorizontalMergeEndCol: -1,
-    maxVerticalMergeEndRow: -1
+    maxVerticalMergeEndRow: -1,
+    mergedRanges: [] as XlsxCellRange[]
   };
   const mergedRegions = Array.isArray(worksheet.mergedRegions) ? worksheet.mergedRegions : [];
 
@@ -196,6 +197,7 @@ export function resolveWorksheetMergeMetadata(worksheet: DukeWorksheet) {
       continue;
     }
 
+    mergeMetadata.mergedRanges.push(range);
     if (range.end.col > range.start.col) {
       mergeMetadata.hasHorizontalMerges = true;
       mergeMetadata.maxHorizontalMergeEndCol = Math.max(mergeMetadata.maxHorizontalMergeEndCol, range.end.col);

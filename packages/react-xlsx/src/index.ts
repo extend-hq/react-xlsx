@@ -1,4 +1,5 @@
 export { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
+export { parseXlsxRange } from "./range-reference";
 export { initWasm, setWasmSource, type XlsxWasmSource } from "./wasm";
 export {
   DefaultXlsxToolbar,
@@ -34,6 +35,9 @@ export type {
   XlsxCellNumberFormatInput,
   XlsxCellProtectionInput,
   XlsxCellRange,
+  XlsxParsedRange,
+  XlsxHighlightRangeOptions,
+  XlsxRangeHighlight,
   XlsxCellStyleContext,
   XlsxCellStyleColorInput,
   XlsxCellStyleInput,

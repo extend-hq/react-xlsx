@@ -47,6 +47,7 @@ import {
   type WorkbookImageSheetOrigin
 } from "./images";
 import { safeCalculate, tryRecalculate } from "./safe-calculate";
+import { parseXlsxRange } from "./range-reference";
 import { canUseConfiguredWasmSourceInWorker, getSheetsWasmModule } from "./wasm";
 import { XlsxWorkerClient } from "./worker-client";
 import { normalizeWorkbookArrayBuffer } from "./zip-entry-names";
@@ -71,6 +72,8 @@ import type {
   XlsxImage,
   XlsxImageRect,
   XlsxImageResizeHandlePosition,
+  XlsxHighlightRangeOptions,
+  XlsxRangeHighlight,
   XlsxResolvedCellStyle,
   XlsxShape,
   XlsxSheetData,
@@ -540,6 +543,7 @@ function buildSheetList(
         hasVerticalMerges: mergeMetadata.hasVerticalMerges,
         maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
         maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
+        mergedRanges: mergeMetadata.mergedRanges,
         hiddenCols: [],
         hiddenRows: [],
         minUsedCol: -1,
@@ -639,6 +643,7 @@ function buildSheetList(
       hasVerticalMerges: mergeMetadata.hasVerticalMerges,
       maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
       maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
+      mergedRanges: mergeMetadata.mergedRanges,
       hiddenCols: resolveWorksheetHiddenCols(worksheet, maxCol),
       hiddenRows: resolveWorksheetHiddenRows(worksheet, maxRow),
       minUsedCol: minCol,
@@ -1898,6 +1903,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [zoomScaleOverridesByTabId, setZoomScaleOverridesByTabId] = React.useState<Record<string, number>>({});
   const [activeCell, setActiveCell] = React.useState<XlsxCellAddress | null>(null);
   const [selection, setSelection] = React.useState<XlsxCellRange | null>(null);
+  const [highlightedRanges, setHighlightedRanges] = React.useState<XlsxRangeHighlight[]>([]);
   const [selectedChartId, setSelectedChartId] = React.useState<string | null>(null);
   const [selectedChartElement, setSelectedChartElement] = React.useState<XlsxChartElementSelection | null>(null);
   const [selectedImageId, setSelectedImageId] = React.useState<string | null>(null);
@@ -2240,6 +2246,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveTabIndexState(0);
       setActiveCell(null);
       setSelection(null);
+      setHighlightedRanges([]);
       setSelectedChartId(null);
       setSelectedChartElement(null);
       setSelectedImageId(null);
@@ -2270,6 +2277,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setActiveTabIndexState(0);
     setActiveCell(null);
     setSelection(null);
+    setHighlightedRanges([]);
     setSelectedChartId(null);
     setSelectedChartElement(null);
     setSelectedImageId(null);
@@ -2488,6 +2496,45 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return index;
     });
   }, [tabs]);
+
+  const highlightRanges = React.useCallback((references: string | readonly string[], options: XlsxHighlightRangeOptions = {}) => {
+    const inputs = typeof references === "string" ? [references] : references;
+    if (!Array.isArray(inputs) || isLoading || error) {
+      return false;
+    }
+    const nextHighlights: XlsxRangeHighlight[] = [];
+    let firstSheetIndex = activeSheetIndex;
+    for (const reference of inputs) {
+      const parsed = parseXlsxRange(reference);
+      if (!parsed) {
+        return false;
+      }
+      const requestedSheetName = parsed.sheetName?.toLowerCase();
+      const sheetIndex = requestedSheetName === undefined
+        ? options.sheetIndex ?? activeSheetIndex
+        : sheets.findIndex((sheet) => sheet.name.toLowerCase() === requestedSheetName);
+      const sheet = Number.isInteger(sheetIndex) ? sheets[sheetIndex] : undefined;
+      if (!sheet) {
+        return false;
+      }
+      if (nextHighlights.length === 0) {
+        firstSheetIndex = sheetIndex;
+      }
+      nextHighlights.push({
+        ...parsed,
+        autoScroll: nextHighlights.length === 0 && (options.autoScroll ?? true),
+        sheetName: sheet.name,
+        workbookSheetIndex: sheet.workbookSheetIndex
+      });
+    }
+    setHighlightedRanges(nextHighlights);
+    if (nextHighlights[0]?.autoScroll) {
+      setActiveSheetIndex(firstSheetIndex);
+    }
+    return true;
+  }, [activeSheetIndex, error, isLoading, setActiveSheetIndex, sheets]);
+
+  const clearHighlightedRanges = React.useCallback(() => setHighlightedRanges([]), []);
 
   const setZoomScale = React.useCallback((nextZoomScale: number) => {
     const normalizedZoomScale = clampZoomScale(nextZoomScale);
@@ -4962,6 +5009,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       clearSelectedCells,
       clearSelectedImage,
       clearSelection,
+      clearHighlightedRanges,
+      highlightRanges,
+      highlightedRanges,
       continueDeferredLoad,
       copySelectionToClipboard,
       defaultZoomScale,
@@ -5082,6 +5132,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       clearSelectedCells,
       clearSelectedImage,
       continueDeferredLoad,
+      clearHighlightedRanges,
+      highlightRanges,
+      highlightedRanges,
       copySelectionToClipboard,
       defaultZoomScale,
       deferredLoadFileSize,

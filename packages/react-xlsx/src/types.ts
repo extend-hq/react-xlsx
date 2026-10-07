@@ -132,6 +132,7 @@ export interface XlsxSheetData {
   hasVerticalMerges: boolean;
   maxHorizontalMergeEndCol: number;
   maxVerticalMergeEndRow: number;
+  mergedRanges?: XlsxCellRange[];
   minUsedCol: number;
   minUsedRow: number;
   maxUsedCol: number;
@@ -162,6 +163,26 @@ export interface XlsxCellAddress {
 export interface XlsxCellRange {
   end: XlsxCellAddress;
   start: XlsxCellAddress;
+}
+
+export interface XlsxParsedRange {
+  kind: "cells" | "rows" | "columns";
+  range: XlsxCellRange;
+  sheetName: string | null;
+}
+
+export interface XlsxHighlightRangeOptions {
+  /** Navigates to the worksheet and reveals the first range. Defaults to true. */
+  autoScroll?: boolean;
+  /** Visible worksheet index for an unqualified reference. Defaults to the active worksheet. */
+  sheetIndex?: number;
+}
+
+export interface XlsxRangeHighlight extends XlsxParsedRange {
+  /** Whether this entry is the navigation target for the current highlight update. */
+  autoScroll: boolean;
+  sheetName: string;
+  workbookSheetIndex: number;
 }
 
 /**
@@ -1059,6 +1080,11 @@ export interface XlsxViewerController {
   addFormControl: (input: XlsxFormControlInput, sheetIndex?: number) => number | null;
   clearSelectedCells: () => void;
   clearSelection: () => void;
+  /** Removes all render-only range highlights. */
+  clearHighlightedRanges: () => void;
+  /** Replaces the highlights with validated A1 ranges. Returns false without changing state if any reference cannot be resolved. */
+  highlightRanges: (references: string | readonly string[], options?: XlsxHighlightRangeOptions) => boolean;
+  highlightedRanges: XlsxRangeHighlight[];
   continueDeferredLoad: () => void;
   copySelectionToClipboard: () => Promise<boolean>;
   defaultZoomScale: number;
@@ -1515,6 +1541,12 @@ export interface XlsxViewerProviderProps extends UseXlsxViewerControllerOptions 
 }
 
 export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
+  /** Render-only A1 ranges to highlight. Null or an empty array clears them; undefined leaves controller state alone. */
+  highlightedRanges?: string | readonly string[] | null;
+  /** Reveals the first newly highlighted range, including switching worksheets. Defaults to true. */
+  autoScrollToHighlightedRanges?: boolean;
+  /** Additional CSS class applied to the range highlight in both renderers. */
+  highlightClassName?: string;
   /**
    * Allows row and column resizing even while editing is disabled by `readOnly`.
    *
