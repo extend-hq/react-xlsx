@@ -7317,6 +7317,9 @@ function XlsxGrid({
     src: string;
   }>());
   const selectionOverlayRef = React.useRef<HTMLDivElement>(null);
+  const selectionPaneContentRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
+  const selectionPaneOverlayRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
+  const selectionPaneFillHandleRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
   const canvasSelectionLayerRef = React.useRef<HTMLDivElement>(null);
   const activeValidationOverlayRef = React.useRef<HTMLDivElement>(null);
   const fillHandleRef = React.useRef<HTMLDivElement>(null);
@@ -7711,6 +7714,7 @@ function XlsxGrid({
       );
     };
     const applyOverlayTransform = (
+      pane: FrozenDrawingPane,
       element: HTMLDivElement | null,
       baseTranslateX: number,
       baseTranslateY: number,
@@ -7721,14 +7725,16 @@ function XlsxGrid({
     ) => {
       const translateX = resolveLiveTranslation(baseTranslateX, anchorX, paneLeft);
       const translateY = resolveLiveTranslation(baseTranslateY, anchorY, paneTop);
-      applyElementTransform(
-        element,
-        liveZoomScale !== 1
-          ? `translate3d(${translateX}px, ${translateY}px, 0) scale(${liveZoomScale})`
-          : `translate3d(${baseTranslateX}px, ${baseTranslateY}px, 0)`,
-        "transform",
-        "0 0"
-      );
+      for (const content of [element, selectionPaneContentRefs.current.get(pane) ?? null]) {
+        applyElementTransform(
+          content,
+          liveZoomScale !== 1
+            ? `translate3d(${translateX}px, ${translateY}px, 0) scale(${liveZoomScale})`
+            : `translate3d(${baseTranslateX}px, ${baseTranslateY}px, 0)`,
+          "transform",
+          "0 0"
+        );
+      }
     };
     const liveScrollBodyViewportWidth = Math.max(0, nextLiveViewport.width - liveFrozenPaneRight);
     const liveScrollBodyViewportHeight = Math.max(0, nextLiveViewport.height - liveFrozenPaneBottom);
@@ -7832,6 +7838,7 @@ function XlsxGrid({
       0
     );
     applyOverlayTransform(
+      "scroll",
       canvasScrollOverlayContentRef.current,
       -nextLiveViewport.left - liveFrozenPaneRight,
       -nextLiveViewport.top - liveFrozenPaneBottom,
@@ -7841,6 +7848,7 @@ function XlsxGrid({
       liveZoomAnchorY
     );
     applyOverlayTransform(
+      "top",
       canvasTopOverlayContentRef.current,
       -nextLiveViewport.left - liveFrozenPaneRight,
       -liveDisplayHeaderHeight,
@@ -7850,6 +7858,7 @@ function XlsxGrid({
       0
     );
     applyOverlayTransform(
+      "left",
       canvasLeftOverlayContentRef.current,
       -liveDisplayRowHeaderWidth,
       -nextLiveViewport.top - liveFrozenPaneBottom,
@@ -7859,6 +7868,7 @@ function XlsxGrid({
       liveZoomAnchorY
     );
     applyOverlayTransform(
+      "corner",
       canvasCornerOverlayContentRef.current,
       -liveDisplayRowHeaderWidth,
       -liveDisplayHeaderHeight,
@@ -11021,8 +11031,10 @@ function XlsxGrid({
     range: XlsxCellRange | null,
     options?: { preferGeometry?: boolean; updateHeaderSelection?: boolean }
   ) => {
-    const overlay = selectionOverlayRef.current;
-    if (!overlay || !range) {
+    const overlays = experimentalCanvas
+      ? [...selectionPaneOverlayRefs.current.values()]
+      : [selectionOverlayRef.current];
+    if (!range) {
       if (options?.updateHeaderSelection !== false) {
         applyHeaderSelection(range);
       }
@@ -11030,7 +11042,7 @@ function XlsxGrid({
     }
 
     const nextRect =
-      options?.preferGeometry
+      experimentalCanvas || options?.preferGeometry
         ? resolveGeometryOverlayRect(range) ?? resolveOverlayRect(range)
         : selectionDragRef.current?.didDrag || fillDragRef.current
         ? resolveDragPreviewRect(range) ?? resolveGeometryOverlayRect(range) ?? resolveOverlayRect(range)
@@ -11042,23 +11054,35 @@ function XlsxGrid({
       return;
     }
 
-    overlay.style.left = `${nextRect.left}px`;
-    overlay.style.top = `${nextRect.top}px`;
-    overlay.style.width = `${nextRect.width}px`;
-    overlay.style.height = `${nextRect.height}px`;
-    overlay.style.opacity = "1";
-    overlay.style.visibility = "visible";
-    const fillHandle = fillHandleRef.current;
-    if (fillHandle) {
-      fillHandle.style.left = `${nextRect.left + nextRect.width - (4 * zoomFactor)}px`;
-      fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
+    for (const overlay of overlays) {
+      if (overlay) {
+        overlay.style.left = `${nextRect.left}px`;
+        overlay.style.top = `${nextRect.top}px`;
+        overlay.style.width = `${nextRect.width}px`;
+        overlay.style.height = `${nextRect.height}px`;
+        overlay.style.opacity = "1";
+        overlay.style.visibility = "visible";
+      }
+    }
+    const fillHandles = experimentalCanvas
+      ? [...selectionPaneFillHandleRefs.current.values()]
+      : [fillHandleRef.current];
+    for (const fillHandle of fillHandles) {
+      if (fillHandle) {
+        fillHandle.style.left = `${nextRect.left + nextRect.width - (4 * zoomFactor)}px`;
+        fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
+      }
     }
     if (options?.updateHeaderSelection !== false) {
       applyHeaderSelection(range);
     }
-  }, [applyHeaderSelection, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect, zoomFactor]);
+  }, [applyHeaderSelection, experimentalCanvas, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect, zoomFactor]);
 
   const applyPreviewOverlayFromElement = React.useCallback((element: HTMLElement, range: XlsxCellRange) => {
+    if (experimentalCanvas) {
+      applyPreviewOverlay(range);
+      return;
+    }
     const overlay = selectionOverlayRef.current;
     if (!overlay) {
       return;
@@ -11082,7 +11106,7 @@ function XlsxGrid({
       fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
     }
     applyHeaderSelection(range);
-  }, [applyHeaderSelection, resolveMountedCellOverlayRect, resolveOverlayRect, zoomFactor]);
+  }, [applyHeaderSelection, applyPreviewOverlay, experimentalCanvas, resolveMountedCellOverlayRect, resolveOverlayRect, zoomFactor]);
 
   const syncActiveValidationOverlay = React.useCallback((cell: XlsxCellAddress | null) => {
     const overlay = activeValidationOverlayRef.current;
@@ -11607,9 +11631,11 @@ function XlsxGrid({
     const overlayRange = selectionPreviewRangeRef.current ?? displayedSelection;
     if (!overlayRange || !wrapperRef.current) {
       applyHeaderSelection(null);
-      if (selectionOverlayRef.current) {
-        selectionOverlayRef.current.style.opacity = "0";
-        selectionOverlayRef.current.style.visibility = "hidden";
+      for (const overlay of [selectionOverlayRef.current, ...selectionPaneOverlayRefs.current.values()]) {
+        if (overlay) {
+          overlay.style.opacity = "0";
+          overlay.style.visibility = "hidden";
+        }
       }
       return;
     }
@@ -15982,14 +16008,112 @@ function XlsxGrid({
       }}
     />
   ] : []);
+  function renderSelectionOverlay(pane?: FrozenDrawingPane) {
+    return (
+      <>
+        <div
+          ref={pane ? (element) => {
+            if (element) {
+              selectionPaneOverlayRefs.current.set(pane, element);
+            } else {
+              selectionPaneOverlayRefs.current.delete(pane);
+            }
+          } : selectionOverlayRef}
+          style={{
+            backgroundColor: selectionFill,
+            boxSizing: "border-box",
+            boxShadow: `inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`,
+            contain: "layout paint",
+            height: resolvedSelectionOverlay?.height ?? 0,
+            left: resolvedSelectionOverlay?.left ?? 0,
+            opacity: resolvedSelectionOverlay ? 1 : 0,
+            pointerEvents: "none",
+            position: "absolute",
+            top: resolvedSelectionOverlay?.top ?? 0,
+            transition: canvasSelectionTransition,
+            visibility: resolvedSelectionOverlay ? "visible" : "hidden",
+            willChange: shouldAnimateCanvasSelectionGeometry ? "left, top, width, height" : undefined,
+            width: resolvedSelectionOverlay?.width ?? 0,
+            zIndex: 24
+          }}
+        />
+        <div
+          ref={pane ? (element) => {
+            if (element) {
+              selectionPaneFillHandleRefs.current.set(pane, element);
+            } else {
+              selectionPaneFillHandleRefs.current.delete(pane);
+            }
+          } : fillHandleRef}
+          onPointerDown={(event) => {
+            if (readOnly || event.button !== 0 || !normalizedSelection || !resolvedSelectionOverlay) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            startFillDrag(event.pointerId, normalizedSelection);
+          }}
+          style={{
+            backgroundColor: selectionStroke,
+            border: `${Math.max(1, zoomFactor)}px solid ${palette.surface}`,
+            contain: "layout paint",
+            cursor: "crosshair",
+            display: !readOnly && resolvedSelectionOverlay ? "block" : "none",
+            height: 8 * zoomFactor,
+            left: resolvedSelectionOverlay ? resolvedSelectionOverlay.left + resolvedSelectionOverlay.width - (4 * zoomFactor) : 0,
+            pointerEvents: "auto",
+            position: "absolute",
+            top: resolvedSelectionOverlay ? resolvedSelectionOverlay.top + resolvedSelectionOverlay.height - (4 * zoomFactor) : 0,
+            transition: shouldAnimateCanvasSelectionGeometry
+              ? "left 120ms cubic-bezier(0.22, 1, 0.36, 1), top 120ms cubic-bezier(0.22, 1, 0.36, 1)"
+              : "none",
+            willChange: shouldAnimateCanvasSelectionGeometry ? "left, top" : undefined,
+            width: 8 * zoomFactor,
+            zIndex: 25
+          }}
+        />
+      </>
+    );
+  }
+
+  const overlayPanes = [
+    { pane: "scroll", style: canvasScrollOverlayPaneStyle, ref: canvasScrollOverlayContentRef, left: -drawingViewport.left - frozenPaneRight, top: -drawingViewport.top - frozenPaneBottom },
+    { pane: "top", style: canvasTopOverlayPaneStyle, ref: canvasTopOverlayContentRef, left: -drawingViewport.left - frozenPaneRight, top: -displayHeaderHeight },
+    { pane: "left", style: canvasLeftOverlayPaneStyle, ref: canvasLeftOverlayContentRef, left: -displayRowHeaderWidth, top: -drawingViewport.top - frozenPaneBottom },
+    { pane: "corner", style: canvasCornerOverlayPaneStyle, ref: canvasCornerOverlayContentRef, left: -displayRowHeaderWidth, top: -displayHeaderHeight }
+  ] as const;
+  const selectionOverlayPanes = experimentalCanvas ? (
+    <div style={{ ...canvasBodyViewportLayerStyle, zIndex: 40 }}>
+      {overlayPanes.map(({ pane, style, left, top }) => (
+        <div key={pane} style={style}>
+          <div
+            ref={(element) => {
+              if (element) {
+                selectionPaneContentRefs.current.set(pane, element);
+              } else {
+                selectionPaneContentRefs.current.delete(pane);
+              }
+            }}
+            style={{
+              height: sheetContentHeight,
+              left: 0,
+              position: "absolute",
+              top: 0,
+              transform: `translate(${left}px, ${top}px)`,
+              transformOrigin: "0 0",
+              width: totalWidth
+            }}
+          >
+            {renderSelectionOverlay(pane)}
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : null;
   const drawingOverlayPanes = (experimentalCanvas && hasCanvasDomDrawingOverlays) || rangeHighlightNodes.length > 0 ? (
     <div style={{ ...canvasBodyViewportLayerStyle, zIndex: experimentalCanvas ? 23 : 34 }}>
-      {([
-        { pane: "scroll", style: canvasScrollOverlayPaneStyle, ref: canvasScrollOverlayContentRef, left: -drawingViewport.left - frozenPaneRight, top: -drawingViewport.top - frozenPaneBottom },
-        { pane: "top", style: canvasTopOverlayPaneStyle, ref: canvasTopOverlayContentRef, left: -drawingViewport.left - frozenPaneRight, top: -displayHeaderHeight },
-        { pane: "left", style: canvasLeftOverlayPaneStyle, ref: canvasLeftOverlayContentRef, left: -displayRowHeaderWidth, top: -drawingViewport.top - frozenPaneBottom },
-        { pane: "corner", style: canvasCornerOverlayPaneStyle, ref: canvasCornerOverlayContentRef, left: -displayRowHeaderWidth, top: -displayHeaderHeight }
-      ] as const).map(({ pane, style, ref, left, top }) => (
+      {overlayPanes.map(({ pane, style, ref, left, top }) => (
         <div key={pane} style={style}>
           <div
             ref={ref}
@@ -16048,6 +16172,7 @@ function XlsxGrid({
               </>
             ) : null}
             {drawingOverlayPanes}
+            {selectionOverlayPanes}
             {experimentalCanvas ? (
               <>
                 <div style={canvasBodyViewportLayerStyle}>
@@ -16369,26 +16494,7 @@ function XlsxGrid({
                 zIndex: 24
               }}
             >
-              <div
-                ref={selectionOverlayRef}
-                style={{
-                  backgroundColor: selectionFill,
-                  boxSizing: "border-box",
-                  boxShadow: `inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`,
-                  contain: "layout paint",
-                  height: resolvedSelectionOverlay?.height ?? 0,
-                  left: resolvedSelectionOverlay?.left ?? 0,
-                  opacity: resolvedSelectionOverlay ? 1 : 0,
-                  pointerEvents: "none",
-                  position: "absolute",
-                  top: resolvedSelectionOverlay?.top ?? 0,
-                  transition: canvasSelectionTransition,
-                  visibility: resolvedSelectionOverlay ? "visible" : "hidden",
-                  willChange: shouldAnimateCanvasSelectionGeometry ? "left, top, width, height" : undefined,
-                  width: resolvedSelectionOverlay?.width ?? 0,
-                  zIndex: 24
-                }}
-              />
+              {!experimentalCanvas ? renderSelectionOverlay() : null}
               {activeCellOverlay != null && activeCellOverlayRect ? (
                 <div
                   data-xlsx-active-cell-overlay=""
@@ -16427,36 +16533,6 @@ function XlsxGrid({
               >
                 ▾
               </div>
-              <div
-                ref={fillHandleRef}
-                onPointerDown={(event) => {
-                  if (readOnly || event.button !== 0 || !normalizedSelection || !resolvedSelectionOverlay) {
-                    return;
-                  }
-
-                  event.preventDefault();
-                  event.stopPropagation();
-                  startFillDrag(event.pointerId, normalizedSelection);
-                }}
-                style={{
-                  backgroundColor: selectionStroke,
-                  border: `${Math.max(1, zoomFactor)}px solid ${palette.surface}`,
-                  contain: "layout paint",
-                  cursor: "crosshair",
-                  display: !readOnly && resolvedSelectionOverlay ? "block" : "none",
-                  height: 8 * zoomFactor,
-                  left: resolvedSelectionOverlay ? resolvedSelectionOverlay.left + resolvedSelectionOverlay.width - (4 * zoomFactor) : 0,
-                  pointerEvents: "auto",
-                  position: "absolute",
-                  top: resolvedSelectionOverlay ? resolvedSelectionOverlay.top + resolvedSelectionOverlay.height - (4 * zoomFactor) : 0,
-                  transition: shouldAnimateCanvasSelectionGeometry
-                    ? "left 120ms cubic-bezier(0.22, 1, 0.36, 1), top 120ms cubic-bezier(0.22, 1, 0.36, 1)"
-                    : "none",
-                  willChange: shouldAnimateCanvasSelectionGeometry ? "left, top" : undefined,
-                  width: 8 * zoomFactor,
-                  zIndex: 25
-                }}
-              />
             </div>
             {resizeGuide ? (
               <div
