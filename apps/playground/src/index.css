@@ -141,3 +141,12 @@
   background: rgb(245 158 11 / 10%);
   border-radius: 4px;
 }
+
+.playground-context-menu {
+  border-radius: var(--radius);
+  font-family: var(--font-sans);
+}
+
+.playground-context-menu .react-xlsx-context-menu-item {
+  border-radius: calc(var(--radius) - 4px);
+}

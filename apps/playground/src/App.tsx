@@ -1380,6 +1380,15 @@ export function App() {
                   }
                   experimentalCanvas={experimentalCanvas}
                   readOnly={isReadOnly}
+                  contextMenuClassName="playground-context-menu"
+                  renderContextMenu={({ context, defaultNode }) => (
+                    <>
+                      <div className="px-2.5 py-2 text-xs font-medium opacity-60">
+                        {context.sheetName} · {context.readOnly ? "Viewer" : "Editor"}
+                      </div>
+                      {defaultNode}
+                    </>
+                  )}
                   renderTableHeaderMenu={({ column, direction, sortAscending, sortDescending, triggerProps }) => (
                     <DropdownMenu>
                       <DropdownMenuTrigger

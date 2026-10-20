@@ -4880,24 +4880,73 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   ]);
 
   const copySelectionToClipboard = React.useCallback(async () => {
-    const clipboardData = getClipboardData();
-    if (!clipboardData || typeof navigator === "undefined" || !navigator.clipboard) {
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
       return false;
     }
 
-    if (typeof ClipboardItem === "function" && navigator.clipboard.write) {
-      const item = new ClipboardItem({
-        [INTERNAL_CLIPBOARD_MIME]: new Blob([clipboardData.structured], { type: INTERNAL_CLIPBOARD_MIME }),
-        "text/html": new Blob([clipboardData.html], { type: "text/html" }),
-        "text/plain": new Blob([clipboardData.text], { type: "text/plain" })
-      });
-      await navigator.clipboard.write([item]);
+    if (isWorkerBacked && activeSheet && selection) {
+      const range = normalizeRange(selection);
+      const textPromise = (async () => {
+        const lines: string[] = [];
+        for (let startRow = range.start.row; startRow <= range.end.row; startRow += 128) {
+          const count = Math.min(128, range.end.row - startRow + 1);
+          const batch = await getRowsBatchAsync(activeSheet.workbookSheetIndex, startRow, count);
+          if (!batch) throw new Error("Unable to read the selected cells.");
+          const values = new Map<string, string>();
+          for (const entry of batch as Array<{ index: number; cells?: Array<{ col: number; value?: unknown; formula?: string; isMergedSecondary?: boolean }> }>) {
+            for (const cell of entry.cells ?? []) {
+              if (cell.col < range.start.col || cell.col > range.end.col || cell.isMergedSecondary) continue;
+              const value = String(cell.value ?? "");
+              const cached = cell.formula ? activeSheet.cachedFormulaValues[cellAddressToA1({ row: entry.index, col: cell.col })] : undefined;
+              values.set(`${entry.index}:${cell.col}`, decodeHtmlEntities(cached !== undefined && value.startsWith("#") ? cached : value));
+            }
+          }
+          for (let row = startRow; row < startRow + count; row++) {
+            const cells: string[] = [];
+            for (let col = range.start.col; col <= range.end.col; col++) cells.push(values.get(`${row}:${col}`) ?? "");
+            lines.push(cells.join("\t"));
+          }
+        }
+        return lines.join("\n");
+      })();
+      if (typeof ClipboardItem === "function" && navigator.clipboard.write) {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/plain": textPromise.then((text) => new Blob([text], { type: "text/plain" }))
+        })]);
+      } else {
+        await navigator.clipboard.writeText(await textPromise);
+      }
       return true;
+    }
+
+    const clipboardData = getClipboardData();
+    if (!clipboardData) return false;
+
+    if (typeof ClipboardItem === "function" && navigator.clipboard.write) {
+      const customType = `web ${INTERNAL_CLIPBOARD_MIME}`;
+      try {
+        await navigator.clipboard.write([new ClipboardItem({
+          [customType]: new Blob([clipboardData.structured], { type: INTERNAL_CLIPBOARD_MIME }),
+          "text/html": new Blob([clipboardData.html], { type: "text/html" }),
+          "text/plain": new Blob([clipboardData.text], { type: "text/plain" })
+        })]);
+        return true;
+      } catch (error) {
+        if (!(error instanceof TypeError) &&
+          (!(error instanceof DOMException) || (error.name !== "NotAllowedError" && error.name !== "NotSupportedError"))) {
+          throw error;
+        }
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/html": new Blob([clipboardData.html], { type: "text/html" }),
+          "text/plain": new Blob([clipboardData.text], { type: "text/plain" })
+        })]);
+        return true;
+      }
     }
 
     await navigator.clipboard.writeText(clipboardData.text);
     return true;
-  }, [getClipboardData]);
+  }, [activeSheet, getClipboardData, getRowsBatchAsync, isWorkerBacked, selection]);
 
   const pasteFromClipboard = React.useCallback(async () => {
     if (readOnly || typeof navigator === "undefined" || !navigator.clipboard) {
@@ -4907,8 +4956,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (navigator.clipboard.read) {
       const items = await navigator.clipboard.read();
       for (const item of items) {
-        if (item.types.includes(INTERNAL_CLIPBOARD_MIME)) {
-          const blob = await item.getType(INTERNAL_CLIPBOARD_MIME);
+        const type = [`web ${INTERNAL_CLIPBOARD_MIME}`, INTERNAL_CLIPBOARD_MIME].find((type) => item.types.includes(type));
+        if (type) {
+          const blob = await item.getType(type);
           return pasteStructuredClipboardData(await blob.text());
         }
       }

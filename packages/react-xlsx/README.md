@@ -396,6 +396,47 @@ Supported references include single cells (`A1`), rectangles (`B2:E8`), absolute
 
 Each string must contain one rectangular A1 reference, not named ranges, structured table references, unions, R1C1 notation, external workbooks, or references spanning multiple worksheets. Whole-row/column highlights cover the displayed grid and extend as it grows.
 
+## Context Menus
+
+Right-click a worksheet cell, row header, column header, or the top-left corner to open the context menu. Right-clicking inside a selection preserves the range. Shift+F10 or the context-menu key opens it at the active cell; arrow keys navigate and Escape dismisses it.
+
+Viewer mode (`readOnly`) offers Copy and selection actions. Editor mode also offers Cut, Paste, Edit cell, Clear contents, Undo/Redo, Merge/Unmerge, and sorting when the target belongs to a table. Actions use the existing controller and undo history. Row and column selections span the displayed grid, matching header selection. Worker-backed viewers copy tab-separated text; editable workbooks also preserve structured cell data when the browser supports custom clipboard formats. Clipboard commands require browser clipboard access; failed operations display an error and Cut only clears cells after copying succeeds.
+
+Customize the existing menu with `contextMenuClassName`, `contextMenuStyle`, and CSS variables, or replace its contents with `renderContextMenu`:
+
+```tsx
+<XlsxViewer
+  file={file}
+  contextMenuClassName="spreadsheet-menu"
+  contextMenuStyle={{ borderRadius: 6 }}
+  renderContextMenu={({ context, actions, runAction, closeMenu, busy }) => (
+    <>
+      {actions.map((action) => (
+        <button
+          key={action.id}
+          type="button"
+          role="menuitem"
+          disabled={busy || action.disabled}
+          onClick={() => void runAction(action.id)}
+        >
+          {action.label}
+        </button>
+      ))}
+      <button type="button" role="menuitem" onClick={() => {
+        inspectSelection(context.selection);
+        closeMenu();
+      }}>
+        Inspect selection
+      </button>
+    </>
+  )}
+/>
+```
+
+The hook receives `context` (target kind, cell, selection, sheet index/name, and read-only state), `actions`, `runAction`, `closeMenu`, viewport `position`, `isDark`, `busy`, `error`, and `defaultNode`. Return `defaultNode` to keep built-in buttons while adding your own content. The viewer owns the portal, viewport-edge positioning, outside-click dismissal, and keyboard navigation for elements with `role="menuitem"`; return menu contents without another portal. `runAction` returns `Promise<boolean>` and rejects unavailable or disabled commands. Handle custom commands in your own callback and call `closeMenu` afterward.
+
+Default styling follows the document theme. Override `.react-xlsx-context-menu`, `.react-xlsx-context-menu-item`, `.react-xlsx-context-menu-separator`, and `.react-xlsx-context-menu-shortcut`, or set `--xlsx-context-menu-background`, `--xlsx-context-menu-color`, `--xlsx-context-menu-border`, `--xlsx-context-menu-hover`, `--xlsx-context-menu-muted`, and `--xlsx-context-menu-danger` through `contextMenuStyle`. The menu is portaled to the document body, so use its class rather than a viewer-descendant selector. Set `enableContextMenu={false}` to retain the browser's native context menu.
+
 ## Custom Rendering
 
 The viewer exposes render props for common UI integration points.

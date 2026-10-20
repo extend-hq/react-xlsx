@@ -1279,6 +1279,44 @@ export interface XlsxViewerZoom {
   zoomScale: number;
 }
 
+export type XlsxContextMenuActionId =
+  | "cut" | "copy" | "paste" | "clearContents" | "editCell"
+  | "undo" | "redo" | "mergeCells" | "unmergeCells"
+  | "sortAscending" | "sortDescending"
+  | "selectRow" | "selectColumn" | "selectAll";
+
+export interface XlsxContextMenuAction {
+  id: XlsxContextMenuActionId;
+  label: string;
+  shortcut?: string;
+  disabled?: boolean;
+  destructive?: boolean;
+  separatorBefore?: boolean;
+}
+
+export interface XlsxContextMenuContext {
+  kind: "cell" | "row" | "column" | "sheet";
+  cell: XlsxCellAddress;
+  selection: XlsxCellRange;
+  sheetIndex: number;
+  sheetName: string;
+  readOnly: boolean;
+}
+
+export interface XlsxContextMenuRenderProps {
+  context: XlsxContextMenuContext;
+  actions: XlsxContextMenuAction[];
+  /** Returns whether the command completed; failures remain visible in the menu. */
+  runAction: (actionId: XlsxContextMenuActionId) => Promise<boolean>;
+  closeMenu: () => void;
+  /** Viewport coordinates. The menu container handles positioning and edge clamping. */
+  position: { x: number; y: number };
+  isDark: boolean;
+  busy: boolean;
+  error: string | null;
+  defaultNode: React.ReactNode;
+}
+
 export interface XlsxViewerEditing {
   addSheet: (name?: string) => void;
   addFormControl: (input: XlsxFormControlInput, sheetIndex?: number) => number | null;
@@ -1651,6 +1689,14 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   onFormControlChange?: (event: XlsxFormControlChangeEvent) => void;
   /** Replaces the chart loading placeholder. */
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;
+  /** Replaces menu contents. Use runAction for built-in commands and closeMenu after custom commands. */
+  renderContextMenu?: (props: XlsxContextMenuRenderProps) => React.ReactNode;
+  /** Enables worksheet right-click and keyboard context menus. Defaults to true. */
+  enableContextMenu?: boolean;
+  /** Class applied to the portaled menu container. */
+  contextMenuClassName?: string;
+  /** Styles applied to the portaled menu container. */
+  contextMenuStyle?: React.CSSProperties & { [property: `--${string}`]: string | number | undefined };
   /**
    * Replaces built-in worksheet form-control rendering.
    * Apply `style` to the custom root and use `stopPropagation` on pointer/click handlers.

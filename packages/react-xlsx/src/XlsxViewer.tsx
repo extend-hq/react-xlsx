@@ -11,6 +11,7 @@ import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffse
 import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
+import { XlsxContextMenu } from "./context-menu";
 import { MemoChartSvg } from "./chart-renderer";
 import {
   emuToPixels,
@@ -30,6 +31,7 @@ import type {
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxContextMenuContext,
   XlsxConditionalFormatValueObject,
   XlsxFormControl,
   XlsxFormControlKindInput,
@@ -7177,6 +7179,10 @@ function XlsxGrid({
   onFormControlAction,
   onFormControlChange,
   renderChartLoading,
+  renderContextMenu,
+  enableContextMenu = true,
+  contextMenuClassName,
+  contextMenuStyle,
   renderFormControl,
   palette,
   renderImage,
@@ -7192,7 +7198,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -7275,6 +7281,18 @@ function XlsxGrid({
         : []
     ))
   ), [formControls, getFormControlItems]);
+  const [contextMenu, setContextMenu] = React.useState<{
+    context: XlsxContextMenuContext;
+    position: { x: number; y: number };
+  } | null>(null);
+  React.useEffect(() => {
+    setContextMenu(null);
+  }, [activeTabIndex, workbook, readOnly, enableContextMenu]);
+  React.useEffect(() => {
+    if (contextMenu && (!selection || !rangesEqual(normalizeRange(selection), contextMenu.context.selection))) {
+      setContextMenu(null);
+    }
+  }, [contextMenu, selection]);
   const canResizeHeaders = !readOnly || allowResizeInReadOnly;
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const scrolledHighlightRef = React.useRef<XlsxViewerController["highlightedRanges"][number] | null>(null);
@@ -11647,6 +11665,57 @@ function XlsxGrid({
     syncActiveValidationOverlay(activeCell);
   }, [activeCell, editingCell, revision, syncActiveValidationOverlay]);
 
+  const closeContextMenu = React.useCallback((restoreFocus = true) => {
+    setContextMenu(null);
+    if (restoreFocus) focusGrid({ preventScroll: true });
+  }, [focusGrid]);
+
+  function getContextExtent(kind: "row" | "column" | "sheet", range: XlsxCellRange): XlsxCellRange {
+    return {
+      start: {
+        row: kind === "row" ? range.start.row : firstVisibleRow ?? 0,
+        col: kind === "column" ? range.start.col : firstVisibleCol ?? 0
+      },
+      end: {
+        row: kind === "row" ? range.end.row : lastVisibleRow ?? 0,
+        col: kind === "column" ? range.end.col : lastVisibleCol ?? 0
+      }
+    };
+  }
+
+  function selectContextExtent(kind: "row" | "column" | "sheet", range: XlsxCellRange) {
+    const nextRange = getContextExtent(kind, range);
+    axisSelectionRef.current = kind === "row"
+      ? { axis: "row", startRow: nextRange.start.row, endRow: nextRange.end.row }
+      : kind === "column"
+        ? { axis: "column", startCol: nextRange.start.col, endCol: nextRange.end.col }
+        : null;
+    selectRange(nextRange);
+  }
+
+  function openContextMenu(cell: XlsxCellAddress, kind: XlsxContextMenuContext["kind"], position: { x: number; y: number }) {
+    if (!enableContextMenu || !activeSheet) return;
+    if (kind === "cell") cell = resolveMergeAnchorCell(cell);
+    if (editingCellRef.current) commitEditingRef.current();
+    const current = normalizedSelection;
+    const inside = current && cell.row >= current.start.row && cell.row <= current.end.row &&
+      cell.col >= current.start.col && cell.col <= current.end.col;
+    let range = inside ? current : { start: cell, end: cell };
+    if (kind !== "cell") {
+      const sameAxis = axisSelectionRef.current?.axis === kind;
+      range = getContextExtent(kind, sameAxis && inside ? range : { start: cell, end: cell });
+      selectContextExtent(kind, range);
+    } else if (!inside) {
+      axisSelectionRef.current = null;
+      selectCell(cell);
+    }
+    setOpenTableMenu(null);
+    setContextMenu({
+      context: { kind, cell, selection: range, sheetIndex: activeSheetIndex, sheetName: activeSheet.name, readOnly },
+      position
+    });
+  }
+
   const handleCellDoubleClick = React.useCallback((cell: XlsxCellAddress) => {
     startEditing(cell);
   }, [startEditing]);
@@ -15701,7 +15770,21 @@ function XlsxGrid({
   }
 
   function handleGridKeyDown(event: React.KeyboardEvent<HTMLDivElement> | KeyboardEvent) {
-    if (editingCell) {
+    if (editingCell || contextMenu) {
+      return;
+    }
+
+    if (enableContextMenu && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      const cell = resolveCurrentCell();
+      const rect = scrollRef.current?.getBoundingClientRect();
+      if (cell && rect) {
+        event.preventDefault();
+        const overlay = resolveOverlayRect({ start: cell, end: cell });
+        openContextMenu(cell, "cell", {
+          x: rect.left + (overlay?.left ?? displayRowHeaderWidth) - (scrollRef.current?.scrollLeft ?? 0),
+          y: rect.top + (overlay ? overlay.top + overlay.height : displayHeaderHeight) - (scrollRef.current?.scrollTop ?? 0)
+        });
+      }
       return;
     }
 
@@ -15902,6 +15985,18 @@ function XlsxGrid({
     "aria-rowcount": Math.max(activeSheet?.rowCount ?? 0, displayRowLimit),
     role: "grid",
     onScroll: handleScrollerScroll,
+    onContextMenu: (event) => {
+      if (!enableContextMenu || isInteractiveFocusTarget(event.target, event.currentTarget)) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const isRowHeader = event.clientX - rect.left < displayRowHeaderWidth;
+      const isColumnHeader = event.clientY - rect.top < displayHeaderHeight;
+      const kind = isRowHeader && isColumnHeader ? "sheet" : isRowHeader ? "row" : isColumnHeader ? "column" : "cell";
+      const cell = resolvePointerCellFromClient(event.clientX, event.clientY) ??
+        (kind === "sheet" ? { row: firstVisibleRow ?? 0, col: firstVisibleCol ?? 0 } : null);
+      if (!cell) return;
+      event.preventDefault();
+      openContextMenu(cell, kind, { x: event.clientX, y: event.clientY });
+    },
     onCopy: (event) => {
       if (editingCell) {
         return;
@@ -16599,6 +16694,20 @@ function XlsxGrid({
       {renderScroller
         ? renderScroller({ children: scrollerContent, viewportProps: scrollerViewportProps })
         : <div key={activeTabIndex} {...scrollerViewportProps}>{scrollerContent}</div>}
+      {enableContextMenu && contextMenu && (
+        <XlsxContextMenu
+          key={`${contextMenu.position.x}:${contextMenu.position.y}`}
+          {...contextMenu}
+          controller={controller}
+          palette={palette}
+          closeMenu={closeContextMenu}
+          editCell={() => startEditing(contextMenu.context.cell)}
+          selectExtent={(kind) => selectContextExtent(kind, contextMenu.context.selection)}
+          renderContextMenu={renderContextMenu}
+          contextMenuClassName={contextMenuClassName}
+          contextMenuStyle={contextMenuStyle}
+        />
+      )}
     </div>
   );
 }
@@ -16626,6 +16735,10 @@ function XlsxViewerInner({
   onFormControlAction,
   onFormControlChange,
   renderChartLoading,
+  renderContextMenu,
+  enableContextMenu = true,
+  contextMenuClassName,
+  contextMenuStyle,
   renderFormControl,
   renderImage,
   renderImageSelection,
@@ -16731,6 +16844,10 @@ function XlsxViewerInner({
                 onFormControlChange={onFormControlChange}
                 palette={palette}
                 renderChartLoading={renderChartLoading}
+                renderContextMenu={renderContextMenu}
+                enableContextMenu={enableContextMenu}
+                contextMenuClassName={contextMenuClassName}
+                contextMenuStyle={contextMenuStyle}
                 renderFormControl={renderFormControl}
                 renderImage={renderImage}
                 renderImageSelection={renderImageSelection}
