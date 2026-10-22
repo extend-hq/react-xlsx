@@ -396,6 +396,22 @@ Supported references include single cells (`A1`), rectangles (`B2:E8`), absolute
 
 Each string must contain one rectangular A1 reference, not named ranges, structured table references, unions, R1C1 notation, external workbooks, or references spanning multiple worksheets. Whole-row/column highlights cover the displayed grid and extend as it grows.
 
+## Examples
+
+See `@extend-ai/react-xlsx` in action in these live [Extend UI](https://www.extend.ai/ui) examples. Click a screenshot to open the demo and integration docs.
+
+### [XLSX Viewer](https://www.extend.ai/ui/docs/components/xlsx-viewer)
+
+Explore workbook navigation, sheet tabs, zoom, and charts.
+
+[![XLSX viewer with worksheet data, a column chart, and sheet tabs](https://raw.githubusercontent.com/extend-hq/react-xlsx/main/docs/readme-assets/extend-ui-xlsx-viewer.png)](https://www.extend.ai/ui/docs/components/xlsx-viewer)
+
+### [XLSX Editor](https://www.extend.ai/ui/docs/components/xlsx-editor)
+
+Try the experimental editor with cell formatting, formulas, undo/redo, and export.
+
+[![XLSX editor with formatting controls and a styled worksheet](https://raw.githubusercontent.com/extend-hq/react-xlsx/main/docs/readme-assets/extend-ui-xlsx-editor.png)](https://www.extend.ai/ui/docs/components/xlsx-editor)
+
 ## Context Menus
 
 Right-click a worksheet cell, row header, column header, or the top-left corner to open the context menu. Right-clicking inside a selection preserves the range. Shift+F10 or the context-menu key opens it at the active cell; arrow keys navigate and Escape dismisses it.

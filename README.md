@@ -320,6 +320,22 @@ Notes:
 - The container sets `pointerEvents: "none"` so clicks still reach the grid. Set `pointerEvents: "auto"` on your own elements to make them interactive.
 - Return `null` to render nothing for a given cell.
 
+## Examples
+
+See `@extend-ai/react-xlsx` in action in these live [Extend UI](https://www.extend.ai/ui) examples. Click a screenshot to open the demo and integration docs.
+
+### [XLSX Viewer](https://www.extend.ai/ui/docs/components/xlsx-viewer)
+
+Explore workbook navigation, sheet tabs, zoom, and charts.
+
+[![XLSX viewer with worksheet data, a column chart, and sheet tabs](./docs/readme-assets/extend-ui-xlsx-viewer.png)](https://www.extend.ai/ui/docs/components/xlsx-viewer)
+
+### [XLSX Editor](https://www.extend.ai/ui/docs/components/xlsx-editor)
+
+Try the experimental editor with cell formatting, formulas, undo/redo, and export.
+
+[![XLSX editor with formatting controls and a styled worksheet](./docs/readme-assets/extend-ui-xlsx-editor.png)](https://www.extend.ai/ui/docs/components/xlsx-editor)
+
 ## Range Highlighting
 
 Pass an A1 reference or an array of references to `highlightedRanges` to draw blue bounding boxes with a thin border matching the selection outline and a subtle fill. The highlights are separate from the current selection and do not change workbook formatting. It works in both canvas and DOM rendering, including frozen panes, hidden rows/columns, merged cells, and zoom.
