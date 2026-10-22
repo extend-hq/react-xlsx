@@ -3527,6 +3527,7 @@ function buildSpreadsheetFontFamily(
     return [
       "Calibri",
       "Carlito",
+      "\"React XLSX Carlito\"",
       "\"Aptos\"",
       "\"Segoe UI\"",
       "Tahoma",

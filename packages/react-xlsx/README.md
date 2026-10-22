@@ -38,6 +38,12 @@ Surface charts use their SVG rendering while the WebGL module loads. Loaded modu
 
 Use a production bundler that preserves dynamic imports, and deploy all generated JavaScript chunks alongside the application. This reduces the initial browser download; all chart modules remain included in the installed package.
 
+## Spreadsheet Fonts
+
+The first workbook load also loads a bundled Carlito font fallback before measuring text and column widths. It supplies Calibri-compatible metrics when Calibri is unavailable, including regular, bold, italic, and bold italic styles. Installed Calibri and Carlito fonts remain preferred. Other font families still depend on the host application or system.
+
+The fallback is a separate JavaScript chunk with embedded WOFF2 data, so production rendering does not contact a font CDN. Deploy this chunk with the package's other generated chunks. Carlito is distributed under the SIL Open Font License; the published package includes `dist/Carlito-OFL.txt`.
+
 ## WebAssembly Asset
 
 Workbook parsing and calculation run through the `@dukelib/sheets-wasm` WebAssembly module. The module loads lazily, on the first workbook parse.

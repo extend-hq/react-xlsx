@@ -1,3 +1,4 @@
+import { getBuiltinChartColor, getBuiltinChartSurfaceStyle, resolveBuiltinChartColor } from "./builtin-chart-styles";
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, strToU8 } from "fflate";
 import type { WorkbookImageAssets, WorkbookImageSheetOrigin } from "./images";
@@ -1046,28 +1047,36 @@ function buildThemeSeriesPalette(themePalette?: XlsxThemePalette | null) {
   return themeColors.length > 0 ? themeColors : SERIES_COLORS;
 }
 
-function applyBuiltinSurfaceDefaults(chart: XlsxChart) {
+function applyBuiltinSurfaceDefaults(chart: XlsxChart, themePalette?: XlsxThemePalette | null) {
   if (chart.chartType !== "Surface") {
     return;
   }
 
-  const wallFill = chart.wireframe ? "#d0d0d0" : "#d9d9df";
+  const builtin = chart.raw?.hasCustomChartColorStyle !== true ? getBuiltinChartSurfaceStyle(chart.chartStyleId) : undefined;
+  const colors = themePalette?.colorsByIndex ?? {};
+  const wallFill = resolveBuiltinChartColor(builtin?.wall.fill, colors) ?? (chart.wireframe ? "#d0d0d0" : "#d9d9df");
+  const floorFill = resolveBuiltinChartColor(builtin?.floor.fill, colors) ?? wallFill;
+  const gridlineColor = resolveBuiltinChartColor(builtin?.majorGridline, colors);
+  for (const axis of [chart.categoryAxis, chart.valueAxis, chart.seriesAxis]) {
+    if (axis && !axis.majorGridlineColor) axis.majorGridlineColor = gridlineColor;
+  }
   const wallLine = chart.wireframe ? "#a6a6a6" : "#a8adb7";
-  chart.floor = {
-    ...(chart.floor ?? {}),
-    fillColor: chart.floor?.fillColor ?? wallFill,
-    lineColor: chart.floor?.lineColor ?? wallLine
-  };
-  chart.sideWall = {
-    ...(chart.sideWall ?? {}),
-    fillColor: chart.sideWall?.fillColor ?? wallFill,
-    lineColor: chart.sideWall?.lineColor ?? wallLine
-  };
-  chart.backWall = {
-    ...(chart.backWall ?? {}),
-    fillColor: chart.backWall?.fillColor ?? wallFill,
-    lineColor: chart.backWall?.lineColor ?? wallLine
-  };
+  const previousDefaults = chart.raw?.builtinSurfaceDefaults as Record<string, { fillColor?: string; lineColor?: string }> | undefined;
+  const nextDefaults: Record<string, { fillColor?: string; lineColor?: string }> = {};
+  for (const key of ["floor", "sideWall", "backWall"] as const) {
+    const wall = chart[key] ?? {};
+    const previous = previousDefaults?.[key];
+    const fillIsDefault = wall.fillColor === undefined || wall.fillColor === previous?.fillColor;
+    const lineIsDefault = wall.lineColor === undefined || wall.lineColor === previous?.lineColor;
+    const fillColor = fillIsDefault ? (key === "floor" ? floorFill : wallFill) : wall.fillColor;
+    const lineColor = lineIsDefault ? wallLine : wall.lineColor;
+    chart[key] = { ...wall, fillColor, lineColor };
+    nextDefaults[key] = {
+      fillColor: fillIsDefault ? fillColor : undefined,
+      lineColor: lineIsDefault ? lineColor : undefined
+    };
+  }
+  chart.raw = { ...chart.raw, builtinSurfaceDefaults: nextDefaults };
   if (!chart.surfaceMaterial && chart.wireframe !== true) {
     chart.surfaceMaterial = "matte";
   }
@@ -1097,37 +1106,59 @@ function applyBuiltinChartDefaults(chart: XlsxChart, themePalette?: XlsxThemePal
   chart.fontFamily = chart.fontFamily ?? minorTypeface;
   chart.titleFontFamily = chart.titleFontFamily ?? chart.fontFamily ?? minorTypeface;
 
-  const seriesPalette = chart.chartColorPalette && chart.chartColorPalette.length > 0
-    ? chart.chartColorPalette
-    : buildThemeSeriesPalette(themePalette);
-  if (!chart.chartColorPalette || chart.chartColorPalette.length === 0) {
-    chart.chartColorPalette = seriesPalette;
-  }
+  const themeColors = themePalette?.colorsByIndex;
+  const useBuiltin = chart.raw?.hasCustomChartColorStyle !== true && themeColors && getBuiltinChartColor(chart.chartStyleId, 0, 1) !== undefined;
+  const colorCount = Math.max(1, chart.series.length, chart.typeGroups?.reduce((total, group) => total + group.series.length, 0) ?? 0);
+  const seriesPalette = useBuiltin && chart.chartType !== "Surface"
+    ? Array.from({ length: colorCount }, (_, index) => resolveBuiltinChartColor(getBuiltinChartColor(chart.chartStyleId, index, colorCount), themeColors) ?? SERIES_COLORS[index % SERIES_COLORS.length])
+    : chart.chartColorPalette?.length ? chart.chartColorPalette : buildThemeSeriesPalette(themePalette);
+  chart.chartColorPalette = seriesPalette;
+  chart.raw = { ...chart.raw, builtinThemeColors: useBuiltin ? themeColors : undefined };
 
-  chart.series = chart.series.map((series, index) => {
+  const applySeriesDefaults = (series: XlsxChartSeries, index: number) => {
     const fallbackColor = seriesPalette[index % seriesPalette.length];
+    const properties = series.shapeProperties ?? {};
+    const previous = properties.builtinDefaultColors as Partial<Record<"color" | "lineColor" | "markerColor" | "markerLineColor", string>> | undefined;
+    const generated: Partial<Record<"color" | "lineColor" | "markerColor" | "markerLineColor", string>> = {};
+    const resolveColor = (key: keyof typeof generated, explicit: unknown, fallback: string | undefined) => {
+      const value = series[key];
+      if (!explicit && (value == null || value === previous?.[key] || ((key === "color" || key === "lineColor") && useBuiltin && chart.raw?.xmlChartType))) {
+        generated[key] = fallback;
+        return fallback;
+      }
+      return value ?? fallback;
+    };
+    const explicitFill = properties.xmlFillColor ?? properties.solidFillHex ?? properties.xmlFillHidden;
+    const explicitLine = properties.xmlLineColor ?? properties.lineColorHex ?? properties.xmlLineHidden;
+    const color = explicitFill
+      ? series.color ?? series.lineColor ?? fallbackColor
+      : explicitLine
+        ? series.lineColor ?? series.color ?? fallbackColor
+        : resolveColor("color", false, fallbackColor);
+    const lineColor = explicitLine
+      ? series.lineColor ?? color
+      : explicitFill
+        ? color
+        : resolveColor("lineColor", false, color ?? fallbackColor);
+    const markerColor = resolveColor("markerColor", properties.xmlMarkerFillColor ?? properties.xmlMarkerFillHidden, color ?? lineColor ?? fallbackColor);
+    const markerLineColor = resolveColor("markerLineColor", properties.xmlMarkerLineColor ?? properties.xmlMarkerLineHidden, lineColor ?? color ?? fallbackColor);
     return {
       ...series,
-      color: series.color ?? series.lineColor ?? fallbackColor,
-      lineColor: series.lineColor ?? series.color ?? fallbackColor,
-      markerColor: series.markerColor ?? series.color ?? series.lineColor ?? fallbackColor,
-      markerLineColor: series.markerLineColor ?? series.lineColor ?? series.color ?? fallbackColor
+      color,
+      lineColor,
+      markerColor,
+      markerLineColor,
+      shapeProperties: { ...properties, builtinDefaultColors: generated }
     };
+  };
+  chart.series = chart.series.map(applySeriesDefaults);
+  let groupSeriesOffset = 0;
+  chart.typeGroups = chart.typeGroups?.map((group) => {
+    const series = group.series.map((entry, index) => applySeriesDefaults(entry, groupSeriesOffset + index));
+    groupSeriesOffset += group.series.length;
+    return { ...group, series };
   });
-  chart.typeGroups = chart.typeGroups?.map((group, groupIndex) => ({
-    ...group,
-    series: group.series.map((series, seriesIndex) => {
-      const fallbackColor = seriesPalette[(groupIndex + seriesIndex) % seriesPalette.length];
-      return {
-        ...series,
-        color: series.color ?? series.lineColor ?? fallbackColor,
-        lineColor: series.lineColor ?? series.color ?? fallbackColor,
-        markerColor: series.markerColor ?? series.color ?? series.lineColor ?? fallbackColor,
-        markerLineColor: series.markerLineColor ?? series.lineColor ?? series.color ?? fallbackColor
-      };
-    })
-  }));
-  applyBuiltinSurfaceDefaults(chart);
+  applyBuiltinSurfaceDefaults(chart, themePalette);
 }
 
 function parseChartPointStyles(seriesNode: Element, themePalette?: XlsxThemePalette | null): XlsxChartPointStyle[] {
@@ -1348,15 +1379,15 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       dataPointStyles: pointStyles.length > 0 ? pointStyles : series.dataPointStyles,
       lineColor: resolvedLineColor,
       lineWidthPx: lineStyle.hidden ? undefined : lineStyle.widthPx ?? series.lineWidthPx,
-      markerColor: rawFillColor
+      markerColor: resolveChartFillColor(markerShapeProperties, themePalette)
+        ?? rawFillColor
         ?? rawLineColor
-        ?? resolveChartFillColor(markerShapeProperties, themePalette)
         ?? fillColor
         ?? lineStyle.color
         ?? undefined,
-      markerLineColor: rawLineColor
+      markerLineColor: markerLineStyle.color
+        ?? rawLineColor
         ?? rawFillColor
-        ?? markerLineStyle.color
         ?? lineStyle.color
         ?? fillColor
         ?? undefined,
@@ -1372,6 +1403,10 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
         xmlLineHidden: lineStyle.hidden ? true : undefined,
         xmlLineColor: lineStyle.color ?? undefined,
         xmlLineWidthPx: lineStyle.widthPx ?? undefined,
+        xmlMarkerFillColor: resolveChartFillColor(markerShapeProperties, themePalette) ?? undefined,
+        xmlMarkerFillHidden: getFirstLocalChild(markerShapeProperties, "noFill") ? true : undefined,
+        xmlMarkerLineColor: markerLineStyle.color ?? undefined,
+        xmlMarkerLineHidden: markerLineStyle.hidden ? true : undefined,
         xmlNegativeFillColor: invertNegativeStyle.color ?? undefined,
         xmlNegativeLineColor: invertNegativeStyle.lineColor ?? undefined
       },
@@ -1468,6 +1503,7 @@ function applyChartStyleFromXml(
   };
   const applyRelationshipStyles = () => {
     chart.chartColorPalette = readChartColorPalette(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE), themePalette);
+    chart.raw = { ...chart.raw, hasCustomChartColorStyle: Boolean(chart.chartColorPalette?.length) };
     const styleAppearance = readChartStyleAppearance(
       archive,
       relationships.get(CHART_STYLE_REL_TYPE),
@@ -1803,6 +1839,7 @@ function applyChartStyleFromXml(
     bandFormatLineColors: Object.keys(bandFormatLineColors).length > 0 ? bandFormatLineColors : undefined,
     bandFormatLineWidths: Object.keys(bandFormatLineWidths).length > 0 ? bandFormatLineWidths : undefined,
     date1904: readChartBooleanAttribute(chartDocument?.documentElement ?? null, "date1904"),
+    titleOverlay: readChartBooleanAttribute(getFirstLocalChild(chartNode, "title"), "overlay"),
     bubble3d: chart.bubble3d,
     grouping: getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val") ?? undefined,
     ofPieType: getFirstLocalChild(chartTypeNode, "ofPieType")?.getAttribute("val") ?? undefined,
@@ -1824,9 +1861,14 @@ function applyChartStyleFromXml(
       rotY: readChartNumericAttribute(view3dNode, "rotY")
     };
   }
-  chart.floor = readChartWallFromXml(getFirstLocalChild(chartNode, "floor"), themePalette) ?? chart.floor;
-  chart.sideWall = readChartWallFromXml(getFirstLocalChild(chartNode, "sideWall"), themePalette) ?? chart.sideWall;
-  chart.backWall = readChartWallFromXml(getFirstLocalChild(chartNode, "backWall"), themePalette) ?? chart.backWall;
+  for (const key of ["floor", "sideWall", "backWall"] as const) {
+    const wall = readChartWallFromXml(getFirstLocalChild(chartNode, key), themePalette);
+    if (wall) {
+      chart[key] = wall;
+      const defaults = chart.raw?.builtinSurfaceDefaults as Record<string, unknown> | undefined;
+      if (defaults) chart.raw = { ...chart.raw, builtinSurfaceDefaults: { ...defaults, [key]: undefined } };
+    }
+  }
 
   const styleAppearance = applyRelationshipStyles();
   const chartTextTypeface = readChartTextTypeface(getFirstLocalChild(chartNode, "txPr"), themePalette);
@@ -1888,20 +1930,20 @@ function applyChartStyleFromXml(
       return position === "l" || position === "r";
     }) ?? valueAxisNodes[1] ?? valueAxisNodes[0];
   }
-  chart.categoryAxis = mergeChartAxis(chart.categoryAxis, readChartAxisFromXml(categoryAxisNode));
-  chart.valueAxis = mergeChartAxis(chart.valueAxis, readChartAxisFromXml(valueAxisNode));
-  chart.seriesAxis = mergeChartAxis(chart.seriesAxis, readChartAxisFromXml(seriesAxisNode));
+  chart.categoryAxis = mergeChartAxis(chart.categoryAxis, readChartAxisFromXml(categoryAxisNode, themePalette));
+  chart.valueAxis = mergeChartAxis(chart.valueAxis, readChartAxisFromXml(valueAxisNode, themePalette));
+  chart.seriesAxis = mergeChartAxis(chart.seriesAxis, readChartAxisFromXml(seriesAxisNode, themePalette));
   chart.axes = chart.axes.length > 0
     ? chart.axes.map((axis, index) => (
       index === 0 && categoryAxisNode
-        ? { ...axis, ...readChartAxisFromXml(categoryAxisNode) }
+        ? { ...axis, ...readChartAxisFromXml(categoryAxisNode, themePalette) }
         : index === 1 && valueAxisNode
-          ? { ...axis, ...readChartAxisFromXml(valueAxisNode) }
+          ? { ...axis, ...readChartAxisFromXml(valueAxisNode, themePalette) }
           : axis
     ))
     : chart.axes;
   if (seriesAxisNode) {
-    const seriesAxis = readChartAxisFromXml(seriesAxisNode);
+    const seriesAxis = readChartAxisFromXml(seriesAxisNode, themePalette);
     if (seriesAxis && !chart.axes.some((axis) => axis.id != null && axis.id === seriesAxis.id)) {
       chart.axes = [...chart.axes, seriesAxis as XlsxChartAxis];
     }
@@ -3148,7 +3190,7 @@ function mergeChartAxis(target: XlsxChartAxis | null | undefined, patch: Partial
   };
 }
 
-function readChartAxisFromXml(axisNode: Element | null): Partial<XlsxChartAxis> | null {
+function readChartAxisFromXml(axisNode: Element | null, themePalette?: XlsxThemePalette | null): Partial<XlsxChartAxis> | null {
   if (!axisNode) {
     return null;
   }
@@ -3169,6 +3211,10 @@ function readChartAxisFromXml(axisNode: Element | null): Partial<XlsxChartAxis> 
     logBase: readChartNumericAttribute(getFirstLocalChild(axisNode, "scaling"), "logBase"),
     orientation: getFirstLocalChild(scalingNode ?? axisNode, "orientation")?.getAttribute("val") ?? undefined,
     majorGridlines: Boolean(getFirstLocalChild(axisNode, "majorGridlines")),
+    majorGridlineColor: (() => {
+      const style = resolveChartLineStyle(getFirstLocalChild(getFirstLocalChild(axisNode, "majorGridlines"), "spPr"), themePalette);
+      return style.hidden ? "transparent" : style.color ?? undefined;
+    })(),
     majorTickMark: getFirstLocalChild(axisNode, "majorTickMark")?.getAttribute("val") ?? undefined,
     majorUnit: readChartNumericAttribute(axisNode, "majorUnit"),
     max: readChartNumericAttribute(scalingNode, "max"),

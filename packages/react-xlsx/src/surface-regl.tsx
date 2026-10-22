@@ -1,7 +1,8 @@
+import { getBuiltinChartColor, getBuiltinChartSurfaceLine, resolveBuiltinChartColor } from "./builtin-chart-styles";
 import createREGL from "regl";
 import * as React from "react";
 import { shadeSurfaceMatteColor, surfaceNormal, transformSurfaceNormal } from "./surface-lighting";
-import { clipSurfaceBand, normalizeSurfaceValue, surfaceHeightRatio, surfaceBandEdges, triangulateSurfaceQuad } from "./surface-geometry";
+import { clipSurfaceBand, normalizeSurfaceValue, surfaceDataRatios, surfaceBandEdges, triangulateSurfaceQuad } from "./surface-geometry";
 import type { XlsxChart } from "./types";
 
 type SurfacePalette = {
@@ -207,6 +208,12 @@ function resolveSurfaceBandPaletteColor(chart: XlsxChart, palette: SurfacePalett
   const bandIndex = resolveSurfaceBandIndex(domain, value);
   const explicitColor = resolveSurfaceBandFormatColor(chart, "bandFormatColors", bandIndex);
   if (explicitColor) return explicitColor;
+  const explicitFill = resolveExplicitSurfaceSeriesColor(chart, "fill");
+  if (explicitFill) return explicitFill;
+  const themeColors = chart.raw?.builtinThemeColors as Record<number, string> | undefined;
+  const paletteCount = Math.trunc((domain.safeMax - domain.minValue) / (domain.ticks[1] - domain.ticks[0])) + 1;
+  const builtinColor = themeColors ? resolveBuiltinChartColor(getBuiltinChartColor(chart.chartStyleId, bandIndex % paletteCount, paletteCount), themeColors) : undefined;
+  if (builtinColor) return builtinColor;
   const stops = getSurfaceColorStops(chart, palette);
   if (stops.length === 0) {
     return resolveSurfaceBaseColor(chart, palette);
@@ -238,8 +245,12 @@ function resolveSurfaceBandFormatColor(chart: XlsxChart, key: "bandFormatColors"
 
 function resolveSurfaceWireframeColor(chart: XlsxChart, palette: SurfacePalette, domain: SurfaceDomain, value: number) {
   const bandIndex = resolveSurfaceBandIndex(domain, value);
+  const themeColors = chart.raw?.builtinThemeColors as Record<number, string> | undefined;
+  const paletteCount = Math.trunc((domain.safeMax - domain.minValue) / (domain.ticks[1] - domain.ticks[0])) + 1;
+  const builtinLine = themeColors ? resolveBuiltinChartColor(getBuiltinChartSurfaceLine(chart.chartStyleId, bandIndex, paletteCount), themeColors) : undefined;
   return resolveSurfaceBandFormatColor(chart, "bandFormatLineColors", bandIndex)
     ?? resolveExplicitSurfaceSeriesColor(chart, "line")
+    ?? builtinLine
     ?? resolveSurfaceBandPaletteColor(chart, palette, domain, value);
 }
 
@@ -271,8 +282,12 @@ function projectCartesian3dPoint(
   rotXRad: number,
   rotYRad: number,
   usePerspective: boolean,
-  perspectiveStrength: number
+  perspectiveStrength: number,
+  rightAngleAxes: boolean
 ) {
+  if (rightAngleAxes) {
+    return { depth: z, x: x + z * Math.sin(rotYRad), y: y - z * Math.sin(rotXRad) };
+  }
   const cosX = Math.cos(rotXRad);
   const sinX = Math.sin(rotXRad);
   const cosY = Math.cos(rotYRad);
@@ -337,14 +352,15 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const wallTriangles: SolidSurfaceTriangle[] = [];
   const contourLines: Array<{ color: string; from: SurfacePoint3D; to: SurfacePoint3D }> = [];
   const meshLines: Array<{ color: string; from: SurfacePoint3D; to: SurfacePoint3D }> = [];
-  const rotX = clamp(chart.view3d?.rotX ?? (isWireframe ? 85 : 25), -88, 88) * (Math.PI / 180);
-  const rotY = clamp(chart.view3d?.rotY ?? (isWireframe ? 0 : 30), -88, 88) * (Math.PI / 180);
+  const rotX = (chart.view3d?.rotX ?? 25) * (Math.PI / 180);
+  const rotY = (chart.view3d?.rotY ?? 30) * (Math.PI / 180);
   const usePerspective = !isContour && chart.view3d?.rAngAx === false;
   const perspectiveStrength = clamp((chart.view3d?.perspective ?? (usePerspective ? 30 : 0)) / 100, 0, 1);
-  const depthScale = isContour ? 1 : clamp((chart.view3d?.depthPercent ?? 100) / 100, 0.2, 4);
-  const heightExtent = 2 * surfaceHeightRatio(chart.view3d?.heightPercent, layout.plot);
+  const ratios = surfaceDataRatios(rows, cols, chart.valueAxis?.crossBetween !== "midCat", chart.view3d?.heightPercent, chart.view3d?.depthPercent, layout);
+  const depthScale = ratios.depth;
+  const heightExtent = 2 * ratios.height;
   const usesFlatMaterial = chart.surfaceMaterial === "flat";
-  const wallLineColor = chart.backWall?.lineColor ?? chart.sideWall?.lineColor ?? chart.floor?.lineColor ?? chart.axisLineColor ?? "#a6a6a6";
+  const wallLineColor = chart.valueAxis?.majorGridlineColor ?? chart.backWall?.lineColor ?? chart.sideWall?.lineColor ?? chart.floor?.lineColor ?? chart.axisLineColor ?? "#a6a6a6";
   const backWallFill = chart.backWall?.fillColor ?? "#d9d9df";
   const sideWallFill = chart.sideWall?.fillColor ?? "#d5d7dc";
   const floorFill = chart.floor?.fillColor ?? "#d0d2d8";
@@ -362,7 +378,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     }
     const worldY = normalizeSurfaceZ(value, domain, heightExtent, chart.valueAxis);
     const worldZ = normalizeSurfaceY(row, rows) * depthScale;
-    const projected = projectCartesian3dPoint(worldX, worldY, worldZ, rotX, rotY, usePerspective, perspectiveStrength);
+    const projected = projectCartesian3dPoint(worldX, worldY, worldZ, rotX, rotY, usePerspective, perspectiveStrength, chart.view3d?.rAngAx !== false);
     return {
       depth: projected.depth,
       worldX,
@@ -449,7 +465,9 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     }
   } else {
     const minPlaneValue = domain.minValue;
-    const wallDepthOffset = -0.2;
+    const wallDepthOffset = 0;
+    const backRow = chart.view3d?.rAngAx !== false || Math.cos(rotX) * Math.cos(rotY) >= 0 ? rows - 1 : 0;
+    const sideColumn = Math.sin(rotY) >= 0 ? 0 : cols - 1;
     if (chart.floor?.hidden !== true && floorFill !== "transparent") {
       addWallQuad(
         nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
@@ -461,44 +479,44 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     }
     if (chart.backWall?.hidden !== true && backWallFill !== "transparent") {
       addWallQuad(
-        nudgeProjectedDepth(projectPoint(0, 0, domain.safeMax), wallDepthOffset),
-        nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
-        nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
-        nudgeProjectedDepth(projectPoint(0, 0, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(0, backRow, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, backRow, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(cols - 1, backRow, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(0, backRow, minPlaneValue), wallDepthOffset),
         backWallFill
       );
     }
     if (chart.sideWall?.hidden !== true && sideWallFill !== "transparent") {
       addWallQuad(
-        nudgeProjectedDepth(projectPoint(cols - 1, 0, domain.safeMax), wallDepthOffset),
-        nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, domain.safeMax), wallDepthOffset),
-        nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, minPlaneValue), wallDepthOffset),
-        nudgeProjectedDepth(projectPoint(cols - 1, 0, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(sideColumn, 0, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(sideColumn, rows - 1, domain.safeMax), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(sideColumn, rows - 1, minPlaneValue), wallDepthOffset),
+        nudgeProjectedDepth(projectPoint(sideColumn, 0, minPlaneValue), wallDepthOffset),
         sideWallFill
       );
     }
-    for (const tick of domain.ticks) {
+    for (const tick of chart.valueAxis?.majorGridlines ? domain.ticks : []) {
       if (chart.backWall?.hidden !== true && wallLineColor !== "transparent") {
-        addMeshLine(nudgeProjectedDepth(projectPoint(0, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), wallLineColor);
+        addMeshLine(nudgeProjectedDepth(projectPoint(0, backRow, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, backRow, tick), wallDepthOffset * 0.75), wallLineColor);
       }
       if (chart.sideWall?.hidden !== true && wallLineColor !== "transparent") {
-        addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rows - 1, tick), wallDepthOffset * 0.75), wallLineColor);
+        addMeshLine(nudgeProjectedDepth(projectPoint(sideColumn, 0, tick), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(sideColumn, rows - 1, tick), wallDepthOffset * 0.75), wallLineColor);
       }
     }
-    for (let columnIndex = 0; columnIndex < cols; columnIndex += columnSkip) {
+    for (let columnIndex = 0; chart.categoryAxis?.majorGridlines && columnIndex < cols; columnIndex += columnSkip) {
       if (chart.floor?.hidden !== true && wallLineColor !== "transparent") {
         addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, rows - 1, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
       }
       if (chart.backWall?.hidden !== true && wallLineColor !== "transparent") {
-        addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, 0, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, 0, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
+        addMeshLine(nudgeProjectedDepth(projectPoint(columnIndex, backRow, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(columnIndex, backRow, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
       }
     }
-    for (let rowIndex = 0; rowIndex < rows; rowIndex += rowSkip) {
+    for (let rowIndex = 0; chart.seriesAxis?.majorGridlines && rowIndex < rows; rowIndex += rowSkip) {
       if (chart.floor?.hidden !== true && wallLineColor !== "transparent") {
         addMeshLine(nudgeProjectedDepth(projectPoint(0, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), wallLineColor);
       }
       if (chart.sideWall?.hidden !== true && wallLineColor !== "transparent") {
-        addMeshLine(nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(cols - 1, rowIndex, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
+        addMeshLine(nudgeProjectedDepth(projectPoint(sideColumn, rowIndex, minPlaneValue), wallDepthOffset * 0.75), nudgeProjectedDepth(projectPoint(sideColumn, rowIndex, domain.safeMax), wallDepthOffset * 0.75), wallLineColor);
       }
     }
   }
@@ -522,7 +540,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const scale = Math.min(
     layout.plot.width / Math.max(0.25, maxX - minX),
     layout.plot.height / Math.max(0.25, maxY - minY)
-  ) * 0.82;
+  );
   const centerX = layout.plot.left + layout.plot.width / 2;
   const centerY = layout.plot.top + layout.plot.height / 2;
   const centerRawX = (minX + maxX) / 2;
@@ -544,11 +562,13 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   const wallPositions: number[] = [];
   const wallColors: number[] = [];
   for (const triangle of wallTriangles) {
-    const rgba = colorToRgba(triangle.color, 1);
+    const world = triangle.points.map(point => ({ x: point.worldX, y: point.worldY, z: -point.worldZ }));
+    const normal = transformSurfaceNormal(surfaceNormal(world[0], world[1], world[2]), chart.view3d?.rotX ?? 25, chart.view3d?.rotY ?? 30, chart.view3d?.rAngAx !== false);
+    const rgba = colorToRgba(usesFlatMaterial ? triangle.color : shadeSurfaceMatteColor(triangle.color, normal), 1);
     for (const point of triangle.points) {
       const clip = toClipPoint(point);
       wallPositions.push(clip.x, clip.y, clip.z);
-      wallColors.push(rgba[0], rgba[1], rgba[2], rgba[3] * 0.92);
+      wallColors.push(rgba[0], rgba[1], rgba[2], rgba[3]);
     }
   }
   for (let index = 0; index < fillVertices.length; index += 3) {
@@ -559,7 +579,7 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
       continue;
     }
     const world = [left, middle, right].map(vertex => ({ x: vertex.point.worldX, y: vertex.point.worldY, z: -vertex.point.worldZ }));
-    const normal = transformSurfaceNormal(surfaceNormal(world[0], world[1], world[2]), chart.view3d?.rotX ?? 25, chart.view3d?.rotY ?? 30);
+    const normal = transformSurfaceNormal(surfaceNormal(world[0], world[1], world[2]), chart.view3d?.rotX ?? 25, chart.view3d?.rotY ?? 30, chart.view3d?.rAngAx !== false);
     const shaded = colorToRgba(usesFlatMaterial ? left.bandColor : shadeSurfaceMatteColor(left.bandColor, normal), 1);
     [left, middle, right].forEach((vertex) => {
       const clip = toClipPoint(vertex.point);
@@ -574,14 +594,14 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
     const from = toClipPoint(line.from);
     const to = toClipPoint(line.to);
     const rgba = colorToRgba(line.color, 1);
-    linePositions.push(from.x, from.y, from.z, to.x, to.y, to.z);
+    linePositions.push(from.x, from.y, from.z - 0.00001, to.x, to.y, to.z - 0.00001);
     lineColors.push(rgba[0], rgba[1], rgba[2], rgba[3], rgba[0], rgba[1], rgba[2], rgba[3]);
   });
   contourLines.forEach((line) => {
     const from = toClipPoint(line.from);
     const to = toClipPoint(line.to);
     const rgba = colorToRgba(line.color, 1);
-    linePositions.push(from.x, from.y, from.z, to.x, to.y, to.z);
+    linePositions.push(from.x, from.y, from.z - 0.00001, to.x, to.y, to.z - 0.00001);
     lineColors.push(rgba[0], rgba[1], rgba[2], rgba[3], rgba[0], rgba[1], rgba[2], rgba[3]);
   });
 
@@ -703,7 +723,8 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
               },
               count: scene.wallPositions.length / 3,
               depth: {
-                enable: false
+                enable: true,
+                func: "lequal"
               },
               frag: `
                 precision mediump float;
@@ -742,7 +763,8 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
               },
               count: scene.linePositions.length / 3,
               depth: {
-                enable: false
+                enable: true,
+                func: "lequal"
               },
               frag: `
                 precision mediump float;

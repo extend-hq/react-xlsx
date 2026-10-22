@@ -13,6 +13,7 @@ export default defineConfig([
     external,
     format: ["esm", "cjs"],
     noExternal,
+    loader: { ".woff2": "dataurl" },
     shims: true,
     skipNodeModulesBundle: true,
     splitting: true,

@@ -75,7 +75,11 @@ function measureColumnCharacterWidthPx(fontFamily?: string | null, fontSizePt?: 
   }
 
   const fontSizePx = normalizedSizePt * (96 / 72);
-  const font = `${fontSizePx}px "${normalizedFamily}"`;
+  const family = JSON.stringify(normalizedFamily);
+  const fallback = normalizedFamily.toLowerCase() === "calibri" || normalizedFamily.toLowerCase() === "carlito"
+    ? ', "Carlito", "React XLSX Carlito"'
+    : "";
+  const font = `${fontSizePx}px ${family}${fallback}`;
   let width = DEFAULT_COLUMN_CHARACTER_WIDTH_PX;
 
   try {

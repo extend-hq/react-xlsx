@@ -8,6 +8,15 @@ export function surfaceHeightRatio(heightPercent: number | undefined, plot: { wi
     : plot.height / Math.max(1, plot.width);
 }
 
+export function surfaceDataRatios(rows: number, columns: number, betweenCategories: boolean, heightPercent: number | undefined, depthPercent: number | undefined, plot: { width: number; height: number }) {
+  const columnCount = Math.max(1, columns);
+  const dataFraction = betweenCategories && columnCount > 1 ? (columnCount - 1) / columnCount : 1;
+  return {
+    height: Math.floor((columnCount + Math.max(1, rows) - (betweenCategories ? 0 : 1)) / 2) / columnCount / dataFraction * surfaceHeightRatio(heightPercent, plot),
+    depth: Math.max(0.01, Math.max(1, rows) / columnCount * (depthPercent ?? 100) / 100) / dataFraction
+  };
+}
+
 export function scaleSurfaceValue(value: number, axis?: XlsxChartAxis | null) {
   const scaled = axis?.logBase != null && axis.logBase > 1
     ? Math.log(Math.max(Number.MIN_VALUE, value)) / Math.log(axis.logBase)

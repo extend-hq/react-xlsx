@@ -14,9 +14,9 @@ export function surfaceNormal(a: SurfaceVector, b: SurfaceVector, c: SurfaceVect
   return { x: x / length, y: y / length, z: z / length };
 }
 
-export function transformSurfaceNormal(normal: SurfaceVector, rotX: number, rotY: number): SurfaceVector {
-  const xAngle = rotX * Math.PI / 180;
-  const yAngle = rotY * Math.PI / 180;
+export function transformSurfaceNormal(normal: SurfaceVector, rotX: number, rotY: number, rightAngleAxes = false): SurfaceVector {
+  const xAngle = rightAngleAxes ? 0 : rotX * Math.PI / 180;
+  const yAngle = rightAngleAxes ? 0 : rotY * Math.PI / 180;
   const cx = Math.cos(xAngle);
   const sx = Math.sin(xAngle);
   const cy = Math.cos(yAngle);
@@ -24,7 +24,10 @@ export function transformSurfaceNormal(normal: SurfaceVector, rotX: number, rotY
   const x = -cy * normal.x + sy * normal.z;
   const y = sy * sx * normal.x + cx * normal.y + cy * sx * normal.z;
   const z = sy * cx * normal.x - sx * normal.y + cy * cx * normal.z;
-  const length = (Math.hypot(x, y, z) || 1) * (z > 0 ? -1 : 1);
+  const facing = rightAngleAxes
+    ? z - x * Math.sin(rotY * Math.PI / 180) - y * Math.sin(rotX * Math.PI / 180)
+    : z;
+  const length = (Math.hypot(x, y, z) || 1) * (facing > 0 ? -1 : 1);
   return { x: x / length, y: y / length, z: z / length };
 }
 

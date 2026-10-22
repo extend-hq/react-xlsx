@@ -1,3 +1,4 @@
+import { loadSpreadsheetFonts } from "./spreadsheet-fonts";
 import * as React from "react";
 import type {
   DrawingAnchor as DukeDrawingAnchor,
@@ -2311,6 +2312,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
         if (maxFileSizeBytes > 0 && buffer.byteLength > maxFileSizeBytes) {
           throw new XlsxFileSizeLimitExceededError(buffer.byteLength, maxFileSizeBytes);
+        }
+
+        await loadSpreadsheetFonts();
+        if (!isCurrent || abortController.signal.aborted) {
+          return;
         }
 
         buffer = normalizeWorkbookArrayBuffer(buffer);

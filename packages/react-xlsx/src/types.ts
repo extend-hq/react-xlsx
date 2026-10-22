@@ -744,6 +744,7 @@ export interface XlsxChartAxis {
   max?: number;
   min?: number;
   majorGridlines?: boolean;
+  majorGridlineColor?: string;
   majorTickMark?: string;
   minorUnit?: number;
   minorGridlines?: boolean;

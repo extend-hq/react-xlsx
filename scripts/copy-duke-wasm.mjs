@@ -9,3 +9,5 @@ const distDir = new URL("../packages/react-xlsx/dist/", import.meta.url);
 
 mkdirSync(distDir, { recursive: true });
 copyFileSync(wasmSource, new URL("duke_sheets_wasm_bg.wasm", distDir));
+
+copyFileSync(new URL("../packages/react-xlsx/src/fonts/OFL.txt", import.meta.url), new URL("Carlito-OFL.txt", distDir));
