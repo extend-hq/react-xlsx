@@ -8,6 +8,7 @@ import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { growScrollDisplayLimit } from "./scroll-display-limit";
 import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffset } from "./range-highlight";
+import { createMergedRangeLookup } from "./merged-range-lookup";
 import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
@@ -7575,25 +7576,15 @@ function XlsxGrid({
 
     return regions;
   }, [worksheet]);
-  const mergedSecondaryAnchorMap = React.useMemo(() => {
-    const map = new Map<string, XlsxCellAddress>();
-
-    for (const region of mergedRegions) {
-      for (let mergeRow: number = region.start.row; mergeRow <= region.end.row; mergeRow += 1) {
-        for (let mergeCol: number = region.start.col; mergeCol <= region.end.col; mergeCol += 1) {
-          if (mergeRow === region.start.row && mergeCol === region.start.col) {
-            continue;
-          }
-          map.set(`${mergeRow}:${mergeCol}`, { row: region.start.row, col: region.start.col });
-        }
-      }
-    }
-
-    return map;
-  }, [mergedRegions]);
+  // Worker-backed sheets have no main-thread worksheet, so selection resolves merges from the
+  // sheet metadata, which is populated in both loading modes.
+  const findMergedRange = React.useMemo(
+    () => createMergedRangeLookup(activeSheet?.mergedRanges ?? mergedRegions),
+    [activeSheet?.mergedRanges, mergedRegions]
+  );
   const resolveMergeAnchorCell = React.useCallback((cell: XlsxCellAddress): XlsxCellAddress => {
-    return mergedSecondaryAnchorMap.get(`${cell.row}:${cell.col}`) ?? cell;
-  }, [mergedSecondaryAnchorMap]);
+    return findMergedRange(cell)?.start ?? cell;
+  }, [findMergedRange]);
   const highlightedCellRanges = React.useMemo(
     () => highlightedRanges.flatMap((highlight, index) => activeSheet?.workbookSheetIndex === highlight.workbookSheetIndex
       ? [{ highlight, index, range: expandHighlightedRange(highlight.range, activeSheet?.mergedRanges ?? mergedRegions) }]
@@ -9318,7 +9309,7 @@ function XlsxGrid({
   const resolvePointerCellFromClient = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
     const geometryCell = resolvePointerCellFromGeometry(clientX, clientY);
     if (geometryCell) {
-      return geometryCell;
+      return resolveMergeAnchorCell(geometryCell);
     }
 
     const resolvedCell = resolvePointerCellFromHitTest(clientX, clientY);
@@ -10744,21 +10735,9 @@ function XlsxGrid({
   const resolveGeometryOverlayRect = React.useCallback((range: XlsxCellRange) => {
     const normalized = normalizeRange(range);
     const isSingleCellSelection = normalized.start.row === normalized.end.row && normalized.start.col === normalized.end.col;
-    const isMergedSecondarySelection = isSingleCellSelection
-      ? worksheet?.isMergedSecondary(normalized.start.row, normalized.start.col) === true
-      : false;
-    const startCell = isSingleCellSelection && !isMergedSecondarySelection
-      ? resolveMergeAnchorCell(normalized.start)
-      : normalized.start;
-    const merge = isSingleCellSelection && !isMergedSecondarySelection
-      ? (worksheet?.getMergeSpan(startCell.row, startCell.col) as { colSpan?: number; rowSpan?: number } | null | undefined)
-      : null;
-    const endCell = isSingleCellSelection && !isMergedSecondarySelection
-      ? {
-          row: startCell.row + Math.max(1, merge?.rowSpan ?? 1) - 1,
-          col: startCell.col + Math.max(1, merge?.colSpan ?? 1) - 1
-        }
-      : normalized.end;
+    const mergedRange = isSingleCellSelection ? findMergedRange(normalized.start) : null;
+    const startCell = mergedRange?.start ?? normalized.start;
+    const endCell = mergedRange?.end ?? normalized.end;
     const startRowIndex = rowIndexByActual.get(startCell.row);
     const endRowIndex = rowIndexByActual.get(endCell.row);
     const startColIndex = colIndexByActual.get(startCell.col);
@@ -10814,7 +10793,7 @@ function XlsxGrid({
       top: Math.max(displayHeaderHeight, top),
       width: Math.max(0, width)
     };
-  }, [colIndexByActual, colPrefixSums, displayDefaultColWidth, displayDefaultRowHeight, displayEffectiveColWidths, displayEffectiveRowHeights, displayHeaderHeight, displayRowHeaderWidth, resolveMergeAnchorCell, rowIndexByActual, rowPrefixSums, worksheet]);
+  }, [colIndexByActual, colPrefixSums, displayDefaultColWidth, displayDefaultRowHeight, displayEffectiveColWidths, displayEffectiveRowHeights, displayHeaderHeight, displayRowHeaderWidth, findMergedRange, rowIndexByActual, rowPrefixSums]);
 
   const resolveMountedRangeOverlayRect = React.useCallback((range: XlsxCellRange, geometryRect: {
     height: number;
@@ -16114,6 +16093,7 @@ function XlsxGrid({
               selectionPaneOverlayRefs.current.delete(pane);
             }
           } : selectionOverlayRef}
+          data-xlsx-selection-overlay=""
           style={{
             backgroundColor: selectionFill,
             boxSizing: "border-box",
