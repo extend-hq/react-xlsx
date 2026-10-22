@@ -9,11 +9,13 @@ import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { growScrollDisplayLimit } from "./scroll-display-limit";
 import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffset } from "./range-highlight";
 import { createMergedRangeLookup } from "./merged-range-lookup";
+import { getCellGeneralAlignment, type CellGeneralAlignment } from "./cell-alignment";
 import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
 import { XlsxContextMenu } from "./context-menu";
-import { MemoChartSvg } from "./chart-renderer";
+import { MemoChartSvg } from "./lazy-chart";
+import { preloadChartRenderers } from "./chart-loader";
 import {
   emuToPixels,
   resizeImageRect,
@@ -435,6 +437,42 @@ function resolveSpreadsheetTextRotation(textRotation: unknown) {
 
   const excelDegrees = textRotation > 90 ? 90 - textRotation : textRotation;
   return -excelDegrees;
+}
+
+function resolveRotatedTextBounds(width: number, height: number, degrees: number) {
+  const radians = degrees * Math.PI / 180;
+  return {
+    width: Math.abs(width * Math.cos(radians)) + Math.abs(height * Math.sin(radians)),
+    height: Math.abs(width * Math.sin(radians)) + Math.abs(height * Math.cos(radians))
+  };
+}
+
+function drawRotatedCellText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  degrees: number,
+  rect: { left: number; top: number; width: number; height: number },
+  align: CanvasTextAlign,
+  verticalAlign: React.CSSProperties["verticalAlign"],
+  lineHeight: number
+) {
+  const bounds = resolveRotatedTextBounds(context.measureText(text).width, lineHeight, degrees);
+  const centerX = align === "right"
+    ? rect.left + rect.width - bounds.width / 2
+    : align === "center"
+      ? rect.left + rect.width / 2
+      : rect.left + bounds.width / 2;
+  const centerY = verticalAlign === "top"
+    ? rect.top + bounds.height / 2
+    : verticalAlign === "middle"
+      ? rect.top + rect.height / 2
+      : rect.top + rect.height - bounds.height / 2;
+  context.save();
+  context.translate(centerX, centerY);
+  context.rotate(degrees * Math.PI / 180);
+  context.textAlign = "center";
+  context.fillText(text, 0, 0);
+  context.restore();
 }
 
 function resolveCanvasFont(style: React.CSSProperties, fallbackSize = 12) {
@@ -1139,6 +1177,7 @@ type WorksheetWithRowsBatch = Worksheet & {
 type WorksheetBatchCellEntry = {
   col?: unknown;
   formula?: unknown;
+  generalAlignment?: unknown;
   hyperlink?: unknown;
   isMergedSecondary?: unknown;
   mergeSpan?: unknown;
@@ -1153,6 +1192,7 @@ type WorksheetBatchRowEntry = {
 
 type BatchedCellData = {
   formula: string | null;
+  generalAlignment?: CellGeneralAlignment;
   hyperlink: {
     location?: string;
     target?: string;
@@ -3530,7 +3570,7 @@ function buildCellStyle(
   style: Record<string, unknown> | null | undefined,
   palette: ViewerPalette,
   themePalette?: XlsxSheetData["themePalette"],
-  options?: { showGridLines?: boolean }
+  options?: { generalAlignment?: CellGeneralAlignment; showGridLines?: boolean }
 ): React.CSSProperties {
   const showGridLines = options?.showGridLines ?? true;
   const baseSurface = paletteIsDark(palette)
@@ -3548,6 +3588,7 @@ function buildCellStyle(
     lineHeight: String(resolveSpreadsheetLineHeight(11)),
     overflow: "hidden",
     padding: DEFAULT_CELL_PADDING,
+    textAlign: options?.generalAlignment ?? "left",
     textOverflow: "clip",
     verticalAlign: "bottom",
     whiteSpace: "nowrap"
@@ -3595,11 +3636,9 @@ function buildCellStyle(
       resolvedFontColor = fontColor;
       css.color = fontColor;
     }
-    if (typeof font.size === "number" && font.size !== 11) {
+    if (typeof font.size === "number" && Number.isFinite(font.size) && font.size > 0) {
       resolvedFontSizePt = font.size;
       css.fontSize = `${font.size}pt`;
-    } else if (typeof font.size === "number") {
-      resolvedFontSizePt = font.size;
     }
 
     const fontFamily = buildSpreadsheetFontFamily(font, themePalette);
@@ -3744,7 +3783,7 @@ function measureWrappedTextHeight(value: string, style: React.CSSProperties, wid
 }
 
 function canCellTextOverflow(data: CellRenderData) {
-  if (!data.value || data.isMergedSecondary || data.shrinkToFit || data.style.whiteSpace === "pre-wrap") {
+  if (!data.value || data.isMergedSecondary || data.shrinkToFit || data.textRotationDeg || data.conditionalIcon || data.style.whiteSpace === "pre-wrap") {
     return false;
   }
 
@@ -4279,6 +4318,9 @@ function buildWorksheetBatchWindow(
         const formula = typeof cellEntry.formula === "string" ? cellEntry.formula : null;
         cells.set(`${row}:${col}`, {
           formula,
+          generalAlignment: cellEntry.generalAlignment === "right" || cellEntry.generalAlignment === "center"
+            ? cellEntry.generalAlignment
+            : "left",
           hyperlink: normalizeBatchedHyperlink(cellEntry.hyperlink),
           isMergedSecondary: cellEntry.isMergedSecondary === true,
           mergeSpan: normalizeBatchedMergeSpan(cellEntry.mergeSpan),
@@ -5197,7 +5239,8 @@ function renderDefaultChartLoadingCard(rect: XlsxImageRect) {
 function renderChartLoadingNode(
   renderChartLoading: XlsxViewerProps["renderChartLoading"],
   chart: XlsxChart,
-  rect: XlsxImageRect
+  rect: XlsxImageRect,
+  stage: "metadata" | "renderer" | "map" = "metadata"
 ) {
   const defaultNode = renderDefaultChartLoadingCard(rect);
   if (!renderChartLoading) {
@@ -5207,7 +5250,8 @@ function renderChartLoadingNode(
   return renderChartLoading({
     chart,
     defaultNode,
-    rect
+    rect,
+    stage
   });
 }
 
@@ -6808,7 +6852,6 @@ function GridRow({
         const adornment = renderCellAdornment ? renderCellAdornment(cell) : null;
         const stickyLeft = stickyLeftByCol.get(actualCol);
         const validationRight = adornment ? 24 : 4;
-        const conditionalIconRight = validationRight;
         const cellStyle: React.CSSProperties = {
           ...cellData.style,
           boxSizing: "border-box",
@@ -6887,7 +6930,7 @@ function GridRow({
         if (usesWrappedText) {
           cellContentStyle.overflow = "clip";
         }
-        const trailingInset = (adornment ? 20 : 0) + (cellData.conditionalIcon ? 18 : 0);
+        const trailingInset = adornment ? 20 : 0;
         if (cellData.conditionalDataBar) {
           cellContentStyle.position = "relative";
           cellContentStyle.zIndex = 1;
@@ -6900,6 +6943,8 @@ function GridRow({
           cellContentStyle.paddingRight = (trailingInset + 4) * zoomFactor;
         }
         if (cellData.conditionalIcon) {
+          cellContentStyle.boxSizing = "border-box";
+          cellContentStyle.paddingLeft = 18 * zoomFactor;
           cellContentStyle.position = "relative";
           cellContentStyle.zIndex = 1;
         }
@@ -6915,11 +6960,20 @@ function GridRow({
           cellContentStyle.fontSize = cellData.shrinkToFitFontSizePx;
           cellContentStyle.lineHeight = `${resolveCanvasLineHeight(cellData.style, cellData.shrinkToFitFontSizePx)}px`;
         }
+        const rotatedTextWidth = cellData.textRotationDeg ? measureTextWidth(cellData.value, cellData.style) : 0;
+        const rotatedTextHeight = resolveCanvasLineHeight(cellData.style, 12 * zoomFactor);
+        const rotatedTextBounds = cellData.textRotationDeg
+          ? resolveRotatedTextBounds(rotatedTextWidth, rotatedTextHeight, cellData.textRotationDeg)
+          : null;
         const rotatedTextStyle = cellData.textRotationDeg
           ? {
               display: "inline-block",
+              left: "50%",
+              lineHeight: `${rotatedTextHeight}px`,
               maxWidth: "none",
-              transform: `rotate(${cellData.textRotationDeg}deg)`,
+              position: "absolute",
+              top: "50%",
+              transform: `translate(-50%, -50%) rotate(${cellData.textRotationDeg}deg)`,
               transformOrigin: "center center",
               whiteSpace: "nowrap",
               width: "max-content"
@@ -7004,7 +7058,7 @@ function GridRow({
                   justifyContent: "center",
                   pointerEvents: "none",
                   position: "absolute",
-                  right: conditionalIconRight * zoomFactor,
+                  left: 4 * zoomFactor,
                   top: "50%",
                   transform: "translateY(-50%)",
                   zIndex: 2
@@ -7098,7 +7152,7 @@ function GridRow({
             ) : (
               <div style={cellContentStyle}>
                 {rotatedTextStyle
-                  ? <span style={rotatedTextStyle}>{cellData.value}</span>
+                  ? <span style={{ ...rotatedTextBounds, flex: "0 0 auto", position: "relative" }}><span style={rotatedTextStyle}>{cellData.value}</span></span>
                   : wrappedTextStyle
                     ? <span style={wrappedTextStyle}>{cellData.value}</span>
                     : cellData.value}
@@ -7275,6 +7329,9 @@ function XlsxGrid({
     workbook,
     zoomScale
   } = controller;
+  React.useEffect(() => {
+    if (showImages) preloadChartRenderers([charts]);
+  }, [charts, showImages]);
   const formControlItemsById = React.useMemo(() => new Map(
     formControls.flatMap((control) => (
       control.controlIndex !== undefined && (control.kind === "dropdown" || control.kind === "listbox")
@@ -7585,6 +7642,15 @@ function XlsxGrid({
   const resolveMergeAnchorCell = React.useCallback((cell: XlsxCellAddress): XlsxCellAddress => {
     return findMergedRange(cell)?.start ?? cell;
   }, [findMergedRange]);
+  const resolveCellSelectionRange = React.useCallback((range: XlsxCellRange): XlsxCellRange => {
+    const normalized = normalizeRange(range);
+    const start = resolveMergeAnchorCell(normalized.start);
+    const end = resolveMergeAnchorCell(normalized.end);
+    if (isSameCell(start, end)) {
+      return { start, end };
+    }
+    return expandHighlightedRange(normalized, activeSheet?.mergedRanges ?? mergedRegions);
+  }, [activeSheet?.mergedRanges, mergedRegions, resolveMergeAnchorCell]);
   const highlightedCellRanges = React.useMemo(
     () => highlightedRanges.flatMap((highlight, index) => activeSheet?.workbookSheetIndex === highlight.workbookSheetIndex
       ? [{ highlight, index, range: expandHighlightedRange(highlight.range, activeSheet?.mergedRanges ?? mergedRegions) }]
@@ -10013,7 +10079,7 @@ function XlsxGrid({
     );
     const finalResolvedStyle = mergeResolvedCellStyle(resolvedMergedStyle, conditionalCellStyle);
     const alignment = finalResolvedStyle?.alignment as Record<string, unknown> | undefined;
-    const textRotationDeg = resolveSpreadsheetTextRotation(alignment?.textRotation);
+    const textRotationDeg = resolveSpreadsheetTextRotation(alignment?.rotation ?? alignment?.textRotation);
     const headerRowCount = table ? Math.max(table.headerRowCount, 1) : 0;
     const rawHyperlink = batchCoversRow
       ? batchedCell?.hyperlink
@@ -10086,6 +10152,7 @@ function XlsxGrid({
       rowSpan: merge?.rowSpan,
       sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
       style: scaleCssProperties(buildCellStyle(finalResolvedStyle, palette, activeSheet?.themePalette, {
+        generalAlignment: worksheet ? getCellGeneralAlignment(worksheet, row, col) : batchedCell?.generalAlignment,
         showGridLines: activeSheet?.showGridLines
       }), zoomFactor),
       textRotationDeg,
@@ -10142,7 +10209,10 @@ function XlsxGrid({
       const startColIndex = colIndexByActual.get(col);
       if (startColIndex !== undefined) {
         const cellColSpan = Math.max(1, nextData.colSpan ?? 1);
-        const endColIndex = Math.min(visibleCols.length - 1, startColIndex + cellColSpan - 1);
+        let endColIndex = startColIndex;
+        while (endColIndex + 1 < visibleCols.length && visibleCols[endColIndex + 1]! < col + cellColSpan) {
+          endColIndex += 1;
+        }
         const horizontalPadding = getHorizontalPadding(nextData.style.padding);
         const textWidth = measureTextWidth(nextData.value, nextData.style);
         const requiredWidth = textWidth + horizontalPadding + 2;
@@ -10191,7 +10261,10 @@ function XlsxGrid({
       const startColIndex = colIndexByActual.get(col);
       if (startColIndex !== undefined) {
         const cellColSpan = Math.max(1, nextData.colSpan ?? 1);
-        const endColIndex = Math.min(visibleCols.length - 1, startColIndex + cellColSpan - 1);
+        let endColIndex = startColIndex;
+        while (endColIndex + 1 < visibleCols.length && visibleCols[endColIndex + 1]! < col + cellColSpan) {
+          endColIndex += 1;
+        }
         const horizontalPadding = getHorizontalPadding(nextData.style.padding);
         const trailingInset = (nextData.conditionalIcon ? 18 * zoomFactor : 0) + (nextData.isTableHeader ? 16 * zoomFactor : 0);
         const availableWidth = Math.max(
@@ -11076,7 +11149,7 @@ function XlsxGrid({
   }, [applyHeaderSelection, experimentalCanvas, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect, zoomFactor]);
 
   const applyPreviewOverlayFromElement = React.useCallback((element: HTMLElement, range: XlsxCellRange) => {
-    if (experimentalCanvas) {
+    if (experimentalCanvas || !isSameCell(range.start, range.end)) {
       applyPreviewOverlay(range);
       return;
     }
@@ -11324,7 +11397,7 @@ function XlsxGrid({
       });
     }
 
-    return normalizeRange({ start: dragState.anchor, end: cell });
+    return resolveCellSelectionRange({ start: dragState.anchor, end: cell });
   }
 
   function updateSelectionDragPreview(clientX: number, clientY: number) {
@@ -11718,13 +11791,14 @@ function XlsxGrid({
     event.preventDefault();
     focusGrid();
     axisSelectionRef.current = null;
-    const targetCell =
+    const targetCell = resolveMergeAnchorCell(
       event.currentTarget.colSpan > 1 || event.currentTarget.rowSpan > 1
         ? resolvePointerCellFromGeometry(event.clientX, event.clientY) ?? cell
-        : cell;
+        : cell
+    );
     const currentSelection = selectionRef.current;
     const anchor = event.shiftKey && currentSelection ? currentSelection.start : targetCell;
-    const initialRange = normalizeRange({ start: anchor, end: targetCell });
+    const initialRange = resolveCellSelectionRange({ start: anchor, end: targetCell });
     const isActive = isSameCell(activeCellRef.current, targetCell);
     const committedOnPointerDown = !isActive || !editingCellRef.current;
     if (editingCellRef.current && !isActive) {
@@ -11772,6 +11846,8 @@ function XlsxGrid({
     resolveCellPointerOriginFromClient,
     resolveMountedCellOverlayRect,
     resolveOverlayRect,
+    resolveCellSelectionRange,
+    resolveMergeAnchorCell,
     resolvePointerCellFromGeometry
   ]);
 
@@ -12150,7 +12226,7 @@ function XlsxGrid({
     axisSelectionRef.current = null;
     const currentSelection = selectionRef.current;
     const anchor = event.shiftKey && currentSelection ? currentSelection.start : cell;
-    const initialRange = normalizeRange({ start: anchor, end: cell });
+    const initialRange = resolveCellSelectionRange({ start: anchor, end: cell });
     const isActive = isSameCell(activeCellRef.current, cell);
     const committedOnPointerDown = !isActive || !editingCellRef.current;
     if (editingCellRef.current && !isActive) {
@@ -12191,6 +12267,7 @@ function XlsxGrid({
     commitSelectionRange,
     focusGrid,
     resolveOverlayRect,
+    resolveCellSelectionRange,
     resolvePointerCellFromClient,
     rowIndexByActual,
     rowPrefixSums,
@@ -13399,16 +13476,19 @@ function XlsxGrid({
           } else {
             const align = canvasCellStyle.textAlign;
             paneContext.textAlign = align;
+            const leadingInset = cellData.conditionalIcon ? 18 * zoomFactor : 0;
+            const trailingInset = cellData.isTableHeader ? 16 * zoomFactor : 0;
+            const textLeft = contentLeft + leadingInset;
+            const textWidth = Math.max(0, contentWidth - leadingInset - trailingInset);
             const textX = align === "right"
-              ? contentLeft + contentWidth
+              ? textLeft + textWidth
               : align === "center"
-                ? contentLeft + (contentWidth / 2)
-                : contentLeft;
-            const trailingInset = (cellData.conditionalIcon ? 18 * zoomFactor : 0) + (cellData.isTableHeader ? 16 * zoomFactor : 0);
+                ? textLeft + textWidth / 2
+                : textLeft;
             const spillMaxWidth = cellData.spillWidth && cellData.spillWidth > 0
               ? Math.max(0, cellData.spillWidth - trailingInset)
               : null;
-            const maxTextWidth = spillMaxWidth ?? Math.max(0, contentWidth - trailingInset);
+            const maxTextWidth = spillMaxWidth ?? textWidth;
             const textColor = canvasCellStyle.textColor;
             const shouldEllipsizeText = canvasCellStyle.textOverflowEllipsis;
             const shouldWrapText = canvasCellStyle.usesWrappedText || rawText.includes("\n");
@@ -13417,22 +13497,9 @@ function XlsxGrid({
               : resolveCanvasLineHeight(cellStyle, 12 * zoomFactor);
 
             if (cellData.textRotationDeg && rawText.length > 0) {
-              const textY = resolveCanvasTextMiddleY(cellStyle.verticalAlign, contentTop, contentHeight, singleLineHeight);
-              const rotationOriginX = contentLeft + (contentWidth / 2);
-              paneContext.save();
-              paneContext.translate(rotationOriginX, textY);
-              paneContext.rotate((cellData.textRotationDeg * Math.PI) / 180);
-              paneContext.textAlign = align;
-              paneContext.fillText(
-                rawText,
-                align === "right"
-                  ? contentWidth / 2
-                  : align === "center"
-                    ? 0
-                    : -(contentWidth / 2),
-                0
-              );
-              paneContext.restore();
+              drawRotatedCellText(paneContext, rawText, cellData.textRotationDeg, {
+                left: textLeft, top: contentTop, width: maxTextWidth, height: contentHeight
+              }, align, cellStyle.verticalAlign, singleLineHeight);
             } else if (shouldWrapText) {
               const wrappedLines = wrapCanvasText(paneContext, rawText, maxTextWidth);
               const lineHeight = cellData.shrinkToFitFontSizePx
@@ -13510,7 +13577,7 @@ function XlsxGrid({
 
           if (cellData.conditionalIcon) {
             const iconSize = 10 * zoomFactor;
-            const iconX = localRect.left + localRect.width - (padding.right + iconSize + (cellData.isTableHeader ? 16 * zoomFactor : 4 * zoomFactor));
+            const iconX = localRect.left + padding.left;
             const iconY = localRect.top + (localRect.height / 2);
             drawCanvasConditionalIcon(paneContext, cellData.conditionalIcon, iconX + (iconSize / 2), iconY, iconSize);
           }
@@ -14043,6 +14110,7 @@ function XlsxGrid({
                     : (
                         <MemoChartSvg
                           chart={chart}
+                          loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, chartsheetRect, stage)}
                           onChartElementDoubleClick={handleChartElementDoubleClick}
                           onChartElementPointerDown={handleChartElementPointerDown}
                           palette={palette}
@@ -15067,6 +15135,7 @@ function XlsxGrid({
               : (
                   <MemoChartSvg
                     chart={chart}
+                    loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, rect, stage)}
                     onChartElementDoubleClick={handleChartElementDoubleClick}
                     onChartElementPointerDown={handleChartElementPointerDown}
                     palette={palette}
@@ -17781,9 +17850,10 @@ export function useXlsxViewerThumbnails(
             rowSpan: merge?.rowSpan,
             sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
             style: buildCellStyle(finalResolvedStyle, palette, sheet.themePalette, {
+              generalAlignment: worksheet ? getCellGeneralAlignment(worksheet, row, col) : batchedCell?.generalAlignment,
               showGridLines
             }),
-            textRotationDeg: resolveSpreadsheetTextRotation(alignment?.textRotation),
+            textRotationDeg: resolveSpreadsheetTextRotation(alignment?.rotation ?? alignment?.textRotation),
             value: sparkline
               ? ""
               : checkboxState !== null
@@ -17811,17 +17881,11 @@ export function useXlsxViewerThumbnails(
             let height = rowItem.size;
             for (let colOffset = 1; colOffset < colSpan; colOffset += 1) {
               const nextCol = colItemByActual.get(colItem.actualIndex + colOffset);
-              if (!nextCol) {
-                break;
-              }
-              width += nextCol.size;
+              width += nextCol?.size ?? 0;
             }
             for (let rowOffset = 1; rowOffset < rowSpan; rowOffset += 1) {
               const nextRow = rowItemByActual.get(rowItem.actualIndex + rowOffset);
-              if (!nextRow) {
-                break;
-              }
-              height += nextRow.size;
+              height += nextRow?.size ?? 0;
             }
 
             const rect = {
@@ -17966,31 +18030,20 @@ export function useXlsxViewerThumbnails(
             } else if (rawText.length > 0) {
               const align = canvasCellStyle.textAlign;
               context.textAlign = align;
+              const leadingInset = cellData.conditionalIcon ? 18 : 0;
+              const textLeft = contentLeft + leadingInset;
+              const maxTextWidth = Math.max(0, contentWidth - leadingInset);
               const textX = align === "right"
-                ? contentLeft + contentWidth
+                ? textLeft + maxTextWidth
                 : align === "center"
-                  ? contentLeft + (contentWidth / 2)
-                  : contentLeft;
-              const trailingInset = cellData.conditionalIcon ? 18 : 0;
-              const maxTextWidth = Math.max(0, contentWidth - trailingInset);
+                  ? textLeft + maxTextWidth / 2
+                  : textLeft;
               const singleLineHeight = resolveCanvasLineHeight(cellData.style, 12);
 
               if (cellData.textRotationDeg) {
-                const alignedTextY = resolveCanvasTextMiddleY(cellData.style.verticalAlign, contentTop, contentHeight, singleLineHeight);
-                const rotationOriginX = contentLeft + (contentWidth / 2);
-                context.save();
-                context.translate(rotationOriginX, alignedTextY);
-                context.rotate((cellData.textRotationDeg * Math.PI) / 180);
-                context.fillText(
-                  rawText,
-                  align === "right"
-                    ? contentWidth / 2
-                    : align === "center"
-                      ? 0
-                      : -(contentWidth / 2),
-                  0
-                );
-                context.restore();
+                drawRotatedCellText(context, rawText, cellData.textRotationDeg, {
+                  left: textLeft, top: contentTop, width: maxTextWidth, height: contentHeight
+                }, align, cellData.style.verticalAlign, singleLineHeight);
               } else if (canvasCellStyle.usesWrappedText || rawText.includes("\n")) {
                 const lines = wrapCanvasText(context, rawText, maxTextWidth);
                 const lineHeight = resolveCanvasLineHeight(cellData.style, 12);
@@ -18014,7 +18067,7 @@ export function useXlsxViewerThumbnails(
 
             if (cellData.conditionalIcon) {
               const iconSize = 10;
-              const iconX = rect.left + rect.width - (padding.right + iconSize + 4);
+              const iconX = rect.left + padding.left;
               const iconY = rect.top + (rect.height / 2);
               drawCanvasConditionalIcon(context, cellData.conditionalIcon, iconX + (iconSize / 2), iconY, iconSize);
             }

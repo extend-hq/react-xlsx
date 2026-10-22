@@ -167,6 +167,8 @@ export interface XlsxCellRange {
   start: XlsxCellAddress;
 }
 
+export type XlsxMergeMode = "cells" | "center" | "across";
+
 export interface XlsxParsedRange {
   kind: "cells" | "rows" | "columns";
   range: XlsxCellRange;
@@ -875,6 +877,7 @@ export interface XlsxChart {
   varyColors?: boolean;
   view3d?: {
     depthPercent?: number;
+    heightPercent?: number;
     perspective?: number;
     rAngAx?: boolean;
     rotX?: number;
@@ -955,6 +958,8 @@ export interface XlsxChartLoadingRenderProps {
   defaultNode: React.ReactNode;
   /** The chart rectangle in viewer pixels, including the current zoom level. */
   rect: XlsxImageRect;
+  /** Identifies whether chart metadata, rendering code, or map geometry is loading. */
+  stage?: "metadata" | "renderer" | "map";
 }
 
 export interface XlsxFileTooLargeRenderProps {
@@ -1129,7 +1134,8 @@ export interface XlsxViewerController {
   images: XlsxImage[];
   moveChartBy: (id: string, deltaX: number, deltaY: number) => void;
   shapes: XlsxShape[];
-  mergeSelection: () => void;
+  /** Merges the selection; defaults to preserving its existing alignment. */
+  mergeSelection: (mode?: XlsxMergeMode) => void;
   maxZoomScale: number;
   minZoomScale: number;
   moveImageBy: (id: string, deltaX: number, deltaY: number) => void;
@@ -1281,7 +1287,7 @@ export interface XlsxViewerZoom {
 
 export type XlsxContextMenuActionId =
   | "cut" | "copy" | "paste" | "clearContents" | "editCell"
-  | "undo" | "redo" | "mergeCells" | "unmergeCells"
+  | "undo" | "redo" | "mergeCells" | "mergeAndCenter" | "mergeAcross" | "unmergeCells"
   | "sortAscending" | "sortDescending"
   | "selectRow" | "selectColumn" | "selectAll";
 
@@ -1332,7 +1338,7 @@ export interface XlsxViewerEditing {
   getCellFormula: (cell?: XlsxCellAddress | null) => string;
   getFormControlItems: (controlIndex: number, sheetIndex?: number) => string[];
   getSheetFormControls: (sheetIndex?: number) => XlsxFormControl[];
-  mergeSelection: () => void;
+  mergeSelection: (mode?: XlsxMergeMode) => void;
   pasteFromClipboard: () => Promise<boolean>;
   pasteStructuredClipboardData: (payload: string) => boolean;
   pasteText: (text: string) => boolean;
@@ -1687,7 +1693,7 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   onFormControlAction?: (event: XlsxFormControlActionEvent) => void;
   /** Called after the built-in editor persists a checkbox, radio, list, dropdown, scrollbar, or spinner change. */
   onFormControlChange?: (event: XlsxFormControlChangeEvent) => void;
-  /** Replaces the chart loading placeholder. */
+  /** Replaces the loading placeholder for chart metadata, chart rendering code, and map geometry. */
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;
   /** Replaces menu contents. Use runAction for built-in commands and closeMenu after custom commands. */
   renderContextMenu?: (props: XlsxContextMenuRenderProps) => React.ReactNode;

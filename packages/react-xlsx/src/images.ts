@@ -1067,7 +1067,7 @@ function parseSpreadsheetAlignment(node: Element | null): XlsxResolvedCellStyle[
   if (textRotation !== null) {
     const parsedRotation = Number(textRotation);
     if (Number.isFinite(parsedRotation)) {
-      alignment.textRotation = parsedRotation;
+      alignment.rotation = parsedRotation;
     }
   }
 

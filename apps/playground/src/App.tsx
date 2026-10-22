@@ -34,6 +34,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 import { Input } from "./components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
 import { Switch } from "./components/ui/switch";
+import { Spinner } from "./components/ui/spinner";
 import { HIGHLIGHT_DEMO_RANGES, HIGHLIGHT_DEMO_URL, RangeHighlightDemo } from "./components/range-highlight-demo";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
 
@@ -742,14 +743,19 @@ function WorkbookToolbar({
 
               <RibbonGroup label="Cells">
                 <div className="flex flex-col gap-1">
-                  <ButtonGroup>
-                    <RibbonButton disabled={!hasSelection || isReadOnly} label="Merge selection" onClick={mergeSelection}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger render={<Button disabled={!hasSelection || isReadOnly} size="sm" variant="outline" />}>
                       Merge
-                    </RibbonButton>
-                    <RibbonButton disabled={!hasSelection || isReadOnly} label="Unmerge selection" onClick={unmergeSelection}>
-                      Unmerge
-                    </RibbonButton>
-                  </ButtonGroup>
+                      <PlaygroundIcon name="chevron-down" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-44">
+                      <DropdownMenuItem onClick={() => mergeSelection("center")}>Merge &amp; Center</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => mergeSelection("across")}>Merge Across</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => mergeSelection()}>Merge Cells</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={unmergeSelection}>Unmerge Cells</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <DropdownMenu>
                     <DropdownMenuTrigger render={<Button disabled={!canEditSelection} size="sm" variant="outline" />}>
                       Borders
@@ -1375,9 +1381,14 @@ export function App() {
                   isDark={isDocumentDark}
                   loadingState={
                     <div className="text-muted-foreground flex h-full w-full items-center justify-center text-sm">
-                      Loading...
+                      <Spinner className="size-5" />
                     </div>
                   }
+                  renderChartLoading={() => (
+                    <div className="text-muted-foreground flex h-full w-full items-center justify-center">
+                      <Spinner className="size-5" />
+                    </div>
+                  )}
                   experimentalCanvas={experimentalCanvas}
                   readOnly={isReadOnly}
                   contextMenuClassName="playground-context-menu"

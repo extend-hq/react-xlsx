@@ -534,80 +534,6 @@ function parseFallbackBubbleSizesFromChartXml(chartXml: string): Array<Array<num
   });
 }
 
-function decodeChartXmlText(value: string) {
-  return value
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, "\"")
-    .replace(/&apos;/g, "'");
-}
-
-function normalizeChartTitleForMatch(value: string | null | undefined) {
-  return (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function extractChartTitleFromXml(chartXml: string): string | null {
-  const match = chartXml.match(/<c:title\b[\s\S]*?<a:t>([\s\S]*?)<\/a:t>/i);
-  if (!match?.[1]) {
-    return null;
-  }
-  const decoded = decodeChartXmlText(match[1]).trim();
-  return decoded.length > 0 ? decoded : null;
-}
-
-function resolveArchiveFallbackBubbleSizes(
-  archive: Record<string, Uint8Array>,
-  preferredTitle: string | undefined
-) {
-  const preferred = normalizeChartTitleForMatch(preferredTitle);
-  let bestScore = Number.NEGATIVE_INFINITY;
-  let bestCandidate: Array<Array<number | null>> = [];
-
-  for (const [path, bytes] of Object.entries(archive)) {
-    if (!/\/charts\/chart\d+\.xml$/i.test(path)) {
-      continue;
-    }
-    const chartXml = strFromU8(bytes);
-    if (!/<c:bubbleChart\b/i.test(chartXml)) {
-      continue;
-    }
-    const candidateBubbleSizes = parseFallbackBubbleSizesFromChartXml(chartXml);
-    const hasCandidateValues = candidateBubbleSizes.some((seriesValues) => seriesValues.some((value) => value != null));
-    if (!hasCandidateValues) {
-      continue;
-    }
-
-    let score = 0;
-    const candidateTitle = normalizeChartTitleForMatch(extractChartTitleFromXml(chartXml));
-    if (preferred.length > 0 && candidateTitle.length > 0 && preferred === candidateTitle) {
-      score += 100;
-    }
-    if (bestCandidate.length === 0) {
-      score += 1;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestCandidate = candidateBubbleSizes;
-      if (score >= 100) {
-        break;
-      }
-    }
-  }
-
-  return bestCandidate;
-}
-
-function parseChartTypeFromXml(chartXml: string) {
-  for (const chartType of PRIMARY_CHART_TYPE_LOCAL_NAMES) {
-    if (new RegExp(`<c:${chartType}\\b`, "i").test(chartXml)) {
-      return chartType;
-    }
-  }
-  return "";
-}
-
 function findPrimaryChartTypeNode(plotAreaNode: Element | null) {
   if (!plotAreaNode) {
     return null;
@@ -634,59 +560,6 @@ function resolveScatterChartType(scatterStyle: string | null | undefined) {
     default:
       return "Scatter";
   }
-}
-
-function resolveArchiveFallbackPointStyles(
-  archive: Record<string, Uint8Array>,
-  preferredTitle: string | undefined,
-  preferredChartXmlType: string | undefined,
-  themePalette?: XlsxThemePalette | null
-) {
-  const preferred = normalizeChartTitleForMatch(preferredTitle);
-  const preferredType = (preferredChartXmlType ?? "").trim();
-  let bestScore = Number.NEGATIVE_INFINITY;
-  let bestCandidate: XlsxChartPointStyle[][] = [];
-
-  for (const [path, bytes] of Object.entries(archive)) {
-    if (!/\/charts\/chart\d+\.xml$/i.test(path)) {
-      continue;
-    }
-    const chartXml = strFromU8(bytes);
-    const candidateType = parseChartTypeFromXml(chartXml);
-    if (!candidateType) {
-      continue;
-    }
-    const candidatePointStyles = parseFallbackPointStylesFromChartXml(chartXml, themePalette);
-    const hasCandidateValues = candidatePointStyles.some((seriesStyles) => seriesStyles.some((style) => (
-      (typeof style.color === "string" && style.color.length > 0)
-      || typeof style.explosion === "number"
-    )));
-    if (!hasCandidateValues) {
-      continue;
-    }
-
-    let score = 0;
-    const candidateTitle = normalizeChartTitleForMatch(extractChartTitleFromXml(chartXml));
-    if (preferred.length > 0 && candidateTitle.length > 0 && preferred === candidateTitle) {
-      score += 100;
-    }
-    if (preferredType && candidateType === preferredType) {
-      score += 20;
-    }
-    if (bestCandidate.length === 0) {
-      score += 1;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestCandidate = candidatePointStyles;
-      if (score >= 120) {
-        break;
-      }
-    }
-  }
-
-  return bestCandidate;
 }
 
 function parseHexColor(color: string): [number, number, number] | null {
@@ -1173,32 +1046,9 @@ function buildThemeSeriesPalette(themePalette?: XlsxThemePalette | null) {
   return themeColors.length > 0 ? themeColors : SERIES_COLORS;
 }
 
-function normalizeBuiltinSurfaceStyleId(styleId: number | undefined) {
-  if (typeof styleId !== "number" || !Number.isFinite(styleId)) {
-    return null;
-  }
-  return styleId >= 100 ? styleId - 100 : styleId;
-}
-
-function getBuiltinSurfacePalette(styleId: number | undefined, wireframe: boolean | undefined) {
-  const normalized = normalizeBuiltinSurfaceStyleId(styleId);
-  if (normalized === 34 || (wireframe === true && normalized == null)) {
-    return ["#5b9bd5", "#ed7d31", "#a5a5a5"];
-  }
-  if (normalized === 35 || normalized === 36 || (wireframe !== true && normalized == null)) {
-    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#d9e2f3"];
-  }
-  return null;
-}
-
 function applyBuiltinSurfaceDefaults(chart: XlsxChart) {
   if (chart.chartType !== "Surface") {
     return;
-  }
-
-  const builtinPalette = getBuiltinSurfacePalette(chart.chartStyleId, chart.wireframe);
-  if ((!chart.chartColorPalette || chart.chartColorPalette.length === 0) && builtinPalette) {
-    chart.chartColorPalette = builtinPalette;
   }
 
   const wallFill = chart.wireframe ? "#d0d0d0" : "#d9d9df";
@@ -1219,7 +1069,7 @@ function applyBuiltinSurfaceDefaults(chart: XlsxChart) {
     lineColor: chart.backWall?.lineColor ?? wallLine
   };
   if (!chart.surfaceMaterial && chart.wireframe !== true) {
-    chart.surfaceMaterial = "flat";
+    chart.surfaceMaterial = "matte";
   }
 }
 
@@ -1330,7 +1180,8 @@ function parseChartCacheValues(
   const referenceNode = getFirstLocalChild(parentNode, "numRef")
     ?? getFirstLocalChild(parentNode, "strRef")
     ?? parentNode;
-  const cacheNode = getFirstLocalChild(referenceNode, cacheName);
+  const cacheNode = getFirstLocalChild(referenceNode, cacheName)
+    ?? getFirstLocalChild(parentNode, cacheName === "numCache" ? "numLit" : "strLit");
   if (!cacheNode) {
     return null;
   }
@@ -1437,7 +1288,13 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
     const fillColor = resolveChartFillColor(shapeProperties, themePalette);
     const markerSize = readChartNumericAttribute(markerNode, "size");
     const markerSymbolNode = markerNode ? getFirstLocalChild(markerNode, "symbol") : null;
-    const markerSymbol = markerSymbolNode?.getAttribute("val") ?? undefined;
+    const markerSymbol = markerSymbolNode?.getAttribute("val")
+      ?? (markerNode
+        || chart.chartType === "Scatter"
+        || ["marker", "lineMarker", "smoothMarker"].includes(chart.scatterStyle ?? "")
+        || readChartBooleanAttribute(chartTypeNode, "marker") === true
+        ? "auto"
+        : series.markerSymbol);
     const pointStyles = parseChartPointStyles(seriesNode, themePalette);
     const seriesExplosion = readChartNumericAttribute(seriesNode, "explosion");
     const invertNegativeStyle = parseInvertNegativeStyle(seriesNode, themePalette);
@@ -1510,6 +1367,7 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       shapeProperties: {
         ...series.shapeProperties,
         xmlExplosion: seriesExplosion ?? undefined,
+        xmlFillHidden: getFirstLocalChild(shapeProperties, "noFill") ? true : undefined,
         xmlFillColor: fillColor ?? undefined,
         xmlLineHidden: lineStyle.hidden ? true : undefined,
         xmlLineColor: lineStyle.color ?? undefined,
@@ -1921,24 +1779,29 @@ function applyChartStyleFromXml(
   chart.surfaceMaterial = seriesSp3dNode?.getAttribute("prstMaterial") ?? chart.surfaceMaterial;
   const bandFormatsNode = getLocalChildren(chartTypeNode, "bandFmts")[0] ?? null;
   const bandFormatNodes = bandFormatsNode ? getLocalChildren(bandFormatsNode, "bandFmt") : [];
-  const bandFormatColors = bandFormatNodes
-    .map((bandFormatNode) => {
-      const shapeProperties = getFirstLocalChild(bandFormatNode, "spPr");
-      return resolveChartFillColor(shapeProperties, themePalette) ?? undefined;
-    })
-    .filter((color): color is string => typeof color === "string" && color.length > 0);
-  const bandFormatLineColors = bandFormatNodes
-    .map((bandFormatNode) => {
-      const shapeProperties = getFirstLocalChild(bandFormatNode, "spPr");
-      return resolveChartLineStyle(shapeProperties, themePalette).color ?? undefined;
-    })
-    .filter((color): color is string => typeof color === "string" && color.length > 0);
+  const bandFormatColors: Record<number, string> = Object.create(null);
+  const bandFormatLineColors: Record<number, string> = Object.create(null);
+  const bandFormatLineWidths: Record<number, number> = Object.create(null);
+  for (const bandFormatNode of bandFormatNodes) {
+    const index = readChartNumericAttribute(bandFormatNode, "idx");
+    if (index == null || !Number.isInteger(index) || index < 0 || index > 0xffffffff) {
+      continue;
+    }
+    const shapeProperties = getFirstLocalChild(bandFormatNode, "spPr");
+    const fillColor = getFirstLocalChild(shapeProperties, "noFill") ? "transparent" : resolveChartFillColor(shapeProperties, themePalette);
+    const lineStyle = resolveChartLineStyle(shapeProperties, themePalette);
+    const lineColor = lineStyle.hidden ? "transparent" : lineStyle.color;
+    const lineWidth = Number(getFirstLocalChild(shapeProperties, "ln")?.getAttribute("w") ?? Number.NaN);
+    if (fillColor) bandFormatColors[index] = fillColor;
+    if (lineColor) bandFormatLineColors[index] = lineColor;
+    if (Number.isFinite(lineWidth) && lineWidth >= 0) bandFormatLineWidths[index] = lineWidth / EMU_PER_PIXEL;
+  }
 
   chart.raw = {
     ...(chart.raw ?? {}),
-    bandFormatCount: bandFormatNodes.length > 0 ? bandFormatNodes.length : undefined,
-    bandFormatColors: bandFormatColors.length > 0 ? bandFormatColors : undefined,
-    bandFormatLineColors: bandFormatLineColors.length > 0 ? bandFormatLineColors : undefined,
+    bandFormatColors: Object.keys(bandFormatColors).length > 0 ? bandFormatColors : undefined,
+    bandFormatLineColors: Object.keys(bandFormatLineColors).length > 0 ? bandFormatLineColors : undefined,
+    bandFormatLineWidths: Object.keys(bandFormatLineWidths).length > 0 ? bandFormatLineWidths : undefined,
     date1904: readChartBooleanAttribute(chartDocument?.documentElement ?? null, "date1904"),
     bubble3d: chart.bubble3d,
     grouping: getFirstLocalChild(chartTypeNode, "grouping")?.getAttribute("val") ?? undefined,
@@ -1954,6 +1817,7 @@ function applyChartStyleFromXml(
   if (view3dNode) {
     chart.view3d = {
       depthPercent: readChartNumericAttribute(view3dNode, "depthPercent"),
+      heightPercent: readChartNumericAttribute(view3dNode, "hPercent"),
       perspective: readChartNumericAttribute(view3dNode, "perspective"),
       rAngAx: getFirstLocalChild(view3dNode, "rAngAx")?.getAttribute("val") === "1",
       rotX: readChartNumericAttribute(view3dNode, "rotX"),
@@ -1979,7 +1843,9 @@ function applyChartStyleFromXml(
   chart.raw = {
     ...(chart.raw ?? {}),
     chartAreaNoFill: styleAppearance.chartAreaNoFill === true || chartAreaNoFill,
-    plotAreaNoFill
+    plotAreaNoFill,
+    plotAreaFillColor: resolveChartFillColor(plotAreaShapeProperties, themePalette) ?? undefined,
+    plotAreaLineColor: resolveChartLineStyle(plotAreaShapeProperties, themePalette).color ?? undefined
   };
   if (chartAreaShapeProperties) {
     const chartAreaFillColor = resolveChartFillColor(chartAreaShapeProperties, themePalette);
@@ -2043,79 +1909,6 @@ function applyChartStyleFromXml(
 
   applyChartSeriesStyleFromXml(chart, chartTypeNode, themePalette);
   applyFallbackSeriesStyles();
-  if (chart.chartType === "Bubble") {
-    const archiveFallbackBubbleSizes = resolveArchiveFallbackBubbleSizes(archive, chart.title);
-    if (archiveFallbackBubbleSizes.length > 0) {
-      chart.series = chart.series.map((series, seriesIndex) => {
-        const pointCount = Math.max(series.values.length, series.categories.length);
-        if (pointCount <= 1) {
-          return series;
-        }
-
-        const numericBubbleCount = (series.bubbleSizes ?? []).filter(
-          (value): value is number => typeof value === "number" && Number.isFinite(value)
-        ).length;
-        if (numericBubbleCount >= pointCount) {
-          return series;
-        }
-
-        const fallbackCandidate = archiveFallbackBubbleSizes[seriesIndex] ?? archiveFallbackBubbleSizes[0] ?? [];
-        const fallbackNumericCount = fallbackCandidate.filter(
-          (value): value is number => typeof value === "number" && Number.isFinite(value)
-        ).length;
-        if (fallbackNumericCount < pointCount) {
-          return series;
-        }
-
-        return {
-          ...series,
-          bubbleSizes: fallbackCandidate
-        };
-      });
-    }
-  }
-  if (chart.chartType === "Pie" || chart.chartType === "Pie3D" || chart.chartType === "PieExploded" || chart.chartType === "Doughnut" || chart.chartType === "BarOfPie") {
-    const needsPointColorFallback = chart.series.some((series) => {
-      const pointCount = Math.max(series.values.length, series.categories.length);
-      if (pointCount <= 0) {
-        return false;
-      }
-      const coloredPointCount = (series.dataPointStyles ?? []).filter(
-        (style) => typeof style.color === "string" && style.color.length > 0
-      ).length;
-      return coloredPointCount === 0;
-    });
-    if (needsPointColorFallback) {
-      const archiveFallbackPointStyles = resolveArchiveFallbackPointStyles(
-        archive,
-        chart.title,
-        chartTypeNode.localName,
-        themePalette
-      );
-      if (archiveFallbackPointStyles.length > 0) {
-        chart.series = chart.series.map((series, seriesIndex) => {
-          const fallbackStyles = archiveFallbackPointStyles[seriesIndex] ?? archiveFallbackPointStyles[0] ?? [];
-          if (fallbackStyles.length === 0) {
-            return series;
-          }
-          const existingByIndex = new Map((series.dataPointStyles ?? []).map((entry) => [entry.index, entry]));
-          for (const fallbackStyle of fallbackStyles) {
-            const existing = existingByIndex.get(fallbackStyle.index);
-            existingByIndex.set(fallbackStyle.index, {
-              color: existing?.color ?? fallbackStyle.color,
-              explosion: existing?.explosion ?? fallbackStyle.explosion,
-              index: fallbackStyle.index,
-              lineColor: existing?.lineColor ?? fallbackStyle.lineColor
-            });
-          }
-          return {
-            ...series,
-            dataPointStyles: Array.from(existingByIndex.values()).sort((left, right) => left.index - right.index)
-          };
-        });
-      }
-    }
-  }
   applyBuiltinChartDefaults(chart, themePalette);
 }
 
@@ -2194,8 +1987,8 @@ function serializeXml(document: XMLDocument) {
   return new XMLSerializer().serializeToString(document);
 }
 
-function getLocalChildren(parent: ParentNode, localName: string) {
-  return Array.from(parent.childNodes).filter(
+function getLocalChildren(parent: ParentNode | null | undefined, localName: string) {
+  return Array.from(parent?.childNodes ?? []).filter(
     (node): node is Element => node.nodeType === Node.ELEMENT_NODE && (node as Element).localName === localName
   );
 }
@@ -2204,17 +1997,17 @@ function removeLocalChildren(parent: ParentNode, localName: string) {
   getLocalChildren(parent, localName).forEach((node) => node.parentNode?.removeChild(node));
 }
 
-function getLocalDescendants(parent: ParentNode, localName: string) {
-  return Array.from((parent as Element | Document).getElementsByTagName("*")).filter(
+function getLocalDescendants(parent: ParentNode | null | undefined, localName: string) {
+  return Array.from((parent as Element | Document | null | undefined)?.getElementsByTagName("*") ?? []).filter(
     (node) => node.localName === localName
   );
 }
 
-function getFirstLocalChild(parent: ParentNode, localName: string) {
+function getFirstLocalChild(parent: ParentNode | null | undefined, localName: string) {
   return getLocalChildren(parent, localName)[0] ?? null;
 }
 
-function getFirstLocalDescendant(parent: ParentNode, localName: string) {
+function getFirstLocalDescendant(parent: ParentNode | null | undefined, localName: string) {
   return getLocalDescendants(parent, localName)[0] ?? null;
 }
 
@@ -2873,11 +2666,12 @@ function normalizeChartExSeries(
         formula: valueDimensionFormula
       })
     : null;
-  const resolvedValueCells = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value");
+  const isCategoricalMap = chartType === "RegionMap" && valueDimension?.dimType === "colorStr";
+  const resolvedValueCells = resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, isCategoricalMap ? "category" : "value");
   const values = resolvedValueCells.map((value) => (
     typeof value === "number" && Number.isFinite(value) ? value : null
   ));
-  const colorStrings = chartType === "RegionMap" && valueDimension?.dimType === "colorStr"
+  const colorStrings = isCategoricalMap
     ? resolvedValueCells.map((value) => {
         if (typeof value === "string") {
           const trimmed = value.trim();
@@ -2889,7 +2683,12 @@ function normalizeChartExSeries(
         return null;
       })
     : [];
-  const categories = resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category");
+  const categoryRows = chartType === "RegionMap"
+    ? resolveReferenceRowPaths(workbook, workbookSheetIndex, categoriesRef)
+    : [];
+  const categories = categoryRows.length === resolvedValueCells.length && categoryRows.length > 0
+    ? categoryRows.map((parts) => parts[0] ?? "")
+    : resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category");
   const hierarchyCategories = (
     chartType === "Sunburst" || chartType === "Treemap"
   )
@@ -4022,6 +3821,7 @@ export function loadWorkbookChartAssets(
         view3d: rawView3d
           ? {
               depthPercent: typeof rawView3d.depthPercent === "number" ? rawView3d.depthPercent : undefined,
+              heightPercent: typeof rawView3d.heightPercent === "number" ? rawView3d.heightPercent : undefined,
               perspective: typeof rawView3d.perspective === "number" ? rawView3d.perspective : undefined,
               rAngAx: typeof rawView3d.rAngAx === "boolean"
                 ? rawView3d.rAngAx

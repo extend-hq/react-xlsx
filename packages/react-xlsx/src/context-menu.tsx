@@ -8,6 +8,7 @@ import type {
   XlsxViewerProps
 } from "./types";
 import { isDarkViewerPalette, type ViewerPalette } from "./viewer-palette";
+import { expandHighlightedRange } from "./range-highlight";
 
 const menuStyles = `
 :where(.react-xlsx-context-menu) {
@@ -59,7 +60,7 @@ export function XlsxContextMenu({
   const table = controller.tables.find(({ start, end }) =>
     context.cell.row >= start.row && context.cell.row <= end.row &&
     context.cell.col >= start.col && context.cell.col <= end.col);
-  const range = context.selection;
+  const range = expandHighlightedRange(context.selection, controller.activeSheet?.mergedRanges ?? []);
   const multiple = range.start.row !== range.end.row || range.start.col !== range.end.col;
   const actions: XlsxContextMenuAction[] = [
     ...(!controller.readOnly ? [{ id: "cut" as const, label: "Cut" }] : []),
@@ -70,8 +71,10 @@ export function XlsxContextMenu({
       { id: "clearContents" as const, label: "Clear contents", destructive: true },
       { id: "undo" as const, label: "Undo", shortcut: `${modifier}Z`, separatorBefore: true, disabled: !controller.canUndo },
       { id: "redo" as const, label: "Redo", shortcut: `${modifier}⇧Z`, disabled: !controller.canRedo },
-      { id: "mergeCells" as const, label: "Merge cells", separatorBefore: true, disabled: !multiple },
-      { id: "unmergeCells" as const, label: "Unmerge cells" },
+      { id: "mergeAndCenter" as const, label: "Merge & Center", separatorBefore: true, disabled: !multiple },
+      { id: "mergeAcross" as const, label: "Merge Across", disabled: range.start.col === range.end.col },
+      { id: "mergeCells" as const, label: "Merge Cells", disabled: !multiple },
+      { id: "unmergeCells" as const, label: "Unmerge Cells" },
       ...(table ? [
         { id: "sortAscending" as const, label: "Sort A to Z", separatorBefore: true },
         { id: "sortDescending" as const, label: "Sort Z to A" }
@@ -175,6 +178,8 @@ export function XlsxContextMenu({
         case "undo": controller.undo(); break;
         case "redo": controller.redo(); break;
         case "mergeCells": controller.mergeSelection(); break;
+        case "mergeAndCenter": controller.mergeSelection("center"); break;
+        case "mergeAcross": controller.mergeSelection("across"); break;
         case "unmergeCells": controller.unmergeSelection(); break;
         case "sortAscending":
         case "sortDescending":

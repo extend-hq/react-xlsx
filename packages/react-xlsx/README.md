@@ -24,6 +24,20 @@ pnpm add @extend-ai/react-xlsx react react-dom
 
 `react` and `react-dom` are peer dependencies.
 
+## Automatic Chart Loading
+
+Chart rendering loads automatically when the viewer encounters charts in the active tab. Map geometry and WebGL surface rendering load separately when those chart types are needed. No extra imports or configuration are required.
+
+The viewer starts loading chart modules while chart metadata is being hydrated. The grid stays usable while charts load. Use `renderChartLoading` to supply a custom component for chart metadata, chart rendering code, and map geometry loading. Its `stage` field is `"metadata"`, `"renderer"`, or `"map"`, and its `chart`, `rect`, and `defaultNode` fields provide context. The component renders in the full chart rectangle and can contain ordinary HTML.
+
+```tsx
+<XlsxViewer renderChartLoading={() => <LoadingSpinner />} />
+```
+
+Surface charts use their SVG rendering while the WebGL module loads. Loaded modules are reused across tabs and workbooks.
+
+Use a production bundler that preserves dynamic imports, and deploy all generated JavaScript chunks alongside the application. This reduces the initial browser download; all chart modules remain included in the installed package.
+
 ## WebAssembly Asset
 
 Workbook parsing and calculation run through the `@dukelib/sheets-wasm` WebAssembly module. The module loads lazily, on the first workbook parse.
@@ -230,6 +244,20 @@ These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 - `useXlsxViewerImages()` for embedded image and chart selection, movement, and resizing
 - `useXlsxViewerCharts()` for chart, chart element, formula, and chartsheet state
 - `useXlsxViewerThumbnails(options)` for painting worksheet thumbnails into your own canvases
+
+## Merging Cells
+
+The controller and `useXlsxViewerEditing()` expose `mergeSelection(mode?)` and `unmergeSelection()`. The merge modes are:
+
+| Mode | Behavior |
+| --- | --- |
+| `"cells"` (default) | Merge the entire selection and preserve the anchor's alignment. |
+| `"center"` | Merge the entire selection and persist horizontal center alignment. |
+| `"across"` | Merge each selected row separately, preserving each row's anchor alignment. |
+
+The playground Merge menu and the editable viewer's context menu expose all three modes. Merge and alignment changes participate in undo/redo and persist in XLSX exports. Unmerge works when selecting any cell within a merged range.
+
+General alignment follows the underlying value type: numbers align right, text aligns left, and booleans and errors align center. Explicit horizontal and vertical alignment is preserved for both merged and ordinary cells.
 
 ## Form Control Editing
 

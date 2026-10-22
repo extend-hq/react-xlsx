@@ -1,6 +1,7 @@
 import { hierarchy as d3Hierarchy, partition as d3Partition, treemap as d3Treemap, treemapBinary, treemapDice, treemapSquarify } from "d3-hierarchy";
-import { geoIdentity, geoMercator, geoNaturalEarth1, geoPath } from "d3-geo";
 import * as React from "react";
+import { shadeSurfaceMatteColor, surfaceNormal, transformSurfaceNormal } from "./surface-lighting";
+import { clipSurfaceBand, normalizeSurfaceValue, surfaceHeightRatio, surfaceBandEdges, triangulateSurfaceQuad } from "./surface-geometry";
 import { scaleBand, scaleLinear, scalePoint } from "d3-scale";
 import {
   arc as d3Arc,
@@ -9,22 +10,14 @@ import {
   curveLinear,
   curveLinearClosed,
   line as d3Line,
-  pie as d3Pie,
-  symbol as d3Symbol,
-  symbolCircle,
-  symbolCross,
-  symbolDiamond,
-  symbolSquare,
-  symbolStar,
-  symbolTriangle
+  pie as d3Pie
 } from "d3-shape";
 import type { CurveFactory } from "d3-shape";
-import { feature as topojsonFeature } from "topojson-client";
-import countiesAlbers10m from "us-atlas/counties-albers-10m.json";
-import countries50m from "world-atlas/countries-50m.json";
-import { MemoSurfaceChartComposite } from "./surface-regl";
+import { regionMapResources, surfaceRenderer } from "./chart-loader";
+import { useChartModule } from "./use-chart-module";
+import type { RegionMapResources, RegionMapFeature } from "./region-map-geography";
 import type { HierarchyNode, HierarchyRectangularNode } from "d3-hierarchy";
-import type { Feature, FeatureCollection, Geometry } from "geojson";
+import type { FeatureCollection, Geometry } from "geojson";
 import type { XlsxChart, XlsxChartAxis, XlsxChartElementSelection, XlsxChartSeries, XlsxChartTypeGroup, XlsxImageRect } from "./types";
 
 type ChartRendererPalette = {
@@ -34,7 +27,7 @@ type ChartRendererPalette = {
   text: string;
 };
 
-type ChartSvgProps = {
+export type ChartSvgProps = {
   chart: XlsxChart;
   onChartElementDoubleClick?: (selection: XlsxChartElementSelection, event: React.MouseEvent<SVGSVGElement>) => void;
   onChartElementPointerDown?: (selection: XlsxChartElementSelection, event: React.PointerEvent<SVGSVGElement>) => void;
@@ -42,6 +35,23 @@ type ChartSvgProps = {
   rect: XlsxImageRect;
   selectedChartElement?: XlsxChartElementSelection | null;
 };
+
+type RegionMapPlotProps = Pick<ChartSvgProps, "chart" | "palette" | "selectedChartElement"> & { layout: ChartLayout };
+
+function RegionMapPlot({ chart, palette, layout, selectedChartElement }: RegionMapPlotProps) {
+  const resources = useChartModule(regionMapResources);
+  return resources
+    ? renderRegionMapChart(chart, palette, layout, selectedChartElement, resources)
+    : null;
+}
+
+function SurfaceChartComposite({
+  loadingFallback,
+  ...props
+}: React.ComponentProps<typeof import("./surface-regl").MemoSurfaceChartComposite> & { loadingFallback: React.ReactNode }) {
+  const renderer = useChartModule(surfaceRenderer);
+  return renderer ? <renderer.MemoSurfaceChartComposite {...props} /> : <>{loadingFallback}</>;
+}
 
 type LegendItem = {
   color: string;
@@ -57,6 +67,7 @@ type PlotRect = {
 
 type ChartLayout = {
   height: number;
+  legendBounds?: PlotRect;
   legendItems: LegendItem[];
   legendPosition: string | undefined;
   plot: PlotRect;
@@ -295,146 +306,6 @@ type SurfaceDomain = {
   ticks: number[];
 };
 
-type RegionMapFeature = Feature<Geometry, { name?: string; regionSet?: "country" | "us-state"; stateCode?: string }>;
-
-const WORLD_COUNTRY_FEATURES = ((topojsonFeature(
-  countries50m as unknown as Parameters<typeof topojsonFeature>[0],
-  (countries50m as { objects: { countries: unknown } }).objects.countries as Parameters<typeof topojsonFeature>[1]
-) as unknown) as FeatureCollection<Geometry, { name?: string }>).features as RegionMapFeature[];
-
-const US_STATE_NAME_BY_ID: Record<string, { code: string; name: string }> = {
-  "01": { code: "AL", name: "Alabama" },
-  "02": { code: "AK", name: "Alaska" },
-  "04": { code: "AZ", name: "Arizona" },
-  "05": { code: "AR", name: "Arkansas" },
-  "06": { code: "CA", name: "California" },
-  "08": { code: "CO", name: "Colorado" },
-  "09": { code: "CT", name: "Connecticut" },
-  "10": { code: "DE", name: "Delaware" },
-  "11": { code: "DC", name: "District of Columbia" },
-  "12": { code: "FL", name: "Florida" },
-  "13": { code: "GA", name: "Georgia" },
-  "15": { code: "HI", name: "Hawaii" },
-  "16": { code: "ID", name: "Idaho" },
-  "17": { code: "IL", name: "Illinois" },
-  "18": { code: "IN", name: "Indiana" },
-  "19": { code: "IA", name: "Iowa" },
-  "20": { code: "KS", name: "Kansas" },
-  "21": { code: "KY", name: "Kentucky" },
-  "22": { code: "LA", name: "Louisiana" },
-  "23": { code: "ME", name: "Maine" },
-  "24": { code: "MD", name: "Maryland" },
-  "25": { code: "MA", name: "Massachusetts" },
-  "26": { code: "MI", name: "Michigan" },
-  "27": { code: "MN", name: "Minnesota" },
-  "28": { code: "MS", name: "Mississippi" },
-  "29": { code: "MO", name: "Missouri" },
-  "30": { code: "MT", name: "Montana" },
-  "31": { code: "NE", name: "Nebraska" },
-  "32": { code: "NV", name: "Nevada" },
-  "33": { code: "NH", name: "New Hampshire" },
-  "34": { code: "NJ", name: "New Jersey" },
-  "35": { code: "NM", name: "New Mexico" },
-  "36": { code: "NY", name: "New York" },
-  "37": { code: "NC", name: "North Carolina" },
-  "38": { code: "ND", name: "North Dakota" },
-  "39": { code: "OH", name: "Ohio" },
-  "40": { code: "OK", name: "Oklahoma" },
-  "41": { code: "OR", name: "Oregon" },
-  "42": { code: "PA", name: "Pennsylvania" },
-  "44": { code: "RI", name: "Rhode Island" },
-  "45": { code: "SC", name: "South Carolina" },
-  "46": { code: "SD", name: "South Dakota" },
-  "47": { code: "TN", name: "Tennessee" },
-  "48": { code: "TX", name: "Texas" },
-  "49": { code: "UT", name: "Utah" },
-  "50": { code: "VT", name: "Vermont" },
-  "51": { code: "VA", name: "Virginia" },
-  "53": { code: "WA", name: "Washington" },
-  "54": { code: "WV", name: "West Virginia" },
-  "55": { code: "WI", name: "Wisconsin" },
-  "56": { code: "WY", name: "Wyoming" }
-};
-
-const US_STATE_FEATURES = ((topojsonFeature(
-  countiesAlbers10m as unknown as Parameters<typeof topojsonFeature>[0],
-  (countiesAlbers10m as { objects: { states: unknown } }).objects.states as Parameters<typeof topojsonFeature>[1]
-) as unknown) as FeatureCollection<Geometry, { name?: string }>).features.map((feature) => {
-  const id = typeof feature.id === "string" ? feature.id : String(feature.id ?? "");
-  const state = US_STATE_NAME_BY_ID[id];
-  return {
-    ...feature,
-    properties: {
-      ...(feature.properties ?? {}),
-      name: state?.name,
-      regionSet: "us-state" as const,
-      stateCode: state?.code
-    }
-  };
-}) as RegionMapFeature[];
-
-const REGION_MAP_COUNTRY_ALIASES = new Map<string, string>([
-  ["us", "united states of america"],
-  ["usa", "united states of america"],
-  ["u s a", "united states of america"],
-  ["united states", "united states of america"],
-  ["united states america", "united states of america"],
-  ["u s", "united states of america"],
-  ["uk", "united kingdom"],
-  ["u k", "united kingdom"],
-  ["uae", "united arab emirates"],
-  ["u a e", "united arab emirates"],
-  ["south korea", "korea, south"],
-  ["north korea", "korea, north"],
-  ["russia", "russian federation"],
-  ["vietnam", "viet nam"],
-  ["czech republic", "czechia"],
-  ["ivory coast", "cote d'ivoire"],
-  ["côte divoire", "cote d'ivoire"]
-]);
-
-const REGION_MAP_US_STATE_ALIASES = new Map<string, string>([
-  ["district of columbia", "district of columbia"],
-  ["washington dc", "district of columbia"],
-  ["washington d c", "district of columbia"],
-  ["dc", "district of columbia"],
-  ["d c", "district of columbia"]
-]);
-
-const REGION_MAP_FEATURES_BY_KEY = (() => {
-  const byKey = new Map<string, RegionMapFeature>();
-  WORLD_COUNTRY_FEATURES.forEach((feature) => {
-    const name = typeof feature.properties?.name === "string" ? feature.properties.name : "";
-    const key = normalizeRegionMapKey(name);
-    if (key.length > 0) {
-      byKey.set(key, feature);
-    }
-  });
-  return byKey;
-})();
-
-const REGION_MAP_US_STATE_FEATURES_BY_KEY = (() => {
-  const byKey = new Map<string, RegionMapFeature>();
-  US_STATE_FEATURES.forEach((feature) => {
-    const name = typeof feature.properties?.name === "string" ? feature.properties.name : "";
-    const key = normalizeRegionMapKey(name);
-    if (key.length > 0) {
-      byKey.set(key, feature);
-    }
-    const stateCode = normalizeRegionMapKey(feature.properties?.stateCode);
-    if (stateCode.length > 0) {
-      byKey.set(stateCode, feature);
-    }
-  });
-  REGION_MAP_US_STATE_ALIASES.forEach((value, key) => {
-    const feature = byKey.get(normalizeRegionMapKey(value));
-    if (feature) {
-      byKey.set(normalizeRegionMapKey(key), feature);
-    }
-  });
-  return byKey;
-})();
-
 function parseRgbColor(color: string) {
   const match = /^#?([0-9a-f]{6})$/i.exec(color);
   if (!match) {
@@ -472,20 +343,6 @@ function darkenColor(color: string, ratio: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
-}
-
-function normalizeRegionMapKey(value: unknown) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/&/g, " and ")
-    .replace(/[^a-zA-Z0-9]+/g, " ")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
 }
 
 const DEFAULT_CHART_FONT_STACK = [
@@ -569,6 +426,13 @@ function chartSeriesStrokeColor(chart: XlsxChart, seriesIndex: number) {
   return series?.lineColor ?? series?.color ?? paletteColor ?? chart.textColor ?? "#222222";
 }
 
+function variesBarColorsByCategory(chart: XlsxChart) {
+  return chart.series.length === 1
+    && chart.varyColors !== false
+    && !chart.chartExLayout
+    && ["ColumnClustered", "ColumnStacked", "ColumnPercentStacked", "BarClustered", "BarStacked", "BarPercentStacked"].includes(chart.chartType);
+}
+
 function chartPointColor(chart: XlsxChart, pointIndex: number, seriesIndex = 0) {
   const pointStyle = chart.series[seriesIndex]?.dataPointStyles?.find((entry) => entry.index === pointIndex);
   if (pointStyle?.color) {
@@ -618,24 +482,11 @@ function isHistogramLikeChart(chart: XlsxChart) {
   return chart.series.some((series) => isHistogramLikeSeries(series));
 }
 
-function resolveRegionMapFeature(value: unknown, featureSet: "country" | "us-state" = "country") {
-  const rawKey = normalizeRegionMapKey(value);
-  if (!rawKey) {
-    return null;
-  }
-  if (featureSet === "us-state") {
-    const canonicalKey = REGION_MAP_US_STATE_ALIASES.get(rawKey) ?? rawKey;
-    return REGION_MAP_US_STATE_FEATURES_BY_KEY.get(canonicalKey) ?? null;
-  }
-  const canonicalKey = REGION_MAP_COUNTRY_ALIASES.get(rawKey) ?? rawKey;
-  return REGION_MAP_FEATURES_BY_KEY.get(canonicalKey) ?? null;
-}
-
 function resolveRegionMapBaseColor(chart: XlsxChart, seriesIndex: number) {
   return chart.series[seriesIndex]?.color
     ?? chart.series[seriesIndex]?.lineColor
     ?? chart.chartColorPalette?.[0]
-    ?? "#ff006e";
+    ?? chartSeriesColor(chart, seriesIndex);
 }
 
 function resolveRegionMapDataColor(chart: XlsxChart, seriesIndex: number) {
@@ -678,9 +529,8 @@ function resolveRegionMapColorStrings(series: XlsxChartSeries | null | undefined
   const values = Array.isArray(raw?.chartExColorStrings)
     ? raw.chartExColorStrings
       .map((value) => (typeof value === "string" ? value.trim() : ""))
-      .filter((value): value is string => value.length > 0)
     : [];
-  return values.length > 0 ? values : null;
+  return values.some((value) => value.length > 0) ? values : null;
 }
 
 function resolveRegionMapLayoutProperties(series: XlsxChartSeries | null | undefined) {
@@ -690,22 +540,6 @@ function resolveRegionMapLayoutProperties(series: XlsxChartSeries | null | undef
   return raw?.layoutProperties && typeof raw.layoutProperties === "object"
     ? raw.layoutProperties as Record<string, unknown>
     : null;
-}
-
-function resolveRegionMapFeatureSet(labels: string[], geography: Record<string, unknown> | null) {
-  const cultureRegion = typeof geography?.cultureRegion === "string"
-    ? geography.cultureRegion.trim().toUpperCase()
-    : "";
-  const countryMatches = labels.filter((label) => resolveRegionMapFeature(label, "country") != null).length;
-  const stateMatches = labels.filter((label) => resolveRegionMapFeature(label, "us-state") != null).length;
-  if (cultureRegion === "US" && stateMatches > 0 && stateMatches >= countryMatches) {
-    return "us-state" as const;
-  }
-  return "country" as const;
-}
-
-function getRegionMapBaseFeatures(featureSet: "country" | "us-state") {
-  return featureSet === "us-state" ? US_STATE_FEATURES : WORLD_COUNTRY_FEATURES;
 }
 
 function resolveRegionMapValueColorFromStops(stops: string[], ratio: number) {
@@ -738,14 +572,14 @@ function resolveRegionMapValueColor(chart: XlsxChart, seriesIndex: number, ratio
 
 function resolveRegionMapNoDataColor(chart: XlsxChart, seriesIndex: number) {
   const baseColor = resolveRegionMapBaseColor(chart, seriesIndex);
-  return normalizeRendererHexColor(baseColor) ?? "#ff006e";
+  return normalizeRendererHexColor(baseColor) ?? chartSeriesColor(chart, seriesIndex);
 }
 
 function buildRegionMapLegendItems(chart: XlsxChart): LegendItem[] {
   const primarySeriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
   const categoricalValues = resolveRegionMapColorStrings(chart.series[primarySeriesIndex] ?? null);
   if (categoricalValues) {
-    const uniqueValues = Array.from(new Set(categoricalValues));
+    const uniqueValues = Array.from(new Set(categoricalValues.filter(Boolean)));
     return uniqueValues.map((value, index) => ({
       color: chartPointColor(chart, index, primarySeriesIndex),
       label: value
@@ -759,16 +593,10 @@ function buildRegionMapLegendItems(chart: XlsxChart): LegendItem[] {
   }
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
-  const ticks = buildNumericTickValues(minValue, maxValue, undefined).slice(0, 5);
-  return ticks.slice(0, -1).map((tick, index) => {
-    const nextTick = ticks[index + 1] ?? maxValue;
-    const midpoint = tick + (nextTick - tick) * 0.5;
-    const ratio = (midpoint - minValue) / Math.max(1e-6, maxValue - minValue);
-    return {
-      color: resolveRegionMapValueColor(chart, primarySeriesIndex, ratio),
-      label: `${formatTickValue(tick)}-${formatTickValue(nextTick)}`
-    };
-  });
+  return [minValue, maxValue].map((value, index) => ({
+    color: resolveRegionMapValueColor(chart, primarySeriesIndex, index),
+    label: formatTickValue(value)
+  }));
 }
 
 function normalizeBuiltinPieStyleId(styleId: number | undefined) {
@@ -1370,7 +1198,7 @@ function excelTreemapTile(node: HierarchyRectangularNode<ChartHierarchyDatum>, x
   node.children.forEach((child) => excelTreemapTile(child, child.x0, child.y0, child.x1, child.y1));
 }
 
-function resolveSurfaceBaseColor(chart: XlsxChart, palette: ChartRendererPalette) {
+function resolveSurfaceBaseColor(chart: XlsxChart, palette: Pick<ChartRendererPalette, "text">) {
   return chart.chartColorPalette?.[0]
     ?? chart.series[0]?.color
     ?? chart.series[0]?.lineColor
@@ -1379,118 +1207,30 @@ function resolveSurfaceBaseColor(chart: XlsxChart, palette: ChartRendererPalette
     ?? palette.text;
 }
 
-function normalizeBuiltinSurfaceStyleId(styleId: number | undefined) {
-  if (typeof styleId !== "number" || !Number.isFinite(styleId)) {
-    return null;
-  }
-  return styleId >= 100 ? styleId - 100 : styleId;
-}
-
-function hasExplicitSurfaceBaseColor(chart: XlsxChart) {
-  const primarySeriesColor = normalizeRendererHexColor(chart.series[0]?.color ?? chart.series[0]?.lineColor);
-  if (!primarySeriesColor) {
-    return null;
-  }
-  const paletteColor = normalizeRendererHexColor(chart.chartColorPalette?.[0]);
-  return paletteColor && paletteColor === primarySeriesColor ? null : primarySeriesColor;
-}
-
-function buildMonochromeSurfacePalette(baseColor: string, count: number) {
-  if (count <= 3) {
-    return [
-      lightenColor(baseColor, 0.22),
-      baseColor,
-      darkenColor(baseColor, 0.2)
-    ];
-  }
-  return [
-    lightenColor(baseColor, 0.3),
-    lightenColor(baseColor, 0.14),
-    baseColor,
-    darkenColor(baseColor, 0.1),
-    darkenColor(baseColor, 0.22)
-  ];
-}
-
-function getBuiltinSurfacePalette(chart: XlsxChart) {
-  const normalized = normalizeBuiltinSurfaceStyleId(chart.chartStyleId);
-  const explicitBaseColor = hasExplicitSurfaceBaseColor(chart);
-  if (normalized === 26) {
-    return buildMonochromeSurfacePalette(explicitBaseColor ?? "#ff006e", 3);
-  }
-  if (normalized === 34 && explicitBaseColor) {
-    return buildMonochromeSurfacePalette(explicitBaseColor, 3);
-  }
-  if (normalized === 34 || (chart.wireframe === true && normalized == null)) {
-    return ["#5b9bd5", "#ed7d31", "#a5a5a5"];
-  }
-  if (normalized === 35 || normalized === 36 || (chart.wireframe !== true && normalized == null)) {
-    return ["#2f5597", "#4472c4", "#5b9bd5", "#8faadc", "#d9e2f3"];
-  }
-  return null;
-}
-
-function shouldPreferBuiltinSurfacePalette(chart: XlsxChart) {
-  const normalized = normalizeBuiltinSurfaceStyleId(chart.chartStyleId);
-  const rawChartType = chart.raw && typeof chart.raw === "object" && typeof (chart.raw as Record<string, unknown>).xmlChartType === "string"
-    ? String((chart.raw as Record<string, unknown>).xmlChartType)
-    : "";
-  return (
-    (rawChartType === "surfaceChart" || rawChartType === "surface3DChart")
-    && (normalized === 26 || normalized === 34 || normalized === 35 || normalized === 36)
-  );
-}
-
-function getSurfaceBandCount(chart: XlsxChart) {
-  const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
-  const explicitBandCount = typeof raw?.bandFormatCount === "number" && Number.isFinite(raw.bandFormatCount)
-    ? raw.bandFormatCount
-    : null;
-  if (explicitBandCount != null && explicitBandCount > 0 && !(isContourSurfaceChart(chart) && chart.wireframe !== true)) {
-    return explicitBandCount;
-  }
-  const builtinPalette = getBuiltinSurfacePalette(chart);
-  if (shouldPreferBuiltinSurfacePalette(chart) && builtinPalette && builtinPalette.length > 0) {
-    return builtinPalette.length;
-  }
-  if (chart.chartColorPalette && chart.chartColorPalette.length > 1) {
-    return chart.chartColorPalette.length;
-  }
-  if (builtinPalette && builtinPalette.length > 0) {
-    return builtinPalette.length;
-  }
-  return chart.wireframe ? 3 : 5;
+function resolveExplicitSurfaceSeriesColor(chart: XlsxChart, kind: "fill" | "line") {
+  const shape = chart.series[0]?.shapeProperties;
+  if (kind === "fill" ? shape?.xmlFillHidden === true : shape?.xmlLineHidden === true) return "transparent";
+  const color = kind === "fill"
+    ? shape?.xmlFillColor ?? shape?.solidFillHex
+    : shape?.xmlLineColor ?? shape?.lineColorHex;
+  return normalizeRendererHexColor(color);
 }
 
 function getSurfaceColorStops(chart: XlsxChart, palette: ChartRendererPalette) {
-  const builtinPalette = getBuiltinSurfacePalette(chart);
-  if (shouldPreferBuiltinSurfacePalette(chart) && builtinPalette && builtinPalette.length >= 2) {
-    return builtinPalette;
-  }
-  const explicitStops = (chart.chartColorPalette ?? []).filter((value): value is string => typeof value === "string" && value.length > 0);
-  if (explicitStops.length >= 2) {
-    return explicitStops;
-  }
-  if (builtinPalette && builtinPalette.length >= 2) {
-    return builtinPalette;
-  }
-  const baseColor = resolveSurfaceBaseColor(chart, palette);
-  return [
-    darkenColor(baseColor, 0.42),
-    darkenColor(baseColor, 0.24),
-    baseColor,
-    lightenColor(baseColor, 0.18),
-    lightenColor(baseColor, 0.34),
-    lightenColor(baseColor, 0.5)
-  ];
+  const explicitFill = resolveExplicitSurfaceSeriesColor(chart, "fill");
+  if (explicitFill) return [explicitFill];
+  const colors = (chart.chartColorPalette ?? []).filter((value): value is string => typeof value === "string" && value.length > 0);
+  return colors.length > 0 ? colors : [resolveSurfaceBaseColor(chart, palette)];
 }
 
 function resolveSurfaceBandPaletteColor(chart: XlsxChart, palette: ChartRendererPalette, domain: SurfaceDomain, value: number) {
+  const bandIndex = resolveSurfaceBandIndex(domain, value);
+  const explicitColor = resolveSurfaceBandFormatColor(chart, "bandFormatColors", bandIndex);
+  if (explicitColor) return explicitColor;
   const stops = getSurfaceColorStops(chart, palette);
   if (stops.length === 0) {
     return resolveSurfaceBaseColor(chart, palette);
   }
-  const bandIndex = resolveSurfaceBandIndex(domain, value);
   return stops[Math.min(stops.length - 1, Math.max(0, bandIndex))] ?? stops[stops.length - 1] ?? resolveSurfaceBaseColor(chart, palette);
 }
 
@@ -1511,9 +1251,8 @@ function getSurfaceDomain(chart: XlsxChart): SurfaceDomain | null {
     : null;
   const rawMin = Math.min(...numericValues);
   const rawMax = Math.max(...numericValues);
-  const bandCount = Math.max(1, getSurfaceBandCount(chart));
   const spanBase = Math.max(1e-6, rawMax - Math.min(0, rawMin));
-  const roughStep = spanBase / bandCount;
+  const roughStep = spanBase / 5;
   const magnitude = 10 ** Math.floor(Math.log10(Math.max(roughStep, 1e-6)));
   const normalized = roughStep / magnitude;
   const niceNormalized = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
@@ -1527,27 +1266,13 @@ function getSurfaceDomain(chart: XlsxChart): SurfaceDomain | null {
   for (let current = minValue; current <= safeMax + step * 0.001; current += step) {
     ticks.push(Number(current.toFixed(8)));
   }
+  const boundedTicks = [...new Set([...ticks.filter((tick) => tick < safeMax), safeMax])];
   return {
     maxValue,
     minValue,
     safeMax,
-    ticks: ticks.length >= 2 ? ticks : [minValue, safeMax]
+    ticks: boundedTicks.length >= 2 ? boundedTicks : [minValue, safeMax]
   };
-}
-
-function resolveSurfaceColor(chart: XlsxChart, palette: ChartRendererPalette, ratio: number) {
-  const stops = getSurfaceColorStops(chart, palette);
-  if (stops.length === 0) {
-    return resolveSurfaceBaseColor(chart, palette);
-  }
-  if (stops.length === 1) {
-    return stops[0];
-  }
-  const clamped = clamp(ratio, 0, 1) * (stops.length - 1);
-  const lowerIndex = Math.floor(clamped);
-  const upperIndex = Math.min(stops.length - 1, lowerIndex + 1);
-  const mixRatio = clamped - lowerIndex;
-  return mixRgbColor(stops[lowerIndex] ?? stops[0], stops[upperIndex] ?? stops[stops.length - 1], mixRatio);
 }
 
 function resolveSurfaceBandColor(chart: XlsxChart, palette: ChartRendererPalette, domain: SurfaceDomain, value: number) {
@@ -1565,116 +1290,18 @@ function resolveSurfaceBandIndex(domain: SurfaceDomain, value: number) {
   return Math.max(0, ticks.length - 2);
 }
 
-type SurfacePathPoint = { x: number; y: number };
-
-function buildSurfaceSmoothPath(points: SurfacePathPoint[], smooth: boolean) {
-  if (points.length < 2) {
-    return "";
-  }
-  return d3Line<SurfacePathPoint>()
-    .x((point) => point.x)
-    .y((point) => point.y)
-    .curve(points.length >= 3 && smooth ? curveCatmullRom.alpha(0.5) : curveLinear)(points) ?? "";
-}
-
-function splitSurfacePointRuns<T extends { hasValue: boolean; x: number; y: number }>(points: T[]) {
-  const runs: SurfacePathPoint[][] = [];
-  let currentRun: SurfacePathPoint[] = [];
-  points.forEach((point) => {
-    if (!point.hasValue) {
-      if (currentRun.length >= 2) {
-        runs.push(currentRun);
-      }
-      currentRun = [];
-      return;
-    }
-    const nextPoint = { x: point.x, y: point.y };
-    const previous = currentRun[currentRun.length - 1];
-    if (!previous || Math.abs(previous.x - nextPoint.x) > 0.01 || Math.abs(previous.y - nextPoint.y) > 0.01) {
-      currentRun.push(nextPoint);
-    }
-  });
-  if (currentRun.length >= 2) {
-    runs.push(currentRun);
-  }
-  return runs;
-}
-
-type SurfaceContourSegment = {
-  end: SurfacePathPoint;
-  start: SurfacePathPoint;
-};
-
-function connectSurfaceContourSegments(segments: SurfaceContourSegment[]) {
-  const remaining = [...segments];
-  const epsilon = 0.75;
-  const within = (left: SurfacePathPoint, right: SurfacePathPoint) => (
-    Math.abs(left.x - right.x) <= epsilon && Math.abs(left.y - right.y) <= epsilon
-  );
-  const paths: SurfacePathPoint[][] = [];
-
-  while (remaining.length > 0) {
-    const seed = remaining.shift();
-    if (!seed) {
-      break;
-    }
-    const chain: SurfacePathPoint[] = [seed.start, seed.end];
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (let index = remaining.length - 1; index >= 0; index -= 1) {
-        const candidate = remaining[index];
-        if (!candidate) {
-          continue;
-        }
-        if (within(chain[chain.length - 1] ?? candidate.start, candidate.start)) {
-          chain.push(candidate.end);
-        } else if (within(chain[chain.length - 1] ?? candidate.start, candidate.end)) {
-          chain.push(candidate.start);
-        } else if (within(chain[0] ?? candidate.start, candidate.end)) {
-          chain.unshift(candidate.start);
-        } else if (within(chain[0] ?? candidate.start, candidate.start)) {
-          chain.unshift(candidate.end);
-        } else {
-          continue;
-        }
-        remaining.splice(index, 1);
-        changed = true;
-      }
-    }
-    const deduped = chain.filter((point, index) => {
-      if (index === 0) {
-        return true;
-      }
-      const previous = chain[index - 1];
-      return !previous || !within(previous, point);
-    });
-    if (deduped.length >= 2) {
-      paths.push(deduped);
-    }
-  }
-
-  return paths;
-}
-
-function getSurfaceWireframePalette(chart: XlsxChart, palette: ChartRendererPalette) {
-  const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
-  const explicit = Array.isArray(raw?.bandFormatLineColors)
-    ? raw.bandFormatLineColors.filter((color): color is string => typeof color === "string" && color.length > 0)
-    : [];
-  if (explicit.length > 0) {
-    return explicit;
-  }
-  return getSurfaceColorStops(chart, palette);
+function resolveSurfaceBandFormatColor(chart: XlsxChart, key: "bandFormatColors" | "bandFormatLineColors", index: number) {
+  const colors = chart.raw?.[key];
+  if (!colors || typeof colors !== "object" || !Object.prototype.hasOwnProperty.call(colors, index)) return null;
+  const color = (colors as Record<number, unknown>)[index];
+  return typeof color === "string" && color.length > 0 ? color : null;
 }
 
 function resolveSurfaceWireframeColor(chart: XlsxChart, palette: ChartRendererPalette, domain: SurfaceDomain, value: number) {
-  const stops = getSurfaceWireframePalette(chart, palette);
-  if (stops.length === 0) {
-    return resolveSurfaceBandPaletteColor(chart, palette, domain, value);
-  }
   const bandIndex = resolveSurfaceBandIndex(domain, value);
-  return stops[Math.min(stops.length - 1, Math.max(0, bandIndex))] ?? resolveSurfaceBandPaletteColor(chart, palette, domain, value);
+  return resolveSurfaceBandFormatColor(chart, "bandFormatLineColors", bandIndex)
+    ?? resolveExplicitSurfaceSeriesColor(chart, "line")
+    ?? resolveSurfaceBandPaletteColor(chart, palette, domain, value);
 }
 
 function resolveSurfacePlotRect(chart: XlsxChart, layout: ChartLayout) {
@@ -1682,12 +1309,11 @@ function resolveSurfacePlotRect(chart: XlsxChart, layout: ChartLayout) {
     return layout.plot;
   }
   const columnCount = Math.max(1, getCategoryLabels(chart).length);
-  const rowCount = Math.max(1, chart.series.length);
-  const targetAspect = Math.max(0.72, columnCount / Math.max(1, rowCount));
-  const widthScale = chart.wireframe ? 0.78 : 0.84;
-  const heightScale = chart.wireframe ? 0.72 : 0.8;
-  let width = layout.plot.width * widthScale;
-  let height = layout.plot.height * heightScale;
+  const depthScale = Math.max(0.01, (chart.view3d?.depthPercent ?? 100) / 100);
+  const categoryExtent = chart.valueAxis?.crossBetween !== "midCat" && columnCount > 1 ? columnCount / (columnCount - 1) : 1;
+  const targetAspect = categoryExtent / depthScale;
+  let width = layout.plot.width;
+  let height = layout.plot.height;
   if (width / Math.max(1e-6, height) > targetAspect) {
     width = height * targetAspect;
   } else {
@@ -1711,9 +1337,10 @@ function buildSurfaceLegendItems(chart: XlsxChart, palette: ChartRendererPalette
     const start = domain.ticks[index] ?? domain.minValue;
     const end = domain.ticks[index + 1] ?? domain.safeMax;
     const midpoint = start + (end - start) * 0.5;
-    const ratio = (midpoint - domain.minValue) / Math.max(1e-6, domain.safeMax - domain.minValue);
     items.push({
-      color: resolveSurfaceColor(chart, palette, ratio),
+      color: chart.wireframe
+        ? resolveSurfaceWireframeColor(chart, palette, domain, midpoint)
+        : resolveSurfaceBandColor(chart, palette, domain, midpoint),
       label: `${formatTickValue(start)}-${formatTickValue(end)}`
     });
   }
@@ -1742,7 +1369,9 @@ function renderSurfaceAxes(chart: XlsxChart, layout: ChartLayout) {
   const rowCount = Math.max(1, seriesLabels.length);
   const columnCount = Math.max(1, categories.length);
   const columnPositions = categories.map((_, index) => (
-    plot.left + (columnCount <= 1 ? plot.width / 2 : (index / (columnCount - 1)) * plot.width)
+    plot.left + (isContourSurfaceChart(chart) && chart.valueAxis?.crossBetween !== "midCat"
+      ? ((index + 0.5) / columnCount) * plot.width
+      : (columnCount <= 1 ? plot.width / 2 : (index / (columnCount - 1)) * plot.width))
   ));
   const rowPositions = seriesLabels.map((_, index) => (
     plot.top + plot.height - (rowCount <= 1 ? plot.height / 2 : (index / (rowCount - 1)) * plot.height)
@@ -1799,73 +1428,11 @@ function normalizeRendererHexColor(value: unknown) {
   return /^[0-9a-f]{6}$/i.test(normalized) ? `#${normalized.toLowerCase()}` : null;
 }
 
-function resolveStockRoleIndices(chart: XlsxChart) {
-  const roles = {
-    close: indexByName(chart.series, /close|last|end/),
-    high: indexByName(chart.series, /high|max|top/),
-    low: indexByName(chart.series, /low|min|bottom/),
-    open: indexByName(chart.series, /open|start/),
-    volume: indexByName(chart.series, /volume|vol/)
-  };
-  const usedIndices = new Set<number>(Object.values(roles).filter((value): value is number => value != null));
-  const remainingIndices = chart.series.map((_, index) => index).filter((index) => !usedIndices.has(index));
-  const canonicalOrder = chart.series.length >= 4
-    ? (["open", "high", "low", "close"] as const)
-    : (["high", "low", "close"] as const);
-  canonicalOrder.forEach((role) => {
-    if (roles[role] == null) {
-      const nextIndex = remainingIndices.shift();
-      if (nextIndex != null) {
-        roles[role] = nextIndex;
-      }
-    }
-  });
-  return roles;
-}
-
-function resolveStockPalette(chart: XlsxChart, axisColor: string) {
-  const raw = chart.raw && typeof chart.raw === "object" ? chart.raw as Record<string, unknown> : null;
-  const highLowLines = raw?.highLowLines && typeof raw.highLowLines === "object"
-    ? raw.highLowLines as Record<string, unknown>
-    : null;
-  const shapeProperties = highLowLines?.shapeProperties && typeof highLowLines.shapeProperties === "object"
-    ? highLowLines.shapeProperties as Record<string, unknown>
-    : null;
-  const lineColor = normalizeRendererHexColor(shapeProperties?.lineColorHex) ?? axisColor ?? "#333333";
-  const chartStyleId = typeof chart.chartStyleId === "number" ? chart.chartStyleId : null;
-  const closeAccent = chartStyleId != null && chartStyleId >= 128 ? "#c0504d" : lineColor;
-  const lowAccent = chartStyleId != null && chartStyleId >= 128 ? "#d9a3a0" : lightenColor(lineColor, 0.45);
-  return {
-    closeAccent,
-    downFill: lightenColor(lineColor, 0.4),
-    lineColor,
-    lowAccent,
-    openAccent: lightenColor(lineColor, 0.22),
-    upFill: "#ffffff",
-    volumeFill: lightenColor(lineColor, 0.26)
-  };
-}
-
-function buildStockLegendItems(chart: XlsxChart, palette: ChartRendererPalette): LegendItem[] {
-  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
-  const roles = resolveStockRoleIndices(chart);
-  const stockPalette = resolveStockPalette(chart, axisColor);
-  return chart.series.map((series, index) => {
-    let color = stockPalette.lineColor;
-    if (roles.volume === index) {
-      color = stockPalette.volumeFill;
-    } else if (roles.open === index) {
-      color = stockPalette.openAccent;
-    } else if (roles.low === index) {
-      color = stockPalette.lowAccent;
-    } else if (roles.close === index) {
-      color = stockPalette.closeAccent;
-    }
-    return {
-      color,
-      label: series.name ?? `Series ${index + 1}`
-    };
-  });
+function buildStockLegendItems(chart: XlsxChart, _palette: ChartRendererPalette): LegendItem[] {
+  return chart.series.map((series, index) => ({
+    color: chartSeriesStrokeColor(chart, index),
+    label: series.name ?? `Series ${index + 1}`
+  }));
 }
 
 function getLegendItems(chart: XlsxChart, chartType: string, palette: ChartRendererPalette): LegendItem[] {
@@ -1883,6 +1450,12 @@ function getLegendItems(chart: XlsxChart, chartType: string, palette: ChartRende
   }
   if (chartType === "RegionMap") {
     return buildRegionMapLegendItems(chart);
+  }
+  if (variesBarColorsByCategory(chart)) {
+    return getCategoryLabels(chart).map((label, index) => ({
+      color: chartPointColor(chart, index),
+      label
+    }));
   }
   if (chartType === "Sunburst" || chartType === "Treemap") {
     const hierarchyData = buildHierarchyData(chart);
@@ -1938,31 +1511,40 @@ function buildLayout(chart: XlsxChart, rect: XlsxImageRect, legendItems: LegendI
   const legendPosition = normalizeLegendPosition(chart.legend?.position);
 
   const legendVertical = legendItems.length > 0 && (legendPosition === "right" || legendPosition === "left");
-  const legendHorizontal = legendItems.length > 0 && (legendPosition === "top" || legendPosition === "bottom");
-
-  const plotLeft = 42 + (legendPosition === "left" ? 98 : 0);
-  const plotRight = 16 + (legendPosition === "right" ? 98 : 0);
-  const plotTop = titleHeight + (legendPosition === "top" ? 24 : 0);
-  const plotBottom = 28 + (legendPosition === "bottom" ? 24 : 0);
-
-  const plotWidth = Math.max(40, width - plotLeft - plotRight);
-  const plotHeight = Math.max(40, height - plotTop - plotBottom);
-
   const compactWidth = width <= 280;
   const compactHeight = height <= 200;
   const finalLegendPosition = compactWidth || compactHeight
     ? (legendVertical ? "bottom" : legendPosition)
     : legendPosition;
+  const layoutLegendPosition = chart.chartType === "RegionMap" ? finalLegendPosition : legendPosition;
+  const primarySeries = chart.series.find((series) => series.hidden !== true) ?? chart.series[0];
+  const horizontalMapGradient = chart.chartType === "RegionMap"
+    && legendItems.length > 0 && !resolveRegionMapColorStrings(primarySeries)
+    && (layoutLegendPosition === "top" || layoutLegendPosition === "bottom");
+  const horizontalLegendHeight = horizontalMapGradient
+    ? Math.min(48, Math.max(24, height - titleHeight - 8))
+    : 24;
+  const plotLeft = 42 + (layoutLegendPosition === "left" ? 98 : 0);
+  const plotRight = 16 + (layoutLegendPosition === "right" ? 98 : 0);
+  const plotTop = titleHeight + (layoutLegendPosition === "top" ? horizontalLegendHeight : 0);
+  const plotBottom = (horizontalMapGradient ? 8 : 28) + (layoutLegendPosition === "bottom" ? horizontalLegendHeight : 0);
+  const plotWidth = Math.max(horizontalMapGradient ? 1 : 40, width - plotLeft - plotRight);
 
   return {
     height,
+    legendBounds: horizontalMapGradient ? {
+      left: plotLeft,
+      top: layoutLegendPosition === "top" ? titleHeight : height - horizontalLegendHeight,
+      width: plotWidth,
+      height: horizontalLegendHeight
+    } : undefined,
     legendItems,
     legendPosition: finalLegendPosition,
     plot: {
-      height: Math.max(40, height - plotTop - plotBottom),
+      height: Math.max(horizontalMapGradient ? 1 : 40, height - plotTop - plotBottom),
       left: plotLeft,
       top: plotTop,
-      width: Math.max(40, width - plotLeft - plotRight)
+      width: plotWidth
     },
     titleHeight,
     width
@@ -2209,30 +1791,36 @@ function truncateSvgText(value: string, maxWidth: number, fontSize = 10) {
   return `${value.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-function markerSymbolPath(symbol: string, size: number) {
-  if (symbol === "none") {
-    return "";
+function markerRadiusPx(sizePt: number | undefined) {
+  return (Number.isFinite(sizePt) && Number(sizePt) > 0 ? Number(sizePt) : 5) * 2 / 3;
+}
+
+function markerSymbolPath(symbol: string, radius: number) {
+  const diagonal = radius / Math.SQRT2;
+  switch (symbol) {
+    case "none":
+      return "";
+    case "diamond":
+      return `M0,${-radius}L${radius},0L0,${radius}L${-radius},0Z`;
+    case "square":
+      return `M${-radius},${-radius}H${radius}V${radius}H${-radius}Z`;
+    case "triangle":
+    case "triangle-up":
+      return `M0,${-radius}L${radius},${radius}H${-radius}Z`;
+    case "cross":
+    case "x":
+      return `M${-diagonal},${-diagonal}L${diagonal},${diagonal}M${-diagonal},${diagonal}L${diagonal},${-diagonal}`;
+    case "plus":
+      return `M${-radius},0H${radius}M0,${-radius}V${radius}`;
+    case "star":
+      return `M${-radius},0H${radius}M${-radius / 2},${-radius * Math.sqrt(3) / 2}L${radius / 2},${radius * Math.sqrt(3) / 2}M${-radius / 2},${radius * Math.sqrt(3) / 2}L${radius / 2},${-radius * Math.sqrt(3) / 2}`;
+    case "dash":
+      return `M${-radius},0H${radius}`;
+    case "dot":
+      return `M${-radius / 2},0H${radius / 2}`;
+    default:
+      return `M${radius},0A${radius},${radius} 0 1,0 ${-radius},0A${radius},${radius} 0 1,0 ${radius},0Z`;
   }
-  const symbolType = (() => {
-    switch (symbol) {
-      case "diamond":
-        return symbolDiamond;
-      case "square":
-        return symbolSquare;
-      case "triangle":
-      case "triangle-up":
-        return symbolTriangle;
-      case "cross":
-      case "plus":
-        return symbolCross;
-      case "star":
-        return symbolStar;
-      case "circle":
-      default:
-        return symbolCircle;
-    }
-  })();
-  return d3Symbol().type(symbolType).size(size * size * Math.PI)() ?? "";
 }
 
 const TWO_PI = Math.PI * 2;
@@ -2371,11 +1959,43 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
   const swatchSize = 8;
   const textOffset = swatchSize + 4;
 
+  if (chart.chartType === "RegionMap") {
+    const seriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
+    const series = chart.series[seriesIndex];
+    if (!resolveRegionMapColorStrings(series)) {
+      const vertical = legendPos === "left" || legendPos === "right";
+      const x = vertical ? (legendPos === "right" ? layout.plot.left + layout.plot.width + 8 : 8) : layout.plot.left;
+      const showSeriesName = vertical || (layout.legendBounds?.height ?? 48) >= 44;
+      const y = vertical ? layout.plot.top + 26 : (layout.legendBounds?.top ?? layout.height - 48) + (showSeriesName ? 20 : 4);
+      const length = vertical ? Math.min(100, Math.max(24, layout.plot.height - 42)) : Math.min(160, layout.plot.width);
+      const gradientId = `map-legend-${chart.id}`;
+      const stops = resolveRegionMapValueColors(series);
+      const count = stops?.length ?? 3;
+      return (
+        <g>
+          <defs>
+            <linearGradient id={gradientId} x1="0%" x2={vertical ? "0%" : "100%"} y1={vertical ? "100%" : "0%"} y2="0%">
+              {Array.from({ length: count }, (_, index) => (
+                <stop key={index} offset={`${index / (count - 1) * 100}%`} stopColor={resolveRegionMapValueColor(chart, seriesIndex, index / (count - 1))} />
+              ))}
+            </linearGradient>
+          </defs>
+          {showSeriesName && <text fill={textColor} fontSize={10} x={x} y={y - 12}>{series?.name ?? ""}</text>}
+          <rect fill={`url(#${gradientId})`} x={x} y={y} width={vertical ? 8 : length} height={vertical ? length : 8} />
+          <text fill={textColor} fontSize={10} x={vertical ? x + 12 : x} y={vertical ? y + length : y + 20}>{items[0]?.label}</text>
+          <text fill={textColor} fontSize={10} textAnchor={vertical ? "start" : "end"} x={vertical ? x + 12 : x + length} y={vertical ? y + 7 : y + 20}>{items[1]?.label}</text>
+        </g>
+      );
+    }
+  }
+
   if (legendPos === "left" || legendPos === "right") {
     const x = legendPos === "right"
       ? layout.plot.left + layout.plot.width + 8
       : 8;
-    const startY = layout.plot.top + 6;
+    const startY = chart.chartType === "Surface"
+      ? layout.plot.top + Math.max(6, (layout.plot.height - items.length * 18) / 2 + 9)
+      : layout.plot.top + 6;
     return (
       <g>
         {items.map((item, index) => {
@@ -2387,7 +2007,7 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
                 key={`legend-${index}`}
                 transform={`translate(${x}, ${y})`}
               >
-              <rect fill={item.color} height={swatchSize} rx={1.2} ry={1.2} width={swatchSize} x={0} y={-7} />
+              <rect fill={chart.chartType === "Surface" && chart.wireframe ? "none" : item.color} stroke={chart.chartType === "Surface" && chart.wireframe ? item.color : undefined} height={swatchSize} width={swatchSize} x={0} y={-7} />
               <text fill={textColor} fontSize={10} x={textOffset} y={0}>
                 {item.label}
               </text>
@@ -2412,7 +2032,7 @@ function renderLegend(chart: XlsxChart, layout: ChartLayout, palette: ChartRende
               key={`legend-${index}`}
               transform={`translate(${cursorX}, ${rowY})`}
             >
-            <rect fill={item.color} height={swatchSize} rx={1.2} ry={1.2} width={swatchSize} x={0} y={-7} />
+            <rect fill={chart.chartType === "Surface" && chart.wireframe ? "none" : item.color} stroke={chart.chartType === "Surface" && chart.wireframe ? item.color : undefined} height={swatchSize} width={swatchSize} x={0} y={-7} />
             <text fill={textColor} fontSize={10} x={textOffset} y={0}>
               {item.label}
             </text>
@@ -3040,7 +2660,7 @@ function renderLineOrAreaChart3d(
         const strokeColor = chartSeriesStrokeColor(chart, seriesIndex);
         const fillColor = chartSeriesColor(chart, seriesIndex);
         const markerSymbol = normalizeChartMarkerSymbol(chart.series[seriesIndex]?.markerSymbol);
-        const markerPath = markerSymbolPath(markerSymbol, Math.max(4, chart.series[seriesIndex]?.markerSize ?? 6) * 0.52);
+        const markerPath = markerSymbolPath(markerSymbol, markerRadiusPx(chart.series[seriesIndex]?.markerSize));
         const slabFaces = isAreaChart && isStackedSeries
           ? definedPoints.slice(1).map((point, pointIndex) => {
               const previous = definedPoints[pointIndex];
@@ -3414,6 +3034,10 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       const colors = chartSeriesBarColors(chart, seriesIndex, rawValue, negativeFillMode);
       const isInvertedNegative = rawValue < 0 && chart.series[seriesIndex]?.invertIfNegative === true;
       if (!(isInvertedNegative)) {
+        if (variesBarColorsByCategory(chart)) {
+          colors.fill = chartPointColor(chart, pointIndex, seriesIndex);
+          colors.stroke = colors.fill;
+        }
         if (pointStyle?.color) {
           colors.fill = pointStyle.color;
           if (!pointStyle.lineColor) {
@@ -3948,7 +3572,7 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
       {!isAreaChart && !isStackedSeries && upDownBarsRecord && plotPointsBySeries.length >= 2
         ? categories.map((_, categoryIndex) => {
             const first = plotPointsBySeries[0]?.[categoryIndex];
-            const second = plotPointsBySeries[1]?.[categoryIndex];
+            const second = plotPointsBySeries[plotPointsBySeries.length - 1]?.[categoryIndex];
             if (!first || !second || first.y == null || second.y == null) {
               return null;
             }
@@ -4032,20 +3656,19 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
               {...chartElementDataProps(seriesIndex)}
               d={linePath}
               fill="none"
-              stroke={chartSeriesStrokeColor(chart, seriesIndex)}
+              stroke={series.shapeProperties?.xmlLineHidden === true ? "none" : chartSeriesStrokeColor(chart, seriesIndex)}
               strokeLinecap="round"
               strokeLinejoin="round"
               strokeWidth={Math.max(1.5, series.lineWidthPx ?? 2)}
             />
             {points.map((point, pointIndex) => (
-              point.y == null ? null : (
-                <circle
+              point.y == null || normalizeChartMarkerSymbol(series.markerSymbol) === "none" ? null : (
+                <path
                   {...chartElementDataProps(seriesIndex, pointIndex)}
                   key={`line-marker-${seriesIndex}-${pointIndex}`}
-                  cx={point.x}
-                  cy={yScale(point.y)}
+                  d={markerSymbolPath(normalizeChartMarkerSymbol(series.markerSymbol), markerRadiusPx(series.markerSize))}
+                  transform={`translate(${point.x}, ${yScale(point.y)})`}
                   fill={series.markerColor ?? chartSeriesColor(chart, seriesIndex)}
-                  r={Math.max(2, (series.markerSize ?? 6) * 0.25)}
                   stroke={series.markerLineColor ?? chart.chartAreaFillColor ?? chartSeriesStrokeColor(chart, seriesIndex)}
                   strokeWidth={1}
                 />
@@ -4255,10 +3878,10 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
               strokeWidth={Math.max(1.5, series.lineWidthPx ?? 2)}
             />
             {points.map((point, pointIndex) => (
-              point.y == null ? null : (
+              point.y == null || normalizeChartMarkerSymbol(series.markerSymbol) === "none" ? null : (
                 <path
                   {...chartElementDataProps(globalSeriesIndex, pointIndex)}
-                  d={markerSymbolPath(normalizeChartMarkerSymbol(series.markerSymbol), Math.max(4, series.markerSize ?? 7)) || markerSymbolPath("circle", 7)}
+                  d={markerSymbolPath(normalizeChartMarkerSymbol(series.markerSymbol), markerRadiusPx(series.markerSize))}
                   fill={series.markerColor ?? series.color ?? series.lineColor ?? chartSeriesColor(chart, columnGroup.series.length + seriesIndex)}
                   key={`combo-line-marker-${seriesIndex}-${pointIndex}`}
                   stroke={series.markerLineColor ?? chart.chartAreaFillColor ?? "#ffffff"}
@@ -4290,7 +3913,6 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   const rawRecord = chart.raw && typeof chart.raw === "object"
     ? chart.raw as Record<string, unknown>
     : null;
-  const normalizedTitle = typeof chart.title === "string" ? chart.title.trim().toLowerCase() : "";
   const scatterStyle = typeof chart.scatterStyle === "string"
     ? chart.scatterStyle
     : rawRecord && typeof rawRecord.scatterStyle === "string"
@@ -4298,16 +3920,13 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
       : undefined;
   const styleDrawsLine = scatterStyle
     ? scatterStyle === "line" || scatterStyle === "lineMarker" || scatterStyle === "smooth" || scatterStyle === "smoothMarker"
-    : true;
+    : chart.chartType !== "Scatter";
   const styleShowsMarkers = scatterStyle
     ? scatterStyle === "marker" || scatterStyle === "lineMarker" || scatterStyle === "smoothMarker"
     : true;
   const styleUsesSmoothCurve = scatterStyle
     ? scatterStyle === "smooth" || scatterStyle === "smoothMarker"
     : smooth;
-  const titleForcesMarkerOnly = normalizedTitle.includes("marker only");
-  const titleForcesNoMarkers = normalizedTitle.includes("no markers");
-  const titleForcesWithMarkers = normalizedTitle.includes("with markers");
   const pointsBySeries = chart.series.map((series) => {
     const yLength = series.values.length;
     const directXValues = Array.from({ length: yLength }, (_, index) => coerceLooseNumber(series.categories[index]));
@@ -4503,18 +4122,16 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
       ) : null}
       {pointsBySeries.map((seriesPoints, seriesIndex) => {
         const series = seriesPoints.series;
-        const markerSize = Math.max(5, series.markerSize ?? 7);
+        const markerSize = markerRadiusPx(series.markerSize);
         const markerPath = markerSymbolPath(
           normalizeChartMarkerSymbol(series.markerSymbol),
-          markerSize * 0.55
+          markerSize
         );
         const markerFill = series.lineColor ?? series.markerColor ?? series.color ?? chartSeriesStrokeColor(chart, seriesIndex);
-        const shouldDrawLine = !titleForcesMarkerOnly
-          && styleDrawsLine
+        const shouldDrawLine = styleDrawsLine
           && series.shapeProperties?.xmlLineHidden !== true
           && seriesPoints.points.length > 1;
-        const shouldDrawMarkers = !titleForcesNoMarkers
-          && (titleForcesMarkerOnly || titleForcesWithMarkers || styleShowsMarkers)
+        const shouldDrawMarkers = styleShowsMarkers
           && markerPath.length > 0;
         const lineCurve = smooth || styleUsesSmoothCurve || series.smooth === true
           ? curveCatmullRom.alpha(0.5)
@@ -4896,8 +4513,8 @@ function renderRadarChart(chart: XlsxChart, palette: ChartRendererPalette, layou
           .curve(hasGap ? curveLinear : curveLinearClosed)(points) ?? "";
         const color = chartSeriesColor(chart, seriesIndex);
         const markerSymbol = normalizeChartMarkerSymbol(series.markerSymbol);
-        const markerSize = Math.max(4, series.markerSize ?? 6);
-        const markerPath = markerSymbolPath(markerSymbol, markerSize * 0.5);
+        const markerSize = markerRadiusPx(series.markerSize);
+        const markerPath = markerSymbolPath(markerSymbol, markerSize);
 	        const showMarkers = markerSymbol !== "none" && markerPath.length > 0;
 	        return (
 	          <g key={`radar-series-${seriesIndex}`}>
@@ -5434,10 +5051,10 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   const wallLineColor = chart.backWall?.lineColor ?? chart.sideWall?.lineColor ?? chart.floor?.lineColor ?? (chart.axisLineColor ?? lightenColor(resolveSurfaceBaseColor(chart, palette), 0.4));
 
   if (isContour) {
-    const thresholds = domain.ticks.slice(1, -1);
-    const quads: React.ReactNode[] = [];
-    const contourSegmentsByThreshold = new Map<number, SurfaceContourSegment[]>();
-
+    const faces: React.ReactNode[] = [];
+    const lines: React.ReactNode[] = [];
+    const inset = chart.valueAxis?.crossBetween !== "midCat" ? plot.width / (2 * cols) : 0;
+    const dataWidth = plot.width - 2 * inset;
     for (let rowIndex = 0; rowIndex < rows - 1; rowIndex += 1) {
       for (let columnIndex = 0; columnIndex < cols - 1; columnIndex += 1) {
         const p00 = matrix[rowIndex]?.[columnIndex];
@@ -5447,239 +5064,64 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
         if (p00 == null || p10 == null || p01 == null || p11 == null) {
           continue;
         }
-
-        const x0 = plot.left + (columnIndex / Math.max(1, cols - 1)) * plot.width;
-        const x1 = plot.left + ((columnIndex + 1) / Math.max(1, cols - 1)) * plot.width;
-        const y0 = plot.top + plot.height - (rowIndex / Math.max(1, rows - 1)) * plot.height;
-        const y1 = plot.top + plot.height - ((rowIndex + 1) / Math.max(1, rows - 1)) * plot.height;
-        const averageValue = (p00 + p10 + p01 + p11) / 4;
-
-        if (!chart.wireframe) {
-          const primaryAvgA = (p00 + p10 + p11) / 3;
-          const primaryAvgB = (p00 + p11 + p01) / 3;
-          const secondaryAvgA = (p00 + p10 + p01) / 3;
-          const secondaryAvgB = (p10 + p11 + p01) / 3;
-          const primaryRange = (Math.max(p00, p10, p11) - Math.min(p00, p10, p11))
-            + (Math.max(p00, p11, p01) - Math.min(p00, p11, p01));
-          const secondaryRange = (Math.max(p00, p10, p01) - Math.min(p00, p10, p01))
-            + (Math.max(p10, p11, p01) - Math.min(p10, p11, p01));
-          const usePrimaryDiagonal = primaryRange <= secondaryRange;
-          const triangles = usePrimaryDiagonal
-            ? [
-                {
-                  bandColor: resolveSurfaceBandColor(chart, palette, domain, primaryAvgA),
-                  bandIndex: resolveSurfaceBandIndex(domain, primaryAvgA),
-                  points: `${x0},${y0} ${x1},${y0} ${x1},${y1}`
-                },
-                {
-                  bandColor: resolveSurfaceBandColor(chart, palette, domain, primaryAvgB),
-                  bandIndex: resolveSurfaceBandIndex(domain, primaryAvgB),
-                  points: `${x0},${y0} ${x1},${y1} ${x0},${y1}`
-                }
-              ]
-            : [
-                {
-                  bandColor: resolveSurfaceBandColor(chart, palette, domain, secondaryAvgA),
-                  bandIndex: resolveSurfaceBandIndex(domain, secondaryAvgA),
-                  points: `${x0},${y0} ${x1},${y0} ${x0},${y1}`
-                },
-                {
-                  bandColor: resolveSurfaceBandColor(chart, palette, domain, secondaryAvgB),
-                  bandIndex: resolveSurfaceBandIndex(domain, secondaryAvgB),
-                  points: `${x1},${y0} ${x1},${y1} ${x0},${y1}`
-                }
-              ];
-          const splitLine = usePrimaryDiagonal
-            ? { x1: x0, y1: y0, x2: x1, y2: y1 }
-            : { x1: x1, y1: y0, x2: x0, y2: y1 };
-          const splitBands = triangles[0]?.bandIndex !== triangles[1]?.bandIndex;
-          quads.push(
-            <g key={`surface-contour-cell-${rowIndex}-${columnIndex}`}>
-              {splitBands ? (
-                <>
-                  <polygon fill={triangles[0]?.bandColor} points={triangles[0]?.points} stroke="none" />
-                  <polygon fill={triangles[1]?.bandColor} points={triangles[1]?.points} stroke="none" />
-                  <line
-                    stroke={darkenColor(resolveSurfaceBandPaletteColor(chart, palette, domain, averageValue), 0.22)}
-                    strokeWidth={0.8}
-                    x1={splitLine.x1}
-                    x2={splitLine.x2}
-                    y1={splitLine.y1}
-                    y2={splitLine.y2}
-                  />
-                </>
-              ) : (
-                <rect
-                  fill={resolveSurfaceBandColor(chart, palette, domain, averageValue)}
-                  height={Math.abs(y1 - y0)}
-                  stroke="none"
-                  width={Math.abs(x1 - x0)}
-                  x={Math.min(x0, x1)}
-                  y={Math.min(y0, y1)}
-                />
-              )}
-            </g>
-          );
-        }
-
-        const corners = [
+        const x0 = plot.left + inset + columnIndex / (cols - 1) * dataWidth;
+        const x1 = plot.left + inset + (columnIndex + 1) / (cols - 1) * dataWidth;
+        const y0 = plot.top + plot.height - rowIndex / (rows - 1) * plot.height;
+        const y1 = plot.top + plot.height - (rowIndex + 1) / (rows - 1) * plot.height;
+        const triangles = triangulateSurfaceQuad([
           { value: p00, x: x0, y: y0 },
           { value: p10, x: x1, y: y0 },
           { value: p11, x: x1, y: y1 },
           { value: p01, x: x0, y: y1 }
-        ];
-        const edges: Array<[typeof corners[number], typeof corners[number]]> = [
-          [corners[0], corners[1]],
-          [corners[1], corners[2]],
-          [corners[2], corners[3]],
-          [corners[3], corners[0]]
-        ];
-        thresholds.forEach((threshold) => {
-          const intersections: Array<{ x: number; y: number }> = [];
-          edges.forEach(([start, end]) => {
-            const delta = end.value - start.value;
-            if (delta === 0) {
-              return;
+        ], chart.valueAxis);
+        triangles.forEach((triangle, triangleIndex) => {
+          const world = triangle.map(point => ({
+            x: (point.x - plot.left - inset) / dataWidth,
+            y: (1 - normalizeSurfaceValue(point.value, domain.minValue, domain.safeMax, chart.valueAxis)) * surfaceHeightRatio(chart.view3d?.heightPercent, layout.plot),
+            z: (point.y - plot.top) / plot.height * ((chart.view3d?.depthPercent ?? 100) / 100)
+          }));
+          const normal = transformSurfaceNormal(surfaceNormal(world[0], world[1], world[2]), chart.view3d?.rotX ?? 90, chart.view3d?.rotY ?? 0);
+          for (let band = 0; band < domain.ticks.length - 1; band += 1) {
+            const lower = domain.ticks[band];
+            const upper = domain.ticks[band + 1];
+            const polygon = clipSurfaceBand(clipSurfaceBand(triangle, lower, true, chart.valueAxis, band === 0), upper, false, chart.valueAxis);
+            if (polygon.length < 3) {
+              continue;
             }
-            const crosses = (start.value < threshold && end.value > threshold) || (start.value > threshold && end.value < threshold);
-            if (!crosses) {
-              return;
+            const key = `${rowIndex}-${columnIndex}-${triangleIndex}-${band}`;
+            const midpoint = (lower + upper) / 2;
+            if (!chart.wireframe) {
+              faces.push(<polygon key={`surface-band-${key}`} fill={chart.surfaceMaterial === "flat" ? resolveSurfaceBandColor(chart, palette, domain, midpoint) : shadeSurfaceMatteColor(resolveSurfaceBandColor(chart, palette, domain, midpoint), normal)} points={polygon.map((point) => `${point.x},${point.y}`).join(" ")} />);
             }
-            const mix = (threshold - start.value) / delta;
-            intersections.push({
-              x: start.x + (end.x - start.x) * mix,
-              y: start.y + (end.y - start.y) * mix
-            });
-          });
-          if (intersections.length === 2) {
-            const segments = contourSegmentsByThreshold.get(threshold) ?? [];
-            segments.push({
-              end: intersections[1] ?? intersections[0] ?? { x: x1, y: y1 },
-              start: intersections[0] ?? { x: x0, y: y0 }
-            });
-            contourSegmentsByThreshold.set(threshold, segments);
-          } else if (intersections.length === 4) {
-            const center = averageValue;
-            const pairings = center >= threshold
-              ? [[0, 1], [2, 3]]
-              : [[0, 3], [1, 2]];
-            pairings.forEach(([startIndex, endIndex], pairingIndex) => {
-              const leftPoint = intersections[startIndex] ?? intersections[0];
-              const rightPoint = intersections[endIndex] ?? intersections[intersections.length - 1];
-              if (!leftPoint || !rightPoint) {
-                return;
-              }
-              const segments = contourSegmentsByThreshold.get(threshold) ?? [];
-              segments.push({
-                end: rightPoint,
-                start: leftPoint
-              });
-              contourSegmentsByThreshold.set(threshold, segments);
-            });
+            const widths = chart.raw?.bandFormatLineWidths as Record<string, number> | undefined;
+            const lineWidth = widths?.[band] ?? chart.series[0]?.lineWidthPx ?? 1;
+            const edges = surfaceBandEdges(polygon, triangle);
+            lines.push(
+              <path
+                key={`surface-edge-${key}`}
+                d={edges.map(([from, to]) => `M ${from.x} ${from.y} L ${to.x} ${to.y}`).join(" ")}
+                fill="none"
+                stroke={resolveSurfaceWireframeColor(chart, palette, domain, midpoint)}
+                strokeWidth={lineWidth}
+              />
+            );
           }
         });
       }
     }
-
-    const contourLines = Array.from(contourSegmentsByThreshold.entries()).flatMap(([threshold, segments], thresholdIndex) => (
-      connectSurfaceContourSegments(segments).map((points, pathIndex) => {
-        const path = buildSurfaceSmoothPath(points, true);
-        if (!path) {
-          return null;
-        }
-        return (
-          <path
-            key={`surface-contour-line-${thresholdIndex}-${pathIndex}`}
-            d={path}
-            fill="none"
-            stroke={chart.wireframe
-              ? resolveSurfaceWireframeColor(chart, palette, domain, threshold)
-              : darkenColor(resolveSurfaceBandColor(chart, palette, domain, threshold), 0.18)}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={chart.wireframe ? 1.45 : 1.2}
-          />
-        );
-      })
-    ));
-
-    const columnAverages = Array.from({ length: cols }, (_, columnIndex) => {
-      const values = Array.from({ length: rows }, (_, rowIndex) => matrix[rowIndex]?.[columnIndex])
-        .filter((value): value is number => value != null);
-      if (values.length === 0) {
-        return domain.minValue;
-      }
-      return values.reduce((sum, value) => sum + value, 0) / values.length;
-    });
-    const rowAverages = Array.from({ length: rows }, (_, rowIndex) => {
-      const values = matrix[rowIndex]?.filter((value): value is number => value != null) ?? [];
-      if (values.length === 0) {
-        return domain.minValue;
-      }
-      return values.reduce((sum, value) => sum + value, 0) / values.length;
-    });
-
     return (
       <g>
         <rect
-          fill={wallFill}
-          height={plot.height}
-          stroke={lightenColor(wallLineColor, 0.14)}
-          strokeWidth={0.8}
-          width={plot.width}
-          x={plot.left}
-          y={plot.top}
+          fill={chart.raw?.plotAreaNoFill === true ? "transparent" : typeof chart.raw?.plotAreaFillColor === "string" ? chart.raw.plotAreaFillColor : wallFill}
+          x={layout.plot.left}
+          y={layout.plot.top}
+          width={layout.plot.width}
+          height={layout.plot.height}
+          stroke={typeof chart.raw?.plotAreaLineColor === "string" ? chart.raw.plotAreaLineColor : wallLineColor}
         />
-        {Array.from({ length: cols }, (_, columnIndex) => {
-          const x = plot.left + (cols <= 1 ? plot.width / 2 : (columnIndex / (cols - 1)) * plot.width);
-          return (
-            <line
-              key={`surface-contour-grid-col-${columnIndex}`}
-              stroke={chart.wireframe
-                ? resolveSurfaceWireframeColor(chart, palette, domain, columnAverages[columnIndex] ?? domain.minValue)
-                : lightenColor(wallLineColor, 0.18)}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={chart.wireframe ? 1.15 : 0.8}
-              x1={x}
-              x2={x}
-              y1={plot.top}
-              y2={plot.top + plot.height}
-            />
-          );
-        })}
-        {Array.from({ length: rows }, (_, rowIndex) => {
-          const y = plot.top + plot.height - (rows <= 1 ? plot.height / 2 : (rowIndex / (rows - 1)) * plot.height);
-          const rowStroke = chart.series[rowIndex]?.lineColor
-            ?? chart.series[rowIndex]?.color
-            ?? resolveSurfaceWireframeColor(chart, palette, domain, rowAverages[rowIndex] ?? domain.minValue);
-          return (
-            <line
-              key={`surface-contour-grid-row-${rowIndex}`}
-              stroke={chart.wireframe ? rowStroke : lightenColor(wallLineColor, 0.18)}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={chart.wireframe ? 1.15 : 0.8}
-              x1={plot.left}
-              x2={plot.left + plot.width}
-              y1={y}
-              y2={y}
-            />
-          );
-        })}
-        {quads}
-        {contourLines}
-        {chart.wireframe ? null : (
-          <rect
-            fill="none"
-            height={plot.height}
-            stroke={lightenColor(wallLineColor, 0.1)}
-            strokeWidth={0.8}
-            width={plot.width}
-            x={plot.left}
-            y={plot.top}
-          />
-        )}
+        <rect fill="none" height={plot.height} stroke={wallLineColor} width={plot.width} x={plot.left} y={plot.top} />
+        {faces}
+        {lines}
       </g>
     );
   }
@@ -5693,37 +5135,26 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
     1
   );
   const depthScale = clamp((chart.view3d?.depthPercent ?? 100) / 100, 0.2, 4);
+  const heightExtent = 2 * surfaceHeightRatio(chart.view3d?.heightPercent, layout.plot);
   const cosX = Math.cos(rotX);
   const sinX = Math.sin(rotX);
   const cosY = Math.cos(rotY);
   const sinY = Math.sin(rotY);
 
   type SurfacePoint = { depth: number; hasValue: boolean; value: number; x: number; y: number };
-  const rawPoints: SurfacePoint[][] = Array.from({ length: rows }, (_, rowIndex) => (
-    Array.from({ length: cols }, (_, columnIndex) => {
-      const value = matrix[rowIndex][columnIndex];
-      const hasValue = value != null;
-      const normalizedX = cols <= 1 ? 0 : ((columnIndex / (cols - 1)) - 0.5) * 2;
-      const normalizedY = hasValue ? (-((((value - minValue) / (safeMax - minValue)) - 0.5) * 1.8) * depthScale) : (0.9 * depthScale);
-      const normalizedZ = rows <= 1 ? 0 : ((rowIndex / (rows - 1)) - 0.5) * 2;
-
-      const x1 = normalizedX * cosY + normalizedZ * sinY;
-      const z1 = -normalizedX * sinY + normalizedZ * cosY;
-      const y1 = normalizedY * cosX - z1 * sinX;
-      const z2 = normalizedY * sinX + z1 * cosX;
-      const perspective = usePerspective
-        ? 1 / Math.max(0.18, 1 + z2 * (0.24 + perspectiveStrength * 0.5))
-        : 1;
-
-      return {
-        depth: z2,
-        hasValue,
-        value: value ?? minValue,
-        x: x1 * perspective,
-        y: y1 * perspective
-      };
-    })
-  ));
+  const projectRawPoint = (columnIndex: number, rowIndex: number, value: number | null): SurfacePoint => {
+    const hasValue = value != null;
+    const normalizedX = cols <= 1 ? 0 : ((columnIndex / (cols - 1)) - 0.5) * 2;
+    const normalizedY = hasValue ? -(normalizeSurfaceValue(value, minValue, safeMax, chart.valueAxis) - 0.5) * heightExtent : heightExtent / 2;
+    const normalizedZ = rows <= 1 ? 0 : ((rowIndex / (rows - 1)) - 0.5) * 2 * depthScale;
+    const x1 = normalizedX * cosY + normalizedZ * sinY;
+    const z1 = -normalizedX * sinY + normalizedZ * cosY;
+    const y1 = normalizedY * cosX - z1 * sinX;
+    const z2 = normalizedY * sinX + z1 * cosX;
+    const perspective = usePerspective ? 1 / Math.max(0.18, 1 + z2 * (0.24 + perspectiveStrength * 0.5)) : 1;
+    return { depth: z2, hasValue, value: value ?? minValue, x: x1 * perspective, y: y1 * perspective };
+  };
+  const rawPoints = matrix.map((row, rowIndex) => row.map((value, columnIndex) => projectRawPoint(columnIndex, rowIndex, value)));
 
   const bounds = rawPoints.flat();
   const minX = Math.min(...bounds.map((point) => point.x));
@@ -5739,271 +5170,50 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   const centerRawX = (minX + maxX) / 2;
   const centerRawY = (minY + maxY) / 2;
 
-  const points = rawPoints.map((row) => row.map((point) => ({
-    ...point,
-    x: centerX + (point.x - centerRawX) * scale,
-    y: centerY + (point.y - centerRawY) * scale
-  })));
-
-  const baseColor = resolveSurfaceBaseColor(chart, palette);
-  const axisColor = chart.axisLineColor ?? lightenColor(baseColor, 0.4);
-  type Quad = {
-    color: string;
-    depth: number;
-    key: string;
-    points: string;
-    stroke: string;
+  const projectPoint = (point: {x: number; y: number; value: number}) => {
+    const projected = projectRawPoint(point.x, point.y, point.value);
+    return { ...projected, x: centerX + (projected.x - centerRawX) * scale, y: centerY + (projected.y - centerRawY) * scale };
   };
-  const quads: Quad[] = [];
+  const faces: Array<{ depth: number; node: React.ReactNode }> = [];
   for (let rowIndex = 0; rowIndex < rows - 1; rowIndex += 1) {
     for (let columnIndex = 0; columnIndex < cols - 1; columnIndex += 1) {
-      const p00 = points[rowIndex][columnIndex];
-      const p10 = points[rowIndex][columnIndex + 1];
-      const p11 = points[rowIndex + 1][columnIndex + 1];
-      const p01 = points[rowIndex + 1][columnIndex];
-      if (!p00.hasValue || !p10.hasValue || !p11.hasValue || !p01.hasValue) {
-        continue;
-      }
-      const averageValue = (p00.value + p10.value + p11.value + p01.value) / 4;
-      const ratio = clamp((averageValue - minValue) / (safeMax - minValue), 0, 1);
-      quads.push({
-        color: resolveSurfaceColor(chart, palette, ratio),
-        depth: (p00.depth + p10.depth + p11.depth + p01.depth) / 4,
-        key: `surface-quad-${rowIndex}-${columnIndex}`,
-        points: `${p00.x},${p00.y} ${p10.x},${p10.y} ${p11.x},${p11.y} ${p01.x},${p01.y}`,
-        stroke: lightenColor(baseColor, 0.18)
+      const values = [matrix[rowIndex][columnIndex], matrix[rowIndex][columnIndex + 1], matrix[rowIndex + 1][columnIndex + 1], matrix[rowIndex + 1][columnIndex]];
+      if (values.some(value => value == null)) continue;
+      const triangles = triangulateSurfaceQuad([
+        { value: values[0]!, x: columnIndex, y: rowIndex },
+        { value: values[1]!, x: columnIndex + 1, y: rowIndex },
+        { value: values[2]!, x: columnIndex + 1, y: rowIndex + 1 },
+        { value: values[3]!, x: columnIndex, y: rowIndex + 1 }
+      ], chart.valueAxis);
+      triangles.forEach((triangle, triangleIndex) => {
+        const world = triangle.map(point => ({
+          x: point.x / Math.max(1, cols - 1),
+          y: (1 - normalizeSurfaceValue(point.value, minValue, safeMax, chart.valueAxis)) * surfaceHeightRatio(chart.view3d?.heightPercent, layout.plot),
+          z: (1 - point.y / Math.max(1, rows - 1)) * depthScale
+        }));
+        const normal = transformSurfaceNormal(surfaceNormal(world[0], world[1], world[2]), chart.view3d?.rotX ?? 25, chart.view3d?.rotY ?? 30);
+        for (let band = 0; band < domain.ticks.length - 1; band += 1) {
+          const lower = domain.ticks[band];
+          const upper = domain.ticks[band + 1];
+          const polygon = clipSurfaceBand(clipSurfaceBand(triangle, lower, true, chart.valueAxis, band === 0), upper, false, chart.valueAxis);
+          if (polygon.length < 3) continue;
+          const projected = polygon.map(projectPoint);
+          const midpoint = (lower + upper) / 2;
+          const widths = chart.raw?.bandFormatLineWidths as Record<string, number> | undefined;
+          const edges = surfaceBandEdges(polygon, triangle).map(([from, to]) => [projectPoint(from), projectPoint(to)]);
+          faces.push({
+            depth: projected.reduce((sum, point) => sum + point.depth, 0) / projected.length,
+            node: <g key={`surface-band-${rowIndex}-${columnIndex}-${triangleIndex}-${band}`}>
+              {!chart.wireframe && <polygon fill={chart.surfaceMaterial === "flat" ? resolveSurfaceBandColor(chart, palette, domain, midpoint) : shadeSurfaceMatteColor(resolveSurfaceBandColor(chart, palette, domain, midpoint), normal)} points={projected.map(point => `${point.x},${point.y}`).join(" ")} />}
+              <path fill="none" stroke={resolveSurfaceWireframeColor(chart, palette, domain, midpoint)} strokeWidth={widths?.[band] ?? chart.series[0]?.lineWidthPx ?? 1} d={edges.map(([from, to]) => `M ${from.x} ${from.y} L ${to.x} ${to.y}`).join(" ")} />
+            </g>
+          });
+        }
       });
     }
   }
-  quads.sort((left, right) => left.depth - right.depth);
-
-  const surfaceContourLines = !isContour
-    ? (() => {
-        const contourSegmentsByThreshold = new Map<number, SurfaceContourSegment[]>();
-        const thresholds = domain.ticks.slice(1, -1);
-        for (let rowIndex = 0; rowIndex < rows - 1; rowIndex += 1) {
-          for (let columnIndex = 0; columnIndex < cols - 1; columnIndex += 1) {
-            const topLeft = points[rowIndex][columnIndex];
-            const topRight = points[rowIndex][columnIndex + 1];
-            const bottomRight = points[rowIndex + 1][columnIndex + 1];
-            const bottomLeft = points[rowIndex + 1][columnIndex];
-            if (!topLeft.hasValue || !topRight.hasValue || !bottomRight.hasValue || !bottomLeft.hasValue) {
-              continue;
-            }
-            const corners = [
-              { point: topLeft, value: topLeft.value },
-              { point: topRight, value: topRight.value },
-              { point: bottomRight, value: bottomRight.value },
-              { point: bottomLeft, value: bottomLeft.value }
-            ];
-            const edges: Array<[typeof corners[number], typeof corners[number]]> = [
-              [corners[0], corners[1]],
-              [corners[1], corners[2]],
-              [corners[2], corners[3]],
-              [corners[3], corners[0]]
-            ];
-            thresholds.forEach((threshold) => {
-              const intersections: SurfacePathPoint[] = [];
-              edges.forEach(([start, end]) => {
-                const delta = end.value - start.value;
-                if (delta === 0) {
-                  return;
-                }
-                const crosses = (start.value < threshold && end.value > threshold) || (start.value > threshold && end.value < threshold);
-                if (!crosses) {
-                  return;
-                }
-                const ratio = (threshold - start.value) / delta;
-                intersections.push({
-                  x: start.point.x + (end.point.x - start.point.x) * ratio,
-                  y: start.point.y + (end.point.y - start.point.y) * ratio
-                });
-              });
-              if (intersections.length === 2) {
-                const segments = contourSegmentsByThreshold.get(threshold) ?? [];
-                segments.push({
-                  end: intersections[1] ?? intersections[0] ?? { x: topRight.x, y: topRight.y },
-                  start: intersections[0] ?? { x: topLeft.x, y: topLeft.y }
-                });
-                contourSegmentsByThreshold.set(threshold, segments);
-              } else if (intersections.length === 4) {
-                const center = (topLeft.value + topRight.value + bottomRight.value + bottomLeft.value) / 4;
-                const pairings = center >= threshold
-                  ? [[0, 1], [2, 3]]
-                  : [[0, 3], [1, 2]];
-                pairings.forEach(([startIndex, endIndex]) => {
-                  const startPoint = intersections[startIndex] ?? intersections[0];
-                  const endPoint = intersections[endIndex] ?? intersections[intersections.length - 1];
-                  if (!startPoint || !endPoint) {
-                    return;
-                  }
-                  const segments = contourSegmentsByThreshold.get(threshold) ?? [];
-                  segments.push({
-                    end: endPoint,
-                    start: startPoint
-                  });
-                  contourSegmentsByThreshold.set(threshold, segments);
-                });
-              }
-            });
-          }
-        }
-        return Array.from(contourSegmentsByThreshold.entries()).flatMap(([threshold, segments], thresholdIndex) => (
-          connectSurfaceContourSegments(segments).map((pathPoints, pathIndex) => {
-            const path = buildSurfaceSmoothPath(pathPoints, true);
-            if (!path) {
-              return null;
-            }
-            return (
-              <path
-                key={`surface-level-line-${thresholdIndex}-${pathIndex}`}
-                d={path}
-                fill="none"
-                stroke={darkenColor(resolveSurfaceBandPaletteColor(chart, palette, domain, threshold), 0.26)}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.55}
-              />
-            );
-          })
-        ));
-      })()
-    : [];
-
-  const buildSurfacePathRuns = (
-    segmentPoints: Array<{ depth: number; hasValue: boolean; value: number; x: number; y: number }>,
-    keyPrefix: string,
-    strokeColor: string,
-    strokeWidth: number
-  ) => (
-    splitSurfacePointRuns(segmentPoints).map((run, runIndex) => {
-      const path = buildSurfaceSmoothPath(run, chart.wireframe === true);
-      if (!path) {
-        return null;
-      }
-      return (
-        <path
-          key={`${keyPrefix}-${runIndex}`}
-          d={path}
-          fill="none"
-          stroke={strokeColor}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={strokeWidth}
-        />
-      );
-    })
-  );
-
-  return (
-    <g>
-      {isContour ? (
-        <>
-          <rect
-            fill={wallFill}
-            height={layout.plot.height}
-            stroke={lightenColor(axisColor, 0.18)}
-            strokeWidth={0.8}
-            width={layout.plot.width}
-            x={layout.plot.left}
-            y={layout.plot.top}
-          />
-          {Array.from({ length: cols }, (_, columnIndex) => {
-            const x = layout.plot.left + (cols <= 1 ? layout.plot.width / 2 : (columnIndex / (cols - 1)) * layout.plot.width);
-            return (
-              <line
-                key={`surface-fallback-column-grid-${columnIndex}`}
-                stroke={lightenColor(wallLineColor, 0.12)}
-                strokeWidth={0.8}
-                x1={x}
-                x2={x}
-                y1={layout.plot.top}
-                y2={layout.plot.top + layout.plot.height}
-              />
-            );
-          })}
-          {Array.from({ length: rows }, (_, rowIndex) => {
-            const y = layout.plot.top + layout.plot.height - (rows <= 1 ? layout.plot.height / 2 : (rowIndex / (rows - 1)) * layout.plot.height);
-            return (
-              <line
-                key={`surface-fallback-row-grid-${rowIndex}`}
-                stroke={lightenColor(wallLineColor, 0.12)}
-                strokeWidth={0.8}
-                x1={layout.plot.left}
-                x2={layout.plot.left + layout.plot.width}
-                y1={y}
-                y2={y}
-              />
-            );
-          })}
-        </>
-      ) : null}
-      {chart.wireframe ? null : quads.map((quad) => (
-        <polygon
-          key={quad.key}
-          fill={quad.color}
-          fillOpacity={0.95}
-          points={quad.points}
-          stroke={quad.stroke}
-          strokeWidth={0.7}
-        />
-      ))}
-      {Array.from({ length: rows }, (_, rowIndex) => {
-        const rowPoints = points[rowIndex];
-        const averageValue = matrix[rowIndex]
-          ?.filter((value): value is number => value != null)
-          .reduce((sum, value, _, values) => sum + value / Math.max(1, values.length), 0) ?? domain.minValue;
-        const rowStroke = chart.wireframe
-          ? (chart.series[rowIndex]?.lineColor
-              ?? chart.series[rowIndex]?.color
-              ?? resolveSurfaceWireframeColor(chart, palette, domain, averageValue))
-          : darkenColor(resolveSurfaceBandColor(chart, palette, domain, averageValue), 0.1);
-        return (
-          <g key={`surface-row-${rowIndex}`}>
-            {buildSurfacePathRuns(
-              rowPoints,
-              `surface-row-${rowIndex}`,
-              rowStroke,
-              chart.wireframe ? Math.max(1.45, chart.series[rowIndex]?.lineWidthPx ?? 1.8) : 0.8
-            )}
-          </g>
-        );
-      })}
-      {Array.from({ length: cols }, (_, columnIndex) => {
-        const columnPoints = Array.from({ length: rows }, (_, rowIndex) => points[rowIndex][columnIndex]);
-        const columnValues = Array.from({ length: rows }, (_, rowIndex) => matrix[rowIndex]?.[columnIndex])
-          .filter((value): value is number => value != null);
-        const columnAverage = columnValues.length > 0
-          ? columnValues.reduce((sum, value) => sum + value, 0) / columnValues.length
-          : domain.minValue;
-        const columnStroke = chart.wireframe
-          ? resolveSurfaceWireframeColor(chart, palette, domain, columnAverage)
-          : darkenColor(resolveSurfaceBandColor(chart, palette, domain, columnAverage), 0.1);
-        return (
-          <g key={`surface-column-${columnIndex}`}>
-            {buildSurfacePathRuns(
-              columnPoints,
-              `surface-column-${columnIndex}`,
-              columnStroke,
-              chart.wireframe ? 1.35 : 0.8
-            )}
-          </g>
-        );
-      })}
-      {surfaceContourLines}
-      {chart.wireframe ? (
-        <rect
-          fill="none"
-          height={layout.plot.height}
-          stroke={lightenColor(axisColor, 0.18)}
-          strokeWidth={0.8}
-          width={layout.plot.width}
-          x={layout.plot.left}
-          y={layout.plot.top}
-        />
-      ) : null}
-    </g>
-  );
+  faces.sort((left, right) => left.depth - right.depth);
+  return <g>{faces.map(face => face.node)}</g>;
 }
 
 function renderSurfaceHitOverlay(
@@ -6065,176 +5275,7 @@ function indexByName(series: XlsxChart["series"], matcher: RegExp) {
 }
 
 function renderStockChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
-  const categories = getCategoryLabels(chart);
-  if (categories.length === 0 || chart.series.length < 2) {
-    return null;
-  }
-
-  const roles = resolveStockRoleIndices(chart);
-  const highIndex = roles.high ?? 0;
-  const lowIndex = roles.low ?? Math.min(1, chart.series.length - 1);
-  const closeIndex = roles.close ?? Math.min(2, chart.series.length - 1);
-  const openIndex = roles.open;
-  const volumeIndex = roles.volume != null && ![highIndex, lowIndex, closeIndex, openIndex].includes(roles.volume)
-    ? roles.volume
-    : null;
-  const high = chart.series[highIndex];
-  const low = chart.series[lowIndex];
-  const close = chart.series[closeIndex];
-  const open = openIndex != null ? chart.series[openIndex] : null;
-  const volume = volumeIndex != null ? chart.series[volumeIndex] : null;
-
-  const points = categories
-    .map((category, index) => {
-      const highValue = safeNumber(high.values[index]);
-      const lowValue = safeNumber(low.values[index]);
-      const closeValue = safeNumber(close.values[index]);
-      const openValue = open ? safeNumber(open.values[index]) : null;
-      const volumeValue = volume ? safeNumber(volume.values[index]) : null;
-      if (highValue == null || lowValue == null || closeValue == null) {
-        return null;
-      }
-      return {
-        category,
-        close: closeValue,
-        high: highValue,
-        low: lowValue,
-        open: openValue,
-        volume: volumeValue
-      };
-    })
-    .filter((entry): entry is { category: string; close: number; high: number; low: number; open: number | null; volume: number | null } => entry != null);
-  if (points.length === 0) {
-    return null;
-  }
-
-  const plot = layout.plot;
-  const hasVolume = volume != null && points.some((entry) => (entry.volume ?? 0) > 0);
-  const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
-  const stockPalette = resolveStockPalette(chart, axisColor);
-  const rawMinValue = hasVolume
-    ? Math.min(0, ...points.flatMap((entry) => [entry.low, entry.close, entry.open ?? entry.close, entry.volume ?? 0]))
-    : Math.min(...points.map((entry) => entry.low));
-  const rawMaxValue = hasVolume
-    ? Math.max(...points.flatMap((entry) => [entry.high, entry.close, entry.open ?? entry.close, entry.volume ?? 0]))
-    : Math.max(...points.map((entry) => entry.high));
-  const resolvedDomain = resolveNumericAxisDomain(
-    typeof chart.valueAxis?.min === "number" && Number.isFinite(chart.valueAxis.min) ? chart.valueAxis.min : rawMinValue,
-    typeof chart.valueAxis?.max === "number" && Number.isFinite(chart.valueAxis.max) ? chart.valueAxis.max : rawMaxValue,
-    chart.valueAxis?.majorUnit,
-    hasVolume
-  );
-  const yScale = scaleLinear()
-    .domain([resolvedDomain.min, resolvedDomain.max])
-    .range([plot.top + plot.height, plot.top]);
-  const xScale = scaleBand<string>()
-    .domain(categories)
-    .range([plot.left, plot.left + plot.width])
-    .paddingInner(0.28)
-    .paddingOuter(0.18);
-  const ticks = resolvedDomain.ticks;
-  const labelColor = resolveChartAxisTextColor(chart);
-  const openTickColor = stockPalette.openAccent;
-  const closeTickColor = openIndex != null ? stockPalette.lineColor : stockPalette.closeAccent;
-  const labelStep = Math.max(1, Math.ceil(categories.length / Math.max(4, Math.floor(plot.width / 68))));
-  const zeroY = yScale(Math.max(resolvedDomain.min, 0));
-
-  return (
-    <g>
-      {ticks.map((tick) => (
-        <g key={`stock-tick-${tick}`}>
-          <line
-            stroke={lightenColor(axisColor, 0.72)}
-            strokeWidth={1}
-            x1={plot.left}
-            x2={plot.left + plot.width}
-            y1={yScale(tick)}
-            y2={yScale(tick)}
-          />
-          <text fill={labelColor} fontSize={10} textAnchor="end" x={plot.left - 6} y={yScale(tick) + 3}>
-            {formatTickValue(tick)}
-          </text>
-        </g>
-      ))}
-      {categories.map((category, index) => {
-        if (index % labelStep !== 0 && index !== categories.length - 1) {
-          return null;
-        }
-        const x = (xScale(category) ?? plot.left) + xScale.bandwidth() * 0.5;
-        return (
-          <text
-            key={`stock-cat-${category}`}
-            fill={labelColor}
-            fontSize={10}
-            textAnchor="middle"
-            x={x}
-            y={plot.top + plot.height + 14}
-          >
-            {category}
-          </text>
-        );
-      })}
-      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left} y1={plot.top} y2={plot.top + plot.height} />
-      <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left + plot.width} y1={plot.top + plot.height} y2={plot.top + plot.height} />
-      {points.map((entry, index) => {
-        const x = (xScale(entry.category) ?? plot.left) + xScale.bandwidth() * 0.5;
-        const previousClose = index > 0 ? points[index - 1]?.close ?? entry.close : entry.close;
-        const isUp = entry.open != null
-          ? entry.close >= entry.open
-          : entry.close >= previousClose;
-        const stroke = stockPalette.lineColor;
-        const candleWidth = Math.max(5, xScale.bandwidth() * 0.56);
-        const bodyLeft = x - candleWidth / 2;
-        const openY = entry.open != null ? yScale(entry.open) : null;
-        const closeY = yScale(entry.close);
-        const highY = yScale(entry.high);
-        const lowY = yScale(entry.low);
-        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, closeIndex, index);
-        return (
-            <g
-              {...chartElementDataProps(closeIndex, index)}
-              key={`stock-point-${index}`}
-            >
-            {hasVolume && entry.volume != null ? (
-              <rect
-                fill={stockPalette.volumeFill}
-                height={Math.max(1, zeroY - yScale(entry.volume))}
-                opacity={0.94}
-                stroke="none"
-                width={Math.max(3, xScale.bandwidth() * 0.64)}
-                x={x - Math.max(3, xScale.bandwidth() * 0.64) / 2}
-                y={yScale(entry.volume)}
-              />
-            ) : null}
-            <line stroke={stroke} strokeWidth={1.6} x1={x} x2={x} y1={highY} y2={lowY} />
-            {entry.open != null && openY != null ? (
-              Math.abs(openY - closeY) >= 1 ? (
-                <rect
-                  fill={isUp ? stockPalette.upFill : stockPalette.downFill}
-                  height={Math.max(1.4, Math.abs(closeY - openY))}
-                  stroke={stroke}
-                  strokeWidth={1.3}
-                  width={candleWidth}
-                  x={bodyLeft}
-                  y={Math.min(openY, closeY)}
-                />
-              ) : (
-                <line stroke={stroke} strokeWidth={1.6} x1={bodyLeft} x2={bodyLeft + candleWidth} y1={closeY} y2={closeY} />
-              )
-            ) : (
-              <line stroke={closeTickColor} strokeWidth={1.8} x1={x} x2={x + 7} y1={closeY} y2={closeY} />
-            )}
-            {entry.open != null && openY != null ? (
-              <line stroke={openTickColor} strokeWidth={1.8} x1={x - 7} x2={x} y1={openY} y2={openY} />
-            ) : null}
-            {selected
-              ? renderSelectionPointHandles(`stock-selection-${index}`, [{ x, y: closeY }])
-              : null}
-          </g>
-        );
-      })}
-    </g>
-  );
+  return renderLineOrAreaChart(chart, palette, layout, "Stock", selectedChartElement);
 }
 
 function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
@@ -6814,7 +5855,13 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
   );
 }
 
-function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, selectedChartElement?: XlsxChartElementSelection | null) {
+function renderRegionMapChart(
+  chart: XlsxChart,
+  palette: ChartRendererPalette,
+  layout: ChartLayout,
+  selectedChartElement: XlsxChartElementSelection | null | undefined,
+  { geoIdentity, geoMercator, geoNaturalEarth1, geoPath, resolveRegionMapFeatureSet, resolveRegionMapFeature, getRegionMapBaseFeatures }: RegionMapResources
+) {
   const primarySeriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
   const primarySeries = chart.series[primarySeriesIndex] ?? null;
   if (!primarySeries) {
@@ -6842,7 +5889,7 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
   const categoricalValues = resolveRegionMapColorStrings(primarySeries);
   const categoricalColorByLabel = categoricalValues
     ? new Map(
-        Array.from(new Set(categoricalValues)).map((value, index) => [
+        Array.from(new Set(categoricalValues.filter(Boolean))).map((value, index) => [
           value,
           chartPointColor(chart, index, primarySeriesIndex)
         ])
@@ -6851,7 +5898,7 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
   const entries = labels.map((label, index) => {
     const feature = resolveRegionMapFeature(label, featureSet);
     const value = safeNumber(primarySeries.values[index]);
-    const colorLabel = categoricalValues?.[index] ?? null;
+    const colorLabel = categoricalValues?.[index] || null;
     return {
       colorLabel,
       feature,
@@ -6888,8 +5935,8 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
   const outlineColor = chart.chartAreaBorderColor && chart.chartAreaBorderColor !== "transparent"
     ? chart.chartAreaBorderColor
     : darkenColor(noDataFill, 0.22);
-  const numericEntryValues = entries
-    .map((entry) => entry.value)
+  const numericEntryValues = primarySeries.values
+    .map(safeNumber)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   const minValue = numericEntryValues.length > 0 ? Math.min(...numericEntryValues) : 0;
   const maxValue = numericEntryValues.length > 0 ? Math.max(...numericEntryValues) : 1;
@@ -6906,7 +5953,7 @@ function renderRegionMapChart(chart: XlsxChart, palette: ChartRendererPalette, l
           <path
             d={d}
             fill={noDataFill}
-            key={`region-map-base-${feature.id ?? index}`}
+            key={`region-map-base-${feature.id ?? "feature"}-${index}`}
             stroke={outlineColor}
             strokeLinejoin="round"
             strokeWidth={0.6}
@@ -7073,7 +6120,7 @@ function renderChartPlot(
     return renderTreemapChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "RegionMap") {
-    return renderRegionMapChart(chart, palette, layout, selectedChartElement);
+    return <RegionMapPlot chart={chart} layout={layout} palette={palette} selectedChartElement={selectedChartElement} />;
   }
   return renderUnsupported(chart, palette, layout, chartType);
 }
@@ -7120,31 +6167,7 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({
     onChartElementDoubleClick?.(selection, event);
   }, [chart, onChartElementDoubleClick, selectedChartElement]);
 
-  if (renderChartType === "Surface") {
-    return (
-      <MemoSurfaceChartComposite
-        background={background}
-        borderColor={borderColor}
-        chart={chart}
-        fallback={renderSurfaceChart(chart, palette, layout, selectedChartElement)}
-        fontFamily={fontFamily}
-          layout={layout}
-          onDoubleClick={handleDoubleClick}
-          onPointerDown={handlePointerDown}
-          overlay={
-            <>
-              {renderSurfaceHitOverlay(chart, layout, selectedChartElement)}
-              {renderSurfaceAxes(chart, layout)}
-              {renderTitle(chart, layout, palette)}
-            {renderLegend(chart, layout, palette)}
-          </>
-        }
-        palette={palette}
-      />
-    );
-  }
-
-  return (
+  const renderSvgChart = (plot: React.ReactNode) => (
     <svg
       aria-label={chart.title ?? chart.name ?? "Chart"}
       onDoubleClick={handleDoubleClick}
@@ -7158,9 +6181,36 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({
         : <rect fill={background} height={layout.height} stroke={borderColor} strokeWidth={1} width={layout.width} x={0} y={0} />}
       {renderTitle(chart, layout, palette)}
       {renderLegend(chart, layout, palette)}
-      {renderChartPlot(chart, palette, layout, renderChartType, selectedChartElement)}
+      {plot}
     </svg>
   );
+  if (renderChartType === "Surface") {
+    const surfacePlot = renderSurfaceChart(chart, palette, layout, selectedChartElement);
+    return (
+      <SurfaceChartComposite
+        loadingFallback={renderSvgChart(surfacePlot)}
+        background={background}
+        borderColor={borderColor}
+        chart={chart}
+        fallback={surfacePlot}
+        fontFamily={fontFamily}
+        layout={layout}
+        onDoubleClick={handleDoubleClick}
+        onPointerDown={handlePointerDown}
+        overlay={
+          <>
+            {renderSurfaceHitOverlay(chart, layout, selectedChartElement)}
+            {renderSurfaceAxes(chart, layout)}
+            {renderTitle(chart, layout, palette)}
+            {renderLegend(chart, layout, palette)}
+          </>
+        }
+        palette={palette}
+      />
+    );
+  }
+
+  return renderSvgChart(renderChartPlot(chart, palette, layout, renderChartType, selectedChartElement));
 }, (prev, next) => (
   prev.chart === next.chart
   && prev.onChartElementDoubleClick === next.onChartElementDoubleClick

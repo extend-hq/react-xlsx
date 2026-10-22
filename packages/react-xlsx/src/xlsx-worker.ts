@@ -2,6 +2,7 @@ import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, unzipSync } from "fflate";
 import { loadWorkbookChartAssets } from "./charts";
 import { buildThemePaletteFromHex } from "./colors";
+import { getCellGeneralAlignment } from "./cell-alignment";
 import {
   collectWorkbookFormControls,
   parseWorkbookChartStyleAssets,
@@ -219,6 +220,10 @@ function parseWorkerSheetLayoutAssets(bytes: Uint8Array, sheetCount: number): Ar
         return null;
       }
 
+      const sheetFormatTag = /<(?:[\w.-]+:)?sheetFormatPr\b[^>]*>/.exec(xml)?.[0] ?? "";
+      const defaultRowHeight = Number(readXmlAttribute(sheetFormatTag, "defaultRowHeight") ?? Number.NaN);
+      const defaultColWidth = Number(readXmlAttribute(sheetFormatTag, "defaultColWidth")
+        ?? readXmlAttribute(sheetFormatTag, "baseColWidth") ?? Number.NaN);
       const rowHeightOverridesPx: Record<number, number> = {};
       for (const match of xml.matchAll(/<row\b[^>]*>/g)) {
         const tag = match[0];
@@ -230,7 +235,15 @@ function parseWorkerSheetLayoutAssets(bytes: Uint8Array, sheetCount: number): Ar
         }
       }
 
-      return { rowHeightOverridesPx };
+      return {
+        defaultRowHeightPx: Number.isFinite(defaultRowHeight) && defaultRowHeight > 0
+          ? Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33))
+          : undefined,
+        defaultColWidthPx: Number.isFinite(defaultColWidth) && defaultColWidth > 0
+          ? resolveSheetColumnWidthPixels(defaultColWidth)
+          : undefined,
+        rowHeightOverridesPx
+      };
     });
   } catch {
     return [];
@@ -486,14 +499,14 @@ function buildSheetList(
       ...sheetState,
       ...mergeMetadata
     };
-    const defaultColWidthPx = resolveWorksheetDefaultColumnWidthPixels(
+    const defaultColWidthPx = sheetState?.defaultColWidthPx ?? resolveWorksheetDefaultColumnWidthPixels(
       worksheet,
       sheetState?.columnWidthCharacterWidthPx,
-      sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH
+      DEFAULT_COL_WIDTH
     );
-    const defaultRowHeightPx = resolveWorksheetDefaultRowHeightPixels(
+    const defaultRowHeightPx = sheetState?.defaultRowHeightPx ?? resolveWorksheetDefaultRowHeightPixels(
       worksheet,
-      sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT
+      DEFAULT_ROW_HEIGHT
     );
     const visibility = normalizeWorksheetVisibility(worksheet.visibility);
     if (!showHiddenSheets && visibility !== "visible") {
@@ -943,13 +956,21 @@ async function handleMessage(message: WorkerRequest) {
         return null;
       }
 
-      return worksheet.getRowsBatch(message.payload.startRow, message.payload.rowCount, {
+      const rows = worksheet.getRowsBatch(message.payload.startRow, message.payload.rowCount, {
         includeFormulas: true,
         includeHyperlinks: true,
         includeMergeInfo: true,
         includeStyles: true,
         useFormattedValues: true
-      }) as unknown[] | null;
+      }) as Array<{ index: number; cells: Array<{ col: number; isMergedSecondary?: boolean; generalAlignment?: string }> }> | null;
+      for (const row of rows ?? []) {
+        for (const cell of row.cells) {
+          if (!cell.isMergedSecondary) {
+            cell.generalAlignment = getCellGeneralAlignment(worksheet, row.index, cell.col);
+          }
+        }
+      }
+      return rows;
     }
     default:
       return null;

@@ -48,6 +48,7 @@ import {
 } from "./images";
 import { safeCalculate, tryRecalculate } from "./safe-calculate";
 import { parseXlsxRange } from "./range-reference";
+import { expandHighlightedRange } from "./range-highlight";
 import { canUseConfiguredWasmSourceInWorker, getSheetsWasmModule } from "./wasm";
 import { XlsxWorkerClient } from "./worker-client";
 import { normalizeWorkbookArrayBuffer } from "./zip-entry-names";
@@ -58,6 +59,7 @@ import type {
   XlsxChartsheet,
   XlsxCellAddress,
   XlsxCellRange,
+  XlsxMergeMode,
   XlsxCellStyleColorInput,
   XlsxCellStyleInput,
   XlsxClipboardData,
@@ -495,14 +497,14 @@ function buildSheetList(
       ...sheetState,
       ...mergeMetadata
     };
-    const defaultColWidthPx = resolveWorksheetDefaultColumnWidthPixels(
+    const defaultColWidthPx = sheetState?.defaultColWidthPx ?? resolveWorksheetDefaultColumnWidthPixels(
       worksheet,
       sheetState?.columnWidthCharacterWidthPx,
-      sheetState?.defaultColWidthPx ?? DEFAULT_COL_WIDTH
+      DEFAULT_COL_WIDTH
     );
-    const defaultRowHeightPx = resolveWorksheetDefaultRowHeightPixels(
+    const defaultRowHeightPx = sheetState?.defaultRowHeightPx ?? resolveWorksheetDefaultRowHeightPixels(
       worksheet,
-      sheetState?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT
+      DEFAULT_ROW_HEIGHT
     );
     const visibility = normalizeWorksheetVisibility(worksheet.visibility);
     if (!showHiddenSheets && visibility !== "visible") {
@@ -1108,6 +1110,11 @@ function rangeContainsCell(range: XlsxCellRange, cell: XlsxCellAddress): boolean
     cell.col >= normalized.start.col &&
     cell.col <= normalized.end.col
   );
+}
+
+function rangesIntersect(a: XlsxCellRange, b: XlsxCellRange): boolean {
+  return a.start.row <= b.end.row && a.end.row >= b.start.row
+    && a.start.col <= b.end.col && a.end.col >= b.start.col;
 }
 
 function mapWorksheetTables(
@@ -4575,15 +4582,42 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     recordRangeEditHistory(mutations, nextRange, nextRange.end);
   }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
 
-  const mergeSelection = React.useCallback(() => {
+  const mergeSelection = React.useCallback((mode: XlsxMergeMode = "cells") => {
     const worksheet = getActiveWorksheet();
     if (readOnly || !worksheet || !selection || !workbook) {
       return;
     }
 
+    const mergedRanges = resolveWorksheetMergeMetadata(worksheet).mergedRanges;
+    const range = expandHighlightedRange(normalizeRange(selection), mergedRanges);
+    const isSingleCell = range.start.row === range.end.row && range.start.col === range.end.col;
+    if ((isSingleCell && mode !== "center") || (mode === "across" && range.start.col === range.end.col)) {
+      return;
+    }
+
     recordHistoryBeforeMutation();
-    worksheet.mergeCells(rangeToA1(selection));
+    for (const merged of mergedRanges) {
+      if (rangesIntersect(range, merged)) {
+        worksheet.unmergeCells(rangeToA1(merged));
+      }
+    }
+    if (mode === "across") {
+      for (let row = range.start.row; row <= range.end.row; row += 1) {
+        worksheet.mergeCells(rangeToA1({
+          start: { row, col: range.start.col },
+          end: { row, col: range.end.col }
+        }));
+      }
+    } else {
+      if (!isSingleCell) worksheet.mergeCells(rangeToA1(range));
+      if (mode === "center") {
+        worksheet.setCellStyleAt(range.start.row, range.start.col, { alignment: { horizontal: "center" } });
+      }
+    }
     refreshWorkbookState(workbook);
+    selectionAnchorRef.current = range.start;
+    setSelection(range);
+    setActiveCell(range.start);
   }, [getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
 
   const unmergeSelection = React.useCallback(() => {
@@ -4592,8 +4626,15 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
+    const range = normalizeRange(selection);
+    const mergedRanges = resolveWorksheetMergeMetadata(worksheet).mergedRanges
+      .filter((merged) => rangesIntersect(range, merged));
+    if (mergedRanges.length === 0) return;
+
     recordHistoryBeforeMutation();
-    worksheet.unmergeCells(rangeToA1(selection));
+    for (const merged of mergedRanges) {
+      worksheet.unmergeCells(rangeToA1(merged));
+    }
     refreshWorkbookState(workbook);
   }, [getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
 

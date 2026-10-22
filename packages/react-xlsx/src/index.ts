@@ -35,6 +35,7 @@ export type {
   XlsxCellNumberFormatInput,
   XlsxCellProtectionInput,
   XlsxCellRange,
+  XlsxMergeMode,
   XlsxContextMenuAction,
   XlsxContextMenuActionId,
   XlsxContextMenuContext,

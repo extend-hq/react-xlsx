@@ -13,7 +13,9 @@ export default defineConfig([
     external,
     format: ["esm", "cjs"],
     noExternal,
+    shims: true,
     skipNodeModulesBundle: true,
+    splitting: true,
     sourcemap: true
   },
   {
