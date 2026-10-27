@@ -9,7 +9,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
-        vanilla: path.resolve(__dirname, "vanilla.html"),
+        vanilla: path.resolve(__dirname, "vanilla/index.html"),
+        vanillaLegacy: path.resolve(__dirname, "vanilla.html"),
       },
     },
   },
