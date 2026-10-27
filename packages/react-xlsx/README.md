@@ -152,7 +152,7 @@ The package provides a vanilla JavaScript entry point and three levels of React 
 
 ### Vanilla JavaScript
 
-Use the vanilla entry point to mount the viewer in an existing DOM element. The viewer uses a bundled Preact renderer and does not require React or JSX. The React component wraps the same viewer implementation. The instance creates an `xlsx-viewer` custom element in light DOM, so application styles and focus behavior continue to apply.
+Use the vanilla entry point to mount the viewer in an existing DOM element. The viewer uses a bundled Preact renderer and does not require React or JSX. The React component wraps the same viewer implementation. The instance creates a `div` in the regular DOM, so application styles and focus behavior continue to apply.
 
 The examples below use a browser bundler such as Vite to resolve the package import. For Vite development, use the [worker configuration above](#webassembly-asset).
 

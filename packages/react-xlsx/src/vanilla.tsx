@@ -109,11 +109,7 @@ function mergeOptions(
 
 function createViewerElement(container: Element | DocumentFragment) {
   const owner = container.ownerDocument;
-  const view = owner.defaultView;
-  if (view && !view.customElements.get("xlsx-viewer")) {
-    view.customElements.define("xlsx-viewer", class extends view.HTMLElement {});
-  }
-  const element = owner.createElement("xlsx-viewer");
+  const element = owner.createElement("div");
   element.style.display = "contents";
   container.appendChild(element);
   return element;
