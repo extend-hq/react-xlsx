@@ -21,7 +21,7 @@ import {
   type XlsxCellStyleInput,
   type XlsxViewerProps
 } from "@extend-ai/react-xlsx";
-import { Button } from "./components/ui/button";
+import { Button, buttonVariants } from "./components/ui/button";
 import { ButtonGroup } from "./components/ui/button-group";
 import { ColorPicker } from "./components/ui/color-picker";
 import {
@@ -479,6 +479,9 @@ function WorkbookToolbar({
             <PlaygroundIcon name="download" />
             Download
           </Button>
+          <a className={buttonVariants({ size: "sm", variant: "outline" })} href="/vanilla">
+            Vanilla JS
+          </a>
           <ThemeToggle />
           <PlaygroundCustomizerPanel />
         </div>

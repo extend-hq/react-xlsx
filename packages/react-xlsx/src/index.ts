@@ -1,6 +1,6 @@
-export { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
-export { parseXlsxRange } from "./range-reference";
-export { initWasm, setWasmSource, type XlsxWasmSource } from "./wasm";
+export { useXlsxViewerController } from "./controller";
+export { initWasm, parseXlsxRange, setWasmSource, XlsxFileSizeLimitExceededError, type XlsxWasmSource } from "@extend-ai/react-xlsx/vanilla";
+export { XlsxViewer } from "./react-viewer";
 export {
   DefaultXlsxToolbar,
   useXlsxViewerCharts,
@@ -11,7 +11,6 @@ export {
   useXlsxViewerThumbnails,
   useXlsxViewerZoom,
   useXlsxViewerTables,
-  XlsxViewer,
   XlsxViewerProvider
 } from "./XlsxViewer";
 export type {

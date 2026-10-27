@@ -1,7 +1,7 @@
 {
   "name": "@extend-ai/react-xlsx",
   "version": "0.18.1",
-  "description": "React components and hooks for viewing XLSX workbooks",
+  "description": "JavaScript and React viewers for XLSX workbooks",
   "license": "MIT",
   "keywords": [
     "react",
@@ -35,6 +35,16 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./vanilla": {
+      "types": "./dist/vanilla.d.ts",
+      "import": "./dist/vanilla.js",
+      "require": "./dist/vanilla.cjs"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js",
+      "require": "./dist/internal.cjs"
+    },
     "./duke_sheets_wasm_bg.wasm": "./dist/duke_sheets_wasm_bg.wasm",
     "./package.json": "./package.json"
   },
@@ -48,14 +58,23 @@
     "react": ">=18",
     "react-dom": ">=18"
   },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "@dukelib/sheets-wasm": "0.1.23",
-    "@tanstack/react-virtual": "^3.13.12",
+    "csstype": "^3.1.0",
     "d3-geo": "^3.1.1",
     "d3-hierarchy": "^3.1.2",
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
     "fflate": "^0.8.3",
+    "preact": "^10.29.8",
     "regl": "^2.1.1",
     "topojson-client": "^3.1.0",
     "us-atlas": "^3.0.1",
@@ -68,6 +87,7 @@
     "clean": "rm -rf dist"
   },
   "devDependencies": {
+    "@tanstack/react-virtual": "^3.13.23",
     "@types/d3-geo": "^3.1.0",
     "@types/d3-hierarchy": "^3.1.7",
     "@types/d3-scale": "^4.0.9",

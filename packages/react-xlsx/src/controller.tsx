@@ -1,5 +1,7 @@
 import { loadSpreadsheetFonts } from "./spreadsheet-fonts";
 import * as React from "react";
+import { formatBinaryBytes, XlsxFileSizeLimitExceededError } from "./errors";
+export { XlsxFileSizeLimitExceededError } from "./errors";
 import type {
   DrawingAnchor as DukeDrawingAnchor,
   DrawingColor as DukeDrawingColor,
@@ -51,7 +53,7 @@ import { safeCalculate, tryRecalculate } from "./safe-calculate";
 import { parseXlsxRange } from "./range-reference";
 import { expandHighlightedRange } from "./range-highlight";
 import { canUseConfiguredWasmSourceInWorker, getSheetsWasmModule } from "./wasm";
-import { XlsxWorkerClient } from "./worker-client";
+import { XlsxWorkerClient, XlsxWorkerUnavailableError } from "./worker-client";
 import { normalizeWorkbookArrayBuffer } from "./zip-entry-names";
 import type {
   UseXlsxViewerControllerOptions,
@@ -236,22 +238,6 @@ type WorkbookPreflightResult = {
   tooLarge: boolean;
 };
 
-function formatBinaryBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "0 B";
-  }
-
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
-}
-
 function findZipEndOfCentralDirectoryOffset(bytes: Uint8Array) {
   const minLength = 22;
   if (bytes.byteLength < minLength) {
@@ -357,20 +343,6 @@ function createWorkbookTooLargeError(preflight: WorkbookPreflightResult) {
     + `Largest worksheet XML: ${formatBinaryBytes(preflight.largestWorksheetXmlBytes)}; `
     + `shared strings: ${formatBinaryBytes(preflight.sharedStringsBytes)}.`
   );
-}
-
-export class XlsxFileSizeLimitExceededError extends Error {
-  fileSizeBytes: number;
-  maxFileSizeBytes: number;
-
-  constructor(fileSizeBytes: number, maxFileSizeBytes: number) {
-    super(
-      `XLSX file size ${formatBinaryBytes(fileSizeBytes)} exceeds the configured limit of ${formatBinaryBytes(maxFileSizeBytes)}.`
-    );
-    this.name = "XlsxFileSizeLimitExceededError";
-    this.fileSizeBytes = fileSizeBytes;
-    this.maxFileSizeBytes = maxFileSizeBytes;
-  }
 }
 
 type HistoryEntry = SnapshotHistoryEntry | CellEditHistoryEntry | RangeEditHistoryEntry;
@@ -2004,7 +1976,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const shouldFallbackFromWorkerError = React.useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error ?? "");
     return (
-      message.includes("DOMParser is not defined")
+      error instanceof XlsxWorkerUnavailableError
+      || message.includes("DOMParser is not defined")
       || message.includes("XMLSerializer is not defined")
       || message.includes("Worker chart payload incomplete")
     );
@@ -2153,11 +2126,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     };
 
     if (!workerSupported) {
+      if (workerTimeoutHandle !== null) window.clearTimeout(workerTimeoutHandle);
       runMainThreadFallback();
       return;
     }
 
-    void getWorkerClient().parseCharts(buffer, effectiveSkipXmlParsing, showHiddenSheets)
+    void Promise.resolve()
+      .then(() => getWorkerClient().parseCharts(buffer, effectiveSkipXmlParsing, showHiddenSheets))
       .then((result) => {
         if (workerTimeoutHandle !== null) {
           window.clearTimeout(workerTimeoutHandle);
@@ -2643,7 +2618,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(new Uint8Array(deferredBuffer), skipXmlParsing);
 
     if (shouldUseWorkerForLoad) {
-      void getWorkerClient().loadWorkbook(deferredBuffer, effectiveSkipXmlParsing, showHiddenSheets)
+      void Promise.resolve()
+        .then(() => getWorkerClient().loadWorkbook(deferredBuffer, effectiveSkipXmlParsing, showHiddenSheets))
         .then((snapshot) => {
           if (!effectiveSkipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
             throw new Error("Worker chart payload incomplete");

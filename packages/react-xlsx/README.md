@@ -1,10 +1,11 @@
 # @extend-ai/react-xlsx
 
-React components and hooks for rendering `.xlsx` workbooks in the browser.
+React components, hooks, and a vanilla JavaScript API for rendering `.xlsx` workbooks in the browser.
 
 `@extend-ai/react-xlsx` gives you:
 
 - A drop-in `XlsxViewer` for workbook previews
+- A `createXlsxViewer` API for mounting the viewer from plain JavaScript
 - A provider/controller API for custom spreadsheet experiences
 - Worksheet rendering with frozen panes, tables, merged cells, conditional formatting, sparklines, selection, resizing, copy/paste, and zoom
 - Embedded worksheet images, shapes, form controls, charts, and chartsheet tabs
@@ -15,14 +16,14 @@ React components and hooks for rendering `.xlsx` workbooks in the browser.
 ## Install
 
 ```bash
-npm install @extend-ai/react-xlsx react react-dom
+npm install @extend-ai/react-xlsx
 ```
 
 ```bash
-pnpm add @extend-ai/react-xlsx react react-dom
+pnpm add @extend-ai/react-xlsx
 ```
 
-`react` and `react-dom` are peer dependencies.
+For the React entry, install `react` and `react-dom` as well. They are optional peer dependencies and are not needed by the vanilla entry.
 
 ## Automatic Chart Loading
 
@@ -105,11 +106,38 @@ If several routes use the viewer, import the same setup module from a shared cli
 
 Configured string, URL, Request URL, bytes, and `WebAssembly.Module` sources are forwarded into the XLSX worker. `Response` sources are supported on the main thread; worker-backed parsing is skipped for that source type.
 
-You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first workbook is opened.
+In Vite development, exclude the vanilla entry from dependency optimization so Vite can resolve the worker asset. Production builds do not need this setting:
+
+```ts
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  optimizeDeps: { exclude: ["@extend-ai/react-xlsx/vanilla"] }
+});
+```
+
+For the React entry, exclude the shared entries and let Vite optimize React separately:
+
+```ts
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  optimizeDeps: {
+    exclude: ["@extend-ai/react-xlsx", "@extend-ai/react-xlsx/vanilla", "@extend-ai/react-xlsx/internal"],
+    include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime"]
+  }
+});
+```
+
+You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first workbook is opened. Vanilla applications can import these functions from `@extend-ai/react-xlsx/vanilla`.
 
 ## Main Entry Points
 
-The package exports three useful levels of API:
+The package provides a vanilla JavaScript entry point and three levels of React API:
+
+- `@extend-ai/react-xlsx/vanilla` exports `createXlsxViewer`, the `XlsxViewer` instance class, and utilities for JavaScript applications.
+
+`@extend-ai/react-xlsx` exports:
 
 1. `XlsxViewer`
    A ready-to-render workbook viewer with built-in toolbar, sheet tabs, grid rendering, charts, images, and selection state.
@@ -121,6 +149,126 @@ The package exports three useful levels of API:
    A lower-level controller hook for fully controlled integrations.
 
 ## Quick Start
+
+### Vanilla JavaScript
+
+Use the vanilla entry point to mount the viewer in an existing DOM element. The viewer uses a bundled Preact renderer and does not require React or JSX. The React component wraps the same viewer implementation. The instance creates an `xlsx-viewer` custom element in light DOM, so application styles and focus behavior continue to apply.
+
+The examples below use a browser bundler such as Vite to resolve the package import. For Vite development, use the [worker configuration above](#webassembly-asset).
+
+#### Open a workbook from a URL
+
+```html
+<div id="viewer"></div>
+<script type="module" src="/main.js"></script>
+```
+
+```js
+import { createXlsxViewer } from "@extend-ai/react-xlsx/vanilla";
+
+const viewer = createXlsxViewer(document.getElementById("viewer"), {
+  src: "/workbook.xlsx",
+  height: 600,
+  readOnly: true,
+});
+```
+
+The URL must be accessible to the browser. A workbook on another origin needs the appropriate CORS headers. Omit `readOnly` to allow editing.
+
+You can also construct an instance directly:
+
+```js
+import { XlsxViewer } from "@extend-ai/react-xlsx/vanilla";
+
+const viewer = new XlsxViewer(document.getElementById("viewer"), {
+  src: "/workbook.xlsx",
+  height: 600,
+});
+```
+
+#### Open a local workbook
+
+The `file` option accepts workbook bytes as an `ArrayBuffer`. This standalone example starts with an empty viewer and loads the file selected by the user:
+
+```html
+<input id="workbook" type="file" accept=".xlsx,.xlsm,.xls" />
+<div id="viewer"></div>
+<script type="module" src="/main.js"></script>
+```
+
+```js
+import { createXlsxViewer } from "@extend-ai/react-xlsx/vanilla";
+
+const viewer = createXlsxViewer(document.getElementById("viewer"), {
+  height: 600,
+  emptyState: "Choose a workbook to preview.",
+});
+
+document.getElementById("workbook").addEventListener("change", async (event) => {
+  const file = event.currentTarget.files?.[0];
+  if (!file) return;
+
+  viewer.setOptions({ file: await file.arrayBuffer(), fileName: file.name });
+});
+```
+
+#### Read state and control the viewer
+
+Subscribe to loading, errors, sheet changes, selection, and other controller updates:
+
+```js
+const unsubscribe = viewer.subscribe((controller) => {
+  if (controller.error) {
+    console.error(controller.error);
+  } else if (controller.isLoading) {
+    console.log("Loading workbook…");
+  } else if (controller.sheets.length > 0) {
+    console.log(controller.activeSheet?.name, controller.selectedRangeAddress);
+  }
+});
+```
+
+Read the latest controller when invoking a command. These commands should run after the workbook has loaded:
+
+```js
+const controller = viewer.getController();
+
+if (controller && !controller.isLoading && controller.sheets.length > 0) {
+  controller.highlightRanges("A1:C5");
+  if (!controller.readOnly) controller.setCellValue({ row: 0, col: 0 }, "42");
+  if (controller.canExport) controller.exportXlsx();
+}
+```
+
+`setCellValue` requires an editable workbook. `exportXlsx()` downloads the current workbook in the browser.
+
+Change options or load another workbook with `setOptions`:
+
+```js
+viewer.setOptions({ isDark: true, readOnly: true });
+viewer.setOptions({ src: "/another-workbook.xlsx", fileName: undefined });
+```
+
+Supplying `file` clears the previous `src`, and supplying `src` clears the previous `file`. To release the viewer when it is no longer needed:
+
+```js
+unsubscribe();
+viewer.destroy();
+```
+
+`createXlsxViewer` returns an object with these methods:
+
+- `getController()` returns the latest `XlsxViewerController`, or `null` when no controller is available or after destruction. Read it again when invoking commands so you have the current state and methods.
+- `subscribe(listener)` reports controller updates, including loading, errors, sheets, selection, zoom, edits, and the existing controller commands. If a controller is already available, the listener is called immediately. Updates can be coalesced. The return value unsubscribes the listener.
+- `setOptions(options)` merges new options into the current ones. Supplying `file` clears `src`, and supplying `src` clears `file`. `file` accepts an `ArrayBuffer`; convert a browser `File` with `await file.arrayBuffer()`.
+- `reload()` discards the current viewer state and reloads the current source.
+- `destroy()` unmounts the viewer, releases its resources, and removes listeners. It is safe to call more than once.
+
+`subscribe` also exposes `isLoadDeferred` and `continueDeferredLoad()` for deferred workbooks.
+
+`XlsxVanillaViewerOptions` supports the non-React viewer options, including `getCellStyle`, form-control events, themes, worker settings, and highlighting. `toolbar`, loading/empty/error states, and the `renderActiveCellOverlay`, `renderChartLoading`, `renderContextMenu`, `renderFormControl`, and `renderImage` callbacks accept text or DOM nodes. Their vanilla callback props omit React's `defaultNode`. React-specific custom scroller, image-selection, and table-header render callbacks are not available through this entry point.
+
+The vanilla entry also exports `setWasmSource`, `initWasm`, `parseXlsxRange`, and workbook types. The same WASM, worker, font, and chart assets need to be served as in the React integration.
 
 ### Basic viewer
 

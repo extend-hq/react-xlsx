@@ -4,13 +4,15 @@
 
 Package: `@extend-ai/react-xlsx`
 
-`react-xlsx` provides React components and hooks for viewing XLSX workbooks with worksheet rendering, charts, chartsheets, embedded images, selection state, zoom, and editing helpers.
+`react-xlsx` provides React components, hooks, and a vanilla JavaScript API for viewing XLSX workbooks with worksheet rendering, charts, chartsheets, embedded images, selection state, zoom, and editing helpers.
 
 ## Install
 
 ```bash
 pnpm add @extend-ai/react-xlsx
 ```
+
+For React integrations, also install `react` and `react-dom`. The vanilla entry does not require them.
 
 ## WebAssembly Asset
 
@@ -73,7 +75,30 @@ If several routes use the viewer, import the same setup module from a shared cli
 
 Configured string, URL, Request URL, bytes, and `WebAssembly.Module` sources are forwarded into the XLSX worker. `Response` sources are supported on the main thread; worker-backed parsing is skipped for that source type.
 
-You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first workbook is opened.
+In Vite development, exclude the vanilla entry from dependency optimization so Vite can resolve the worker asset. Production builds do not need this setting:
+
+```ts
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  optimizeDeps: { exclude: ["@extend-ai/react-xlsx/vanilla"] }
+});
+```
+
+For the React entry, exclude the shared entries and let Vite optimize React separately:
+
+```ts
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  optimizeDeps: {
+    exclude: ["@extend-ai/react-xlsx", "@extend-ai/react-xlsx/vanilla", "@extend-ai/react-xlsx/internal"],
+    include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime"]
+  }
+});
+```
+
+You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first workbook is opened. Vanilla applications can import these functions from `@extend-ai/react-xlsx/vanilla`.
 
 ## What It Supports
 
@@ -91,6 +116,62 @@ You can also call `initWasm()` (optionally with a source) ahead of time to warm 
 - Legacy `.xls` and macro-enabled `.xlsm` workbooks have limited support: the viewer only displays workbook data that `@dukelib/sheets-wasm` can parse, and format-specific XML features may be missing or skipped
 
 ## Quick Start
+
+### Vanilla JavaScript
+
+Use the vanilla entry in a browser app with a bundler such as Vite. Add a container and a file input to your page:
+
+```html
+<input id="workbook" type="file" accept=".xlsx,.xlsm,.xls" />
+<output id="status" aria-live="polite"></output>
+<div id="viewer"></div>
+<script type="module" src="/main.js"></script>
+```
+
+Then create the viewer, observe its state, and allow a local workbook to replace the initial URL:
+
+```js
+import { createXlsxViewer } from "@extend-ai/react-xlsx/vanilla";
+
+const viewer = createXlsxViewer(document.getElementById("viewer"), {
+  src: "/workbook.xlsx",
+  height: 600,
+});
+
+const status = document.getElementById("status");
+const unsubscribe = viewer.subscribe((controller) => {
+  if (controller.error) {
+    status.textContent = controller.error.message;
+  } else if (controller.isLoading) {
+    status.textContent = "Loading workbook…";
+  } else {
+    status.textContent = controller.selectedRangeAddress ?? controller.activeSheet?.name ?? "No workbook open";
+  }
+});
+
+document.getElementById("workbook").addEventListener("change", async (event) => {
+  const file = event.currentTarget.files?.[0];
+  if (!file) return;
+
+  viewer.setOptions({ file: await file.arrayBuffer(), fileName: file.name });
+});
+```
+
+Use the current controller to run commands after the workbook has loaded, or update the viewer's options at any time:
+
+```js
+viewer.getController()?.highlightRanges("A1:C5");
+viewer.setOptions({ isDark: true, readOnly: true });
+```
+
+When removing the viewer, unsubscribe and release its resources:
+
+```js
+unsubscribe();
+viewer.destroy();
+```
+
+The vanilla entry uses a bundled Preact renderer and does not require React. The React component wraps the same viewer. See the [vanilla API documentation](packages/react-xlsx/README.md#vanilla-javascript) for more examples, including editing and exporting. The playground also has a standalone JavaScript page at `/vanilla`.
 
 ### Minimal Viewer
 
