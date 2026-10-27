@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/copy-duke-wasm.mjs && vite",
-    "build": "node scripts/copy-duke-wasm.mjs && tsc -p tsconfig.json --noEmit && vite build",
+    "dev": "pnpm --filter @extend-ai/react-xlsx build && node scripts/copy-duke-wasm.mjs && vite",
+    "build": "pnpm --filter @extend-ai/react-xlsx build && node scripts/copy-duke-wasm.mjs && tsc -p tsconfig.json --noEmit && vite build",
     "clean": "rm -rf dist",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"

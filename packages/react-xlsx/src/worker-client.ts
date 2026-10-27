@@ -83,7 +83,7 @@ type WorkerErrorMessage = {
   error: string;
 };
 
-type WorkerResponse = WorkerSuccessMessage | WorkerErrorMessage;
+type WorkerResponse = WorkerSuccessMessage | WorkerErrorMessage | { type: "ready" };
 
 type PendingRequest = {
   reject: (error: Error) => void;
@@ -100,6 +100,13 @@ function createAbortError() {
   return error;
 }
 
+export class XlsxWorkerUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "XlsxWorkerUnavailableError";
+  }
+}
+
 export class XlsxWorkerClient {
   private readonly worker: Worker;
 
@@ -109,10 +116,22 @@ export class XlsxWorkerClient {
 
   private disposed = false;
 
+  private failure: XlsxWorkerUnavailableError | null = null;
+
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor() {
-    this.worker = new Worker(new URL("./xlsx-worker.js", import.meta.url), { type: "module" });
+    try {
+      this.worker = new Worker(new URL("./xlsx-worker.js", import.meta.url), { type: "module" });
+    } catch {
+      throw new XlsxWorkerUnavailableError("The workbook worker could not be started.");
+    }
     this.worker.addEventListener("message", this.handleMessage);
     this.worker.addEventListener("error", this.handleError);
+    this.worker.addEventListener("messageerror", this.handleError);
+    this.startupTimer = setTimeout(() => {
+      this.fail(new XlsxWorkerUnavailableError("The workbook worker did not start in time."));
+    }, 15000);
   }
 
   dispose() {
@@ -121,14 +140,21 @@ export class XlsxWorkerClient {
     }
 
     this.disposed = true;
-    this.worker.removeEventListener("message", this.handleMessage);
-    this.worker.removeEventListener("error", this.handleError);
-    this.worker.terminate();
+    this.stopWorker();
     const abortError = createAbortError();
     for (const request of this.pendingRequests.values()) {
       request.reject(abortError);
     }
     this.pendingRequests.clear();
+  }
+
+  private stopWorker() {
+    if (this.startupTimer !== null) clearTimeout(this.startupTimer);
+    this.startupTimer = null;
+    this.worker.removeEventListener("message", this.handleMessage);
+    this.worker.removeEventListener("error", this.handleError);
+    this.worker.removeEventListener("messageerror", this.handleError);
+    this.worker.terminate();
   }
 
   loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false) {
@@ -195,23 +221,43 @@ export class XlsxWorkerClient {
         reject(createAbortError());
         return;
       }
+      if (this.failure) {
+        reject(this.failure);
+        return;
+      }
 
       const id = this.nextRequestId;
       this.nextRequestId += 1;
       this.pendingRequests.set(id, { reject, resolve: resolve as (value: unknown) => void });
-      this.worker.postMessage({ ...message, id }, transfer);
+      try {
+        this.worker.postMessage({ ...message, id }, transfer);
+      } catch {
+        this.fail(new XlsxWorkerUnavailableError("The workbook worker could not receive a request."));
+      }
     });
   }
 
   private readonly handleError = () => {
+    this.fail(new XlsxWorkerUnavailableError("The workbook worker failed."));
+  };
+
+  private fail(error: XlsxWorkerUnavailableError) {
+    if (this.disposed || this.failure) return;
+    this.failure = error;
+    this.stopWorker();
     for (const request of this.pendingRequests.values()) {
-      request.reject(new Error("Worker request failed."));
+      request.reject(error);
     }
     this.pendingRequests.clear();
-  };
+  }
 
   private readonly handleMessage = (event: MessageEvent<WorkerResponse>) => {
     const message = event.data;
+    if ("type" in message) {
+      if (this.startupTimer !== null) clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+      return;
+    }
     const request = this.pendingRequests.get(message.id);
     if (!request) {
       return;

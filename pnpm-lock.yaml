@@ -138,9 +138,9 @@ importers:
       '@dukelib/sheets-wasm':
         specifier: 0.1.23
         version: 0.1.23
-      '@tanstack/react-virtual':
-        specifier: ^3.13.12
-        version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      csstype:
+        specifier: ^3.1.0
+        version: 3.2.3
       d3-geo:
         specifier: ^3.1.1
         version: 3.1.1
@@ -156,6 +156,9 @@ importers:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
+      preact:
+        specifier: ^10.29.8
+        version: 10.29.8
       react:
         specifier: '>=18'
         version: 19.2.4
@@ -175,6 +178,9 @@ importers:
         specifier: ^2.0.2
         version: 2.0.2
     devDependencies:
+      '@tanstack/react-virtual':
+        specifier: ^3.13.23
+        version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@types/d3-geo':
         specifier: ^3.1.0
         version: 3.1.0
@@ -3186,6 +3192,14 @@ packages:
   powershell-utils@0.1.0:
     resolution: {integrity: sha512-dM0jVuXJPsDN6DvRpea484tCUaMiXWjuCn++HGTqUWzGDjv5tZkEZldAJ/UMlqRYGFrD/etByo4/xOuC/snX2A==}
     engines: {node: '>=20'}
+
+  preact@10.29.8:
+    resolution: {integrity: sha512-ej2aVZ+vZ8WO7tvlQWRM9N63A0KzF9q4mWJfDUHgYaIofWY9hu74QdnQrjoPMmZi2/nZ5gN0bJCQF49xQqx09Q==}
+    peerDependencies:
+      preact-render-to-string: '>=5'
+    peerDependenciesMeta:
+      preact-render-to-string:
+        optional: true
 
   pretty-ms@9.3.0:
     resolution: {integrity: sha512-gjVS5hOP+M3wMm5nmNOucbIrqudzs9v/57bWRHQWLYklXqoXKrVfYW2W9+glfGsqtPgpiz5WwyEEB+ksXIx3gQ==}
@@ -6516,6 +6530,8 @@ snapshots:
       source-map-js: 1.2.1
 
   powershell-utils@0.1.0: {}
+
+  preact@10.29.8: {}
 
   pretty-ms@9.3.0:
     dependencies:

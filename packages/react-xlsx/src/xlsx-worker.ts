@@ -995,3 +995,5 @@ self.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
       } satisfies WorkerErrorResponse);
     });
 });
+
+self.postMessage({ type: "ready" });

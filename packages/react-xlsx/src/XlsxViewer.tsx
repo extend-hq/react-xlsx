@@ -1130,8 +1130,8 @@ function darkenColor(color: string, ratio: number) {
   return mixRgbColor(color, "#000000", ratio);
 }
 
-const ViewerContext = React.createContext<XlsxViewerController | null>(null);
-const ViewerAppearanceContext = React.createContext<{
+export const ViewerContext = React.createContext<XlsxViewerController | null>(null);
+export const ViewerAppearanceContext = React.createContext<{
   headerBackgroundColor?: string;
   headerTextColor?: string;
   isDark: boolean;
