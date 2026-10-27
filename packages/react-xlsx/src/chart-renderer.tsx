@@ -2,7 +2,7 @@ import { getBuiltinChartColor, getBuiltinChartSurfaceLine, resolveBuiltinChartCo
 import { hierarchy as d3Hierarchy, partition as d3Partition, treemap as d3Treemap, treemapBinary, treemapDice, treemapSquarify } from "d3-hierarchy";
 import * as React from "react";
 import { shadeSurfaceMatteColor, surfaceNormal, transformSurfaceNormal } from "./surface-lighting";
-import { clipSurfaceBand, normalizeSurfaceValue, surfaceDataRatios, surfaceBandEdges, triangulateSurfaceQuad } from "./surface-geometry";
+import { clipSurfaceBand, groupSurfaceBandEdges, normalizeSurfaceValue, surfaceDataRatios, triangulateSurfaceQuad } from "./surface-geometry";
 import { scaleBand, scaleLinear, scalePoint } from "d3-scale";
 import {
   arc as d3Arc,
@@ -5121,17 +5121,18 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
               faces.push(<polygon key={`surface-band-${key}`} fill={chart.surfaceMaterial === "flat" ? resolveSurfaceBandColor(chart, palette, domain, midpoint) : shadeSurfaceMatteColor(resolveSurfaceBandColor(chart, palette, domain, midpoint), normal)} points={polygon.map((point) => `${point.x},${point.y}`).join(" ")} />);
             }
             const widths = chart.raw?.bandFormatLineWidths as Record<string, number> | undefined;
-            const lineWidth = widths?.[band] ?? chart.series[0]?.lineWidthPx ?? 1;
-            const edges = surfaceBandEdges(polygon, triangle);
-            lines.push(
-              <path
-                key={`surface-edge-${key}`}
-                d={edges.map(([from, to]) => `M ${from.x} ${from.y} L ${to.x} ${to.y}`).join(" ")}
-                fill="none"
-                stroke={resolveSurfaceWireframeColor(chart, palette, domain, midpoint)}
-                strokeWidth={lineWidth}
-              />
-            );
+            for (const group of groupSurfaceBandEdges(polygon, triangle, band, lower, chart.wireframe === true)) {
+              const edgeMidpoint = (domain.ticks[group.band] + domain.ticks[group.band + 1]) / 2;
+              lines.push(
+                <path
+                  key={`surface-edge-${key}-${group.band}`}
+                  d={group.edges.map(([from, to]) => `M ${from.x} ${from.y} L ${to.x} ${to.y}`).join(" ")}
+                  fill="none"
+                  stroke={resolveSurfaceWireframeColor(chart, palette, domain, edgeMidpoint)}
+                  strokeWidth={widths?.[group.band] ?? chart.series[0]?.lineWidthPx ?? 1}
+                />
+              );
+            }
           }
         });
       }
@@ -5266,12 +5267,16 @@ function renderSurfaceChart(chart: XlsxChart, palette: ChartRendererPalette, lay
           const projected = polygon.map(projectPoint);
           const midpoint = (lower + upper) / 2;
           const widths = chart.raw?.bandFormatLineWidths as Record<string, number> | undefined;
-          const edges = surfaceBandEdges(polygon, triangle).map(([from, to]) => [projectPoint(from), projectPoint(to)]);
+          const edgeGroups = groupSurfaceBandEdges(polygon, triangle, band, lower, chart.wireframe === true);
           faces.push({
             depth: projected.reduce((sum, point) => sum + point.depth, 0) / projected.length,
             node: <g key={`surface-band-${rowIndex}-${columnIndex}-${triangleIndex}-${band}`}>
               {!chart.wireframe && <polygon fill={chart.surfaceMaterial === "flat" ? resolveSurfaceBandColor(chart, palette, domain, midpoint) : shadeSurfaceMatteColor(resolveSurfaceBandColor(chart, palette, domain, midpoint), normal)} points={projected.map(point => `${point.x},${point.y}`).join(" ")} />}
-              <path fill="none" stroke={resolveSurfaceWireframeColor(chart, palette, domain, midpoint)} strokeWidth={widths?.[band] ?? chart.series[0]?.lineWidthPx ?? 1} d={edges.map(([from, to]) => `M ${from.x} ${from.y} L ${to.x} ${to.y}`).join(" ")} />
+              {edgeGroups.map((group) => {
+                const edgeMidpoint = (domain.ticks[group.band] + domain.ticks[group.band + 1]) / 2;
+                const edges = group.edges.map(([from, to]) => [projectPoint(from), projectPoint(to)]);
+                return <path key={`surface-edge-${group.band}`} fill="none" stroke={resolveSurfaceWireframeColor(chart, palette, domain, edgeMidpoint)} strokeWidth={widths?.[group.band] ?? chart.series[0]?.lineWidthPx ?? 1} d={edges.map(([from, to]) => `M ${from.x} ${from.y} L ${to.x} ${to.y}`).join(" ")} />;
+              })}
             </g>
           });
         }

@@ -71,3 +71,26 @@ export function surfaceBandEdges(polygon: SurfaceBandPoint[], triangle: [Surface
       : [[from, to]];
   });
 }
+
+export function groupSurfaceBandEdges(
+  polygon: SurfaceBandPoint[],
+  triangle: [SurfaceBandPoint, SurfaceBandPoint, SurfaceBandPoint],
+  band: number,
+  lower: number,
+  wireframe: boolean
+) {
+  const edges = surfaceBandEdges(polygon, triangle);
+  const currentEdges: typeof edges = [];
+  const lowerBoundaryEdges: typeof edges = [];
+  for (const edge of edges) {
+    if (wireframe && band > 0 && edge[0].value === lower && edge[1].value === lower) {
+      lowerBoundaryEdges.push(edge);
+    } else {
+      currentEdges.push(edge);
+    }
+  }
+  return [
+    ...(currentEdges.length > 0 ? [{ band, edges: currentEdges }] : []),
+    ...(lowerBoundaryEdges.length > 0 ? [{ band: band - 1, edges: lowerBoundaryEdges }] : [])
+  ];
+}

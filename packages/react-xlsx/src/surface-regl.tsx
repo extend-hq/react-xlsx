@@ -2,7 +2,7 @@ import { getBuiltinChartColor, getBuiltinChartSurfaceLine, resolveBuiltinChartCo
 import createREGL from "regl";
 import * as React from "react";
 import { shadeSurfaceMatteColor, surfaceNormal, transformSurfaceNormal } from "./surface-lighting";
-import { clipSurfaceBand, normalizeSurfaceValue, surfaceDataRatios, surfaceBandEdges, triangulateSurfaceQuad } from "./surface-geometry";
+import { clipSurfaceBand, groupSurfaceBandEdges, normalizeSurfaceValue, surfaceDataRatios, triangulateSurfaceQuad } from "./surface-geometry";
 import type { XlsxChart } from "./types";
 
 type SurfacePalette = {
@@ -428,10 +428,13 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
               }
             }
           }
-          const color = resolveSurfaceWireframeColor(chart, palette, domain, (lower + upper) / 2);
-          if (color !== "transparent") {
-            for (const [from, to] of surfaceBandEdges(polygon, triangle)) {
-              contourLines.push({ color, from: projectPoint(from.x, from.y, from.value), to: projectPoint(to.x, to.y, to.value) });
+          for (const group of groupSurfaceBandEdges(polygon, triangle, band, lower, isWireframe)) {
+            const edgeMidpoint = (domain.ticks[group.band] + domain.ticks[group.band + 1]) / 2;
+            const color = resolveSurfaceWireframeColor(chart, palette, domain, edgeMidpoint);
+            if (color !== "transparent") {
+              for (const [from, to] of group.edges) {
+                contourLines.push({ color, from: projectPoint(from.x, from.y, from.value), to: projectPoint(to.x, to.y, to.value) });
+              }
             }
           }
         }
