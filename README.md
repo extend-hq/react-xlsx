@@ -1,5 +1,6 @@
 # react-xlsx
 
+[![npm version](https://img.shields.io/npm/v/%40extend-ai%2Freact-xlsx)](https://www.npmjs.com/package/@extend-ai/react-xlsx)
 [![release](https://img.shields.io/github/v/release/extend-hq/react-xlsx?label=release)](https://github.com/extend-hq/react-xlsx/releases)
 
 Package: `@extend-ai/react-xlsx`
