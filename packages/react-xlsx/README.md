@@ -240,7 +240,7 @@ if (controller && !controller.isLoading && controller.sheets.length > 0) {
 }
 ```
 
-`setCellValue` requires an editable workbook. `exportXlsx()` downloads the current workbook in the browser.
+`setCellValue` requires an editable workbook. `exportXlsx()` downloads the current workbook in the browser, and `getXlsxBytes()` returns the same bytes as a `Uint8Array` (or `null` before a workbook loads) for saving elsewhere, such as uploading to your own storage.
 
 Change options or load another workbook with `setOptions`:
 
