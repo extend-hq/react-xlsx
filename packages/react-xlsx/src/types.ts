@@ -1104,6 +1104,8 @@ export interface XlsxViewerController {
   chartsheets: XlsxChartsheet[];
   exportCsv: () => void;
   exportXlsx: () => void;
+  /** The current workbook as XLSX bytes, the same bytes `exportXlsx()` downloads; `null` before a workbook loads. */
+  getXlsxBytes: () => Uint8Array | null;
   error: Error | null;
   file?: ArrayBuffer;
   fillSelection: (targetRange: XlsxCellRange) => void;
