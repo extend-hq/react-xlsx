@@ -763,6 +763,7 @@ Common source and loading props:
 - `fileName?: string`
 - `controller?: XlsxViewerController`
 - `useWorker?: boolean`
+- `locale?: string` — BCP 47 locale for numeric decimal and grouping separators, defaulting to `"en-US"`. Pass `"fr-FR"` for French or `navigator.language` for the browser locale. Dates retain their workbook format.
 - `maxFileSizeBytes?: number`
 - `readOnly?: boolean`
 - `readOnlyAboveBytes?: number`

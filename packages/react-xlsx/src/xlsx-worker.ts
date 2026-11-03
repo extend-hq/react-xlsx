@@ -1,3 +1,4 @@
+import { localizeCellNumber, localizeRows } from "./number-locale";
 import type { Workbook } from "@dukelib/sheets-wasm";
 import { strFromU8, unzipSync } from "fflate";
 import { loadWorkbookChartAssets } from "./charts";
@@ -89,6 +90,7 @@ type WorkerRequest =
         workbookSheetIndex: number;
         row: number;
         col: number;
+        locale?: string;
       };
     }
   | {
@@ -98,6 +100,7 @@ type WorkerRequest =
         workbookSheetIndex: number;
         startRow: number;
         rowCount: number;
+        locale?: string;
       };
     };
 
@@ -940,7 +943,7 @@ async function handleMessage(message: WorkerRequest) {
       const targetSheet = sheets.find((sheet) => sheet.workbookSheetIndex === message.payload.workbookSheetIndex) ?? null;
       const worksheet = workbook.getSheet(message.payload.workbookSheetIndex);
       return {
-        displayValue: getCellDisplayValue(worksheet, message.payload.row, message.payload.col, targetSheet),
+        displayValue: localizeCellNumber(worksheet, message.payload.row, message.payload.col, getCellDisplayValue(worksheet, message.payload.row, message.payload.col, targetSheet), message.payload.locale),
         formula: worksheet.getFormulaAt(message.payload.row, message.payload.col) ?? ""
       };
     }
@@ -970,6 +973,7 @@ async function handleMessage(message: WorkerRequest) {
           }
         }
       }
+      localizeRows(worksheet, rows, message.payload.locale);
       return rows;
     }
     default:

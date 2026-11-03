@@ -1,3 +1,4 @@
+import { localizeCellNumber, localizeRows } from "./number-locale";
 import * as React from "react";
 import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
 import {
@@ -1178,6 +1179,7 @@ type WorksheetBatchCellEntry = {
   col?: unknown;
   formula?: unknown;
   generalAlignment?: unknown;
+  numericValue?: unknown;
   hyperlink?: unknown;
   isMergedSecondary?: unknown;
   mergeSpan?: unknown;
@@ -1193,6 +1195,7 @@ type WorksheetBatchRowEntry = {
 type BatchedCellData = {
   formula: string | null;
   generalAlignment?: CellGeneralAlignment;
+  numericValue?: number | null;
   hyperlink: {
     location?: string;
     target?: string;
@@ -3807,12 +3810,12 @@ function canReceiveOverflowText(data: CellRenderData) {
   return !data.isMergedSecondary && !data.colSpan && data.value.length === 0;
 }
 
-function getCellDisplayValue(worksheet: Worksheet, row: number, col: number, activeSheet?: XlsxSheetData | null): string {
+function getCellDisplayValue(worksheet: Worksheet, row: number, col: number, activeSheet?: XlsxSheetData | null, locale = "en-US"): string {
   const formula = worksheet.getFormulaAt(row, col);
   const cachedFormulaValue = formula ? activeSheet?.cachedFormulaValues?.[cellAddressToA1({ row, col })] : undefined;
   const formatted = worksheet.getFormattedValueAt(row, col);
   if (formatted && !(formula && cachedFormulaValue !== undefined && formatted.startsWith("#"))) {
-    return decodeHtmlEntities(formatted);
+    return localizeCellNumber(worksheet, row, col, decodeHtmlEntities(formatted), locale);
   }
 
   const cellValue = worksheet.getCalculatedValueAt(row, col);
@@ -3868,6 +3871,8 @@ function getBatchedCellNumericValue(cell: BatchedCellData | undefined) {
   if (!cell) {
     return null;
   }
+
+  if (cell.numericValue !== undefined) return cell.numericValue;
 
   const text = cell.value.trim();
   if (text.length === 0) {
@@ -4319,6 +4324,7 @@ function buildWorksheetBatchWindow(
         const formula = typeof cellEntry.formula === "string" ? cellEntry.formula : null;
         cells.set(`${row}:${col}`, {
           formula,
+          numericValue: typeof cellEntry.numericValue === "number" ? cellEntry.numericValue : cellEntry.numericValue === null ? null : undefined,
           generalAlignment: cellEntry.generalAlignment === "right" || cellEntry.generalAlignment === "center"
             ? cellEntry.generalAlignment
             : "left",
@@ -7287,6 +7293,7 @@ function XlsxGrid({
     getRowsBatchAsync,
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
+    locale,
     getFormControlItems,
     highlightedRanges,
     images,
@@ -8278,7 +8285,8 @@ function XlsxGrid({
       activeSheet?.visibleCols,
       displayColLimit,
       worksheet,
-      revision
+      revision,
+      locale
     ]
   );
   const actualRowHeights = React.useMemo(
@@ -8313,7 +8321,7 @@ function XlsxGrid({
                 continue;
               }
 
-              const cellValue = worksheet.getFormattedValueAt(row, col);
+              const cellValue = localizeCellNumber(worksheet, row, col, worksheet.getFormattedValueAt(row, col), locale);
               if (!cellValue) {
                 continue;
               }
@@ -8401,7 +8409,8 @@ function XlsxGrid({
       displayColLimit,
       palette,
       worksheet,
-      revision
+      revision,
+      locale
     ]
   );
   const displayActualColWidths = React.useMemo(
@@ -9843,11 +9852,12 @@ function XlsxGrid({
         includeStyles: true,
         useFormattedValues: true
       });
+      localizeRows(worksheet, rows, locale);
       return buildWorksheetBatchWindow(rows as unknown[] | null, activeSheet ?? null, viewportRequest.startRow, viewportRequest.endRow);
     } catch {
       return null;
     }
-  }, [activeSheet, getRowsBatchAsync, shouldVirtualizeRows, viewportRequest, worksheet]);
+  }, [activeSheet, getRowsBatchAsync, shouldVirtualizeRows, viewportRequest, worksheet, locale]);
 
   React.useEffect(() => {
     if (!shouldVirtualizeRows || !getRowsBatchAsync || !activeSheet || !viewportRequest) {
@@ -9903,7 +9913,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     setAsyncViewportRowBatch(null);
-  }, [activeSheetIndex, revision]);
+  }, [activeSheetIndex, revision, locale]);
 
   const sparklinesByCell = React.useMemo(() => {
     const map = new Map<string, XlsxSheetData["sparklines"][number]>();
@@ -9933,6 +9943,7 @@ function XlsxGrid({
         getCellStyle,
         palette,
         revision,
+        locale,
         selectedChartElement,
         selectedChartId,
         viewportRowBatch,
@@ -9947,6 +9958,7 @@ function XlsxGrid({
       getCellStyle,
       palette,
       revision,
+      locale,
       selectedChartElement,
       selectedChartId,
       viewportRowBatch,
@@ -10065,7 +10077,7 @@ function XlsxGrid({
       if (displayValue === null) {
         displayValue = batchCoversRow || !worksheet
           ? batchedCell?.value ?? ""
-          : getCellDisplayValue(worksheet, row, col, activeSheet);
+          : getCellDisplayValue(worksheet, row, col, activeSheet, locale);
       }
       return displayValue;
     };
@@ -10309,6 +10321,7 @@ function XlsxGrid({
     activeSheet,
     activeSheetChartHighlights,
     cellRenderCacheInvalidationKey,
+    locale,
     colIndexByActual,
     colPrefixSums,
     displayDefaultColWidth,
@@ -17360,6 +17373,7 @@ export function useXlsxViewerThumbnails(
     getSheetFormControls,
     getSheetImages,
     getSheetShapes,
+    locale,
     workbook,
     sheets
   } = useXlsxViewer();
@@ -17387,6 +17401,12 @@ export function useXlsxViewerThumbnails(
       isMountedRef.current = false;
     };
   }, []);
+
+  React.useEffect(() => {
+    workerThumbnailRowBatchCacheRef.current.clear();
+    workerThumbnailRowBatchRequestRef.current.clear();
+    setWorkerThumbnailRowBatchVersion((version) => version + 1);
+  }, [locale]);
 
   React.useEffect(() => {
     const currentSheets = new Set(sheets);
@@ -17798,7 +17818,7 @@ export function useXlsxViewerThumbnails(
             col,
             sheet,
             () => (worksheet ? getCellNumericValue(worksheet, row, col) : getBatchedCellNumericValue(batchedCell)),
-            () => (worksheet ? getCellDisplayValue(worksheet, row, col, sheet) : (batchedCell?.value ?? "")),
+            () => (worksheet ? getCellDisplayValue(worksheet, row, col, sheet, locale) : (batchedCell?.value ?? "")),
             worksheet,
             workerRowBatch?.cells
           );
@@ -17860,7 +17880,7 @@ export function useXlsxViewerThumbnails(
               : checkboxState !== null
                 ? ""
                 : worksheet
-                  ? getCellDisplayValue(worksheet, row, col, sheet)
+                  ? getCellDisplayValue(worksheet, row, col, sheet, locale)
                   : batchedCell?.value ?? ""
           };
 
@@ -18168,6 +18188,7 @@ export function useXlsxViewerThumbnails(
     sheets,
     thumbnailImageLoadVersion,
     workerThumbnailRowBatchVersion,
+    locale,
     workbook
   ]);
 

@@ -234,6 +234,7 @@ export function WorkbookWorkspace({ buffer }: { buffer: ArrayBuffer }) {
 | `fileName` | `string` | Optional display/download name override. |
 | `controller` | `XlsxViewerController` | Uses an existing controller instead of creating one internally. If present, it takes precedence over provider context and source props on the viewer itself. |
 | `useWorker` | `boolean` | Enables worker-backed parsing. Defaults to `true`. |
+| `locale` | `string` | BCP 47 locale for numeric decimal and grouping separators. Defaults to `"en-US"`. Use `"fr-FR"` for French or pass `navigator.language` for the browser locale. Dates retain their workbook format. |
 | `deferLoadingAboveBytes` | `number` | Defers parsing above this byte threshold. Defaults to `0` (disabled). |
 | `maxFileSizeBytes` | `number` | Hard parse limit before rendering a too-large state. Defaults to `25 * 1024 * 1024` (`25 MB`). |
 | `readOnly` | `boolean` | Forces viewer editing features off. Defaults to `false`. |

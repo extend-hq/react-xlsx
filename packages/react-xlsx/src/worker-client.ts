@@ -29,6 +29,7 @@ type WorkerMessage =
         workbookSheetIndex: number;
         row: number;
         col: number;
+        locale?: string;
       };
     }
   | {
@@ -38,6 +39,7 @@ type WorkerMessage =
         workbookSheetIndex: number;
         startRow: number;
         rowCount: number;
+        locale?: string;
       };
     };
 
@@ -178,13 +180,13 @@ export class XlsxWorkerClient {
     }, [workerBuffer]);
   }
 
-  getCellSnapshot(workbookSheetIndex: number, row: number, col: number) {
+  getCellSnapshot(workbookSheetIndex: number, row: number, col: number, locale?: string) {
     return this.request<{
       displayValue: string;
       formula: string;
     }>({
       id: 0,
-      payload: { col, row, workbookSheetIndex },
+      payload: { col, row, workbookSheetIndex, locale },
       type: "getCellSnapshot"
     });
   }
@@ -207,10 +209,10 @@ export class XlsxWorkerClient {
     }, [workerBuffer]);
   }
 
-  getRowsBatch(workbookSheetIndex: number, startRow: number, rowCount: number) {
+  getRowsBatch(workbookSheetIndex: number, startRow: number, rowCount: number, locale?: string) {
     return this.request<unknown[] | null>({
       id: 0,
-      payload: { rowCount, startRow, workbookSheetIndex },
+      payload: { rowCount, startRow, workbookSheetIndex, locale },
       type: "getRowsBatch"
     });
   }

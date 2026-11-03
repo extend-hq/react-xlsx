@@ -1,3 +1,4 @@
+import { localizeCellNumber, parseLocaleNumber } from "./number-locale";
 import { loadSpreadsheetFonts } from "./spreadsheet-fonts";
 import * as React from "react";
 import { formatBinaryBytes, XlsxFileSizeLimitExceededError } from "./errors";
@@ -1317,7 +1318,7 @@ function cloneCellStyle(style: unknown): unknown {
   }
 }
 
-function coerceUserEnteredValue(value: string): unknown {
+function coerceUserEnteredValue(value: string, locale = "en-US"): unknown {
   const trimmed = value.trim();
   if (!trimmed) {
     return "";
@@ -1330,6 +1331,9 @@ function coerceUserEnteredValue(value: string): unknown {
   if (/^(true|false)$/i.test(trimmed)) {
     return trimmed.toLowerCase() === "true";
   }
+
+  const localizedNumber = parseLocaleNumber(trimmed, locale);
+  if (localizedNumber !== undefined) return localizedNumber;
 
   if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(trimmed)) {
     const parsed = Number(trimmed);
@@ -1861,6 +1865,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     deferLoadingAboveBytes = DEFAULT_DEFER_LOADING_ABOVE_BYTES,
     file,
     fileName,
+    locale = "en-US",
     maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
     readOnly: requestedReadOnly = false,
     readOnlyAboveBytes = 0,
@@ -2804,16 +2809,16 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       });
     }
 
-    return getWorkerClient().getCellSnapshot(workbookSheetIndex, row, col);
-  }, [getWorkerClient, isWorkerBacked]);
+    return getWorkerClient().getCellSnapshot(workbookSheetIndex, row, col, locale);
+  }, [getWorkerClient, isWorkerBacked, locale]);
 
   const getRowsBatchAsync = React.useCallback((workbookSheetIndex: number, startRow: number, rowCount: number) => {
     if (!isWorkerBacked) {
       return Promise.resolve(null);
     }
 
-    return getWorkerClient().getRowsBatch(workbookSheetIndex, startRow, rowCount);
-  }, [getWorkerClient, isWorkerBacked]);
+    return getWorkerClient().getRowsBatch(workbookSheetIndex, startRow, rowCount, locale);
+  }, [getWorkerClient, isWorkerBacked, locale]);
 
   const visibleSheetIndexByWorkbookSheetIndex = React.useMemo(
     () => new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index])),
@@ -3073,7 +3078,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const getCellDisplayValue = React.useCallback((cell?: XlsxCellAddress | null) => {
     if (cell && activeSheet) {
-      const workerSnapshot = workerCellSnapshotCacheRef.current.get(`${activeSheet.workbookSheetIndex}:${cell.row}:${cell.col}`);
+      const workerSnapshot = workerCellSnapshotCacheRef.current.get(`${locale}:${activeSheet.workbookSheetIndex}:${cell.row}:${cell.col}`);
       if (workerSnapshot) {
         return workerSnapshot.displayValue;
       }
@@ -3088,7 +3093,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const cachedFormulaValue = formula ? activeSheet?.cachedFormulaValues?.[cellAddressToA1(cell)] : undefined;
     const formatted = worksheet.getFormattedValueAt(cell.row, cell.col);
     if (formatted && !(formula && cachedFormulaValue !== undefined && formatted.startsWith("#"))) {
-      return decodeHtmlEntities(formatted);
+      return localizeCellNumber(worksheet, cell.row, cell.col, decodeHtmlEntities(formatted), locale);
     }
 
     const calculated = worksheet.getCalculatedValueAt(cell.row, cell.col);
@@ -3103,11 +3108,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     return calculated.toString();
-  }, [activeSheet, getActiveWorksheet]);
+  }, [activeSheet, getActiveWorksheet, locale]);
 
   const getCellFormula = React.useCallback((cell?: XlsxCellAddress | null) => {
     if (cell && activeSheet) {
-      const workerSnapshot = workerCellSnapshotCacheRef.current.get(`${activeSheet.workbookSheetIndex}:${cell.row}:${cell.col}`);
+      const workerSnapshot = workerCellSnapshotCacheRef.current.get(`${locale}:${activeSheet.workbookSheetIndex}:${cell.row}:${cell.col}`);
       if (workerSnapshot) {
         return workerSnapshot.formula;
       }
@@ -3119,7 +3124,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     return worksheet.getFormulaAt(cell.row, cell.col) ?? "";
-  }, [activeSheet, getActiveWorksheet]);
+  }, [activeSheet, getActiveWorksheet, locale]);
 
   const getClipboardData = React.useCallback((): XlsxClipboardData | null => {
     const worksheet = getActiveWorksheet();
@@ -3261,7 +3266,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    const cacheKey = `${deferredMetadataSheet.workbookSheetIndex}:${deferredMetadataCell.row}:${deferredMetadataCell.col}`;
+    const cacheKey = `${locale}:${deferredMetadataSheet.workbookSheetIndex}:${deferredMetadataCell.row}:${deferredMetadataCell.col}`;
     if (workerCellSnapshotCacheRef.current.has(cacheKey)) {
       return;
     }
@@ -3291,7 +3296,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     return () => {
       isCurrent = false;
     };
-  }, [deferredMetadataCell, deferredMetadataSheet, getCellSnapshotAsync, isWorkerBacked]);
+  }, [deferredMetadataCell, deferredMetadataSheet, getCellSnapshotAsync, isWorkerBacked, locale]);
 
   const activeCellAddress = React.useMemo(() => (activeCell ? cellAddressToA1(activeCell) : null), [activeCell]);
   const selectedRangeAddress = React.useMemo(() => (selection ? rangeToA1(selection) : null), [selection]);
@@ -4370,7 +4375,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    const nextValue = coerceUserEnteredValue(value);
+    if (locale !== "en-US" && value === getCellDisplayValue(cell)) return;
+    const nextValue = coerceUserEnteredValue(value, locale);
     worksheet.setCell(cellAddressToA1(cell), nextValue);
     const after = captureCellMutationState(cell);
     if (!after) {
@@ -4379,7 +4385,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     recordCellEditHistory(cell, before, after);
-  }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
+  }, [captureCellMutationState, getActiveWorksheet, getCellDisplayValue, locale, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
   const setCellFormula = React.useCallback((cell: XlsxCellAddress, formula: string) => {
     const worksheet = getActiveWorksheet();
@@ -4772,7 +4778,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             cell: nextCell
           });
         } else {
-          const nextValue = coerceUserEnteredValue(rawValue);
+          const nextValue = coerceUserEnteredValue(rawValue, locale);
           worksheet.setCell(cellAddressToA1(nextCell), nextValue);
           const after = captureCellMutationState(nextCell);
           if (!after) {
@@ -4801,7 +4807,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     selectionAnchorRef.current = targetCell;
     recordRangeEditHistory(mutations, nextRange, targetCell);
     return true;
-  }, [activeCell, captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+  }, [activeCell, captureCellMutationState, getActiveWorksheet, locale, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
 
   const pasteStructuredClipboardData = React.useCallback((serializedPayload: string) => {
     const worksheet = getActiveWorksheet();
@@ -5103,6 +5109,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       deferredLoadFileSize,
       defineNamedRange,
       displayFileName,
+      locale,
       download,
       exportCsv,
       exportXlsx,
@@ -5226,6 +5233,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       deferredLoadFileSize,
       defineNamedRange,
       displayFileName,
+      locale,
       download,
       error,
       exportCsv,

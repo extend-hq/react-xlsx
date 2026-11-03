@@ -986,6 +986,8 @@ export interface XlsxScrollerRenderProps {
 }
 
 export interface UseXlsxViewerControllerOptions {
+  /** BCP 47 locale for numeric decimal and grouping separators. Defaults to en-US. */
+  locale?: string;
   /**
    * Allows row and column resizing even while editing is disabled by `readOnly`.
    *
@@ -1099,6 +1101,7 @@ export interface XlsxViewerController {
   deferredLoadFileSize: number | null;
   defineNamedRange: (name: string, range?: XlsxCellRange | null) => void;
   displayFileName: string;
+  locale: string;
   download: () => void;
   charts: XlsxChart[];
   chartsheets: XlsxChartsheet[];

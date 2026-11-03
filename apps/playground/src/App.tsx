@@ -274,6 +274,8 @@ function WorkbookToolbar({
   onOpenFile,
   readOnly,
   remoteUrl,
+  locale,
+  setLocale,
   setAllowResizeInReadOnly,
   setExperimentalCanvas,
   setHighlightCells,
@@ -296,6 +298,8 @@ function WorkbookToolbar({
   onOpenFile: () => void;
   readOnly: boolean;
   remoteUrl: string;
+  locale: string;
+  setLocale: (value: string) => void;
   setAllowResizeInReadOnly: (value: boolean) => void;
   setExperimentalCanvas: (value: boolean) => void;
   setHighlightCells: (value: boolean) => void;
@@ -967,6 +971,20 @@ function WorkbookToolbar({
                   </SelectContent>
                 </Select>
               </RibbonGroup>
+              <RibbonGroup label="Number locale">
+                <Select value={locale} onValueChange={(value) => value && setLocale(value)}>
+                  <SelectTrigger aria-label="Number locale" className="w-[170px]" size="sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="en-US">English (US)</SelectItem>
+                    <SelectItem value="fr-FR">French (France)</SelectItem>
+                    <SelectItem value="de-DE">German (Germany)</SelectItem>
+                    <SelectItem value="en-GB">English (UK)</SelectItem>
+                    <SelectItem value="ja-JP">Japanese (Japan)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </RibbonGroup>
               <RibbonGroup label="Display">
                 <div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
                   <span className="text-muted-foreground text-[11px] font-medium">Canvas</span>
@@ -1140,6 +1158,7 @@ function SheetTabThumbnail({
 export function App() {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [remoteUrl, setRemoteUrl] = React.useState("");
+  const [locale, setLocale] = React.useState("en-US");
   const [source, setSource] = React.useState<ViewerSource>(null);
   const [isReadingFile, setIsReadingFile] = React.useState(false);
   const [isDragActive, setIsDragActive] = React.useState(false);
@@ -1170,6 +1189,7 @@ export function App() {
     source?.type === "file"
       ? {
           allowResizeInReadOnly,
+          locale,
           file: source.file,
           fileName: source.fileName,
           readOnly: isReadOnly,
@@ -1179,6 +1199,7 @@ export function App() {
       : source?.type === "url"
         ? {
             allowResizeInReadOnly,
+            locale,
             src: source.src,
             fileName: source.fileName,
             readOnly: isReadOnly,
@@ -1187,6 +1208,7 @@ export function App() {
           }
         : {
             allowResizeInReadOnly,
+            locale,
             readOnly: isReadOnly,
             readOnlyAboveBytes: AUTO_READ_ONLY_THRESHOLD_BYTES,
             useWorker
@@ -1362,6 +1384,8 @@ export function App() {
               onOpenFile={() => fileInputRef.current?.click()}
               readOnly={isReadOnly}
               remoteUrl={remoteUrl}
+              locale={locale}
+              setLocale={setLocale}
               setAllowResizeInReadOnly={setAllowResizeInReadOnly}
               setExperimentalCanvas={setExperimentalCanvas}
               setHighlightCells={setHighlightCells}
