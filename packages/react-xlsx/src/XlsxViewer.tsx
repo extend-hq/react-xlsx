@@ -7338,8 +7338,8 @@ function XlsxGrid({
     zoomScale
   } = controller;
   React.useEffect(() => {
-    if (showImages) preloadChartRenderers([charts]);
-  }, [charts, showImages]);
+    if (showImages && !isChartsLoading) preloadChartRenderers([charts]);
+  }, [charts, isChartsLoading, showImages]);
   const formControlItemsById = React.useMemo(() => new Map(
     formControls.flatMap((control) => (
       control.controlIndex !== undefined && (control.kind === "dropdown" || control.kind === "listbox")

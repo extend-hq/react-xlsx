@@ -1949,6 +1949,26 @@ function applyChartStyleFromXml(
     }
   }
 
+  const kind = chartTypeNode.localName === "lineChart" && chart.chartType === "Line" ? "line"
+    : chartTypeNode.localName === "barChart" && chart.chartType === "ColumnClustered" ? "bar"
+    : null;
+  const groupCount = Array.from(plotArea.children).filter((entry) => entry.localName.endsWith("Chart")).length;
+  if (kind && groupCount === 1 && !chart.is3d
+    && !plotArea.querySelector("trendline, errBars, dropLines, hiLowLines, upDownBars, dateAx, multiLvlStrRef, pictureOptions")
+    && getLocalChildren(chartTypeNode, "ser").length === chart.series.length) {
+    chart.renderSource = {
+      kind,
+      xml: chartXml,
+      themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
+        const color = themePalette.colorsByIndex[index];
+        return color ? [[key, color]] : [];
+      })) : undefined,
+      themeOverrideXml: readArchiveText(archive, relationships.get("http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride")) ?? undefined,
+      styleXml: readArchiveText(archive, relationships.get(CHART_STYLE_REL_TYPE)) ?? undefined,
+      colorStyleXml: readArchiveText(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE)) ?? undefined
+    };
+  }
+
   applyChartSeriesStyleFromXml(chart, chartTypeNode, themePalette);
   applyFallbackSeriesStyles();
   applyBuiltinChartDefaults(chart, themePalette);

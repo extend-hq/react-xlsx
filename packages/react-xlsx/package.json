@@ -68,17 +68,15 @@
   },
   "dependencies": {
     "@dukelib/sheets-wasm": "0.1.23",
+    "@extend-ai/extend-office-charts": "https://github.com/extend-hq/extend-office/releases/download/charts-browser-v0.1.0/extend-ai-extend-office-charts-0.1.0.tgz",
     "csstype": "^3.1.0",
     "d3-geo": "^3.1.1",
     "d3-hierarchy": "^3.1.2",
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
     "fflate": "^0.8.3",
-    "preact": "^10.29.8",
     "regl": "^2.1.1",
-    "topojson-client": "^3.1.0",
-    "us-atlas": "^3.0.1",
-    "world-atlas": "^2.0.2"
+    "topojson-client": "^3.1.0"
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts && node ../../scripts/copy-duke-wasm.mjs",
@@ -93,6 +91,9 @@
     "@types/d3-scale": "^4.0.9",
     "@types/d3-shape": "^3.1.8",
     "@types/geojson": "^7946.0.16",
-    "@types/topojson-client": "^3.1.5"
+    "@types/topojson-client": "^3.1.5",
+    "preact": "^10.29.8",
+    "us-atlas": "^3.0.1",
+    "world-atlas": "^2.0.2"
   }
 }

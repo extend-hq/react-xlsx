@@ -826,7 +826,18 @@ export interface XlsxChartWall {
   thickness?: number;
 }
 
+export interface XlsxChartRenderSource {
+  kind: "bar" | "line";
+  xml: string;
+  themeColors?: Record<string, string>;
+  themeOverrideXml?: string;
+  styleXml?: string;
+  colorStyleXml?: string;
+}
+
 export interface XlsxChart {
+  /** Original chart appearance used with the current workbook values during rendering. */
+  renderSource?: XlsxChartRenderSource;
   anchor: XlsxImageAnchor;
   autoTitleDeleted?: boolean;
   axes: XlsxChartAxis[];
