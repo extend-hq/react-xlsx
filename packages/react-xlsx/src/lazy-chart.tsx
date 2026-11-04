@@ -1,5 +1,5 @@
 import * as React from "react";
-import { chartRenderer, regionMapResources } from "./chart-loader";
+import { chartRenderer, officeChartRenderer, regionMapResources } from "./chart-loader";
 import { useChartModule } from "./use-chart-module";
 import type { ChartSvgProps } from "./chart-renderer";
 
@@ -29,7 +29,7 @@ function MapChartSvg({ renderer, loadingFallback, ...props }: LazyChartProps & {
   return resources ? <renderer.MemoChartSvg {...props} /> : <>{loadingFallback("map")}</>;
 }
 
-function ChartSvg({ loadingFallback, ...props }: LazyChartProps) {
+function LegacyChartSvg({ loadingFallback, ...props }: LazyChartProps) {
   const renderer = useChartModule(chartRenderer);
   if (!renderer) return <>{loadingFallback("renderer")}</>;
   return props.chart.chartType === "RegionMap"
@@ -37,10 +37,21 @@ function ChartSvg({ loadingFallback, ...props }: LazyChartProps) {
     : <renderer.MemoChartSvg {...props} />;
 }
 
+function SharedChart(props: LazyChartProps & { source: NonNullable<ChartSvgProps["chart"]["renderSource"]> }) {
+  const module = useChartModule(officeChartRenderer);
+  if (!module) return <>{props.loadingFallback("renderer")}</>;
+  const fallback = <LegacyChartSvg {...props} />;
+  return module.renderer
+    ? <module.SharedChartSvg {...props} renderer={module.renderer} fallback={fallback} />
+    : fallback;
+}
+
 export function MemoChartSvg(props: LazyChartProps) {
   return (
     <ChartLoadBoundary key={props.chart.id}>
-      <ChartSvg {...props} />
+      {props.chart.renderSource
+        ? <SharedChart {...props} source={props.chart.renderSource} />
+        : <LegacyChartSvg {...props} />}
     </ChartLoadBoundary>
   );
 }

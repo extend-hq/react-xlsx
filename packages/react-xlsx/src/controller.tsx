@@ -4246,7 +4246,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     setChartsByWorkbookSheetIndex((current) => current.map((sheetCharts) => (
-      sheetCharts.map((chart) => chart.id === id ? { ...chart, ...patch } : chart)
+      sheetCharts.map((chart) => {
+        if (chart.id !== id) return chart;
+        const appearanceUnchanged = Object.keys(patch).every((key) => key === "anchor" || key === "title");
+        return { ...chart, renderSource: appearanceUnchanged ? chart.renderSource : undefined, ...patch };
+      })
     )));
     setRevision((current) => current + 1);
   }, [ensureChartAssetsHydrated, getChartById, readOnly, recordHistoryBeforeMutation, sheets, workbook]);
@@ -4266,7 +4270,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return false;
     }
 
-    updateChart(chartId, { series: nextChart.series });
+    updateChart(chartId, { series: nextChart.series, renderSource: chart.renderSource });
     const selectedSeries = nextChart.series[seriesIndex];
     if (selectedSeries) {
       setSelectedChartElement((current) => (

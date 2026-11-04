@@ -68,6 +68,7 @@
   },
   "dependencies": {
     "@dukelib/sheets-wasm": "0.1.23",
+    "@extend-ai/extend-office-charts": "https://github.com/extend-hq/extend-office/releases/download/charts-browser-v0.1.0/extend-ai-extend-office-charts-0.1.0.tgz",
     "csstype": "^3.1.0",
     "d3-geo": "^3.1.1",
     "d3-hierarchy": "^3.1.2",

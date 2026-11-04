@@ -138,6 +138,9 @@ importers:
       '@dukelib/sheets-wasm':
         specifier: 0.1.23
         version: 0.1.23
+      '@extend-ai/extend-office-charts':
+        specifier: https://github.com/extend-hq/extend-office/releases/download/charts-browser-v0.1.0/extend-ai-extend-office-charts-0.1.0.tgz
+        version: https://github.com/extend-hq/extend-office/releases/download/charts-browser-v0.1.0/extend-ai-extend-office-charts-0.1.0.tgz
       csstype:
         specifier: ^3.1.0
         version: 3.2.3
@@ -699,6 +702,10 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@extend-ai/extend-office-charts@https://github.com/extend-hq/extend-office/releases/download/charts-browser-v0.1.0/extend-ai-extend-office-charts-0.1.0.tgz':
+    resolution: {integrity: sha512-ezfXCSHRbOvFYlAZ1dd112vMio4ChZEg+l4mhr53/IAjbhp+ccbpfhUcCJy6+x5A81HeFBW4eQJZrMhhS28fIA==, tarball: https://github.com/extend-hq/extend-office/releases/download/charts-browser-v0.1.0/extend-ai-extend-office-charts-0.1.0.tgz}
+    version: 0.1.0
 
   '@floating-ui/core@1.7.5':
     resolution: {integrity: sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ==}
@@ -4244,6 +4251,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.27.5':
     optional: true
+
+  '@extend-ai/extend-office-charts@https://github.com/extend-hq/extend-office/releases/download/charts-browser-v0.1.0/extend-ai-extend-office-charts-0.1.0.tgz': {}
 
   '@floating-ui/core@1.7.5':
     dependencies:
