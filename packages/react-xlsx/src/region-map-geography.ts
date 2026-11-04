@@ -1,6 +1,6 @@
 import { feature as topojsonFeature } from "topojson-client";
-import countiesAlbers10m from "us-atlas/counties-albers-10m.json";
-import countries50m from "world-atlas/countries-50m.json";
+import countiesAlbers10m from "us-atlas/counties-albers-10m.json" with { layer: "states" };
+import countries50m from "world-atlas/countries-50m.json" with { layer: "countries" };
 import type { Feature, FeatureCollection, Geometry } from "geojson";
 
 export { geoIdentity, geoMercator, geoNaturalEarth1, geoPath } from "d3-geo";

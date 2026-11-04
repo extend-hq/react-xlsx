@@ -7,17 +7,19 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, type Options } from "tsup";
 import ts from "typescript";
+import { feature } from "topojson-client";
 import configuration from "../tsup.config.ts";
 
 test("atlas bundles preserve geography with a bounded JavaScript syntax tree in ESM and CJS", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "xlsx-atlas-"));
   try {
     const modules = ["us-atlas/counties-albers-10m.json", "world-atlas/countries-50m.json"];
+    const layers = ["states", "countries"];
     const paths = modules.map((name) => fileURLToPath(import.meta.resolve(name)));
     const expected = await Promise.all(paths.map(async (path) => JSON.parse(await readFile(path, "utf8"))));
     const entry = join(temporary, "input.js");
     await writeFile(entry, [
-      ...paths.map((path, index) => `import atlas${index} from ${JSON.stringify(path)};`),
+      ...paths.map((path, index) => `import atlas${index} from ${JSON.stringify(path)} with { layer: ${JSON.stringify(layers[index])} };`),
       "export default [atlas0, atlas1];"
     ].join("\n"));
 
@@ -47,7 +49,11 @@ test("atlas bundles preserve geography with a bounded JavaScript syntax tree in 
       countNodes(tree);
       assert.ok(nodeCount < 1000, `${extension} bundle expands geographic data into ${nodeCount} syntax nodes`);
       const module = extension === "mjs" ? await import(pathToFileURL(output).href) : loadCommonJs(output);
-      assert.deepEqual(module.default, expected);
+      for (const [index, layer] of layers.entries()) {
+        const actual = module.default[index];
+        assert.deepEqual(Object.keys(actual.objects), [layer]);
+        assert.deepEqual(feature(actual, actual.objects[layer]), feature(expected[index], expected[index].objects[layer]));
+      }
     }
 
     await writeFile(entry, [
