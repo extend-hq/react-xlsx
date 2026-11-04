@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.20.2",
+  "version": "0.20.3",
   "description": "JavaScript and React viewers for XLSX workbooks",
   "license": "MIT",
   "keywords": [
@@ -46,7 +46,8 @@
       "require": "./dist/internal.cjs"
     },
     "./duke_sheets_wasm_bg.wasm": "./dist/duke_sheets_wasm_bg.wasm",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./office_charts_bg.wasm": "./dist/office_charts_bg.wasm"
   },
   "files": [
     "dist"
@@ -68,7 +69,6 @@
   },
   "dependencies": {
     "@dukelib/sheets-wasm": "0.1.23",
-    "@extend-ai/rust-office-charts": "https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.0/extend-ai-rust-office-charts-0.2.0.tgz",
     "csstype": "^3.1.0",
     "d3-geo": "^3.1.1",
     "d3-hierarchy": "^3.1.2",
@@ -94,6 +94,7 @@
     "@types/topojson-client": "^3.1.5",
     "preact": "^10.29.8",
     "us-atlas": "^3.0.1",
-    "world-atlas": "^2.0.2"
+    "world-atlas": "^2.0.2",
+    "@extend-ai/rust-office-charts": "https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.0/extend-ai-rust-office-charts-0.2.0.tgz"
   }
 }

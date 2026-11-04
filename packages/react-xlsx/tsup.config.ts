@@ -2,7 +2,7 @@ import { defineConfig, type Options } from "tsup";
 import { atlasJsonPlugin } from "./build/atlas-json.ts";
 
 const external = ["react", "react-dom"];
-const noExternal = ["us-atlas", "world-atlas"];
+const noExternal = ["us-atlas", "world-atlas", "@extend-ai/rust-office-charts"];
 const virtualizer = ["@tanstack/react-virtual", "@tanstack/virtual-core"];
 
 function sharedCorePlugin(): NonNullable<Options["esbuildPlugins"]>[number] {

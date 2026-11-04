@@ -138,9 +138,6 @@ importers:
       '@dukelib/sheets-wasm':
         specifier: 0.1.23
         version: 0.1.23
-      '@extend-ai/rust-office-charts':
-        specifier: https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.0/extend-ai-rust-office-charts-0.2.0.tgz
-        version: https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.0/extend-ai-rust-office-charts-0.2.0.tgz
       csstype:
         specifier: ^3.1.0
         version: 3.2.3
@@ -172,6 +169,9 @@ importers:
         specifier: ^3.1.0
         version: 3.1.0
     devDependencies:
+      '@extend-ai/rust-office-charts':
+        specifier: https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.0/extend-ai-rust-office-charts-0.2.0.tgz
+        version: https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.0/extend-ai-rust-office-charts-0.2.0.tgz
       '@tanstack/react-virtual':
         specifier: ^3.13.23
         version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
