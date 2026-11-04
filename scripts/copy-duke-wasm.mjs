@@ -11,3 +11,8 @@ mkdirSync(distDir, { recursive: true });
 copyFileSync(wasmSource, new URL("duke_sheets_wasm_bg.wasm", distDir));
 
 copyFileSync(new URL("../packages/react-xlsx/src/fonts/OFL.txt", import.meta.url), new URL("Carlito-OFL.txt", distDir));
+
+for (const name of ["preact", "us-atlas", "world-atlas"]) {
+  const directory = dirname(require.resolve(`${name}/package.json`));
+  copyFileSync(join(directory, "LICENSE"), new URL(`${name}-LICENSE.txt`, distDir));
+}
