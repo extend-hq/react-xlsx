@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { OfficeCharts } from "@extend-ai/extend-office-charts";
+import type { OfficeCharts } from "@extend-ai/rust-office-charts";
 import { renderSelectionRectHandles, useChartEvents } from "./chart-interaction";
 import type { ChartSvgProps } from "./chart-renderer";
 import type { XlsxChart, XlsxChartRenderSource, XlsxChartElementSelection } from "./types";

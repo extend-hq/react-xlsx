@@ -39,7 +39,7 @@ function createChartModule<T>(importModule: () => Promise<T>): ChartModule<T> {
 export const officeChartRenderer = createChartModule(async () => {
   try {
     const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
-      import("@extend-ai/extend-office-charts"), import("./shared-chart")
+      import("@extend-ai/rust-office-charts"), import("./shared-chart")
     ]);
     return { renderer: await loadOfficeCharts(), SharedChartSvg };
   } catch {
