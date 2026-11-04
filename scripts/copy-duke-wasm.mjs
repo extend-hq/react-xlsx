@@ -9,6 +9,8 @@ const distDir = new URL("../packages/react-xlsx/dist/", import.meta.url);
 
 mkdirSync(distDir, { recursive: true });
 copyFileSync(wasmSource, new URL("duke_sheets_wasm_bg.wasm", distDir));
+copyFileSync(require.resolve("@extend-ai/rust-office-charts/office_charts_bg.wasm"), new URL("office_charts_bg.wasm", distDir));
+copyFileSync(join(dirname(require.resolve("@extend-ai/rust-office-charts/package.json")), "LICENSE"), new URL("rust-office-charts-LICENSE.txt", distDir));
 
 copyFileSync(new URL("../packages/react-xlsx/src/fonts/OFL.txt", import.meta.url), new URL("Carlito-OFL.txt", distDir));
 
