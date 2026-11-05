@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.5
+
+- Use the bundled spreadsheet font fallback for Office chart titles and labels when native fonts are unavailable.
+- Update Rust Office Charts to improve title font defaults, wrapping, manual placement, and radial gradient fidelity.
+
 ## 0.20.4
 
 - Use the updated Rust Office renderer for additional chart families and filled maps, preserving series and point selection.

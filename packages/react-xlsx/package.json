@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.20.4",
+  "version": "0.20.5",
   "description": "JavaScript and React viewers for XLSX workbooks",
   "license": "MIT",
   "keywords": [
@@ -86,6 +86,6 @@
     "@types/d3-hierarchy": "^3.1.7",
     "@types/d3-shape": "^3.1.8",
     "preact": "^10.29.8",
-    "@extend-ai/rust-office-charts": "https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.1/extend-ai-rust-office-charts-0.2.1.tgz"
+    "@extend-ai/rust-office-charts": "https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.2.2/extend-ai-rust-office-charts-0.2.2.tgz"
   }
 }

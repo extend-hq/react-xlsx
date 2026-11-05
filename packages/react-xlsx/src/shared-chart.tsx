@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { OfficeCharts } from "@extend-ai/rust-office-charts";
 import { renderSelectionRectHandles, useChartEvents } from "./chart-interaction";
+import { SPREADSHEET_FALLBACK_FONT } from "./spreadsheet-fonts";
 import type { ChartSvgProps } from "./chart-renderer";
 import type { XlsxChart, XlsxChartRenderSource, XlsxChartElementSelection } from "./types";
 
@@ -26,6 +27,16 @@ function safeChartSvg(markup: string, prefix: string, seriesMap?: number[]) {
   for (const node of [svg, ...Array.from(svg.querySelectorAll("*"))]) {
     if (node.namespaceURI !== svgNamespace || !allowedElements.has(node.localName)) return null;
     for (const { name, value } of Array.from(node.attributes)) {
+      if (name === "font-family") {
+        const families = value.split(",").map((family) => family.trim());
+        const unquote = (family: string) => family.replace(/^["']|["']$/g, "");
+        if (/^(Calibri|Carlito|Aptos(?: Narrow)?)$/i.test(unquote(families[0] ?? ""))
+          && !families.some((family) => unquote(family) === SPREADSHEET_FALLBACK_FONT)) {
+          families.splice(1, 0, JSON.stringify(SPREADSHEET_FALLBACK_FONT));
+          node.setAttribute(name, families.join(", "));
+        }
+        continue;
+      }
       if (plainAttributes.has(name) || name === "xmlns") continue;
       if (name === "id" && /^[\w-]+$/.test(value)) {
         node.setAttribute(name, prefix + value);
