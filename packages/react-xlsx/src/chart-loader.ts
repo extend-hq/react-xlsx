@@ -1,3 +1,4 @@
+import type { OfficeCharts } from "@extend-ai/extend-office-charts";
 import type { XlsxChart } from "./types";
 
 type ModuleSnapshot<T> = { module: T | null; error: unknown };
@@ -36,7 +37,12 @@ function createChartModule<T>(importModule: () => Promise<T>): ChartModule<T> {
   };
 }
 
-export const officeChartRenderer = createChartModule(async () => {
+type OfficeChartModule = {
+  renderer: OfficeCharts | null;
+  SharedChartSvg: typeof import("./shared-chart").SharedChartSvg | null;
+};
+
+export const officeChartRenderer = createChartModule<OfficeChartModule>(async () => {
   try {
     const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
       import("@extend-ai/extend-office-charts"), import("./shared-chart")
@@ -47,26 +53,44 @@ export const officeChartRenderer = createChartModule(async () => {
   }
 });
 
-export const chartRenderer = createChartModule(() => import("./chart-renderer"));
-export const regionMapResources = createChartModule(() => import("./region-map-geography"));
-export const surfaceRenderer = createChartModule(() => import("./surface-regl"));
+export const suppliedOfficeChartRenderer = createChartModule<OfficeChartModule>(async () => {
+  const { SharedChartSvg } = await import("./shared-chart");
+  return { renderer: null, SharedChartSvg };
+});
 
-export function preloadChartRenderers(chartsBySheet: readonly (readonly XlsxChart[])[]) {
+export const chartRenderer = createChartModule(() => import("./chart-renderer"));
+export const officeMapRenderer = createChartModule<OfficeChartModule>(async () => {
+  const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
+    import("./office-maps/index.js"), import("./shared-chart")
+  ]);
+  return { renderer: await loadOfficeCharts(), SharedChartSvg };
+});
+export const surfaceRenderer = createChartModule(() => import("./surface-webgl"));
+
+export function preloadChartRenderers(chartsBySheet: readonly (readonly XlsxChart[])[], experimentalOfficeCharts?: OfficeCharts) {
   let hasCharts = false;
   let hasSharedCharts = false;
+  let hasExtendedCharts = false;
   let hasMaps = false;
   let hasSurfaces = false;
   for (const charts of chartsBySheet) {
     for (const chart of charts) {
-      hasSharedCharts ||= Boolean(chart.renderSource);
-      hasCharts ||= !chart.renderSource;
-      hasMaps ||= chart.chartType === "RegionMap";
-      hasSurfaces ||= chart.chartType === "Surface";
+      if (chart.chartType === "RegionMap") {
+        hasMaps = true;
+        continue;
+      }
+      const source = chart.renderSource;
+      hasSharedCharts ||= Boolean(source && !source.experimental);
+      hasExtendedCharts ||= Boolean(source?.experimental && experimentalOfficeCharts);
+      const fallback = !source || Boolean(source.experimental && !experimentalOfficeCharts);
+      hasCharts ||= fallback;
+      hasSurfaces ||= fallback && chart.chartType === "Surface";
     }
   }
 
-  if (hasSharedCharts) void officeChartRenderer.load().catch(() => {});
+  if (experimentalOfficeCharts && (hasExtendedCharts || hasSharedCharts)) void suppliedOfficeChartRenderer.load().catch(() => {});
+  else if (hasSharedCharts) void officeChartRenderer.load().catch(() => {});
   if (hasCharts) void chartRenderer.load().catch(() => {});
-  if (hasMaps) void regionMapResources.load().catch(() => {});
+  if (hasMaps) void officeMapRenderer.load().catch(() => {});
   if (hasSurfaces) void surfaceRenderer.load().catch(() => {});
 }

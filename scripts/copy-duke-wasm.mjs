@@ -12,7 +12,13 @@ copyFileSync(wasmSource, new URL("duke_sheets_wasm_bg.wasm", distDir));
 
 copyFileSync(new URL("../packages/react-xlsx/src/fonts/OFL.txt", import.meta.url), new URL("Carlito-OFL.txt", distDir));
 
-for (const name of ["preact", "us-atlas", "world-atlas"]) {
+for (const name of ["preact"]) {
   const directory = dirname(require.resolve(`${name}/package.json`));
   copyFileSync(join(directory, "LICENSE"), new URL(`${name}-LICENSE.txt`, distDir));
 }
+
+for (const name of ["LICENSE", "MAP-DATA-LICENSE", "provenance.json"]) {
+  copyFileSync(new URL(`../packages/react-xlsx/src/office-maps/${name}`, import.meta.url), new URL(`office-maps-${name}`, distDir));
+}
+
+copyFileSync(new URL("../packages/react-xlsx/src/office-maps/office_charts_bg.wasm", import.meta.url), new URL("office_charts_bg.wasm", distDir));

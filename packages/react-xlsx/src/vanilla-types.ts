@@ -1,3 +1,4 @@
+import type { OfficeCharts } from "@extend-ai/extend-office-charts";
 import type { Properties } from "csstype";
 import type {
   UseXlsxViewerControllerOptions,
@@ -89,6 +90,7 @@ export interface XlsxVanillaViewerOptions extends UseXlsxViewerControllerOptions
   enableCanvasSelectionAnimation?: boolean;
   enableGestureZoom?: boolean;
   experimentalCanvas?: boolean;
+  experimentalOfficeCharts?: OfficeCharts;
   errorState?: XlsxVanillaContent | ((error: Error) => XlsxVanillaContent);
   fileTooLargeState?: XlsxVanillaContent | ((props: XlsxVanillaFileTooLargeRenderProps) => XlsxVanillaContent);
   getCellStyle?: (context: XlsxVanillaCellStyleContext) => XlsxVanillaStyle | null | undefined;

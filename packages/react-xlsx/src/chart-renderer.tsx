@@ -4,7 +4,7 @@ import { hierarchy as d3Hierarchy, partition as d3Partition, treemap as d3Treema
 import * as React from "react";
 import { shadeSurfaceMatteColor, surfaceNormal, transformSurfaceNormal } from "./surface-lighting";
 import { clipSurfaceBand, groupSurfaceBandEdges, normalizeSurfaceValue, surfaceDataRatios, triangulateSurfaceQuad } from "./surface-geometry";
-import { scaleBand, scaleLinear, scalePoint } from "d3-scale";
+import { bandScale, linearScale, pointScale } from "./chart-scales";
 import {
   arc as d3Arc,
   area as d3Area,
@@ -15,11 +15,9 @@ import {
   pie as d3Pie
 } from "d3-shape";
 import type { CurveFactory } from "d3-shape";
-import { regionMapResources, surfaceRenderer } from "./chart-loader";
+import { surfaceRenderer } from "./chart-loader";
 import { useChartModule } from "./use-chart-module";
-import type { RegionMapResources, RegionMapFeature } from "./region-map-geography";
 import type { HierarchyNode, HierarchyRectangularNode } from "d3-hierarchy";
-import type { FeatureCollection, Geometry } from "geojson";
 import type { XlsxChart, XlsxChartAxis, XlsxChartElementSelection, XlsxChartSeries, XlsxChartTypeGroup, XlsxImageRect } from "./types";
 
 type ChartRendererPalette = {
@@ -38,19 +36,10 @@ export type ChartSvgProps = {
   selectedChartElement?: XlsxChartElementSelection | null;
 };
 
-type RegionMapPlotProps = Pick<ChartSvgProps, "chart" | "palette" | "selectedChartElement"> & { layout: ChartLayout };
-
-function RegionMapPlot({ chart, palette, layout, selectedChartElement }: RegionMapPlotProps) {
-  const resources = useChartModule(regionMapResources);
-  return resources
-    ? renderRegionMapChart(chart, palette, layout, selectedChartElement, resources)
-    : null;
-}
-
 function SurfaceChartComposite({
   loadingFallback,
   ...props
-}: React.ComponentProps<typeof import("./surface-regl").MemoSurfaceChartComposite> & { loadingFallback: React.ReactNode }) {
+}: React.ComponentProps<typeof import("./surface-webgl").MemoSurfaceChartComposite> & { loadingFallback: React.ReactNode }) {
   const renderer = useChartModule(surfaceRenderer);
   return renderer ? <renderer.MemoSurfaceChartComposite {...props} /> : <>{loadingFallback}</>;
 }
@@ -387,13 +376,6 @@ function isHistogramLikeChart(chart: XlsxChart) {
   return chart.series.some((series) => isHistogramLikeSeries(series));
 }
 
-function resolveRegionMapBaseColor(chart: XlsxChart, seriesIndex: number) {
-  return chart.series[seriesIndex]?.color
-    ?? chart.series[seriesIndex]?.lineColor
-    ?? chart.chartColorPalette?.[0]
-    ?? chartSeriesColor(chart, seriesIndex);
-}
-
 function resolveRegionMapDataColor(chart: XlsxChart, seriesIndex: number) {
   const pointColor = normalizeRendererHexColor(chartPointColor(chart, 0, seriesIndex));
   if (pointColor) {
@@ -438,15 +420,6 @@ function resolveRegionMapColorStrings(series: XlsxChartSeries | null | undefined
   return values.some((value) => value.length > 0) ? values : null;
 }
 
-function resolveRegionMapLayoutProperties(series: XlsxChartSeries | null | undefined) {
-  const raw = series?.raw && typeof series.raw === "object"
-    ? series.raw as Record<string, unknown>
-    : null;
-  return raw?.layoutProperties && typeof raw.layoutProperties === "object"
-    ? raw.layoutProperties as Record<string, unknown>
-    : null;
-}
-
 function resolveRegionMapValueColorFromStops(stops: string[], ratio: number) {
   if (stops.length === 0) {
     return "#4f81bd";
@@ -473,11 +446,6 @@ function resolveRegionMapValueColor(chart: XlsxChart, seriesIndex: number, ratio
     lightenColor(baseColor, 0.28),
     darkenColor(baseColor, 0.08)
   ], ratio);
-}
-
-function resolveRegionMapNoDataColor(chart: XlsxChart, seriesIndex: number) {
-  const baseColor = resolveRegionMapBaseColor(chart, seriesIndex);
-  return normalizeRendererHexColor(baseColor) ?? chartSeriesColor(chart, seriesIndex);
 }
 
 function buildRegionMapLegendItems(chart: XlsxChart): LegendItem[] {
@@ -2877,17 +2845,19 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
   const categoryBandPadding = isHistogramLike
     ? { inner: 0, outer: 0 }
     : resolveCategoryBandPadding(chart.gapWidth);
-  const categoryScale = scaleBand<string>()
-    .domain(categories)
-    .range(isHorizontal ? [plot.top, plot.top + plot.height] : [plot.left, plot.left + plot.width])
-    .paddingInner(categoryBandPadding.inner)
-    .paddingOuter(categoryBandPadding.outer);
+  const categoryScale = bandScale(
+    categories,
+    isHorizontal ? [plot.top, plot.top + plot.height] : [plot.left, plot.left + plot.width],
+    categoryBandPadding.inner,
+    categoryBandPadding.outer
+  );
 
-  const seriesScale = scaleBand<string>()
-    .domain(Array.from({ length: seriesCount }, (_, index) => String(index)))
-    .range([0, categoryScale.bandwidth()])
-    .paddingInner(isHistogramLike ? 0 : 0.16)
-    .paddingOuter(isHistogramLike ? 0 : 0.08);
+  const seriesScale = bandScale(
+    Array.from({ length: seriesCount }, (_, index) => String(index)),
+    [0, categoryScale.bandwidth],
+    isHistogramLike ? 0 : 0.16,
+    isHistogramLike ? 0 : 0.08
+  );
   const usesSeriesDepthAxis = (
     chart.is3d === true
     && !isHorizontal
@@ -2914,20 +2884,19 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
     : frameOffsets?.depthY;
 
   const shouldReverseValueAxis = chart.valueAxis?.orientation === "maxMin";
-  const valueScale = scaleLinear()
-    .domain([minValue, maxValue])
-    .range(
-      isHorizontal
-        ? (shouldReverseValueAxis ? [plot.left + plot.width, plot.left] : [plot.left, plot.left + plot.width])
-        : (shouldReverseValueAxis ? [plot.top, plot.top + plot.height] : [plot.top + plot.height, plot.top])
-    );
+  const valueScale = linearScale(
+    [minValue, maxValue],
+    isHorizontal
+      ? (shouldReverseValueAxis ? [plot.left + plot.width, plot.left] : [plot.left, plot.left + plot.width])
+      : (shouldReverseValueAxis ? [plot.top, plot.top + plot.height] : [plot.top + plot.height, plot.top])
+  );
 
   const ticks = isPercentStacked
     ? buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit ?? 20)
     : valueDomain.ticks;
   const categoryPositions = categories.map((category) => {
     const bandStart = categoryScale(category) ?? 0;
-    return bandStart + categoryScale.bandwidth() / 2;
+    return bandStart + categoryScale.bandwidth / 2;
   });
 
   const bars: BarRect[] = [];
@@ -2977,14 +2946,14 @@ function renderBarChart(chart: XlsxChart, palette: ChartRendererPalette, layout:
       const category = categories[categoryIndex];
       const categoryStart = categoryScale(category) ?? 0;
       const barThickness = usesSeriesDepthAxis
-        ? Math.max(7, categoryScale.bandwidth() * 0.4)
+        ? Math.max(7, categoryScale.bandwidth * 0.4)
         : isHistogramLike
-          ? categoryScale.bandwidth()
+          ? categoryScale.bandwidth
         : isStacked
-          ? categoryScale.bandwidth()
-          : seriesScale.bandwidth();
+          ? categoryScale.bandwidth
+          : seriesScale.bandwidth;
       const barOffset = usesSeriesDepthAxis
-        ? Math.max(0, (categoryScale.bandwidth() - barThickness) * 0.5)
+        ? Math.max(0, (categoryScale.bandwidth - barThickness) * 0.5)
         : isHistogramLike
           ? 0
         : isStacked
@@ -3380,12 +3349,8 @@ function renderLineOrAreaChart(chart: XlsxChart, palette: ChartRendererPalette, 
     maxValue = valueDomain.max;
   }
 
-  const xScale = scalePoint<string>()
-    .domain(categories)
-    .range([plot.left, plot.left + plot.width]);
-  const yScale = scaleLinear()
-    .domain([minValue, maxValue])
-    .range([plot.top + plot.height, plot.top]);
+  const xScale = pointScale(categories, [plot.left, plot.left + plot.width]);
+  const yScale = linearScale([minValue, maxValue], [plot.top + plot.height, plot.top]);
 
   const ticks = isPercentStackedSeries
     ? buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit ?? 20)
@@ -3653,18 +3618,20 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
   const categoryBandPadding = histogramColumns
     ? { inner: 0, outer: 0 }
     : resolveCategoryBandPadding(groupGapWidth);
-  const categoryScale = scaleBand<string>()
-    .domain(categories)
-    .range([plot.left, plot.left + plot.width])
-    .paddingInner(categoryBandPadding.inner)
-    .paddingOuter(categoryBandPadding.outer);
-  const seriesScale = scaleBand<string>()
-    .domain(Array.from({ length: columnGroup.series.length }, (_, index) => String(index)))
-    .range([0, categoryScale.bandwidth()])
-    .paddingInner(histogramColumns ? 0 : 0.16)
-    .paddingOuter(histogramColumns ? 0 : 0.08);
+  const categoryScale = bandScale(
+    categories,
+    [plot.left, plot.left + plot.width],
+    categoryBandPadding.inner,
+    categoryBandPadding.outer
+  );
+  const seriesScale = bandScale(
+    Array.from({ length: columnGroup.series.length }, (_, index) => String(index)),
+    [0, categoryScale.bandwidth],
+    histogramColumns ? 0 : 0.16,
+    histogramColumns ? 0 : 0.08
+  );
   const categoryPositions = categories.map((category) => (
-    (categoryScale(category) ?? plot.left) + categoryScale.bandwidth() / 2
+    (categoryScale(category) ?? plot.left) + categoryScale.bandwidth / 2
   ));
   const resolveGlobalSeriesIndex = (series: XlsxChartSeries) => {
     const index = chart.series.findIndex((candidate) => candidate.id === series.id);
@@ -3693,12 +3660,8 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
     lineGroup.valueAxis?.majorUnit,
     false
   );
-  const primaryScale = scaleLinear()
-    .domain([primaryDomain.min, primaryDomain.max])
-    .range([plot.top + plot.height, plot.top]);
-  const secondaryScale = scaleLinear()
-    .domain([secondaryDomain.min, secondaryDomain.max])
-    .range([plot.top + plot.height, plot.top]);
+  const primaryScale = linearScale([primaryDomain.min, primaryDomain.max], [plot.top + plot.height, plot.top]);
+  const secondaryScale = linearScale([secondaryDomain.min, secondaryDomain.max], [plot.top + plot.height, plot.top]);
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = resolveChartAxisTextColor(chart);
 
@@ -3741,7 +3704,7 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
         const globalSeriesIndex = resolveGlobalSeriesIndex(series);
         const value = safeNumber(series.values[categoryIndex]) ?? 0;
         const categoryStart = categoryScale(category) ?? plot.left;
-        const barWidth = Math.max(1, histogramColumns ? categoryScale.bandwidth() : seriesScale.bandwidth());
+        const barWidth = Math.max(1, histogramColumns ? categoryScale.bandwidth : seriesScale.bandwidth);
         const x = categoryStart + (histogramColumns ? 0 : (seriesScale(String(seriesIndex)) ?? 0));
         const y = primaryScale(Math.max(0, value));
         const zeroY = primaryScale(0);
@@ -3778,7 +3741,7 @@ function renderComboChart(chart: XlsxChart, palette: ChartRendererPalette, layou
       {lineGroup.series.map((series, seriesIndex) => {
         const globalSeriesIndex = resolveGlobalSeriesIndex(series);
         const points = categories.map((category, categoryIndex) => ({
-          x: (categoryScale(category) ?? plot.left) + categoryScale.bandwidth() / 2,
+          x: (categoryScale(category) ?? plot.left) + categoryScale.bandwidth / 2,
           y: safeNumber(series.values[categoryIndex])
         }));
         const lineStrokePoints = chart.displayBlanksAs === "span"
@@ -3973,8 +3936,8 @@ function renderScatterChart(chart: XlsxChart, palette: ChartRendererPalette, lay
   const safeMaxX = maxX <= minX ? minX + 1 : maxX;
   const safeMaxY = maxY <= minY ? minY + 1 : maxY;
 
-  const xScale = scaleLinear().domain([minX, safeMaxX]).range([plot.left, plot.left + plot.width]);
-  const yScale = scaleLinear().domain([minY, safeMaxY]).range([plot.top + plot.height, plot.top]);
+  const xScale = linearScale([minX, safeMaxX], [plot.left, plot.left + plot.width]);
+  const yScale = linearScale([minY, safeMaxY], [plot.top + plot.height, plot.top]);
   const xMajorUnit = typeof chart.categoryAxis?.majorUnit === "number" && chart.categoryAxis.majorUnit > 0
     ? chart.categoryAxis.majorUnit
     : hasSyntheticIndexAxis
@@ -4145,9 +4108,7 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
   const bubbleScaleFactor = clamp((chart.bubbleScale ?? 100) / 100, 0.2, 4);
   const minRadius = 4;
   const maxRadius = Math.max(minRadius + 2, 12 * bubbleScaleFactor);
-  const radiusScale = scaleLinear()
-    .domain([minBubbleMagnitude, maxBubbleMagnitude <= minBubbleMagnitude ? minBubbleMagnitude + 1 : maxBubbleMagnitude])
-    .range([minRadius, maxRadius]);
+  const radiusScale = linearScale([minBubbleMagnitude, maxBubbleMagnitude <= minBubbleMagnitude ? minBubbleMagnitude + 1 : maxBubbleMagnitude], [minRadius, maxRadius]);
   const safeMaxX = maxX <= minX ? minX + 1 : maxX;
   const safeMaxY = maxY <= minY ? minY + 1 : maxY;
   const xSpan = safeMaxX - minX;
@@ -4166,8 +4127,8 @@ function renderBubbleChart(chart: XlsxChart, palette: ChartRendererPalette, layo
     safeMaxY + yPad,
     chart.valueAxis?.crosses === "autoZero"
   );
-  const xScale = scaleLinear().domain([xDomain.min, xDomain.max]).range([plot.left, plot.left + plot.width]);
-  const yScale = scaleLinear().domain([yDomain.min, yDomain.max]).range([plot.top + plot.height, plot.top]);
+  const xScale = linearScale([xDomain.min, xDomain.max], [plot.left, plot.left + plot.width]);
+  const yScale = linearScale([yDomain.min, yDomain.max], [plot.top + plot.height, plot.top]);
 
   const xTicks = xDomain.ticks;
   const yTicks = yDomain.ticks;
@@ -5256,11 +5217,12 @@ function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, l
 
   const plot = layout.plot;
   const labels = stages.map((stage) => stage.label);
-  const xScale = scaleBand<string>()
-    .domain(labels)
-    .range([plot.left, plot.left + plot.width])
-    .paddingInner(0.34)
-    .paddingOuter(0.18);
+  const xScale = bandScale(
+    labels,
+    [plot.left, plot.left + plot.width],
+    0.34,
+    0.18
+  );
 
   const bars: Array<ChartStage & { end: number; index: number; start: number }> = [];
   let runningTotal = 0;
@@ -5280,9 +5242,7 @@ function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, l
     maxValue = minValue + 1;
   }
 
-  const yScale = scaleLinear()
-    .domain([minValue, maxValue])
-    .range([plot.top + plot.height, plot.top]);
+  const yScale = linearScale([minValue, maxValue], [plot.top + plot.height, plot.top]);
   const ticks = buildNumericTickValues(minValue, maxValue, chart.valueAxis?.majorUnit);
   const axisColor = chart.axisLineColor ?? chart.chartAreaBorderColor ?? palette.border;
   const labelColor = resolveChartAxisTextColor(chart);
@@ -5308,7 +5268,7 @@ function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, l
       <line stroke={axisColor} strokeWidth={1.2} x1={plot.left} x2={plot.left + plot.width} y1={yScale(0)} y2={yScale(0)} />
       {bars.map((bar, index) => {
         const bandLeft = xScale(bar.label) ?? plot.left;
-        const bandWidth = xScale.bandwidth();
+        const bandWidth = xScale.bandwidth;
         const topValue = Math.max(bar.start, bar.end);
         const bottomValue = Math.min(bar.start, bar.end);
         const top = yScale(topValue);
@@ -5329,7 +5289,7 @@ function renderWaterfallChart(chart: XlsxChart, palette: ChartRendererPalette, l
                 stroke={lightenColor(axisColor, 0.35)}
                 strokeDasharray="3 3"
                 strokeWidth={1}
-                x1={(xScale(connectorStart.label) ?? plot.left) + xScale.bandwidth()}
+                x1={(xScale(connectorStart.label) ?? plot.left) + xScale.bandwidth}
                 x2={bandLeft}
                 y1={connectorY}
                 y2={connectorY}
@@ -5612,12 +5572,8 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
   const minValue = Math.min(...allValues);
   const maxValue = Math.max(...allValues);
   const valueDomain = resolveAxisDomainWithChartOverrides(chart.valueAxis, minValue, maxValue, false);
-  const yScale = scaleLinear()
-    .domain([valueDomain.min, valueDomain.max])
-    .range([layout.plot.top + layout.plot.height, layout.plot.top]);
-  const xScale = scalePoint<number>()
-    .domain(seriesStats.map((_, index) => index))
-    .range([layout.plot.left + 24, layout.plot.left + layout.plot.width - 24]);
+  const yScale = linearScale([valueDomain.min, valueDomain.max], [layout.plot.top + layout.plot.height, layout.plot.top]);
+  const xScale = pointScale(seriesStats.map((_, index) => index), [layout.plot.left + 24, layout.plot.left + layout.plot.width - 24]);
   const gap = seriesStats.length > 1
     ? Math.abs((xScale(1) ?? 0) - (xScale(0) ?? 0))
     : layout.plot.width * 0.5;
@@ -5825,173 +5781,6 @@ function renderBoxWhiskerChart(chart: XlsxChart, palette: ChartRendererPalette, 
   );
 }
 
-function renderRegionMapChart(
-  chart: XlsxChart,
-  palette: ChartRendererPalette,
-  layout: ChartLayout,
-  selectedChartElement: XlsxChartElementSelection | null | undefined,
-  { geoIdentity, geoMercator, geoNaturalEarth1, geoPath, resolveRegionMapFeatureSet, resolveRegionMapFeature, getRegionMapBaseFeatures }: RegionMapResources
-) {
-  const primarySeriesIndex = Math.max(0, chart.series.findIndex((series) => series.hidden !== true));
-  const primarySeries = chart.series[primarySeriesIndex] ?? null;
-  if (!primarySeries) {
-    return null;
-  }
-
-  const labels = getCategoryLabels(chart);
-  const layoutProperties = resolveRegionMapLayoutProperties(primarySeries);
-  const geography = layoutProperties?.geography && typeof layoutProperties.geography === "object"
-    ? layoutProperties.geography as Record<string, unknown>
-    : null;
-  const featureSet = resolveRegionMapFeatureSet(labels, geography);
-  const viewedRegionType = typeof geography?.viewedRegionType === "string"
-    ? geography.viewedRegionType
-    : null;
-  const projectionType = typeof geography?.projectionType === "string"
-    ? geography.projectionType
-    : null;
-  const projection = featureSet === "us-state"
-    ? geoIdentity()
-    : projectionType === "miller"
-      ? geoMercator()
-      : geoNaturalEarth1();
-  const availableFeatures = getRegionMapBaseFeatures(featureSet);
-  const categoricalValues = resolveRegionMapColorStrings(primarySeries);
-  const categoricalColorByLabel = categoricalValues
-    ? new Map(
-        Array.from(new Set(categoricalValues.filter(Boolean))).map((value, index) => [
-          value,
-          chartPointColor(chart, index, primarySeriesIndex)
-        ])
-      )
-    : null;
-  const entries = labels.map((label, index) => {
-    const feature = resolveRegionMapFeature(label, featureSet);
-    const value = safeNumber(primarySeries.values[index]);
-    const colorLabel = categoricalValues?.[index] || null;
-    return {
-      colorLabel,
-      feature,
-      key: normalizeCategoryLabel(label),
-      label: normalizeCategoryLabel(label),
-      value
-    };
-  }).filter((entry) => entry.feature != null && (entry.value != null || entry.colorLabel != null)) as Array<{
-    colorLabel: string | null;
-    feature: RegionMapFeature;
-    key: string;
-    label: string;
-    value: number | null;
-  }>;
-  const fitToMatchedData = entries.length > 0 && (viewedRegionType === "dataOnly" || entries.length === 1);
-  const fitFeatures = fitToMatchedData
-    ? entries.map((entry) => entry.feature)
-    : availableFeatures;
-  projection.fitExtent(
-    [
-      [layout.plot.left + 8, layout.plot.top + 8],
-      [layout.plot.left + layout.plot.width - 8, layout.plot.top + layout.plot.height - 8]
-    ],
-    {
-      type: "FeatureCollection",
-      features: fitFeatures
-    } satisfies FeatureCollection<Geometry, { name?: string }>
-  );
-  const path = geoPath(projection);
-  const baseFeatures = fitToMatchedData
-    ? fitFeatures
-    : availableFeatures;
-  const noDataFill = resolveRegionMapNoDataColor(chart, primarySeriesIndex);
-  const outlineColor = chart.chartAreaBorderColor && chart.chartAreaBorderColor !== "transparent"
-    ? chart.chartAreaBorderColor
-    : darkenColor(noDataFill, 0.22);
-  const numericEntryValues = primarySeries.values
-    .map(safeNumber)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  const minValue = numericEntryValues.length > 0 ? Math.min(...numericEntryValues) : 0;
-  const maxValue = numericEntryValues.length > 0 ? Math.max(...numericEntryValues) : 1;
-  const showRegionLabels = layoutProperties?.regionLabelLayout !== "none";
-
-  return (
-    <g>
-      {baseFeatures.map((feature, index) => {
-        const d = path(feature);
-        if (!d) {
-          return null;
-        }
-        return (
-          <path
-            d={d}
-            fill={noDataFill}
-            key={`region-map-base-${feature.id ?? "feature"}-${index}`}
-            stroke={outlineColor}
-            strokeLinejoin="round"
-            strokeWidth={0.6}
-          />
-        );
-      })}
-      {entries.map((entry, index) => {
-        const d = path(entry.feature);
-        if (!d) {
-          return null;
-        }
-        const fill = entry.value != null
-          ? (() => {
-              const ratio = maxValue <= minValue ? 1 : (entry.value - minValue) / Math.max(1e-6, maxValue - minValue);
-              return resolveRegionMapValueColor(chart, primarySeriesIndex, ratio);
-            })()
-          : categoricalColorByLabel?.get(entry.colorLabel ?? "") ?? resolveRegionMapDataColor(chart, primarySeriesIndex);
-        const selected = isSelectedChartPointOrSeries(selectedChartElement, chart.id, primarySeriesIndex, index);
-        const centroid = path.centroid(entry.feature);
-        const canShowSelectionDot = Number.isFinite(centroid[0]) && Number.isFinite(centroid[1]);
-        return (
-          <React.Fragment key={`region-map-value-${entry.key || index}`}>
-            <path
-              {...chartElementDataProps(primarySeriesIndex, index)}
-              d={d}
-              fill={fill}
-              stroke={selected ? "#64748b" : darkenColor(fill, 0.18)}
-              strokeLinejoin="round"
-              strokeWidth={selected ? 1.8 : 0.85}
-            />
-            {selected && canShowSelectionDot
-              ? renderSelectionPointHandles(`region-map-selection-${index}`, [{ x: centroid[0], y: centroid[1] }])
-              : null}
-          </React.Fragment>
-        );
-      })}
-      {showRegionLabels
-        ? entries.map((entry, index) => {
-            const bounds = path.bounds(entry.feature);
-            const [[x0, y0], [x1, y1]] = bounds;
-            const width = x1 - x0;
-            const height = y1 - y0;
-            if (!Number.isFinite(width) || !Number.isFinite(height) || width < 26 || height < 12) {
-              return null;
-            }
-            const centroid = path.centroid(entry.feature);
-            if (!Number.isFinite(centroid[0]) || !Number.isFinite(centroid[1])) {
-              return null;
-            }
-            return (
-              <text
-                fill={resolveChartTextColor(chart)}
-                fontSize={9}
-                fontWeight={600}
-                key={`region-map-label-${entry.key || index}`}
-                textAnchor="middle"
-                x={centroid[0]}
-                y={centroid[1]}
-              >
-                {truncateSvgText(entry.label, Math.max(28, width - 4), 9)}
-              </text>
-            );
-          })
-        : null}
-    </g>
-  );
-}
-
 function renderUnsupported(chart: XlsxChart, palette: ChartRendererPalette, layout: ChartLayout, chartType: string) {
   return (
     <g>
@@ -6090,7 +5879,7 @@ function renderChartPlot(
     return renderTreemapChart(chart, palette, layout, selectedChartElement);
   }
   if (chartType === "RegionMap") {
-    return <RegionMapPlot chart={chart} layout={layout} palette={palette} selectedChartElement={selectedChartElement} />;
+    return renderUnsupported(chart, palette, layout, chartType);
   }
   return renderUnsupported(chart, palette, layout, chartType);
 }
@@ -6121,6 +5910,7 @@ export const MemoChartSvg = React.memo(function MemoChartSvg({
   const renderSvgChart = (plot: React.ReactNode) => (
     <svg
       aria-label={chart.title ?? chart.name ?? "Chart"}
+      data-xlsx-chart-renderer="legacy"
       onDoubleClick={handleDoubleClick}
       onPointerDown={handlePointerDown}
       role="img"

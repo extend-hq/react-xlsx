@@ -546,6 +546,7 @@ function buildSheetList(
         colWidths: [],
         conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
         dataValidations: parseWorksheetDataValidations(worksheet),
+        officeLayout: sheetState?.officeLayout,
         defaultColWidthPx,
         defaultRowHeightPx,
         freezePanes: parseWorksheetFreezePanes(worksheet),
@@ -612,6 +613,7 @@ function buildSheetList(
       colWidths: visibleCols.map(resolveColumnWidthPx),
       conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
       dataValidations: parseWorksheetDataValidations(worksheet),
+      officeLayout: sheetState?.officeLayout,
       defaultColWidthPx,
       defaultRowHeightPx,
       freezePanes: parseWorksheetFreezePanes(worksheet),
@@ -852,7 +854,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
     )
   );
   const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
-  const hasCharts = Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) => {
+  const hasCharts = nextWorkbook.chartsheetCount > 0 || Array.from({ length: nextWorkbook.sheetCount }, (_, workbookSheetIndex) => {
     const worksheet = nextWorkbook.getSheet(workbookSheetIndex);
     const hasClassicCharts = Array.isArray(worksheet.charts) && worksheet.charts.length > 0;
     const hasModernCharts = Array.isArray(worksheet.chartsEx) && worksheet.chartsEx.length > 0;

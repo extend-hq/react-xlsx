@@ -1,3 +1,4 @@
+import type { OfficeCharts } from "@extend-ai/extend-office-charts";
 import type * as React from "react";
 import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
 
@@ -114,7 +115,15 @@ export interface XlsxFreezePanes {
 
 export type XlsxSheetVisibility = "hidden" | "veryHidden" | "visible";
 
+export interface XlsxOfficeLayout {
+  defaultColumnPx: number;
+  defaultRowPx: number;
+  columns: Record<number, { sourcePx: number; sizePx: number }>;
+  rows: Record<number, { sourcePx: number; sizePx: number }>;
+}
+
 export interface XlsxSheetData {
+  officeLayout?: XlsxOfficeLayout;
   cellStyleIds?: Record<string, number>;
   autoFilterRanges: XlsxCellRange[];
   cachedFormulaValues: Record<string, string>;
@@ -827,7 +836,11 @@ export interface XlsxChartWall {
 }
 
 export interface XlsxChartRenderSource {
-  kind: "bar" | "line";
+  kind: string;
+  seriesTypes?: string[];
+  indexedXSeries?: boolean[];
+  sourceSeries?: XlsxChartSeries[];
+  experimental?: boolean;
   xml: string;
   themeColors?: Record<string, string>;
   themeOverrideXml?: string;
@@ -1710,6 +1723,8 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   onFormControlAction?: (event: XlsxFormControlActionEvent) => void;
   /** Called after the built-in editor persists a checkbox, radio, list, dropdown, scrollbar, or spinner change. */
   onFormControlChange?: (event: XlsxFormControlChangeEvent) => void;
+  /** Use a supplied Office renderer for additional chart families and native chart sizing. */
+  experimentalOfficeCharts?: OfficeCharts;
   /** Replaces the loading placeholder for chart metadata, chart rendering code, and map geometry. */
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;
   /** Replaces menu contents. Use runAction for built-in commands and closeMenu after custom commands. */

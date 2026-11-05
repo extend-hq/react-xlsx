@@ -1,5 +1,6 @@
 import { getBuiltinChartColor, getBuiltinChartSurfaceStyle, resolveBuiltinChartColor } from "./builtin-chart-styles";
 import type { Workbook } from "@dukelib/sheets-wasm";
+import { collectChartsheetDrawingOrigins } from "./chartsheet-payload";
 import { strFromU8, strToU8 } from "fflate";
 import type { WorkbookImageAssets, WorkbookImageSheetOrigin } from "./images";
 import type {
@@ -208,20 +209,40 @@ export function applyChartSeriesFormula(
 
   const categoriesRef: XlsxChartReference = {
     ...(currentSeries.categoriesRef ?? {}),
-    formula: parsed.categoryFormula
+    formula: parsed.categoryFormula,
+    values: parsed.categoryFormula === currentSeries.categoriesRef?.formula ? currentSeries.categoriesRef.values : undefined
   };
   const valuesRef: XlsxChartReference = {
     ...(currentSeries.valuesRef ?? {}),
-    formula: parsed.valueFormula
+    formula: parsed.valueFormula,
+    values: parsed.valueFormula === currentSeries.valuesRef?.formula ? currentSeries.valuesRef.values : undefined
   };
   const bubbleSizeRef: XlsxChartReference | null = chart.chartType === "Bubble" || parsed.bubbleSizeFormula
     ? {
         ...(currentSeries.bubbleSizeRef ?? {}),
-        formula: parsed.bubbleSizeFormula
+        formula: parsed.bubbleSizeFormula,
+        values: parsed.bubbleSizeFormula === currentSeries.bubbleSizeRef?.formula ? currentSeries.bubbleSizeRef?.values : undefined
       }
     : currentSeries.bubbleSizeRef ?? null;
-  const raw = {
-    ...(currentSeries.raw ?? {})
+  const isUnresolved = (formula: string | undefined) => Boolean(
+    workbook && formula && !resolveReferenceSheet(workbook, chart.workbookSheetIndex, formula).sheet
+  );
+  const resolveEditedReference = (
+    reference: XlsxChartReference | null,
+    currentReference: XlsxChartReference | null | undefined,
+    currentValues: Array<number | string | null>,
+    mode: "category" | "value"
+  ) => {
+    if (!workbook) return currentValues;
+    if (reference?.formula === currentReference?.formula && isUnresolved(reference?.formula)) return currentValues;
+    return resolveReferenceValues(workbook, chart.workbookSheetIndex, reference, mode);
+  };
+  const raw: Record<string, unknown> = {
+    ...(currentSeries.raw ?? {}),
+    unresolvedCategoriesReference: isUnresolved(categoriesRef.formula),
+    unresolvedValuesReference: isUnresolved(valuesRef.formula),
+    unresolvedBubbleSizeReference: isUnresolved(bubbleSizeRef?.formula),
+    unresolvedNameReference: isUnresolved(parsed.nameFormula)
   };
   if (parsed.nameFormula) {
     raw.name = parsed.nameFormula;
@@ -232,32 +253,30 @@ export function applyChartSeriesFormula(
   const nextSeries: XlsxChartSeries = {
     ...currentSeries,
     bubbleSizeRef,
-    bubbleSizes: workbook && bubbleSizeRef?.formula
-      ? resolveReferenceValues(workbook, chart.workbookSheetIndex, bubbleSizeRef, "value").map((value) => (
-          typeof value === "number" && Number.isFinite(value) ? value : null
-        ))
-      : currentSeries.bubbleSizes,
-    categories: workbook
-      ? resolveReferenceValues(workbook, chart.workbookSheetIndex, categoriesRef, "category")
-      : currentSeries.categories,
+    bubbleSizes: resolveEditedReference(bubbleSizeRef, currentSeries.bubbleSizeRef, currentSeries.bubbleSizes ?? [], "value")
+      .map((value) => typeof value === "number" && Number.isFinite(value) ? value : null),
+    categories: resolveEditedReference(categoriesRef, currentSeries.categoriesRef, currentSeries.categories, "category"),
     categoriesRef,
     name: parsed.nameLiteral ?? (
-      parsed.nameFormula && workbook
-        ? resolveSeriesName(workbook, chart.workbookSheetIndex, parsed.nameFormula)
-        : parsed.nameFormula ?? currentSeries.name
+      parsed.nameFormula === currentSeries.raw?.name && isUnresolved(parsed.nameFormula)
+        ? currentSeries.name
+        : parsed.nameFormula && workbook
+          ? resolveSeriesName(workbook, chart.workbookSheetIndex, parsed.nameFormula)
+          : parsed.nameFormula ?? currentSeries.name
     ),
     raw,
-    values: workbook
-      ? resolveReferenceValues(workbook, chart.workbookSheetIndex, valuesRef, "value").map((value) => (
-          typeof value === "number" && Number.isFinite(value) ? value : null
-        ))
-      : currentSeries.values,
+    values: resolveEditedReference(valuesRef, currentSeries.valuesRef, currentSeries.values, "value")
+      .map((value) => typeof value === "number" && Number.isFinite(value) ? value : null),
     valuesRef
   };
 
   return {
     ...chart,
-    series: chart.series.map((series, index) => index === seriesIndex ? nextSeries : series)
+    series: chart.series.map((series, index) => index === seriesIndex ? nextSeries : series),
+    typeGroups: chart.typeGroups?.map((group) => ({
+      ...group,
+      series: group.series.map((series) => series.id === currentSeries.id ? nextSeries : series)
+    }))
   };
 }
 
@@ -1152,9 +1171,10 @@ function applyBuiltinChartDefaults(chart: XlsxChart, themePalette?: XlsxThemePal
     };
   };
   chart.series = chart.series.map(applySeriesDefaults);
+  const canonicalSeries = chart.id.startsWith("chart-ex-") ? null : new Map(chart.series.map((series) => [series.id, series]));
   let groupSeriesOffset = 0;
   chart.typeGroups = chart.typeGroups?.map((group) => {
-    const series = group.series.map((entry, index) => applySeriesDefaults(entry, groupSeriesOffset + index));
+    const series = group.series.map((entry, index) => canonicalSeries?.get(entry.id) ?? applySeriesDefaults(entry, groupSeriesOffset + index));
     groupSeriesOffset += group.series.length;
     return { ...group, series };
   });
@@ -1365,12 +1385,15 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
       ? undefined
       : rawLineColor ?? lineStyle.color ?? rawFillColor ?? fillColor ?? series.lineColor ?? series.color;
 
-    const hasCategoryReference = typeof series.categoriesRef?.formula === "string" && series.categoriesRef.formula.length > 0;
-    const hasValueReference = typeof series.valuesRef?.formula === "string" && series.valuesRef.formula.length > 0;
-    const hasBubbleSizeReference = typeof series.bubbleSizeRef?.formula === "string" && series.bubbleSizeRef.formula.length > 0;
+    const hasCategoryReference = typeof series.categoriesRef?.formula === "string" && series.categoriesRef.formula.length > 0 && !series.raw?.unresolvedCategoriesReference;
+    const hasValueReference = typeof series.valuesRef?.formula === "string" && series.valuesRef.formula.length > 0 && !series.raw?.unresolvedValuesReference;
+    const hasBubbleSizeReference = typeof series.bubbleSizeRef?.formula === "string" && series.bubbleSizeRef.formula.length > 0 && !series.raw?.unresolvedBubbleSizeReference;
 
     return {
       ...series,
+      name: series.raw?.unresolvedNameReference
+        ? parseChartCacheValues(getFirstLocalChild(seriesNode, "tx"), "strCache", "category")?.[0]?.toString() ?? series.name
+        : series.name,
       bubbleSizes: !hasBubbleSizeReference && cachedBubbleSizes
         ? cachedBubbleSizes.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null))
         : series.bubbleSizes,
@@ -1682,6 +1705,23 @@ function applyChartStyleFromXml(
     if (typeof fallbackStyleId === "number" && Number.isFinite(fallbackStyleId)) {
       chart.chartStyleId = fallbackStyleId;
     }
+    const sourceSeries = chart.raw?.officeSourceSeries as XlsxChartSeries[] | undefined;
+    if (sourceSeries && chartDocument?.documentElement.namespaceURI === "http://schemas.microsoft.com/office/drawing/2014/chartex") {
+      chart.renderSource = {
+        kind: chart.chartExLayout ?? "",
+        seriesTypes: getLocalDescendants(chartNode, "series").map(node => node.getAttribute("layoutId") ?? ""),
+        sourceSeries,
+        experimental: true,
+        xml: chartXml,
+        themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
+          const color = themePalette.colorsByIndex[index];
+          return color ? [[key, color]] : [];
+        })) : undefined,
+        themeOverrideXml: readArchiveText(archive, relationships.get("http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride")) ?? undefined,
+        styleXml: readArchiveText(archive, relationships.get(CHART_STYLE_REL_TYPE)) ?? undefined,
+        colorStyleXml: readArchiveText(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE)) ?? undefined
+      };
+    }
     applyModernChartExStyles();
     applyFallbackSeriesStyles();
     applyBuiltinChartDefaults(chart, themePalette);
@@ -1949,15 +1989,25 @@ function applyChartStyleFromXml(
     }
   }
 
-  const kind = chartTypeNode.localName === "lineChart" && chart.chartType === "Line" ? "line"
-    : chartTypeNode.localName === "barChart" && chart.chartType === "ColumnClustered" ? "bar"
-    : null;
-  const groupCount = Array.from(plotArea.children).filter((entry) => entry.localName.endsWith("Chart")).length;
-  if (kind && groupCount === 1 && !chart.is3d
-    && !plotArea.querySelector("trendline, errBars, dropLines, hiLowLines, upDownBars, dateAx, multiLvlStrRef, pictureOptions")
-    && getLocalChildren(chartTypeNode, "ser").length === chart.series.length) {
+  const groups = Array.from(plotArea.children).filter((entry) => entry.localName.endsWith("Chart"));
+  const seriesTypes = groups.flatMap(group => getLocalChildren(group, "ser").map(() => group.localName.slice(0, -5)));
+  const seriesNodes = groups.flatMap(group => getLocalChildren(group, "ser"));
+  const indexedXSeries = seriesNodes.map(series => {
+    const x = getFirstLocalChild(series, "xVal");
+    return Boolean(x && (getFirstLocalChild(x, "multiLvlStrRef") || getFirstLocalChild(x, "strRef") || getFirstLocalChild(x, "strLit")));
+  });
+  const unsupportedHierarchy = getLocalDescendants(plotArea, "multiLvlStrRef").some(node => node.parentElement?.localName !== "xVal");
+  const kind = chartTypeNode.localName.slice(0, -5);
+  const stable = groups.length === 1 && !chart.is3d
+    && ((kind === "line" && chart.chartType === "Line") || (kind === "bar" && chart.chartType === "ColumnClustered"))
+    && !plotArea.querySelector("trendline, errBars, dropLines, hiLowLines, upDownBars, dateAx, multiLvlStrRef, pictureOptions");
+  if (seriesTypes.length === chart.series.length
+    && !unsupportedHierarchy && !plotArea.querySelector("pictureOptions")) {
     chart.renderSource = {
       kind,
+      seriesTypes,
+      indexedXSeries,
+      experimental: !stable,
       xml: chartXml,
       themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
         const color = themePalette.colorsByIndex[index];
@@ -1969,7 +2019,21 @@ function applyChartStyleFromXml(
     };
   }
 
-  applyChartSeriesStyleFromXml(chart, chartTypeNode, themePalette);
+  if (groups.length > 1 && chart.typeGroups?.length === groups.length) {
+    let seriesOffset = 0;
+    const hydratedSeries: XlsxChartSeries[] = [];
+    chart.typeGroups = chart.typeGroups.map((group, index) => {
+      const count = getLocalChildren(groups[index], "ser").length;
+      const groupChart = { ...chart, chartType: group.chartType, series: chart.series.slice(seriesOffset, seriesOffset + count) };
+      applyChartSeriesStyleFromXml(groupChart, groups[index], themePalette);
+      seriesOffset += count;
+      hydratedSeries.push(...groupChart.series);
+      return { ...group, series: groupChart.series };
+    });
+    chart.series = [...hydratedSeries, ...chart.series.slice(seriesOffset)];
+  } else {
+    applyChartSeriesStyleFromXml(chart, chartTypeNode, themePalette);
+  }
   applyFallbackSeriesStyles();
   applyBuiltinChartDefaults(chart, themePalette);
 }
@@ -2191,8 +2255,8 @@ function resolveReferenceSheet(workbook: Workbook, fallbackSheetIndex: number, f
   if (!formula) {
     return {
       range: null,
-      sheet: workbook.getSheet(fallbackSheetIndex),
-      sheetName: workbook.getSheet(fallbackSheetIndex)?.name ?? ""
+      sheet: fallbackSheetIndex < workbook.sheetCount ? workbook.getSheet(fallbackSheetIndex) : null,
+      sheetName: fallbackSheetIndex < workbook.sheetCount ? workbook.getSheet(fallbackSheetIndex)?.name ?? "" : ""
     };
   }
 
@@ -2212,8 +2276,8 @@ function resolveReferenceSheet(workbook: Workbook, fallbackSheetIndex: number, f
   if (!split) {
     return {
       range: parseA1Range(trimmedFormula),
-      sheet: workbook.getSheet(fallbackSheetIndex),
-      sheetName: workbook.getSheet(fallbackSheetIndex)?.name ?? ""
+      sheet: fallbackSheetIndex < workbook.sheetCount ? workbook.getSheet(fallbackSheetIndex) : null,
+      sheetName: fallbackSheetIndex < workbook.sheetCount ? workbook.getSheet(fallbackSheetIndex)?.name ?? "" : ""
     };
   }
 
@@ -2226,8 +2290,8 @@ function resolveReferenceSheet(workbook: Workbook, fallbackSheetIndex: number, f
   } catch {
     return {
       range: parseA1Range(split.range),
-      sheet: workbook.getSheet(fallbackSheetIndex),
-      sheetName: workbook.getSheet(fallbackSheetIndex)?.name ?? ""
+      sheet: null,
+      sheetName: split.sheetName
     };
   }
 }
@@ -2596,6 +2660,7 @@ function buildChartExParetoLineSeries(series: XlsxChartSeries, sourceRaw: unknow
   });
   return {
     ...series,
+    id: series.id.replace(/-series-\d+$/, `-series-${index}`),
     color: undefined,
     lineColor: undefined,
     markerColor: undefined,
@@ -2971,7 +3036,7 @@ function normalizeChartExChart(
     name: typeof drawing.name === "string" ? drawing.name : chartTitle,
     overlap: undefined,
     plotVisibleOnly: undefined,
-    raw: chart,
+    raw: { ...chart, officeSourceSeries: normalizedSeries },
     radarStyle: undefined,
     scatterStyle: undefined,
     roundedCorners: undefined,
@@ -3552,7 +3617,14 @@ function normalizeChartSeries(
     name: resolveSeriesName(workbook, workbookSheetIndex, series.name),
     negativeColor: undefined,
     negativeLineColor: undefined,
-    raw: series,
+    raw: {
+      ...series,
+      unresolvedCategoriesReference: Boolean(categoriesRef?.formula && !resolveReferenceSheet(workbook, workbookSheetIndex, categoriesRef.formula).sheet),
+      unresolvedValuesReference: Boolean(valuesRef?.formula && !resolveReferenceSheet(workbook, workbookSheetIndex, valuesRef.formula).sheet),
+      unresolvedBubbleSizeReference: Boolean(bubbleSizeRef?.formula && !resolveReferenceSheet(workbook, workbookSheetIndex, bubbleSizeRef.formula).sheet),
+      unresolvedNameReference: typeof series.name === "string" && series.name.includes("!")
+        && !resolveReferenceSheet(workbook, workbookSheetIndex, series.name).sheet
+    },
     shapeProperties,
     smooth: typeof series.smooth === "boolean" ? series.smooth : undefined,
     values: resolveReferenceValues(workbook, workbookSheetIndex, valuesRef, "value").map((value) => (
@@ -3637,12 +3709,15 @@ function buildTabs(
     const slotIndex = typeof entry.index === "number" ? entry.index : index;
     if (slotType === "chartsheet") {
       const chartsheet = chartsheets[slotIndex];
+      const visibility = normalizeWorksheetVisibility(chartsheet?.raw?.visibility);
+      if (!showHiddenSheets && visibility !== "visible") return [];
       return chartsheet ? [{
         chartsheetIndex: slotIndex,
         id: `chartsheet-${slotIndex}`,
         index,
         kind: "chartsheet" as const,
-        name: chartsheet.name
+        name: chartsheet.name,
+        visibility
       }] : [];
     }
 
@@ -3779,10 +3854,26 @@ function applyChartOrigins(
 
 export function hydrateWorkbookChartStyles(
   chartsByWorkbookSheetIndex: XlsxChart[][],
-  imageAssets: Pick<WorkbookImageAssets, "archive" | "sheetOrigins" | "themePalette">
+  imageAssets: Pick<WorkbookImageAssets, "archive" | "sheetOrigins" | "themePalette">,
+  chartsheets: XlsxChartsheet[] = []
 ) {
   const chartOriginsById = new Map<string, WorkbookChartOrigin>();
   applyChartOrigins(chartsByWorkbookSheetIndex, chartOriginsById, imageAssets.archive, imageAssets.sheetOrigins);
+  const chartsheetOrigins = collectChartsheetDrawingOrigins(imageAssets.archive, chartsheets);
+  for (const chartsheet of chartsheets) {
+    if (chartsheet.workbookSheetIndex == null) continue;
+    const charts = chartsByWorkbookSheetIndex[chartsheet.workbookSheetIndex] ?? [];
+    const origins = collectChartOriginsForSheet(imageAssets.archive, chartsheetOrigins.get(chartsheet.index) ?? null);
+    for (const chart of charts) {
+      const kind = chart.id.startsWith("chart-ex-") ? "modern" : "classic";
+      const origin = origins.find((entry) => entry.chartKind === kind);
+      if (!origin) continue;
+      if (origin.anchor) chart.anchor = origin.anchor;
+      chart.chartPath = origin.chartPath ?? undefined;
+      chartsheet.chartPath = chart.chartPath;
+      chartOriginsById.set(chart.id, origin);
+    }
+  }
   for (const charts of chartsByWorkbookSheetIndex) {
     for (const chart of charts) {
       applyChartStyleFromXml(chart, chart.chartPath, imageAssets.archive, imageAssets.themePalette);
@@ -3790,6 +3881,126 @@ export function hydrateWorkbookChartStyles(
     }
   }
   return chartOriginsById;
+}
+
+function normalizeClassicChartDrawing(
+  workbook: Workbook,
+  workbookSheetIndex: number,
+  visibleSheetIndex: number,
+  rawChart: unknown,
+  chartIndex: number,
+  chartId = `chart-${workbookSheetIndex}-${chartIndex}`
+): XlsxChart {
+  const drawing = rawChart && typeof rawChart === "object" ? rawChart as Record<string, unknown> : {};
+  const chart = drawing.chart && typeof drawing.chart === "object"
+    ? drawing.chart as Record<string, unknown>
+    : {};
+  const rawView3d = chart.view3D && typeof chart.view3D === "object"
+    ? chart.view3D as Record<string, unknown>
+    : null;
+  const rawSeries = Array.isArray(chart.series) ? chart.series : [];
+  const typeGroups = Array.isArray(chart.typeGroups)
+    ? chart.typeGroups
+      .map((entry, groupIndex) => normalizeChartTypeGroup(workbook, workbookSheetIndex, chartId, entry, groupIndex))
+      .filter((value): value is XlsxChartTypeGroup => value != null)
+    : [];
+  let seriesOrdinal = 0;
+  const series = typeGroups.some((group) => group.series.length > 0)
+    ? typeGroups.flatMap((group) => {
+        group.series = group.series.map((entry) => ({ ...entry, id: `${chartId}-series-${seriesOrdinal++}` }));
+        return group.series;
+      })
+    : rawSeries.map((entry, seriesIndex) => normalizeChartSeries(workbook, workbookSheetIndex, chartId, entry, seriesIndex));
+  const chartLevelDataLabels = normalizeChartDataLabels(chart.dataLabels);
+  const firstSeriesDataLabels = rawSeries.length > 0 && rawSeries[0] && typeof rawSeries[0] === "object"
+    ? normalizeChartDataLabels((rawSeries[0] as Record<string, unknown>).dataLabels)
+    : null;
+  return {
+    anchor: normalizeChartAnchor(drawing.anchor),
+    autoTitleDeleted: typeof chart.autoTitleDeleted === "boolean" ? chart.autoTitleDeleted : undefined,
+    axes: Array.isArray(chart.axes) ? chart.axes.map(normalizeChartAxis).filter((value): value is XlsxChartAxis => Boolean(value)) : [],
+    axisLabelColor: undefined,
+    axisLineColor: undefined,
+    categoryAxis: normalizeChartAxis(chart.categoryAxis),
+    chartAreaBorderColor: undefined,
+    chartAreaFillColor: undefined,
+    chartColorPalette: undefined,
+    chartColorPaletteOffset: undefined,
+    chartPath: undefined,
+    chartStyleId: undefined,
+    chartType: typeof chart.chartType === "string" ? chart.chartType : "ColumnClustered",
+    dataLabels: chartLevelDataLabels ?? firstSeriesDataLabels,
+    displayBlanksAs: typeof chart.displayBlanksAs === "string" ? chart.displayBlanksAs : undefined,
+    editable: true,
+    firstSliceAngle: typeof chart.firstSliceAngle === "number" ? chart.firstSliceAngle : undefined,
+    fontFamily: undefined,
+    gapWidth: typeof chart.gapWidth === "number" ? chart.gapWidth : undefined,
+    holeSize: typeof chart.holeSize === "number" ? chart.holeSize : undefined,
+    id: chartId,
+    is3d: typeof chart.is3D === "boolean" ? chart.is3D : typeof chart.is3d === "boolean" ? chart.is3d : undefined,
+    legend: normalizeLegend(chart.legend)
+      ? {
+          ...normalizeLegend(chart.legend),
+          position: normalizeLegendPosition(normalizeLegend(chart.legend)?.position)
+        }
+      : null,
+    name: typeof drawing.name === "string" ? drawing.name : undefined,
+    overlap: typeof chart.overlap === "number" ? chart.overlap : undefined,
+    plotVisibleOnly: typeof chart.plotVisibleOnly === "boolean" ? chart.plotVisibleOnly : undefined,
+    raw: chart,
+    radarStyle: typeof chart.radarStyle === "string" ? chart.radarStyle : undefined,
+    scatterStyle: typeof chart.scatterStyle === "string" ? chart.scatterStyle : undefined,
+    roundedCorners: typeof chart.roundedCorners === "boolean" ? chart.roundedCorners : undefined,
+    shape3d: typeof chart.shape === "string"
+      ? chart.shape
+      : typeof chart.shape3d === "string"
+        ? chart.shape3d
+        : undefined,
+    seriesAxis: null,
+    series,
+    sheetIndex: visibleSheetIndex,
+    showDlblsOverMax: typeof chart.showDlblsOverMax === "boolean" ? chart.showDlblsOverMax : undefined,
+    sideWall: null,
+    backWall: null,
+    bubbleScale: typeof chart.bubbleScale === "number" ? chart.bubbleScale : undefined,
+    bubble3d: typeof chart.bubble3d === "boolean" ? chart.bubble3d : undefined,
+    floor: null,
+    surfaceMaterial: undefined,
+    textColor: undefined,
+    title: typeof chart.title === "string" ? chart.title : undefined,
+    titleColor: undefined,
+    titleFontFamily: undefined,
+    typeGroups,
+    valueAxis: normalizeChartAxis(chart.valueAxis),
+    varyColors: typeof chart.varyColors === "boolean" ? chart.varyColors : undefined,
+    view3d: rawView3d
+      ? {
+          depthPercent: typeof rawView3d.depthPercent === "number" ? rawView3d.depthPercent : undefined,
+          heightPercent: typeof rawView3d.heightPercent === "number" ? rawView3d.heightPercent : undefined,
+          perspective: typeof rawView3d.perspective === "number" ? rawView3d.perspective : undefined,
+          rAngAx: typeof rawView3d.rAngAx === "boolean"
+            ? rawView3d.rAngAx
+            : typeof rawView3d.rightAngleAxes === "boolean"
+              ? rawView3d.rightAngleAxes
+              : undefined,
+          rotX: typeof rawView3d.rotX === "number"
+            ? rawView3d.rotX
+            : typeof rawView3d.rotateX === "number"
+              ? rawView3d.rotateX
+              : undefined,
+          rotY: typeof rawView3d.rotY === "number"
+            ? rawView3d.rotY
+            : typeof rawView3d.rotateY === "number"
+              ? rawView3d.rotateY
+              : undefined
+        }
+      : undefined,
+    wireframe: typeof chart.wireframe === "boolean" ? chart.wireframe : undefined,
+    workbookSheetIndex,
+    zIndex: Array.isArray(drawing.drawingPath) && typeof drawing.drawingPath[0] === "number"
+      ? drawing.drawingPath[0] + 1
+      : chartIndex + 1
+  } satisfies XlsxChart;
 }
 
 export function loadWorkbookChartAssets(
@@ -3810,108 +4021,7 @@ export function loadWorkbookChartAssets(
       if (rawChart.hidden || !rawChart.anchor) {
         excludedChartIds.add(chartId);
       }
-      const drawing = rawChart && typeof rawChart === "object" ? rawChart as unknown as Record<string, unknown> : {};
-      const chart = drawing.chart && typeof drawing.chart === "object"
-        ? drawing.chart as Record<string, unknown>
-        : {};
-      const rawView3d = chart.view3D && typeof chart.view3D === "object"
-        ? chart.view3D as Record<string, unknown>
-        : null;
-      const rawSeries = Array.isArray(chart.series) ? chart.series : [];
-      const chartLevelDataLabels = normalizeChartDataLabels(chart.dataLabels);
-      const firstSeriesDataLabels = rawSeries.length > 0 && rawSeries[0] && typeof rawSeries[0] === "object"
-        ? normalizeChartDataLabels((rawSeries[0] as Record<string, unknown>).dataLabels)
-        : null;
-      return {
-        anchor: normalizeChartAnchor(drawing.anchor),
-        autoTitleDeleted: typeof chart.autoTitleDeleted === "boolean" ? chart.autoTitleDeleted : undefined,
-        axes: Array.isArray(chart.axes) ? chart.axes.map(normalizeChartAxis).filter((value): value is XlsxChartAxis => Boolean(value)) : [],
-        axisLabelColor: undefined,
-        axisLineColor: undefined,
-        categoryAxis: normalizeChartAxis(chart.categoryAxis),
-        chartAreaBorderColor: undefined,
-        chartAreaFillColor: undefined,
-        chartColorPalette: undefined,
-        chartColorPaletteOffset: undefined,
-        chartPath: undefined,
-        chartStyleId: undefined,
-        chartType: typeof chart.chartType === "string" ? chart.chartType : "ColumnClustered",
-        dataLabels: chartLevelDataLabels ?? firstSeriesDataLabels,
-        displayBlanksAs: typeof chart.displayBlanksAs === "string" ? chart.displayBlanksAs : undefined,
-        editable: true,
-        firstSliceAngle: typeof chart.firstSliceAngle === "number" ? chart.firstSliceAngle : undefined,
-        fontFamily: undefined,
-        gapWidth: typeof chart.gapWidth === "number" ? chart.gapWidth : undefined,
-        holeSize: typeof chart.holeSize === "number" ? chart.holeSize : undefined,
-        id: chartId,
-        is3d: typeof chart.is3D === "boolean" ? chart.is3D : undefined,
-        legend: normalizeLegend(chart.legend)
-          ? {
-              ...normalizeLegend(chart.legend),
-              position: normalizeLegendPosition(normalizeLegend(chart.legend)?.position)
-            }
-          : null,
-        name: typeof drawing.name === "string" ? drawing.name : undefined,
-        overlap: typeof chart.overlap === "number" ? chart.overlap : undefined,
-        plotVisibleOnly: typeof chart.plotVisibleOnly === "boolean" ? chart.plotVisibleOnly : undefined,
-        raw: chart,
-        radarStyle: typeof chart.radarStyle === "string" ? chart.radarStyle : undefined,
-        scatterStyle: typeof chart.scatterStyle === "string" ? chart.scatterStyle : undefined,
-        roundedCorners: typeof chart.roundedCorners === "boolean" ? chart.roundedCorners : undefined,
-        shape3d: typeof chart.shape === "string"
-          ? chart.shape
-          : typeof chart.shape3d === "string"
-            ? chart.shape3d
-            : undefined,
-        seriesAxis: null,
-        series: rawSeries.map((entry, seriesIndex) => normalizeChartSeries(workbook, workbookSheetIndex, chartId, entry, seriesIndex)),
-        sheetIndex: visibleSheetIndex,
-        showDlblsOverMax: typeof chart.showDlblsOverMax === "boolean" ? chart.showDlblsOverMax : undefined,
-        sideWall: null,
-        backWall: null,
-        bubbleScale: typeof chart.bubbleScale === "number" ? chart.bubbleScale : undefined,
-        bubble3d: typeof chart.bubble3d === "boolean" ? chart.bubble3d : undefined,
-        floor: null,
-        surfaceMaterial: undefined,
-        textColor: undefined,
-        title: typeof chart.title === "string" ? chart.title : undefined,
-        titleColor: undefined,
-        titleFontFamily: undefined,
-        typeGroups: Array.isArray(chart.typeGroups)
-          ? chart.typeGroups
-            .map((entry, groupIndex) => normalizeChartTypeGroup(workbook, workbookSheetIndex, chartId, entry, groupIndex))
-            .filter((value): value is XlsxChartTypeGroup => value != null)
-          : [],
-        valueAxis: normalizeChartAxis(chart.valueAxis),
-        varyColors: typeof chart.varyColors === "boolean" ? chart.varyColors : undefined,
-        view3d: rawView3d
-          ? {
-              depthPercent: typeof rawView3d.depthPercent === "number" ? rawView3d.depthPercent : undefined,
-              heightPercent: typeof rawView3d.heightPercent === "number" ? rawView3d.heightPercent : undefined,
-              perspective: typeof rawView3d.perspective === "number" ? rawView3d.perspective : undefined,
-              rAngAx: typeof rawView3d.rAngAx === "boolean"
-                ? rawView3d.rAngAx
-                : typeof rawView3d.rightAngleAxes === "boolean"
-                  ? rawView3d.rightAngleAxes
-                  : undefined,
-              rotX: typeof rawView3d.rotX === "number"
-                ? rawView3d.rotX
-                : typeof rawView3d.rotateX === "number"
-                  ? rawView3d.rotateX
-                  : undefined,
-              rotY: typeof rawView3d.rotY === "number"
-                ? rawView3d.rotY
-                : typeof rawView3d.rotateY === "number"
-                  ? rawView3d.rotateY
-                  : undefined
-            }
-          : undefined,
-        wireframe: typeof chart.wireframe === "boolean" ? chart.wireframe : undefined,
-        workbookSheetIndex,
-        zIndex: Array.isArray(drawing.drawingPath) && typeof drawing.drawingPath[0] === "number"
-          ? drawing.drawingPath[0] + 1
-          : chartIndex + 1
-      } satisfies XlsxChart;
+      return normalizeClassicChartDrawing(workbook, workbookSheetIndex, visibleSheetIndex, rawChart, chartIndex, chartId);
     });
 
     const modernCharts = rawChartsEx.map((rawChartEx, chartExIndex) => {
@@ -3935,9 +4045,27 @@ export function loadWorkbookChartAssets(
   const chartsheets = Array.isArray(workbook.chartsheets)
     ? workbook.chartsheets.map((entry, index) => normalizeChartsheet(entry, index))
     : [];
+  for (const chartsheet of chartsheets) {
+    const workbookSheetIndex = workbook.sheetCount + chartsheet.index;
+    const raw = chartsheet.raw;
+    const charts: XlsxChart[] = [];
+    if (raw?.chart && typeof raw.chart === "object") {
+      charts.push(normalizeClassicChartDrawing(
+        workbook, workbookSheetIndex, workbookSheetIndex, raw, 0, `${chartsheet.id}-chart-0`
+      ));
+    }
+    if (raw?.chartEx && typeof raw.chartEx === "object") {
+      charts.push(normalizeChartExChart(
+        workbook, workbookSheetIndex, workbookSheetIndex, raw, 0, imageAssets?.themePalette ?? null
+      ));
+    }
+    chartsByWorkbookSheetIndex[workbookSheetIndex] = charts;
+    chartsheet.chartIds = charts.map((chart) => chart.id);
+    chartsheet.workbookSheetIndex = workbookSheetIndex;
+  }
   const tabs = buildTabs(workbook, chartsheets, visibleSheetIndexByWorkbookSheetIndex, showHiddenSheets);
   const chartOriginsById = imageAssets
-    ? hydrateWorkbookChartStyles(chartsByWorkbookSheetIndex, imageAssets)
+    ? hydrateWorkbookChartStyles(chartsByWorkbookSheetIndex, imageAssets, chartsheets)
     : new Map<string, WorkbookChartOrigin>();
 
   if (imageAssets) {

@@ -1,0 +1,10 @@
+{
+  "package": "@extend-ai/extend-office-charts",
+  "version": "0.1.1",
+  "sourceSha256": "bbe7ea3295356a31450fe56bea873580e332fd5f3550d5c0c9543275ee738b57",
+  "wasmSha256": "9e4511da4ff7f129206f77acb5c19813f3d8429b85f8c22ec8252b55d49dc509",
+  "wasmBytes": 1224776,
+  "features": [
+    "map-fallback"
+  ]
+}

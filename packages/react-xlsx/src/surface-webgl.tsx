@@ -1,5 +1,4 @@
 import { getBuiltinChartColor, getBuiltinChartSurfaceLine, resolveBuiltinChartColor } from "./builtin-chart-styles";
-import createREGL from "regl";
 import * as React from "react";
 import { shadeSurfaceMatteColor, surfaceNormal, transformSurfaceNormal } from "./surface-lighting";
 import { clipSurfaceBand, groupSurfaceBandEdges, normalizeSurfaceValue, surfaceDataRatios, triangulateSurfaceQuad } from "./surface-geometry";
@@ -618,6 +617,74 @@ function buildSurfaceMesh(chart: XlsxChart, palette: SurfacePalette, layout: Sur
   };
 }
 
+function paintSurface(gl: WebGLRenderingContext, scene: SurfaceScene) {
+  const program = gl.createProgram();
+  if (!program) throw new Error("Cannot create surface program");
+  const positionBuffer = gl.createBuffer();
+  const colorBuffer = gl.createBuffer();
+  function attachShader(type: number, source: string) {
+    const shader = gl.createShader(type);
+    if (!shader) throw new Error("Cannot create surface shader");
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    gl.attachShader(program!, shader);
+    gl.deleteShader(shader);
+  }
+  try {
+    if (!positionBuffer || !colorBuffer) throw new Error("Cannot create surface buffers");
+    attachShader(gl.VERTEX_SHADER, `
+      precision mediump float;
+      attribute vec3 position;
+      attribute vec4 color;
+      varying vec4 vColor;
+      void main() {
+        gl_Position = vec4(position, 1.0);
+        vColor = color;
+      }`);
+    attachShader(gl.FRAGMENT_SHADER, `
+      precision mediump float;
+      varying vec4 vColor;
+      void main() {
+        gl_FragColor = vColor;
+      }`);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error("Cannot link surface program");
+    gl.useProgram(program);
+    const position = gl.getAttribLocation(program, "position");
+    const color = gl.getAttribLocation(program, "color");
+    gl.enableVertexAttribArray(position);
+    gl.enableVertexAttribArray(color);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clearDepth(1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const draw = (positions: Float32Array, colors: Float32Array, mode: number, depth: number) => {
+      if (positions.length === 0) return;
+      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STREAM_DRAW);
+      gl.vertexAttribPointer(position, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STREAM_DRAW);
+      gl.vertexAttribPointer(color, 4, gl.FLOAT, false, 0, 0);
+      gl.depthFunc(depth);
+      gl.drawArrays(mode, 0, positions.length / 3);
+    };
+    draw(scene.wallPositions, scene.wallColors, gl.TRIANGLES, gl.LEQUAL);
+    draw(scene.fillPositions, scene.fillColors, gl.TRIANGLES, gl.LESS);
+    draw(scene.linePositions, scene.lineColors, gl.LINES, gl.LEQUAL);
+    gl.disableVertexAttribArray(position);
+    gl.disableVertexAttribArray(color);
+  } finally {
+    gl.useProgram(null);
+    gl.deleteBuffer(positionBuffer);
+    gl.deleteBuffer(colorBuffer);
+    gl.deleteProgram(program);
+  }
+}
+
 export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartComposite({
   background,
   borderColor,
@@ -645,175 +712,34 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
     if (!canvas) {
       return;
     }
-    let cancelled = false;
-    let reglInstance: ReturnType<typeof createREGL> | null = null;
-
     const drawSurface = () => {
       try {
         const scene = buildSurfaceMesh(chart, palette, layout);
-        if (!scene) {
-          if (!cancelled) {
-            setFailed(true);
-            setReady(false);
-          }
-          return;
-        }
+        if (!scene) throw new Error("Empty surface");
         const dpr = window.devicePixelRatio || 1;
         canvas.width = Math.max(1, Math.round(layout.width * dpr));
         canvas.height = Math.max(1, Math.round(layout.height * dpr));
-        reglInstance = createREGL({
-          attributes: {
-            alpha: true,
-            antialias: true,
-            depth: true,
-            premultipliedAlpha: true
-          },
-          canvas
-        });
-        const fillCommand = scene.fillPositions.length > 0
-          ? reglInstance({
-              attributes: {
-                color: scene.fillColors,
-                position: scene.fillPositions
-              },
-              blend: {
-                enable: true,
-                func: {
-                  dstRGB: "one minus src alpha",
-                  dstAlpha: "one minus src alpha",
-                  srcRGB: "src alpha",
-                  srcAlpha: "src alpha"
-                }
-              },
-              count: scene.fillPositions.length / 3,
-              depth: {
-                enable: true
-              },
-              frag: `
-                precision mediump float;
-                varying vec4 vColor;
-                void main() {
-                  gl_FragColor = vColor;
-                }
-              `,
-              primitive: "triangles",
-              vert: `
-                precision mediump float;
-                attribute vec3 position;
-                attribute vec4 color;
-                varying vec4 vColor;
-                void main() {
-                  gl_Position = vec4(position, 1.0);
-                  vColor = color;
-                }
-              `
-            })
-          : null;
-        const wallCommand = scene.wallPositions.length > 0
-          ? reglInstance({
-              attributes: {
-                color: scene.wallColors,
-                position: scene.wallPositions
-              },
-              blend: {
-                enable: true,
-                func: {
-                  dstRGB: "one minus src alpha",
-                  dstAlpha: "one minus src alpha",
-                  srcRGB: "src alpha",
-                  srcAlpha: "src alpha"
-                }
-              },
-              count: scene.wallPositions.length / 3,
-              depth: {
-                enable: true,
-                func: "lequal"
-              },
-              frag: `
-                precision mediump float;
-                varying vec4 vColor;
-                void main() {
-                  gl_FragColor = vColor;
-                }
-              `,
-              primitive: "triangles",
-              vert: `
-                precision mediump float;
-                attribute vec3 position;
-                attribute vec4 color;
-                varying vec4 vColor;
-                void main() {
-                  gl_Position = vec4(position, 1.0);
-                  vColor = color;
-                }
-              `
-            })
-          : null;
-        const lineCommand = scene.linePositions.length > 0
-          ? reglInstance({
-              attributes: {
-                color: scene.lineColors,
-                position: scene.linePositions
-              },
-              blend: {
-                enable: true,
-                func: {
-                  dstRGB: "one minus src alpha",
-                  dstAlpha: "one minus src alpha",
-                  srcRGB: "src alpha",
-                  srcAlpha: "src alpha"
-                }
-              },
-              count: scene.linePositions.length / 3,
-              depth: {
-                enable: true,
-                func: "lequal"
-              },
-              frag: `
-                precision mediump float;
-                varying vec4 vColor;
-                void main() {
-                  gl_FragColor = vColor;
-                }
-              `,
-              lineWidth: 1,
-              primitive: "lines",
-              vert: `
-                precision mediump float;
-                attribute vec3 position;
-                attribute vec4 color;
-                varying vec4 vColor;
-                void main() {
-                  gl_Position = vec4(position, 1.0);
-                  vColor = color;
-                }
-              `
-            })
-          : null;
-
-        reglInstance.clear({ color: [0, 0, 0, 0], depth: 1 });
-        wallCommand?.();
-        fillCommand?.();
-        lineCommand?.();
-        if (!cancelled) {
-          setReady(true);
-          setFailed(false);
-        }
+        const gl = canvas.getContext("webgl", { alpha: true, antialias: true, depth: true, premultipliedAlpha: true });
+        if (!gl || gl.isContextLost()) throw new Error("WebGL unavailable");
+        paintSurface(gl, scene);
+        setReady(true);
+        setFailed(false);
       } catch {
-        if (!cancelled) {
-          setReady(false);
-          setFailed(true);
-        }
+        setReady(false);
+        setFailed(true);
       }
     };
-
-    setReady(false);
-    setFailed(false);
+    const onLost = (event: Event) => {
+      event.preventDefault();
+      setReady(false);
+      setFailed(true);
+    };
+    canvas.addEventListener("webglcontextlost", onLost);
+    canvas.addEventListener("webglcontextrestored", drawSurface);
     drawSurface();
-
     return () => {
-      cancelled = true;
-      reglInstance?.destroy();
+      canvas.removeEventListener("webglcontextlost", onLost);
+      canvas.removeEventListener("webglcontextrestored", drawSurface);
     };
   }, [
     chart,
@@ -827,6 +753,7 @@ export const MemoSurfaceChartComposite = React.memo(function MemoSurfaceChartCom
   return (
     <div
       aria-label={chart.title ?? chart.name ?? "Chart"}
+      data-xlsx-chart-renderer="legacy"
       role="img"
       style={{
         background,

@@ -10,6 +10,7 @@ import type {
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { resolveWorkbookColor } from "./colors";
 import type {
+  XlsxOfficeLayout,
   XlsxCellAddress,
   XlsxConditionalDataBarRule,
   XlsxConditionalFormatIcon,
@@ -97,6 +98,20 @@ function measureColumnCharacterWidthPx(fontFamily?: string | null, fontSizePt?: 
   }
 
   columnCharacterWidthCache.set(cacheKey, width);
+  return width;
+}
+
+function measureOfficeDigitWidthPt(fontFamily?: string | null, fontSizePt?: number | null) {
+  const family = fontFamily?.trim() || "Calibri";
+  const size = typeof fontSizePt === "number" && fontSizePt > 0 ? fontSizePt : 11;
+  const key = `office|${family}|${size}`;
+  const cached = columnCharacterWidthCache.get(key);
+  if (cached !== undefined) return cached;
+  const context = typeof document !== "undefined" ? document.createElement("canvas").getContext("2d") : null;
+  if (!context) return 6;
+  context.font = `${size}px ${JSON.stringify(family)}, "React XLSX Carlito"`;
+  const width = Math.max(1, Math.round(Math.max(...Array.from("0123456789", digit => context.measureText(digit).width))));
+  columnCharacterWidthCache.set(key, width);
   return width;
 }
 
@@ -235,6 +250,7 @@ type WorkbookSheetInfo = {
 };
 
 type WorkbookSheetState = {
+  officeLayout?: XlsxOfficeLayout;
   cellStyleIds: Record<string, number>;
   autoFilterRanges: XlsxCellRange[];
   cachedFormulaValues: Record<string, string>;
@@ -1660,6 +1676,20 @@ function parseSheetState(
   );
 
   const defaultRowHeight = Number(sheetFormatNode?.getAttribute("defaultRowHeight") ?? 15);
+  const digitWidthPt = measureOfficeDigitWidthPt(options?.defaultFont?.family, options?.defaultFont?.sizePt);
+  const storedColumnPixels = (width: number) => Math.max(0, Math.floor(
+    ((256 * width + Math.floor(128 / digitWidthPt)) / 256) * digitWidthPt
+  ) * (4 / 3));
+  const explicitDefaultWidth = Number(sheetFormatNode?.getAttribute("defaultColWidth") ?? Number.NaN);
+  const baseWidth = Number(sheetFormatNode?.getAttribute("baseColWidth") ?? 8);
+  const officeLayout: XlsxOfficeLayout = {
+    defaultColumnPx: Number.isFinite(explicitDefaultWidth) && explicitDefaultWidth > 0
+      ? storedColumnPixels(explicitDefaultWidth)
+      : ((Number.isFinite(baseWidth) && baseWidth > 0 ? baseWidth : 8) * digitWidthPt + 5) * (4 / 3),
+    defaultRowPx: (Number.isFinite(defaultRowHeight) && defaultRowHeight > 0 ? defaultRowHeight : 15) * (4 / 3),
+    columns: {},
+    rows: {}
+  };
   const defaultColWidth = Number(
     sheetFormatNode?.getAttribute("defaultColWidth")
     ?? sheetFormatNode?.getAttribute("baseColWidth")
@@ -1703,6 +1733,7 @@ function parseSheetState(
     const styleId = Number(rowNode.getAttribute("s") ?? Number.NaN);
     if (rowIndex >= 0 && Number.isFinite(height)) {
       rowHeightOverridesPx[rowIndex] = Math.max(MIN_ROW_HEIGHT_PX, Math.round(height * 1.33));
+      officeLayout.rows[rowIndex] = { sourcePx: rowHeightOverridesPx[rowIndex], sizePx: Math.max(0, height * (4 / 3)) };
     }
     if (rowIndex >= 0 && Number.isFinite(styleId)) {
       rowStyleIds[rowIndex] = styleId;
@@ -1745,6 +1776,7 @@ function parseSheetState(
         if (Number.isFinite(width)) {
           const widthPx = sheetColumnWidthToPixels(width, columnWidthCharacterWidthPx);
           colWidthOverridesPx[col] = widthPx;
+          officeLayout.columns[col] = { sourcePx: widthPx, sizePx: storedColumnPixels(width) };
         }
         if (Number.isFinite(styleId)) {
           colStyleIds[col] = styleId;
@@ -1762,6 +1794,7 @@ function parseSheetState(
     colStyleIds,
     conditionalFormatRules,
     defaultColWidthPx: sheetColumnWidthToPixels(defaultColWidth, columnWidthCharacterWidthPx),
+    officeLayout,
     defaultRowHeightPx: Math.max(MIN_ROW_HEIGHT_PX, Math.round(defaultRowHeight * 1.33)),
     hasHorizontalMerges: false,
     hasVerticalMerges: false,

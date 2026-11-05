@@ -438,6 +438,7 @@ function buildSheetList(
     colWidthOverridesPx?: Record<number, number>;
     colStyleIds?: Record<number, number>;
     conditionalFormatRules?: XlsxConditionalFormatRule[];
+    officeLayout?: XlsxSheetData["officeLayout"];
     defaultColWidthPx?: number;
     defaultRowHeightPx?: number;
     hasHorizontalMerges?: boolean;
@@ -513,6 +514,7 @@ function buildSheetList(
         colStyleIds: sheetState?.colStyleIds ?? {},
         conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
         dataValidations: parseWorksheetDataValidations(worksheet),
+        officeLayout: sheetState?.officeLayout,
         defaultColWidthPx,
         defaultRowHeightPx,
         freezePanes: parseWorksheetFreezePanes(worksheet),
@@ -614,6 +616,7 @@ function buildSheetList(
       colStyleIds: sheetState?.colStyleIds ?? {},
       conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
       dataValidations: parseWorksheetDataValidations(worksheet),
+      officeLayout: sheetState?.officeLayout,
       defaultColWidthPx,
       defaultRowHeightPx,
       freezePanes: parseWorksheetFreezePanes(worksheet),
@@ -2092,7 +2095,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         return;
       }
       if (imageAssetsRef.current && !effectiveSkipXmlParsing) {
-        const chartOriginsById = hydrateWorkbookChartStyles(result.chartsByWorkbookSheetIndex, imageAssetsRef.current);
+        const chartOriginsById = hydrateWorkbookChartStyles(result.chartsByWorkbookSheetIndex, imageAssetsRef.current, result.chartsheets);
         chartAssetsRef.current = { ...result, chartOriginsById };
       }
       setChartsByWorkbookSheetIndex(result.chartsByWorkbookSheetIndex);
@@ -2342,11 +2345,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
             setImageAssets(workerImageAssets);
             const chartOriginsById = workerImageAssets
-              ? hydrateWorkbookChartStyles(snapshot.chartsByWorkbookSheetIndex, workerImageAssets)
+              ? hydrateWorkbookChartStyles(snapshot.chartsByWorkbookSheetIndex, workerImageAssets, snapshot.chartsheets)
               : new Map();
             setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
             setWorkbook(null);
-            setSheets(snapshot.sheets);
+            setSheets(snapshot.sheets.map(sheet => ({ ...sheet, officeLayout: workerImageAssets?.sheetStatesByWorkbookSheetIndex[sheet.workbookSheetIndex]?.officeLayout })));
             setChartsByWorkbookSheetIndex(snapshot.chartsByWorkbookSheetIndex);
             setChartsheets(snapshot.chartsheets);
             setTabs(snapshot.tabs);
@@ -2634,12 +2637,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             : parseWorkbookImageAssets(new Uint8Array(deferredBuffer));
           setImageAssets(workerImageAssets);
           const chartOriginsById = workerImageAssets
-            ? hydrateWorkbookChartStyles(snapshot.chartsByWorkbookSheetIndex, workerImageAssets)
+            ? hydrateWorkbookChartStyles(snapshot.chartsByWorkbookSheetIndex, workerImageAssets, snapshot.chartsheets)
             : new Map();
           deferredBufferRef.current = null;
           setDeferredLoadFileSize(null);
           setWorkbook(null);
-          setSheets(snapshot.sheets);
+          setSheets(snapshot.sheets.map(sheet => ({ ...sheet, officeLayout: workerImageAssets?.sheetStatesByWorkbookSheetIndex[sheet.workbookSheetIndex]?.officeLayout })));
           setChartsByWorkbookSheetIndex(snapshot.chartsByWorkbookSheetIndex);
           setChartsheets(snapshot.chartsheets);
           setTabs(snapshot.tabs);
@@ -4270,7 +4273,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return false;
     }
 
-    updateChart(chartId, { series: nextChart.series, renderSource: chart.renderSource });
+    const source = chart.renderSource;
+    const indexedCategoryFormulaChanged = source?.indexedXSeries?.[seriesIndex]
+      && chart.series[seriesIndex]?.categoriesRef?.formula !== nextChart.series[seriesIndex]?.categoriesRef?.formula;
+    updateChart(chartId, {
+      series: nextChart.series,
+      typeGroups: nextChart.typeGroups,
+      renderSource: source?.sourceSeries || indexedCategoryFormulaChanged ? undefined : source
+    });
     const selectedSeries = nextChart.series[seriesIndex];
     if (selectedSeries) {
       setSelectedChartElement((current) => (

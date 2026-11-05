@@ -7,7 +7,7 @@ import type { XlsxChart, XlsxChartRenderSource, XlsxChartElementSelection } from
 const svgNamespace = "http://www.w3.org/2000/svg";
 const allowedElements = new Set([
   "svg", "g", "defs", "clipPath", "rect", "circle", "ellipse", "path", "line", "polyline", "polygon",
-  "text", "tspan", "linearGradient", "radialGradient", "stop", "pattern"
+  "title", "desc", "text", "tspan", "linearGradient", "radialGradient", "stop", "pattern"
 ]);
 const plainAttributes = new Set([
   "x", "y", "width", "height", "x1", "x2", "y1", "y2", "cx", "cy", "fx", "fy", "r", "rx", "ry", "fr",
@@ -15,10 +15,10 @@ const plainAttributes = new Set([
   "dominant-baseline", "stroke-linecap", "stroke-linejoin", "stroke-width", "stroke-dasharray",
   "opacity", "fill-opacity", "stroke-opacity", "fill-rule", "shape-rendering", "offset", "stop-opacity",
   "gradientUnits", "gradientTransform", "patternUnits", "patternContentUnits",
-  "data-chart-kind", "data-chart-series", "data-chart-point", "data-chart-x", "data-chart-y"
+  "pointer-events", "data-chart-kind", "data-chart-series", "data-chart-point", "data-chart-x", "data-chart-y"
 ]);
 
-function safeChartSvg(markup: string, prefix: string) {
+function safeChartSvg(markup: string, prefix: string, seriesMap?: number[]) {
   const svg = new DOMParser().parseFromString(markup, "image/svg+xml").documentElement;
   if (svg.localName !== "svg" || svg.namespaceURI !== svgNamespace) return null;
 
@@ -47,7 +47,11 @@ function safeChartSvg(markup: string, prefix: string) {
     }
 
     if (node.hasAttribute("data-chart-series")) {
-      node.setAttribute("data-xlsx-chart-series-index", node.getAttribute("data-chart-series")!);
+      const sourceSeries = Number(node.getAttribute("data-chart-series"));
+      const series = seriesMap?.[sourceSeries] ?? sourceSeries;
+      if (!Number.isInteger(series) || series < 0) return null;
+      node.setAttribute("data-chart-series", String(series));
+      node.setAttribute("data-xlsx-chart-series-index", String(series));
       const point = node.getAttribute("data-chart-point");
       if (point != null) node.setAttribute("data-xlsx-chart-point-index", point);
       const kind = node.getAttribute("data-chart-kind");
@@ -74,24 +78,37 @@ function renderSharedChart(renderer: OfficeCharts, chart: XlsxChart, source: Xls
       fontFamily: chart.fontFamily,
       data: {
         title: chart.title,
-        series: chart.series.map((series) => ({
-          chartType: source.kind,
-          name: series.name,
-          points: Array.from({ length: Math.max(series.values.length, series.categories.length) }, (_, index) => {
-            const value = series.values[index];
-            const label = series.categories[index];
-            return {
-              index,
-              value: value == null ? null : String(value),
-              categories: series.categories.length || series.categoriesRef?.formula
-                ? [{ level: 0, label: label == null ? "" : String(label) }]
-                : []
-            };
-          })
-        }))
+        series: (source.sourceSeries ?? chart.series).map((series, ordinal) => {
+          const chartType = source.seriesTypes?.[ordinal] ?? source.kind;
+          const xy = chartType === "scatter" || chartType === "bubble";
+          const indexedX = source.indexedXSeries?.[ordinal] === true;
+          const hierarchy = series.raw?.chartExHierarchyCategories as string[][] | undefined;
+          const colorStrings = series.raw?.chartExColorStrings as Array<string | null> | undefined;
+          return {
+            chartType,
+            name: series.name,
+            points: Array.from({ length: Math.max(series.values.length, indexedX ? 0 : series.categories.length, series.bubbleSizes?.length ?? 0) }, (_, index) => {
+              const value = series.values[index];
+              const label = series.categories[index];
+              const bubble = series.bubbleSizes?.[index];
+              return {
+                index,
+                value: xy ? undefined : colorStrings?.[index] ?? (value == null ? null : String(value)),
+                x: indexedX ? String(index + 1) : xy && label != null ? String(label) : undefined,
+                y: xy && value != null ? String(value) : undefined,
+                bubbleSize: bubble == null ? undefined : String(bubble),
+                categories: xy ? [] : hierarchy?.[index]?.length
+                  ? [...hierarchy[index]].reverse().map((label, level) => ({level, label}))
+                  : series.categories.length || series.categoriesRef?.formula
+                    ? [{ level: 0, label: label == null ? "" : String(label) }]
+                    : []
+              };
+            })
+          };
+        })
       }
     });
-    return svg ? safeChartSvg(svg, prefix) : null;
+    return svg ? safeChartSvg(svg, prefix, source.sourceSeries?.map(series => chart.series.findIndex(candidate => candidate.id === series.id))) : null;
   } catch {
     return null;
   }
@@ -102,7 +119,7 @@ function selectionHandles(svg: Element, chartId: string, selected: XlsxChartElem
   return Array.from(svg.querySelectorAll("[data-chart-point]")).map((node, index) => {
     if (Number(node.getAttribute("data-chart-series")) !== selected.seriesIndex
       || (selected.kind === "point" && Number(node.getAttribute("data-chart-point")) !== selected.pointIndex)) return null;
-    if (node.getAttribute("data-chart-kind") === "bar") {
+    if (node.localName === "rect") {
       return renderSelectionRectHandles(String(index), Number(node.getAttribute("x")), Number(node.getAttribute("y")),
         Number(node.getAttribute("width")), Number(node.getAttribute("height")));
     }
@@ -130,7 +147,7 @@ export function SharedChartSvg(props: ChartSvgProps & {
   const handles = React.useMemo(() => svg && selectionHandles(svg, chart.id, selectedChartElement),
     [svg, chart.id, selectedChartElement]);
   const { handlePointerDown, handleDoubleClick } = useChartEvents(props);
-  if (!svg) return <>{fallback}</>;
+  if (!svg) return <div data-xlsx-chart-fallback="unsupported" style={{width:"100%",height:"100%"}}>{fallback}</div>;
   return (
     <svg
       aria-label={chart.title ?? chart.name ?? "Chart"}

@@ -7254,13 +7254,14 @@ function XlsxGrid({
   renderScroller,
   enableGestureZoom = true,
   experimentalCanvas = true,
+  experimentalOfficeCharts,
   selectionColor,
   selectionFillColor,
   selectionHeaderColor,
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "experimentalOfficeCharts" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -7338,8 +7339,8 @@ function XlsxGrid({
     zoomScale
   } = controller;
   React.useEffect(() => {
-    if (showImages && !isChartsLoading) preloadChartRenderers([charts]);
-  }, [charts, isChartsLoading, showImages]);
+    if (showImages && !isChartsLoading) preloadChartRenderers([charts], experimentalOfficeCharts);
+  }, [charts, isChartsLoading, showImages, experimentalOfficeCharts]);
   const formControlItemsById = React.useMemo(() => new Map(
     formControls.flatMap((control) => (
       control.controlIndex !== undefined && (control.kind === "dropdown" || control.kind === "listbox")
@@ -7577,6 +7578,7 @@ function XlsxGrid({
     palette: ViewerPalette;
     readOnly: boolean;
     renderChartLoading: XlsxViewerProps["renderChartLoading"];
+    experimentalOfficeCharts: XlsxViewerProps["experimentalOfficeCharts"];
     renderFormControl: XlsxViewerProps["renderFormControl"];
     renderImage: XlsxViewerProps["renderImage"];
     renderImageSelection: XlsxViewerProps["renderImageSelection"];
@@ -8210,6 +8212,17 @@ function XlsxGrid({
   }, [activeSheet?.freezePanes?.col, visibleCols]);
   const actualColWidths = React.useMemo(
     () => {
+      const office = experimentalOfficeCharts ? activeSheet?.officeLayout : undefined;
+      if (office) {
+        return Array.from({ length: displayColLimit }, (_, index) => {
+          if (hiddenColSet.has(index)) return 0;
+          const original = office.columns[index];
+          const override = activeSheet?.colWidthOverridesPx[index];
+          return override !== undefined && override !== original?.sourcePx
+            ? override
+            : original?.sizePx ?? office.defaultColumnPx;
+        });
+      }
       const widths = new Array(displayColLimit).fill(0);
       const showGridLines = activeSheet?.showGridLines ?? true;
       const fallbackWidth = Math.max(
@@ -8277,6 +8290,8 @@ function XlsxGrid({
       return widths;
     },
     [
+      experimentalOfficeCharts,
+      activeSheet?.officeLayout,
       activeSheet?.colWidthOverridesPx,
       activeSheet?.colWidths,
       activeSheet?.defaultColWidthPx,
@@ -8291,6 +8306,17 @@ function XlsxGrid({
   );
   const actualRowHeights = React.useMemo(
     () => {
+      const office = experimentalOfficeCharts ? activeSheet?.officeLayout : undefined;
+      if (office) {
+        return Array.from({ length: displayRowLimit }, (_, index) => {
+          if (hiddenRowSet.has(index)) return 0;
+          const original = office.rows[index];
+          const override = activeSheet?.rowHeightOverridesPx[index];
+          return override !== undefined && override !== original?.sourcePx
+            ? override
+            : original?.sizePx ?? office.defaultRowPx;
+        });
+      }
       const heights = new Array(displayRowLimit).fill(0);
       const showGridLines = activeSheet?.showGridLines ?? true;
       const fallbackHeight = Math.max(
@@ -8396,6 +8422,8 @@ function XlsxGrid({
       return heights;
     },
     [
+      experimentalOfficeCharts,
+      activeSheet?.officeLayout,
       activeSheet?.defaultRowHeightPx,
       activeSheet?.maxUsedRow,
       activeSheet?.maxUsedCol,
@@ -14116,13 +14144,26 @@ function XlsxGrid({
           }}
         >
           {charts.length > 0 ? charts.map((chart) => {
-            const chartsheetRect = { height: 320, left: 0, top: 0, width: 640 };
+            const sourceSize = experimentalOfficeCharts && chart.anchor.kind !== "two-cell" ? chart.anchor.sizeEmu : undefined;
+            const chartsheetRect = {
+              height: sourceSize?.cy ? emuToPixels(sourceSize.cy) : 320,
+              left: 0,
+              top: 0,
+              width: sourceSize?.cx ? emuToPixels(sourceSize.cx) : 640
+            };
             return (
-              <div key={chart.id} style={{ minHeight: 320, position: "relative" }}>
+              <div key={chart.id} style={{
+                minHeight: sourceSize ? undefined : 320,
+                width: sourceSize ? chartsheetRect.width : undefined,
+                maxWidth: "100%",
+                aspectRatio: sourceSize ? `${chartsheetRect.width}/${chartsheetRect.height}` : undefined,
+                position: "relative"
+              }}>
                   {isChartsLoading
                     ? renderChartLoadingNode(renderChartLoading, chart, chartsheetRect)
                     : (
                         <MemoChartSvg
+                          experimentalOfficeCharts={experimentalOfficeCharts}
                           chart={chart}
                           loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, chartsheetRect, stage)}
                           onChartElementDoubleClick={handleChartElementDoubleClick}
@@ -15148,6 +15189,7 @@ function XlsxGrid({
               ? renderChartLoadingNode(renderChartLoading, chart, rect)
               : (
                   <MemoChartSvg
+                    experimentalOfficeCharts={experimentalOfficeCharts}
                     chart={chart}
                     loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, rect, stage)}
                     onChartElementDoubleClick={handleChartElementDoubleClick}
@@ -15242,6 +15284,7 @@ function XlsxGrid({
   const previousPaneDrawingNodes = paneDrawingNodesCacheRef.current;
   const canReusePaneDrawingNodes =
     previousPaneDrawingNodes !== null
+    && previousPaneDrawingNodes.experimentalOfficeCharts === experimentalOfficeCharts
     && previousPaneDrawingNodes.showImages === showImages
     && previousPaneDrawingNodes.updateFormControl === updateFormControl
     && previousPaneDrawingNodes.chartRects === chartRects
@@ -15320,6 +15363,7 @@ function XlsxGrid({
       palette,
       readOnly,
       renderChartLoading,
+      experimentalOfficeCharts,
       renderFormControl,
       renderImage,
       renderImageSelection,
@@ -16785,6 +16829,7 @@ function XlsxViewerInner({
   enableGestureZoom = true,
   errorState,
   experimentalCanvas = true,
+  experimentalOfficeCharts,
   fileTooLargeState,
   getCellStyle,
   headerBackgroundColor,
@@ -16898,6 +16943,7 @@ function XlsxViewerInner({
                 enableGestureZoom={enableGestureZoom}
                 errorState={errorState}
                 experimentalCanvas={experimentalCanvas}
+                experimentalOfficeCharts={experimentalOfficeCharts}
                 fileTooLargeState={fileTooLargeState}
                 getCellStyle={getCellStyle}
                 highlightClassName={highlightClassName}
