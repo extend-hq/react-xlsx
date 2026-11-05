@@ -775,3 +775,9 @@ The package also exports the main types you are likely to use for custom integra
 - `XlsxViewer` resolves its controller in this order: explicit `controller` prop, provider context, then an internally created controller
 - `DefaultXlsxToolbar` is exported if you want the library toolbar outside the default shell
 - The release badge tracks the latest GitHub release version
+
+## Excel chart comparisons
+
+Charts use the shared Rust renderer and Office font fallbacks, including Carlito. The latest corpus run rendered all 382 charts in 43 workbooks and compared 381 native Excel image pairs. The 48-example gallery covers 2D and 3D charts, modern charts, shadows, bevels and labels; remaining visual differences are documented.
+
+[![Excel and React XLSX chart comparisons](https://raw.githubusercontent.com/extend-hq/rust-office/main/docs/readme-assets/excel-chart-overview.png)](https://github.com/extend-hq/rust-office/blob/main/docs/excel-chart-comparisons.md)

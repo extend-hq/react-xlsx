@@ -250,12 +250,17 @@ export function applyChartSeriesFormula(
     delete raw.name;
   }
 
+  const categories = resolveEditedReference(categoriesRef, currentSeries.categoriesRef, currentSeries.categories, "category");
+  raw.chartCategoryReferenceValues = categories;
+  raw.chartCategoryNumericValues = workbook
+    ? resolveReferenceValues(workbook, chart.workbookSheetIndex, categoriesRef, "value")
+    : currentSeries.raw?.chartCategoryNumericValues;
   const nextSeries: XlsxChartSeries = {
     ...currentSeries,
     bubbleSizeRef,
     bubbleSizes: resolveEditedReference(bubbleSizeRef, currentSeries.bubbleSizeRef, currentSeries.bubbleSizes ?? [], "value")
       .map((value) => typeof value === "number" && Number.isFinite(value) ? value : null),
-    categories: resolveEditedReference(categoriesRef, currentSeries.categoriesRef, currentSeries.categories, "category"),
+    categories,
     categoriesRef,
     name: parsed.nameLiteral ?? (
       parsed.nameFormula === currentSeries.raw?.name && isUnresolved(parsed.nameFormula)
@@ -270,8 +275,20 @@ export function applyChartSeriesFormula(
     valuesRef
   };
 
+  const hierarchy = currentSeries.raw?.chartHierarchyCategories as Array<Array<{ level: number; label: string }>> | undefined;
+  if (hierarchy) {
+    const changedReference = categoriesRef.formula !== currentSeries.categoriesRef?.formula;
+    const resolvedHierarchy = changedReference ? buildEditedChartHierarchy(nextSeries) : hydrateChartHierarchy(nextSeries, hierarchy);
+    if (resolvedHierarchy) {
+      raw.chartHierarchyCategories = resolvedHierarchy;
+      nextSeries.categories = resolvedHierarchy.map((point) => point?.find((entry) => entry.level === 0)?.label ?? null);
+    } else delete raw.chartHierarchyCategories;
+  }
+
+  const sourceSeries = chart.raw?.officeSourceSeries as XlsxChartSeries[] | undefined;
   return {
     ...chart,
+    raw: sourceSeries ? { ...chart.raw, officeSourceSeries: sourceSeries.map(series => series.id === currentSeries.id ? nextSeries : series) } : chart.raw,
     series: chart.series.map((series, index) => index === seriesIndex ? nextSeries : series),
     typeGroups: chart.typeGroups?.map((group) => ({
       ...group,
@@ -977,13 +994,40 @@ function readChartRelationships(
   for (const relationshipNode of getLocalDescendants(relsDocument, "Relationship")) {
     const type = relationshipNode.getAttribute("Type");
     const target = relationshipNode.getAttribute("Target");
-    if (!type || !target) {
+    if (!type || !target || relationshipNode.getAttribute("TargetMode") === "External") {
       continue;
     }
     relationships.set(type, resolveRelationshipPath(relsPath, target));
   }
 
   return relationships;
+}
+
+function readChartImages(archive: Record<string, Uint8Array>, chartPath: string | undefined) {
+  if (!chartPath || typeof btoa !== "function") return undefined;
+  const relsPath = normalizeArchivePath(`${dirname(chartPath)}/_rels/${chartPath.split("/").pop()}.rels`);
+  const document = parseXml(readArchiveText(archive, relsPath) ?? "");
+  const images: Record<string, string> = Object.create(null);
+  for (const relationship of getLocalDescendants(document, "Relationship")) {
+    const id = relationship.getAttribute("Id");
+    const target = relationship.getAttribute("Target");
+    if (!id || !target || relationship.getAttribute("TargetMode") === "External"
+      || !relationship.getAttribute("Type")?.endsWith("/image")) continue;
+    const bytes = archive[resolveRelationshipPath(relsPath, target)];
+    if (!bytes?.length) continue;
+    const signature = String.fromCharCode(...bytes.subarray(0, 12));
+    const mime = bytes[0] === 137 && signature.slice(1, 4) === "PNG" ? "image/png"
+      : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? "image/jpeg"
+      : signature.startsWith("GIF87a") || signature.startsWith("GIF89a") ? "image/gif"
+      : signature.startsWith("RIFF") && signature.slice(8, 12) === "WEBP" ? "image/webp" : null;
+    if (!mime) continue;
+    const chunks: string[] = [];
+    for (let index = 0; index < bytes.length; index += 0x8000) {
+      chunks.push(String.fromCharCode(...bytes.subarray(index, index + 0x8000)));
+    }
+    images[id] = `data:${mime};base64,${btoa(chunks.join(""))}`;
+  }
+  return Object.keys(images).length > 0 ? images : undefined;
 }
 
 function readChartColorPalette(
@@ -1269,58 +1313,412 @@ function parseChartCacheValues(
   return values;
 }
 
+function parseChartHierarchyCategories(parentNode: Element | null) {
+  const referenceNode = getFirstLocalChild(parentNode, "multiLvlStrRef");
+  const cacheNode = getFirstLocalChild(referenceNode, "multiLvlStrCache");
+  if (!cacheNode) return undefined;
+  const pointCount = readChartNumericAttribute(cacheNode, "ptCount");
+  const categories: Array<Array<{ level: number; label: string }>> = new Array(
+    Number.isSafeInteger(pointCount) && pointCount! >= 0 && pointCount! <= 1_048_576 ? pointCount : 0
+  );
+  getLocalChildren(cacheNode, "lvl").forEach((levelNode, level) => {
+    for (const point of getLocalChildren(levelNode, "pt")) {
+      const index = Number(point.getAttribute("idx") ?? Number.NaN);
+      if (!Number.isSafeInteger(index) || index < 0 || index > 1_048_575) continue;
+      (categories[index] ??= []).push({ level, label: getFirstLocalChild(point, "v")?.textContent ?? "" });
+    }
+  });
+  return categories;
+}
+
+function hydrateChartHierarchy(series: XlsxChartSeries, hierarchy: Array<Array<{ level: number; label: string }>>) {
+  const formula = series.categoriesRef?.formula;
+  if (!formula || series.raw?.unresolvedCategoriesReference) return hierarchy;
+  const range = parseA1Range(splitSheetReference(formula)?.range ?? formula);
+  if (!range) return hierarchy;
+  const rows = range.end.row - range.start.row + 1;
+  const columns = range.end.col - range.start.col + 1;
+  const levels = hierarchy.reduce((count, point) => Math.max(count, ...point.map((entry) => entry.level + 1)), 0);
+  const referenceValues = (series.raw?.chartCategoryReferenceValues as XlsxChartSeries["categories"] | undefined) ?? series.categories;
+  if (referenceValues.length !== rows * columns || (levels !== columns && levels !== rows)) return hierarchy;
+  const pointsByRow = levels === columns && (rows === series.values.length || rows === hierarchy.length);
+  const pointsByColumn = levels === rows && (columns === series.values.length || columns === hierarchy.length);
+  if (!pointsByRow && !pointsByColumn) return hierarchy;
+  const previous = new Map<number, string>();
+  return Array.from({ length: pointsByRow ? rows : columns }, (_, index) => {
+    const cached = hierarchy[index] ?? [];
+    const entries: Array<{ level: number; label: string }> = [];
+    let changedParent = false;
+    for (let level = levels - 1; level >= 0; level -= 1) {
+      const offset = pointsByRow ? index * columns + columns - 1 - level : (rows - 1 - level) * columns + index;
+      const value = referenceValues[offset];
+      const explicit = cached.some(entry => entry.level === level);
+      if (level > 0 && (value == null || value === "") && !explicit) continue;
+      const label = String(value ?? "");
+      if (level === 0 || explicit || changedParent || previous.get(level) !== label) {
+        entries.push({ level, label });
+        changedParent = true;
+      }
+      previous.set(level, label);
+    }
+    return entries.sort((a, b) => a.level - b.level);
+  });
+}
+
+function buildEditedChartHierarchy(series: XlsxChartSeries) {
+  const formula = series.categoriesRef?.formula;
+  if (!formula || series.raw?.unresolvedCategoriesReference) return undefined;
+  const range = parseA1Range(splitSheetReference(formula)?.range ?? formula);
+  if (!range) return undefined;
+  const rows = range.end.row - range.start.row + 1;
+  const columns = range.end.col - range.start.col + 1;
+  const values = series.raw?.chartCategoryReferenceValues as XlsxChartSeries["categories"] | undefined;
+  if (!values || values.length !== rows * columns || rows < 2 || columns < 2) return undefined;
+  const byRow = rows === series.values.length;
+  if (!byRow && columns !== series.values.length) return undefined;
+  const levelCount = byRow ? columns : rows;
+  const previous = new Map<number, string>();
+  return Array.from({ length: series.values.length }, (_, index) => {
+    const entries: Array<{ level: number; label: string }> = [];
+    let changedParent = false;
+    for (let level = levelCount - 1; level >= 0; level -= 1) {
+      const offset = byRow ? index * columns + columns - 1 - level : (rows - 1 - level) * columns + index;
+      const value = values[offset];
+      if (level > 0 && value == null) continue;
+      const label = String(value ?? "");
+      if (level === 0 || index === 0 || changedParent || previous.get(level) !== label) {
+        entries.push({ level, label });
+        changedParent = true;
+      }
+      previous.set(level, label);
+    }
+    return entries.sort((a, b) => a.level - b.level);
+  });
+}
+
 function parseChartMultiLevelCacheValues(
   parentNode: Element | null,
   mode: "category" | "value"
 ): Array<number | string | null> | null {
-  if (!parentNode) {
-    return null;
-  }
+  const hierarchy = parseChartHierarchyCategories(parentNode);
+  if (!hierarchy?.length) return null;
+  return Array.from({ length: hierarchy.length }, (_, index) => {
+    const label = hierarchy[index]?.find((entry) => entry.level === 0)?.label;
+    return mode === "value" ? cellValueToNumber(label) : label || null;
+  });
+}
 
-  const referenceNode = getFirstLocalChild(parentNode, "multiLvlStrRef") ?? parentNode;
-  const cacheNode = getFirstLocalChild(referenceNode, "multiLvlStrCache");
-  if (!cacheNode) {
-    return null;
-  }
+function chartReferenceFromXml(parentNode: Element | null, mode: "category" | "value"): XlsxChartReference | null {
+  if (!parentNode) return null;
+  const formula = getFirstLocalDescendant(parentNode, "f")?.textContent ?? undefined;
+  const values = parseChartCacheValues(parentNode, "numCache", mode)
+    ?? parseChartCacheValues(parentNode, "strCache", mode)
+    ?? parseChartMultiLevelCacheValues(parentNode, mode)
+    ?? [];
+  return { formula, values, refType: formula ? "formula" : mode === "value" ? "numbers" : "strings" };
+}
 
-  const levelNodes = getLocalChildren(cacheNode, "lvl");
-  if (levelNodes.length === 0) {
-    return null;
-  }
+type ChartReferenceLayout = {
+  range: NonNullable<ReturnType<typeof parseA1Range>>;
+  hiddenCells: number[];
+  tableTotalCells: number[];
+};
+type ChartReferenceResolver = ((reference: XlsxChartReference | null, sheetIndex: number, mode: "category" | "value") => Array<number | string | null> | null)
+  & {
+    layout: (reference: XlsxChartReference | null, sheetIndex: number) => ChartReferenceLayout | null;
+    external: (reference: XlsxChartReference | null, mode: "category" | "value") => Array<number | string | null> | null;
+  };
 
-  const pointCount = readChartNumericAttribute(cacheNode, "ptCount");
-  const primaryLevelNode = mode === "category"
-    ? levelNodes[levelNodes.length - 1] ?? levelNodes[0]
-    : levelNodes[0];
-  const pointNodes = getLocalChildren(primaryLevelNode, "pt")
-    .map((pointNode) => {
-      const rawIndex = Number(pointNode.getAttribute("idx") ?? Number.NaN);
-      return {
-        index: Number.isFinite(rawIndex) ? rawIndex : 0,
-        value: getFirstLocalChild(pointNode, "v")?.textContent ?? ""
-      };
-    })
-    .sort((left, right) => left.index - right.index);
-
-  if (pointNodes.length === 0) {
-    return null;
-  }
-
-  const maxIndex = pointNodes.reduce((max, point) => Math.max(max, point.index), 0);
-  const targetLength = Math.max(
-    pointNodes.length,
-    Number.isFinite(pointCount ?? Number.NaN) ? Number(pointCount) : 0,
-    maxIndex + 1
-  );
-  const values = Array.from({ length: targetLength }, () => null as number | string | null);
-  for (const point of pointNodes) {
-    if (mode === "value") {
-      values[point.index] = cellValueToNumber(point.value);
-      continue;
+function createArchiveChartReferenceResolver(archive: Record<string, Uint8Array>): ChartReferenceResolver {
+  const documents = new Map<string, XMLDocument | null>();
+  const read = (path: string) => {
+    if (!documents.has(path)) documents.set(path, parseXml(readArchiveText(archive, path) ?? ""));
+    return documents.get(path) ?? null;
+  };
+  const cellsByPath = new Map<string, Map<string, Element>>();
+  let sharedStrings: string[] | undefined;
+  const external = (reference: XlsxChartReference | null, mode: "category" | "value") => {
+    const split = splitSheetReference(reference?.formula?.trim().replace(/^=/, "") ?? "");
+    const link = /^\[(\d+)\](.+)$/.exec(split?.sheetName ?? "");
+    const range = split ? parseA1Range(split.range) : null;
+    if (!link || !range || Number(link[1]) < 1 || range.end.row >= 1_048_576 || range.end.col >= 16_384
+      || (range.end.row - range.start.row + 1) * (range.end.col - range.start.col + 1) > 1_048_576) return null;
+    const rootRelationships = getLocalDescendants(read("_rels/.rels"), "Relationship");
+    const rootTarget = rootRelationships.find(node => node.getAttribute("Type")?.endsWith("/officeDocument"))?.getAttribute("Target");
+    const workbookPath = rootTarget ? resolveRelationshipPath("workbook.xml", rootTarget) : "xl/workbook.xml";
+    const workbookDocument = read(workbookPath);
+    const referenceNode = getLocalDescendants(workbookDocument, "externalReference")[Number(link[1]) - 1];
+    const id = referenceNode?.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id")
+      ?? referenceNode?.getAttribute("r:id");
+    const relsPath = `${dirname(workbookPath)}/_rels/${workbookPath.split("/").pop()}.rels`;
+    const relationship = getLocalDescendants(read(relsPath), "Relationship").find(node => node.getAttribute("Id") === id
+      && node.getAttribute("Type")?.endsWith("/externalLink") && node.getAttribute("TargetMode") !== "External");
+    const target = relationship?.getAttribute("Target");
+    if (!target) return null;
+    const path = resolveRelationshipPath(relsPath, target);
+    const book = getFirstLocalChild(read(path)?.documentElement ?? null, "externalBook");
+    const names = getLocalChildren(getFirstLocalChild(book, "sheetNames"), "sheetName");
+    const sheetId = names.findIndex(node => node.getAttribute("val")?.toLowerCase() === link[2].toLowerCase());
+    if (sheetId < 0) return null;
+    const sheet = getLocalChildren(getFirstLocalChild(book, "sheetDataSet"), "sheetData")
+      .find(node => node.hasAttribute("sheetId") && Number(node.getAttribute("sheetId")) === sheetId);
+    if (!sheet || ["1", "true"].includes(sheet.getAttribute("refreshError") ?? "")) return null;
+    const key = `${path}#${sheetId}`;
+    if (!cellsByPath.has(key)) cellsByPath.set(key, new Map(getLocalDescendants(sheet, "cell")
+      .map(cell => [cell.getAttribute("r")?.replace(/\$/g, "").toUpperCase() ?? "", cell])));
+    const cells = cellsByPath.get(key)!;
+    const values: Array<number | string | null> = [];
+    for (let row = range.start.row; row <= range.end.row; row += 1) {
+      for (let col = range.start.col; col <= range.end.col; col += 1) {
+        const cell = cells.get(`${formatA1Column(col)}${row + 1}`);
+        const type = cell?.getAttribute("t") ?? "n";
+        if (!["n", "str", "b", "e"].includes(type)) return null;
+        const value = type === "e" ? null : getFirstLocalChild(cell, "v")?.textContent ?? null;
+        values.push(mode === "value" ? cellValueToNumber(value) : value);
+      }
     }
-    values[point.index] = point.value.length > 0 ? point.value : null;
+    return values;
+  };
+  const locate = (reference: XlsxChartReference | null, sheetIndex: number) => {
+    if (!reference?.formula) return null;
+    const rootRelationships = getLocalDescendants(read("_rels/.rels"), "Relationship");
+    const rootTarget = rootRelationships.find((node) => node.getAttribute("Type")?.endsWith("/officeDocument"))?.getAttribute("Target");
+    const workbookPath = rootTarget ? resolveRelationshipPath("workbook.xml", rootTarget) : "xl/workbook.xml";
+    const workbookDocument = read(workbookPath);
+    const sheetNodes = getLocalDescendants(workbookDocument, "sheet");
+    let formula = reference.formula.replace(/^=/, "");
+    for (let depth = 0; depth < 8 && !formula.includes("!") && !parseA1Range(formula); depth += 1) {
+      const names = getLocalDescendants(workbookDocument, "definedName").filter((node) => node.getAttribute("name") === formula);
+      const named = names.find((node) => node.getAttribute("localSheetId") === String(sheetIndex))
+        ?? names.find((node) => !node.hasAttribute("localSheetId"));
+      if (!named?.textContent || named.textContent === formula) return null;
+      formula = named.textContent.replace(/^=/, "");
+    }
+    const split = splitSheetReference(formula);
+    const range = parseA1Range(split?.range ?? formula);
+    const sheet = split ? sheetNodes.find((node) => node.getAttribute("name") === split.sheetName) : sheetNodes[sheetIndex];
+    if (!range || !sheet || range.end.row >= 1_048_576 || range.end.col >= 16_384) return null;
+    const id = sheet.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id") ?? sheet.getAttribute("r:id");
+    const relsPath = `${dirname(workbookPath)}/_rels/${workbookPath.split("/").pop()}.rels`;
+    const relationships = getLocalDescendants(read(relsPath), "Relationship");
+    const relationship = relationships.find((node) => node.getAttribute("Id") === id && node.getAttribute("TargetMode") !== "External");
+    const target = relationship?.getAttribute("Target");
+    if (!target) return null;
+    const path = resolveRelationshipPath(relsPath, target);
+    const document = read(path);
+    if (!document) return null;
+    return { range, path, document, relationships, relsPath, workbookPath };
+  };
+  const resolve = ((reference: XlsxChartReference | null, sheetIndex: number, mode: "category" | "value") => {
+    if (!reference?.formula) return reference?.values ?? null;
+    const cached = external(reference, mode);
+    if (cached) return cached;
+    const target = locate(reference, sheetIndex);
+    if (!target) return null;
+    const { range, path, document, relationships, relsPath, workbookPath } = target;
+    if (!cellsByPath.has(path)) cellsByPath.set(path, new Map(getLocalDescendants(document, "c").map((cell) => [cell.getAttribute("r")?.toUpperCase() ?? "", cell])));
+    const cells = cellsByPath.get(path)!;
+    const values: Array<number | string | null> = [];
+    for (let row = range.start.row; row <= range.end.row; row += 1) {
+      for (let col = range.start.col; col <= range.end.col; col += 1) {
+        const cell = cells.get(`${formatA1Column(col)}${row + 1}`);
+        const type = cell?.getAttribute("t");
+        let value: string | null = getFirstLocalChild(cell, "v")?.textContent ?? null;
+        if (type === "s") {
+          if (!sharedStrings) {
+            const sharedTarget = relationships.find((node) => node.getAttribute("Type")?.endsWith("/sharedStrings"))?.getAttribute("Target");
+            sharedStrings = getLocalDescendants(read(sharedTarget ? resolveRelationshipPath(relsPath, sharedTarget) : `${dirname(workbookPath)}/sharedStrings.xml`), "si")
+              .map((item) => getLocalDescendants(item, "t").map((node) => node.textContent ?? "").join(""));
+          }
+          value = value == null ? null : sharedStrings[Number(value)] ?? null;
+        } else if (type === "inlineStr") value = getLocalDescendants(cell, "t").map((node) => node.textContent ?? "").join("");
+        else if (type === "e") value = null;
+        values.push(mode === "value" ? cellValueToNumber(value) : value);
+      }
+    }
+    return values;
+  }) as ChartReferenceResolver;
+  resolve.external = external;
+  resolve.layout = (reference, sheetIndex) => {
+    const target = locate(reference, sheetIndex);
+    if (!target) return null;
+    const { range, path, document } = target;
+    const hiddenRows = new Set(getLocalDescendants(document, "row")
+      .filter(node => node.getAttribute("hidden") === "1" || node.getAttribute("hidden") === "true")
+      .map(node => Number(node.getAttribute("r")) - 1));
+    const hiddenColumns = getLocalDescendants(document, "col")
+      .filter(node => node.getAttribute("hidden") === "1" || node.getAttribute("hidden") === "true")
+      .map(node => [Number(node.getAttribute("min")) - 1, Number(node.getAttribute("max")) - 1]);
+    const sheetRelsPath = `${dirname(path)}/_rels/${path.split("/").pop()}.rels`;
+    const totalRanges = getLocalDescendants(read(sheetRelsPath), "Relationship")
+      .filter(node => node.getAttribute("Type")?.endsWith("/table") && node.getAttribute("TargetMode") !== "External")
+      .flatMap(node => {
+        const table = read(resolveRelationshipPath(sheetRelsPath, node.getAttribute("Target") ?? ""))?.documentElement;
+        const tableRange = parseA1Range(table?.getAttribute("ref") ?? "");
+        const totalCount = Number(table?.getAttribute("totalsRowCount") ?? 0);
+        const headers = Number(table?.getAttribute("headerRowCount") ?? 1);
+        if (!tableRange || totalCount <= 0 || range.start.col < tableRange.start.col || range.end.col > tableRange.end.col
+          || range.start.row < tableRange.start.row + headers || range.end.row > tableRange.end.row) return [];
+        const firstTotal = tableRange.end.row - totalCount + 1;
+        return range.start.row < firstTotal && range.end.row >= firstTotal ? [firstTotal] : [];
+      });
+    const hiddenCells: number[] = [];
+    const tableTotalCells: number[] = [];
+    let index = 0;
+    for (let row = range.start.row; row <= range.end.row; row += 1) {
+      for (let col = range.start.col; col <= range.end.col; col += 1, index += 1) {
+        if (hiddenRows.has(row) || hiddenColumns.some(([min, max]) => col >= min && col <= max)) hiddenCells.push(index);
+        if (totalRanges.some(start => row >= start)) tableTotalCells.push(index);
+      }
+    }
+    return { range, hiddenCells, tableTotalCells };
+  };
+  return resolve;
+}
+
+function referenceHiddenCells(workbook: Workbook, sheetIndex: number, reference: XlsxChartReference | null | undefined) {
+  const { sheet, range } = resolveReferenceSheet(workbook, sheetIndex, reference?.formula);
+  if (!sheet || !range) return undefined;
+  const hidden: number[] = [];
+  let index = 0;
+  for (let row = range.start.row; row <= range.end.row; row += 1) {
+    for (let col = range.start.col; col <= range.end.col; col += 1, index += 1) {
+      if (sheet.isRowHidden(row) || sheet.isColumnHidden(col)) hidden.push(index);
+    }
   }
-  return values;
+  return hidden;
+}
+
+function hydrateChartReferenceCaches(document: XMLDocument, sheetIndex: number, resolve: ChartReferenceResolver, workbook?: Workbook) {
+  for (const reference of [...getLocalDescendants(document, "numRef"), ...getLocalDescendants(document, "strRef")]) {
+    const formula = getFirstLocalChild(reference, "f")?.textContent;
+    if (!formula) continue;
+    const numeric = reference.localName === "numRef";
+    const source = { formula };
+    const live = workbook ? resolveReferenceSheet(workbook, sheetIndex, formula) : null;
+    const values = workbook && live?.sheet && live.range
+      ? resolveReferenceValues(workbook, sheetIndex, source, numeric ? "value" : "category")
+      : resolve(source, sheetIndex, numeric ? "value" : "category");
+    if (!values) continue;
+    const cache = ensureChild(reference, numeric ? "numCache" : "strCache");
+    removeLocalChildren(cache, "pt");
+    ensureChild(cache, "ptCount").setAttribute("val", String(values.length));
+    values.forEach((value, index) => {
+      if (value == null) return;
+      const point = cache.ownerDocument.createElementNS(CHART_NS, "c:pt");
+      point.setAttribute("idx", String(index));
+      setLeafValue(point, "v", String(value));
+      cache.appendChild(point);
+    });
+  }
+}
+
+function chartPointExclusions(chart: XlsxChart, series: XlsxChartSeries, resolve: ChartReferenceResolver, workbook?: Workbook) {
+  const count = Math.max(series.values.length, series.categories.length, series.bubbleSizes?.length ?? 0);
+  const excluded = new Set<number>();
+  const references = [series.categoriesRef, series.valuesRef, series.bubbleSizeRef];
+  const hiddenByFormula = series.raw?.chartReferenceHiddenCells as Record<string, number[]> | undefined;
+  for (const reference of references) {
+    const layout = resolve.layout(reference ?? null, chart.workbookSheetIndex);
+    if (!layout) continue;
+    const rows = layout.range.end.row - layout.range.start.row + 1;
+    const columns = layout.range.end.col - layout.range.start.col + 1;
+    const hidden = workbook ? referenceHiddenCells(workbook, chart.workbookSheetIndex, reference)
+      : reference?.formula ? hiddenByFormula?.[reference.formula] : undefined;
+    const cells = [...layout.tableTotalCells, ...(chart.plotVisibleOnly !== false ? hidden ?? layout.hiddenCells : [])];
+    for (const cell of cells) {
+      const index = rows === count ? Math.floor(cell / columns) : columns === count ? cell % columns : rows * columns === count ? cell : -1;
+      if (index >= 0 && index < count) excluded.add(index);
+    }
+  }
+  return Array.from(excluded).sort((a, b) => a - b);
+}
+
+function reconcileChartSeries(chart: XlsxChart, seriesNodes: Element[], resolveReference: ChartReferenceResolver, workbook?: Workbook) {
+  const sameCount = seriesNodes.length === chart.series.length;
+  const unmatched = new Set(chart.series);
+  chart.series = seriesNodes.map((node, index) => {
+    const categoriesRef = chartReferenceFromXml(getFirstLocalChild(node, "cat") ?? getFirstLocalChild(node, "xVal"), "category");
+    const valuesRef = chartReferenceFromXml(getFirstLocalChild(node, "val") ?? getFirstLocalChild(node, "yVal"), "value");
+    const bubbleSizeRef = chartReferenceFromXml(getFirstLocalChild(node, "bubbleSize"), "value");
+    const title = getFirstLocalChild(node, "tx");
+    const nameFormula = getFirstLocalDescendant(title, "f")?.textContent ?? undefined;
+    const name = getFirstLocalDescendant(title, "v")?.textContent ?? undefined;
+    const existing = sameCount ? chart.series[index] : undefined;
+    const matching = (existing ? [existing] : Array.from(unmatched)).find((series) => {
+      const sameName = nameFormula ? series.raw?.name === nameFormula : series.name === name;
+      const sameCategories = categoriesRef?.formula ? series.categoriesRef?.formula === categoriesRef.formula
+        : !series.categoriesRef?.formula && JSON.stringify(series.categories) === JSON.stringify(categoriesRef?.values ?? []);
+      const sameValues = valuesRef?.formula ? series.valuesRef?.formula === valuesRef.formula
+        : !series.valuesRef?.formula && JSON.stringify(series.values) === JSON.stringify(valuesRef?.values ?? []);
+      const sameBubbleSizes = bubbleSizeRef?.formula ? series.bubbleSizeRef?.formula === bubbleSizeRef.formula
+        : !series.bubbleSizeRef?.formula && JSON.stringify(series.bubbleSizes ?? []) === JSON.stringify(bubbleSizeRef?.values ?? []);
+      return sameName && sameCategories && sameValues && sameBubbleSizes;
+    });
+    if (matching) {
+      unmatched.delete(matching);
+      return matching;
+    }
+    if (workbook) {
+      const asRaw = (reference: XlsxChartReference | null, mode: "category" | "value") => reference && ({
+        refType: reference.refType, formula: reference.formula,
+        [mode === "value" ? "numbers" : "strings"]: reference.values
+      });
+      const normalized = normalizeChartSeries(workbook, chart.workbookSheetIndex, `${chart.id}-source`, {
+        name: nameFormula ?? name,
+        categories: asRaw(categoriesRef, "category"), values: asRaw(valuesRef, "value"), bubbleSize: asRaw(bubbleSizeRef, "value")
+      }, index);
+      return { ...existing, ...normalized, id: existing?.id ?? normalized.id, raw: { ...existing?.raw, ...normalized.raw } };
+    }
+    const categories = resolveReference(categoriesRef, chart.workbookSheetIndex, "category");
+    const values = resolveReference(valuesRef, chart.workbookSheetIndex, "value");
+    const bubbleSizes = resolveReference(bubbleSizeRef, chart.workbookSheetIndex, "value");
+    const resolvedName = nameFormula ? resolveReference({ formula: nameFormula }, chart.workbookSheetIndex, "category") : null;
+    return {
+      ...existing,
+      id: existing?.id ?? `${chart.id}-source-series-${index}`,
+      name: resolvedName?.[0]?.toString() ?? name,
+      categories: categories ?? categoriesRef?.values ?? [],
+      categoriesRef,
+      values: (values ?? valuesRef?.values ?? []).map(cellValueToNumber),
+      valuesRef,
+      bubbleSizes: (bubbleSizes ?? bubbleSizeRef?.values ?? []).map(cellValueToNumber),
+      bubbleSizeRef,
+      dataPoints: [],
+      raw: {
+        ...existing?.raw,
+        name: nameFormula,
+        chartCategoryReferenceValues: categories,
+        unresolvedCategoriesReference: Boolean(categoriesRef?.formula && !categories),
+        unresolvedValuesReference: Boolean(valuesRef?.formula && !values),
+        unresolvedBubbleSizeReference: Boolean(bubbleSizeRef?.formula && !bubbleSizes)
+      }
+    } satisfies XlsxChartSeries;
+  }).map(series => {
+    const categories = resolveReference.external(series.categoriesRef ?? null, "category");
+    const values = resolveReference.external(series.valuesRef ?? null, "value");
+    const bubbleSizes = resolveReference.external(series.bubbleSizeRef ?? null, "value");
+    const name = typeof series.raw?.name === "string" ? resolveReference.external({ formula: series.raw.name }, "category") : null;
+    if (!categories && !values && !bubbleSizes && !name) return series;
+    return {
+      ...series,
+      name: name ? String(name[0] ?? "") : series.name,
+      categories: categories ?? series.categories,
+      values: values ? values.map(cellValueToNumber) : series.values,
+      bubbleSizes: bubbleSizes ? bubbleSizes.map(cellValueToNumber) : series.bubbleSizes,
+      raw: {
+        ...series.raw,
+        ...(categories ? {
+          chartCategoryReferenceValues: categories,
+          chartCategoryNumericValues: resolveReference.external(series.categoriesRef ?? null, "value"),
+          unresolvedCategoriesReference: false
+        } : {}),
+        ...(values ? { unresolvedValuesReference: false } : {}),
+        ...(bubbleSizes ? { unresolvedBubbleSizeReference: false } : {}),
+        ...(name ? { unresolvedNameReference: false } : {})
+      }
+    };
+  });
 }
 
 function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, themePalette?: XlsxThemePalette | null) {
@@ -1350,12 +1748,9 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
     const seriesExplosion = readChartNumericAttribute(seriesNode, "explosion");
     const invertNegativeStyle = parseInvertNegativeStyle(seriesNode, themePalette);
     const invertIfNegative = readChartBooleanAttribute(seriesNode, "invertIfNegative");
-    const isScatterChart = (
-      chart.chartType === "Scatter"
-      || chart.chartType === "ScatterLines"
-      || chart.chartType === "ScatterSmooth"
-      || chart.chartType === "Bubble"
-    );
+    const isScatterChart = chartTypeNode.localName === "scatterChart" || chartTypeNode.localName === "bubbleChart";
+    const cachedHierarchy = parseChartHierarchyCategories(getFirstLocalChild(seriesNode, "cat"));
+    const hierarchy = cachedHierarchy ? hydrateChartHierarchy(series, cachedHierarchy) : undefined;
     const cachedCategories = isScatterChart
       ? (
           parseChartCacheValues(getFirstLocalChild(seriesNode, "xVal"), "numCache", "value")
@@ -1391,13 +1786,16 @@ function applyChartSeriesStyleFromXml(chart: XlsxChart, chartTypeNode: Element, 
 
     return {
       ...series,
+      raw: hierarchy ? { ...series.raw, chartHierarchyCategories: hierarchy } : series.raw,
       name: series.raw?.unresolvedNameReference
         ? parseChartCacheValues(getFirstLocalChild(seriesNode, "tx"), "strCache", "category")?.[0]?.toString() ?? series.name
         : series.name,
       bubbleSizes: !hasBubbleSizeReference && cachedBubbleSizes
         ? cachedBubbleSizes.map((value) => (typeof value === "number" && Number.isFinite(value) ? value : null))
         : series.bubbleSizes,
-      categories: !hasCategoryReference && cachedCategories ? cachedCategories : series.categories,
+      categories: hierarchy ? Array.from({ length: hierarchy.length }, (_, index) =>
+        hierarchy[index]?.find((entry) => entry.level === 0)?.label ?? null)
+        : !hasCategoryReference && cachedCategories ? cachedCategories : series.categories,
       color: rawFillColor ?? rawLineColor ?? fillColor ?? lineStyle.color ?? series.color,
       dataPointStyles: pointStyles.length > 0 ? pointStyles : series.dataPointStyles,
       lineColor: resolvedLineColor,
@@ -1446,13 +1844,19 @@ function applyChartStyleFromXml(
   chart: XlsxChart,
   chartPath: string | undefined,
   archive: Record<string, Uint8Array>,
-  themePalette?: XlsxThemePalette | null
+  themePalette: XlsxThemePalette | null | undefined,
+  resolveReference: ChartReferenceResolver,
+  workbook?: Workbook
 ) {
   const chartXml = readArchiveText(archive, chartPath);
   if (!chartXml) {
     return;
   }
   const relationships = chartPath ? readChartRelationships(archive, chartPath) : new Map<string, string>();
+  const workbookRelationships = readChartRelationships(archive, "xl/workbook.xml");
+  const themePath = [...workbookRelationships].find(([type]) => type.endsWith("/theme"))?.[1];
+  const themeXml = readArchiveText(archive, themePath ?? "xl/theme/theme1.xml") ?? undefined;
+  const images = readChartImages(archive, chartPath);
   const fallbackPointStylesBySeries = parseFallbackPointStylesFromChartXml(chartXml, themePalette);
   const fallbackSeriesStyles = parseFallbackSeriesStylesFromChartXml(chartXml, themePalette);
   const fallbackBubbleSizesBySeries = parseFallbackBubbleSizesFromChartXml(chartXml);
@@ -1706,13 +2110,15 @@ function applyChartStyleFromXml(
       chart.chartStyleId = fallbackStyleId;
     }
     const sourceSeries = chart.raw?.officeSourceSeries as XlsxChartSeries[] | undefined;
-    if (sourceSeries && chartDocument?.documentElement.namespaceURI === "http://schemas.microsoft.com/office/drawing/2014/chartex") {
+    if (chartDocument?.documentElement.namespaceURI === "http://schemas.microsoft.com/office/drawing/2014/chartex") {
       chart.renderSource = {
         kind: chart.chartExLayout ?? "",
         seriesTypes: getLocalDescendants(chartNode, "series").map(node => node.getAttribute("layoutId") ?? ""),
         sourceSeries,
         experimental: true,
         xml: chartXml,
+        images,
+        themeXml,
         themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
           const color = themePalette.colorsByIndex[index];
           return color ? [[key, color]] : [];
@@ -1992,38 +2398,46 @@ function applyChartStyleFromXml(
   const groups = Array.from(plotArea.children).filter((entry) => entry.localName.endsWith("Chart"));
   const seriesTypes = groups.flatMap(group => getLocalChildren(group, "ser").map(() => group.localName.slice(0, -5)));
   const seriesNodes = groups.flatMap(group => getLocalChildren(group, "ser"));
+  const dateAxisIds = new Set(getLocalChildren(plotArea, "dateAx").map(node => readChartNumericAttribute(node, "axId")));
+  const dateCategorySeries = groups.flatMap(group => {
+    const axisIds = getLocalChildren(group, "axId").map(node => Number(node.getAttribute("val")));
+    const hasDates = axisIds.some(id => dateAxisIds.has(id)) || (axisIds.length === 0 && dateAxisIds.size > 0);
+    return getLocalChildren(group, "ser").map(() => hasDates);
+  });
   const indexedXSeries = seriesNodes.map(series => {
     const x = getFirstLocalChild(series, "xVal");
     return Boolean(x && (getFirstLocalChild(x, "multiLvlStrRef") || getFirstLocalChild(x, "strRef") || getFirstLocalChild(x, "strLit")));
   });
-  const unsupportedHierarchy = getLocalDescendants(plotArea, "multiLvlStrRef").some(node => node.parentElement?.localName !== "xVal");
+  reconcileChartSeries(chart, seriesNodes, resolveReference, workbook);
   const kind = chartTypeNode.localName.slice(0, -5);
   const stable = groups.length === 1 && !chart.is3d
     && ((kind === "line" && chart.chartType === "Line") || (kind === "bar" && chart.chartType === "ColumnClustered"))
     && !plotArea.querySelector("trendline, errBars, dropLines, hiLowLines, upDownBars, dateAx, multiLvlStrRef, pictureOptions");
-  if (seriesTypes.length === chart.series.length
-    && !unsupportedHierarchy && !plotArea.querySelector("pictureOptions")) {
-    chart.renderSource = {
-      kind,
-      seriesTypes,
-      indexedXSeries,
-      experimental: !stable,
-      xml: chartXml,
-      themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
-        const color = themePalette.colorsByIndex[index];
-        return color ? [[key, color]] : [];
-      })) : undefined,
-      themeOverrideXml: readArchiveText(archive, relationships.get("http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride")) ?? undefined,
-      styleXml: readArchiveText(archive, relationships.get(CHART_STYLE_REL_TYPE)) ?? undefined,
-      colorStyleXml: readArchiveText(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE)) ?? undefined
-    };
-  }
+  if (chartDocument) hydrateChartReferenceCaches(chartDocument, chart.workbookSheetIndex, resolveReference, workbook);
+  chart.renderSource = {
+    kind,
+    seriesTypes,
+    indexedXSeries,
+    dateCategorySeries,
+    experimental: !stable,
+    xml: chartDocument ? serializeXml(chartDocument) : chartXml,
+    images,
+    themeXml,
+    themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
+      const color = themePalette.colorsByIndex[index];
+      return color ? [[key, color]] : [];
+    })) : undefined,
+    themeOverrideXml: readArchiveText(archive, relationships.get("http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride")) ?? undefined,
+    styleXml: readArchiveText(archive, relationships.get(CHART_STYLE_REL_TYPE)) ?? undefined,
+    colorStyleXml: readArchiveText(archive, relationships.get(CHART_COLOR_STYLE_REL_TYPE)) ?? undefined
+  };
 
-  if (groups.length > 1 && chart.typeGroups?.length === groups.length) {
+  if (groups.length > 1) {
     let seriesOffset = 0;
     const hydratedSeries: XlsxChartSeries[] = [];
-    chart.typeGroups = chart.typeGroups.map((group, index) => {
-      const count = getLocalChildren(groups[index], "ser").length;
+    chart.typeGroups = groups.map((node, index) => {
+      const group = chart.typeGroups?.[index] ?? { chartType: node.localName.slice(0, -5), series: [] };
+      const count = getLocalChildren(node, "ser").length;
       const groupChart = { ...chart, chartType: group.chartType, series: chart.series.slice(seriesOffset, seriesOffset + count) };
       applyChartSeriesStyleFromXml(groupChart, groups[index], themePalette);
       seriesOffset += count;
@@ -2034,6 +2448,15 @@ function applyChartStyleFromXml(
   } else {
     applyChartSeriesStyleFromXml(chart, chartTypeNode, themePalette);
   }
+  chart.series = chart.series.map((series, index) => {
+    const raw = { ...series.raw, chartExcludedPointIndices: chartPointExclusions(chart, series, resolveReference, workbook) };
+    if (!dateCategorySeries[index]) return { ...series, raw };
+    const cachedNumbers = parseChartCacheValues(getFirstLocalChild(seriesNodes[index], "cat"), "numCache", "value");
+    const currentNumbers = series.raw?.chartCategoryNumericValues as Array<number | null> | undefined;
+    const numbers = !series.raw?.unresolvedCategoriesReference && currentNumbers
+      ? currentNumbers : cachedNumbers ?? resolveReference(series.categoriesRef ?? null, chart.workbookSheetIndex, "value");
+    return { ...series, raw: { ...raw, chartCategoryNumericValues: numbers } };
+  });
   applyFallbackSeriesStyles();
   applyBuiltinChartDefaults(chart, themePalette);
 }
@@ -2294,41 +2717,6 @@ function resolveReferenceSheet(workbook: Workbook, fallbackSheetIndex: number, f
       sheetName: split.sheetName
     };
   }
-}
-
-function resolveChartReferenceLabel(
-  workbook: Workbook,
-  fallbackSheetIndex: number,
-  reference: XlsxChartReference | null | undefined,
-  fallbackLabel: string
-) {
-  if (!reference?.formula) {
-    return fallbackLabel;
-  }
-
-  const resolved = resolveReferenceSheet(workbook, fallbackSheetIndex, reference.formula);
-  if (!resolved.sheet || !resolved.range) {
-    return fallbackLabel;
-  }
-
-  const { start } = resolved.range;
-  if (start.row > 0) {
-    const headerDisplay = cellValueToDisplay(
-      typeof resolved.sheet.getFormattedValueAt === "function"
-        ? resolved.sheet.getFormattedValueAt(start.row - 1, start.col)
-        : null
-    );
-    if (headerDisplay.length > 0) {
-      return headerDisplay;
-    }
-  }
-
-  const firstDisplay = cellValueToDisplay(
-    typeof resolved.sheet.getFormattedValueAt === "function"
-      ? resolved.sheet.getFormattedValueAt(start.row, start.col)
-      : null
-  );
-  return firstDisplay.length > 0 ? firstDisplay : fallbackLabel;
 }
 
 function resolveReferenceRowPaths(
@@ -2857,7 +3245,7 @@ function normalizeChartExSeries(
       ? series.text
       : seriesTextFormula
         ? resolveSeriesName(workbook, workbookSheetIndex, seriesTextFormula)
-      : resolveChartReferenceLabel(workbook, workbookSheetIndex, valuesRef, `Series ${index + 1}`),
+      : undefined,
     negativeColor: undefined,
     negativeLineColor: undefined,
     raw: {
@@ -3070,7 +3458,7 @@ function normalizeChartExChart(
   return normalizedChart;
 }
 
-function cellValueToNumber(value: unknown) {
+function cellValueToNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -3078,15 +3466,16 @@ function cellValueToNumber(value: unknown) {
     if ((value as { is_empty?: boolean }).is_empty) {
       return null;
     }
-    const candidates: unknown[] = [];
-    if (typeof (value as { asNumber?: () => unknown }).asNumber === "function") {
-      candidates.push((value as { asNumber: () => unknown }).asNumber());
-    }
     if (typeof (value as { toJs?: () => unknown }).toJs === "function") {
-      candidates.push((value as { toJs: () => unknown }).toJs());
+      const primitive = (value as { toJs: () => unknown }).toJs();
+      if (primitive == null || typeof primitive !== "object") return cellValueToNumber(primitive);
     }
+    const candidates: unknown[] = [];
     if (typeof (value as { asText?: () => unknown }).asText === "function") {
       candidates.push((value as { asText: () => unknown }).asText());
+    }
+    if (typeof (value as { asNumber?: () => unknown }).asNumber === "function") {
+      candidates.push((value as { asNumber: () => unknown }).asNumber());
     }
     if (typeof (value as { toString?: () => unknown }).toString === "function") {
       candidates.push((value as { toString: () => unknown }).toString());
@@ -3097,15 +3486,14 @@ function cellValueToNumber(value: unknown) {
         return candidate;
       }
       if (typeof candidate === "string") {
-        const parsed = Number(candidate.replace(/,/g, ""));
-        if (Number.isFinite(parsed)) {
-          return parsed;
-        }
+        return cellValueToNumber(candidate);
       }
     }
   }
   if (typeof value === "string") {
-    const parsed = Number(value.replace(/,/g, ""));
+    const stripped = value.replace(/,/g, "").trim();
+    if (!stripped) return null;
+    const parsed = Number(stripped);
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
@@ -3588,13 +3976,14 @@ function normalizeChartSeries(
     ? normalizeHexColor(shapeProperties.lineColorHex)
     : null;
   const bubbleSizeRef = normalizeChartReference(series.bubbleSize ?? series.bubbleSizes ?? series.bubbles);
+  const categories = resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category");
 
   return {
     bubbleSizeRef,
     bubbleSizes: resolveReferenceValues(workbook, workbookSheetIndex, bubbleSizeRef, "value").map((value) => (
       typeof value === "number" && Number.isFinite(value) ? value : null
     )),
-    categories: resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "category"),
+    categories,
     categoriesRef,
     color: rawFillColor ?? undefined,
     dataPoints: Array.isArray(series.dataPoints) ? series.dataPoints : [],
@@ -3619,6 +4008,11 @@ function normalizeChartSeries(
     negativeLineColor: undefined,
     raw: {
       ...series,
+      chartCategoryReferenceValues: categories,
+      chartCategoryNumericValues: resolveReferenceValues(workbook, workbookSheetIndex, categoriesRef, "value"),
+      chartReferenceHiddenCells: Object.fromEntries([categoriesRef, valuesRef, bubbleSizeRef]
+        .filter(reference => reference?.formula)
+        .map(reference => [reference!.formula!, referenceHiddenCells(workbook, workbookSheetIndex, reference) ?? []])),
       unresolvedCategoriesReference: Boolean(categoriesRef?.formula && !resolveReferenceSheet(workbook, workbookSheetIndex, categoriesRef.formula).sheet),
       unresolvedValuesReference: Boolean(valuesRef?.formula && !resolveReferenceSheet(workbook, workbookSheetIndex, valuesRef.formula).sheet),
       unresolvedBubbleSizeReference: Boolean(bubbleSizeRef?.formula && !resolveReferenceSheet(workbook, workbookSheetIndex, bubbleSizeRef.formula).sheet),
@@ -3852,11 +4246,24 @@ function applyChartOrigins(
   }
 }
 
+export function refreshChartRenderSource(
+  chart: XlsxChart,
+  imageAssets: Pick<WorkbookImageAssets, "archive" | "themePalette">,
+  workbook?: Workbook | null
+) {
+  const next = { ...chart, series: chart.series.map(series => ({ ...series })) };
+  applyChartStyleFromXml(next, next.chartPath, imageAssets.archive, imageAssets.themePalette,
+    createArchiveChartReferenceResolver(imageAssets.archive), workbook ?? undefined);
+  return next;
+}
+
 export function hydrateWorkbookChartStyles(
   chartsByWorkbookSheetIndex: XlsxChart[][],
   imageAssets: Pick<WorkbookImageAssets, "archive" | "sheetOrigins" | "themePalette">,
-  chartsheets: XlsxChartsheet[] = []
+  chartsheets: XlsxChartsheet[] = [],
+  workbook?: Workbook
 ) {
+  const resolveReference = createArchiveChartReferenceResolver(imageAssets.archive);
   const chartOriginsById = new Map<string, WorkbookChartOrigin>();
   applyChartOrigins(chartsByWorkbookSheetIndex, chartOriginsById, imageAssets.archive, imageAssets.sheetOrigins);
   const chartsheetOrigins = collectChartsheetDrawingOrigins(imageAssets.archive, chartsheets);
@@ -3876,7 +4283,7 @@ export function hydrateWorkbookChartStyles(
   }
   for (const charts of chartsByWorkbookSheetIndex) {
     for (const chart of charts) {
-      applyChartStyleFromXml(chart, chart.chartPath, imageAssets.archive, imageAssets.themePalette);
+      applyChartStyleFromXml(chart, chart.chartPath, imageAssets.archive, imageAssets.themePalette, resolveReference, workbook);
       applyBuiltinChartDefaults(chart, imageAssets.themePalette);
     }
   }
@@ -4065,7 +4472,7 @@ export function loadWorkbookChartAssets(
   }
   const tabs = buildTabs(workbook, chartsheets, visibleSheetIndexByWorkbookSheetIndex, showHiddenSheets);
   const chartOriginsById = imageAssets
-    ? hydrateWorkbookChartStyles(chartsByWorkbookSheetIndex, imageAssets, chartsheets)
+    ? hydrateWorkbookChartStyles(chartsByWorkbookSheetIndex, imageAssets, chartsheets, workbook)
     : new Map<string, WorkbookChartOrigin>();
 
   if (imageAssets) {
@@ -4183,6 +4590,9 @@ function setChartTitle(chartNode: Element, value: string | undefined) {
 }
 
 function setRefFormula(parent: Element, refNodeName: string, formula: string | undefined) {
+  for (const name of ["multiLvlStrRef", "strRef", "numRef", "strLit", "numLit"]) {
+    if (name !== refNodeName) removeLocalChildren(parent, name);
+  }
   if (!formula) {
     removeLocalChildren(parent, refNodeName);
     return;
@@ -4232,8 +4642,29 @@ function updateSeriesNodes(plotAreaNode: Element, chart: Partial<XlsxChart>) {
             ? ensureChild(seriesNode, "xVal")
             : ensureChild(seriesNode, "cat")
         );
-      const categoryRefName = target.localName === "xVal" || getFirstLocalChild(target, "numRef") ? "numRef" : "strRef";
+      const hierarchy = series.raw?.chartHierarchyCategories as Array<Array<{ level: number; label: string }>> | undefined;
+      const categoryRefName = target.localName === "xVal" || getFirstLocalChild(target, "numRef") ? "numRef"
+        : hierarchy ? "multiLvlStrRef" : "strRef";
       setRefFormula(target, categoryRefName, series.categoriesRef.formula);
+      if (categoryRefName === "multiLvlStrRef" && hierarchy) {
+        const reference = ensureChild(target, categoryRefName);
+        removeLocalChildren(reference, "multiLvlStrCache");
+        const cache = ensureChild(reference, "multiLvlStrCache");
+        ensureChild(cache, "ptCount").setAttribute("val", String(hierarchy.length));
+        const levelCount = hierarchy.reduce((count, point) => Math.max(count, ...point.map(entry => entry.level + 1)), 0);
+        for (let level = 0; level < levelCount; level += 1) {
+          const levelNode = cache.ownerDocument.createElementNS(CHART_NS, "c:lvl");
+          hierarchy.forEach((point, index) => {
+            const entry = point.find(item => item.level === level);
+            if (!entry) return;
+            const pointNode = cache.ownerDocument.createElementNS(CHART_NS, "c:pt");
+            pointNode.setAttribute("idx", String(index));
+            setLeafValue(pointNode, "v", entry.label);
+            levelNode.appendChild(pointNode);
+          });
+          cache.appendChild(levelNode);
+        }
+      }
     }
     if (series.valuesRef?.formula) {
       const target = getFirstLocalChild(seriesNode, "yVal")

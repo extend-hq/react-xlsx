@@ -78,7 +78,7 @@ function measureColumnCharacterWidthPx(fontFamily?: string | null, fontSizePt?: 
   const fontSizePx = normalizedSizePt * (96 / 72);
   const family = JSON.stringify(normalizedFamily);
   const fallback = normalizedFamily.toLowerCase() === "calibri" || normalizedFamily.toLowerCase() === "carlito"
-    ? ', "Carlito", "React XLSX Carlito"'
+    ? ', "Carlito"'
     : "";
   const font = `${fontSizePx}px ${family}${fallback}`;
   let width = DEFAULT_COLUMN_CHARACTER_WIDTH_PX;
@@ -109,7 +109,7 @@ function measureOfficeDigitWidthPt(fontFamily?: string | null, fontSizePt?: numb
   if (cached !== undefined) return cached;
   const context = typeof document !== "undefined" ? document.createElement("canvas").getContext("2d") : null;
   if (!context) return 6;
-  context.font = `${size}px ${JSON.stringify(family)}, "React XLSX Carlito"`;
+  context.font = `${size}px ${JSON.stringify(family)}, "Carlito"`;
   const width = Math.max(1, Math.round(Math.max(...Array.from("0123456789", digit => context.measureText(digit).width))));
   columnCharacterWidthCache.set(key, width);
   return width;

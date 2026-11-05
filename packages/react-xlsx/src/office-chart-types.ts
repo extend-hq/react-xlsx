@@ -20,6 +20,7 @@ export interface RenderOptions {
   width?: number;
   height?: number;
   themeColors?: Readonly<Record<string, string>>;
+  images?: Readonly<Record<string, string>>;
   fontFamily?: string;
   themeXml?: string;
   themeOverrideXml?: string;

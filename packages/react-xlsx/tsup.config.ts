@@ -1,7 +1,7 @@
 import { defineConfig, type Options } from "tsup";
 
 const external = ["react", "react-dom"];
-const officeCharts = ["@extend-ai/rust-office-charts"];
+const officeCharts = ["@extend-ai/rust-office-charts", "@extend-ai/office-fonts"];
 const virtualizer = ["@tanstack/react-virtual", "@tanstack/virtual-core"];
 
 function sharedCorePlugin(): NonNullable<Options["esbuildPlugins"]>[number] {

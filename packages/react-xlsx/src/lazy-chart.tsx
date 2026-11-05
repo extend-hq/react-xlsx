@@ -1,8 +1,8 @@
 import type { OfficeCharts } from "@extend-ai/rust-office-charts";
 import * as React from "react";
-import { chartRenderer, officeChartRenderer, suppliedOfficeChartRenderer, officeExtendedChartRenderer } from "./chart-loader";
+import { officeChartRenderer, suppliedOfficeChartRenderer, officeExtendedChartRenderer } from "./chart-loader";
 import { useChartModule } from "./use-chart-module";
-import type { ChartSvgProps } from "./chart-renderer";
+import type { ChartSvgProps } from "./chart-renderer-types";
 
 class ChartLoadBoundary extends React.Component<{
   children: React.ReactNode;
@@ -23,15 +23,16 @@ class ChartLoadBoundary extends React.Component<{
 
 type LazyChartProps = ChartSvgProps & { experimentalOfficeCharts?: OfficeCharts; loadingFallback: (stage: "renderer" | "map") => React.ReactNode };
 
-function LegacyChartSvg({ loadingFallback, ...props }: LazyChartProps) {
-  const renderer = useChartModule(chartRenderer);
-  return renderer ? <renderer.MemoChartSvg {...props} /> : <>{loadingFallback("renderer")}</>;
+function UnsupportedChart({ chart }: Pick<ChartSvgProps, "chart">) {
+  return <div role="status" data-xlsx-chart-fallback="unsupported">{chart.chartType === "RegionMap"
+    ? "Map data is unavailable."
+    : "This chart cannot be rendered."}</div>;
 }
 
 function SharedChart(props: LazyChartProps & { source: NonNullable<ChartSvgProps["chart"]["renderSource"]> }) {
   const module = useChartModule(props.experimentalOfficeCharts ? suppliedOfficeChartRenderer : props.source.experimental ? officeExtendedChartRenderer : officeChartRenderer);
   if (!module) return <>{props.loadingFallback(props.chart.chartType === "RegionMap" ? "map" : "renderer")}</>;
-  const fallback = props.chart.chartType === "RegionMap" ? <div role="status">Map data is unavailable.</div> : <LegacyChartSvg {...props} />;
+  const fallback = <UnsupportedChart chart={props.chart} />;
   const renderer = props.experimentalOfficeCharts ?? module.renderer;
   return renderer && module.SharedChartSvg
     ? <module.SharedChartSvg {...props} renderer={renderer} fallback={fallback} />
@@ -43,7 +44,7 @@ export function MemoChartSvg(props: LazyChartProps) {
     <ChartLoadBoundary key={props.chart.id}>
       {props.chart.renderSource
         ? <SharedChart {...props} source={props.chart.renderSource} />
-        : <LegacyChartSvg {...props} />}
+        : <UnsupportedChart chart={props.chart} />}
     </ChartLoadBoundary>
   );
 }

@@ -1,13 +1,16 @@
 import * as React from "react";
-import type { ChartSvgProps } from "./chart-renderer";
+import type { ChartSvgProps } from "./chart-renderer-types";
 import type { XlsxChart, XlsxChartElementSelection } from "./types";
 
 function resolveChartElementTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) {
     return null;
   }
+  if (target.closest("[data-chart-effect]")) {
+    return null;
+  }
 
-  return target.closest("[data-xlsx-chart-series-index]") as HTMLElement | SVGElement | null;
+  return target.closest("[data-xlsx-chart-series-index],[data-xlsx-chart-element-kind='legend']") as HTMLElement | SVGElement | null;
 }
 
 function resolveChartSelectionFromTarget(
@@ -18,6 +21,9 @@ function resolveChartSelectionFromTarget(
   const element = resolveChartElementTarget(target);
   if (!element) {
     return { chartId: chart.id, kind: "chart" };
+  }
+  if (element.dataset.xlsxChartElementKind === "legend") {
+    return { chartId: chart.id, kind: "legend" };
   }
 
   const seriesIndex = Number(element.dataset.xlsxChartSeriesIndex);
@@ -32,13 +38,17 @@ function resolveChartSelectionFromTarget(
 
   const rawPointIndex = element.dataset.xlsxChartPointIndex;
   const rawElementKind = element.dataset.xlsxChartElementKind;
-  const selectionMode = element.dataset.xlsxChartSelectionMode;
+  if (rawElementKind === "legendEntry" && !(selectedChartElement?.chartId === chart.id
+    && (selectedChartElement.kind === "legend" || selectedChartElement.kind === "legendEntry"))) {
+    return { chartId: chart.id, kind: "legend" };
+  }
   const pointIndex = rawPointIndex == null || rawPointIndex === "" ? null : Number(rawPointIndex);
   const hasPoint = pointIndex != null && Number.isInteger(pointIndex) && pointIndex >= 0;
   const sameSelectedSeries = selectedChartElement?.chartId === chart.id
     && selectedChartElement.kind !== "chart"
+    && selectedChartElement.kind !== "legend"
     && selectedChartElement.seriesIndex === seriesIndex;
-  if (hasPoint && (selectionMode !== "seriesFirst" || sameSelectedSeries)) {
+  if (hasPoint && rawElementKind !== "legendEntry" && sameSelectedSeries) {
     return {
       chartId: chart.id,
       kind: "point",
@@ -47,10 +57,21 @@ function resolveChartSelectionFromTarget(
       seriesIndex
     };
   }
+  if (rawElementKind === "legendEntry") {
+    const rawLegendIndex = element.dataset.xlsxChartLegendIndex;
+    const legendIndex = rawLegendIndex == null || rawLegendIndex === "" ? undefined : Number(rawLegendIndex);
+    return {
+      chartId: chart.id,
+      kind: "legendEntry",
+      seriesId: series.id,
+      seriesIndex,
+      ...(legendIndex != null && Number.isInteger(legendIndex) && legendIndex >= 0 ? { legendIndex } : {})
+    };
+  }
 
   return {
     chartId: chart.id,
-    kind: rawElementKind === "legendEntry" ? "legendEntry" : "series",
+    kind: "series",
     seriesId: series.id,
     seriesIndex
   };
@@ -83,50 +104,4 @@ export function useChartEvents({
   }, [chart, onChartElementDoubleClick, selectedChartElement]);
 
   return { handlePointerDown, handleDoubleClick };
-}
-
-export function renderSelectionRectHandles(
-  key: string,
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-  color = "#64748b"
-) {
-  return renderSelectionPointHandles(
-    key,
-    [
-      { x: left, y: top },
-      { x: left + width, y: top },
-      { x: left, y: top + height },
-      { x: left + width, y: top + height }
-    ],
-    color
-  );
-}
-
-export function renderSelectionPointHandles(
-  key: string,
-  points: Array<{ x: number; y: number }>,
-  color = "#64748b"
-) {
-  const radius = 3;
-
-  return (
-    <g key={key} pointerEvents="none">
-      {points.map((point, index) => (
-        <circle
-          cx={point.x}
-          cy={point.y}
-          fill="#ffffff"
-          key={`${key}-handle-${index}`}
-          r={radius}
-          stroke={color}
-          strokeWidth={1.1}
-          style={{ filter: "drop-shadow(0 1px 2px rgba(15, 23, 42, 0.18))" }}
-          vectorEffect="non-scaling-stroke"
-        />
-      ))}
-    </g>
-  );
 }

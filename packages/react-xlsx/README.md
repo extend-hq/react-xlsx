@@ -41,9 +41,9 @@ Use a production bundler that preserves dynamic imports, and deploy all generate
 
 ## Spreadsheet Fonts
 
-The first workbook load also loads a bundled Carlito font fallback before measuring text and column widths. It supplies Calibri-compatible metrics when Calibri is unavailable, including regular, bold, italic, and bold italic styles. Installed Calibri and Carlito fonts remain preferred. Other font families still depend on the host application or system.
+Workbook loading prepares shared fallbacks for Calibri, Arial, Times New Roman, Courier New, Aptos and Aptos Narrow before measuring text. Installed originals remain preferred. The loader discovers font families from bounded style, theme, drawing, chart and shared-string XML parts; unusually large parts and fonts declared only in inline worksheet text may require host-provided fonts.
 
-The fallback is a separate JavaScript chunk with embedded WOFF2 data, so production rendering does not contact a font CDN. Deploy this chunk with the package's other generated chunks. Carlito is distributed under the SIL Open Font License; the published package includes `dist/Carlito-OFL.txt`.
+Each family is a separate lazy JavaScript chunk with embedded WOFF2 data. Deploy the generated chunks alongside the viewer; no font CDN is required. The package includes `dist/Office-Font-Licenses.txt`.
 
 ## WebAssembly Asset
 

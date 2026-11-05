@@ -807,9 +807,10 @@ export interface XlsxChartSeries {
 
 export type XlsxChartElementSelection =
   | { kind: "chart"; chartId: string }
+  | { kind: "legend"; chartId: string }
   | { kind: "series"; chartId: string; seriesId: string; seriesIndex: number }
   | { kind: "point"; chartId: string; seriesId: string; seriesIndex: number; pointIndex: number }
-  | { kind: "legendEntry"; chartId: string; seriesId: string; seriesIndex: number };
+  | { kind: "legendEntry"; chartId: string; seriesId: string; seriesIndex: number; legendIndex?: number };
 
 export type XlsxFormulaTarget =
   | { kind: "cell"; cell: XlsxCellAddress | null }
@@ -837,12 +838,15 @@ export interface XlsxChartWall {
 
 export interface XlsxChartRenderSource {
   kind: string;
+  images?: Record<string, string>;
   seriesTypes?: string[];
   indexedXSeries?: boolean[];
+  dateCategorySeries?: boolean[];
   sourceSeries?: XlsxChartSeries[];
   experimental?: boolean;
   xml: string;
   themeColors?: Record<string, string>;
+  themeXml?: string;
   themeOverrideXml?: string;
   styleXml?: string;
   colorStyleXml?: string;
@@ -1723,7 +1727,7 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   onFormControlAction?: (event: XlsxFormControlActionEvent) => void;
   /** Called after the built-in editor persists a checkbox, radio, list, dropdown, scrollbar, or spinner change. */
   onFormControlChange?: (event: XlsxFormControlChangeEvent) => void;
-  /** Override the bundled Office renderer and enable native chart sizing. */
+  /** Override the bundled Office chart renderer. */
   experimentalOfficeCharts?: OfficeCharts;
   /** Replaces the loading placeholder for chart metadata, chart rendering code, and map geometry. */
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;

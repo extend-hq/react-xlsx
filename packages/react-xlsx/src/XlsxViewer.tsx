@@ -4023,7 +4023,7 @@ function collectChartRangeHighlights(
 
   const highlights: ChartRangeHighlight[] = [];
   const seenRanges = new Set<string>();
-  const selectedSeriesIndex = selectedElement?.chartId === chart.id && selectedElement.kind !== "chart"
+  const selectedSeriesIndex = selectedElement?.chartId === chart.id && selectedElement.kind !== "chart" && selectedElement.kind !== "legend"
     ? selectedElement.seriesIndex
     : null;
   const seriesEntries = chart.series
@@ -8212,7 +8212,7 @@ function XlsxGrid({
   }, [activeSheet?.freezePanes?.col, visibleCols]);
   const actualColWidths = React.useMemo(
     () => {
-      const office = experimentalOfficeCharts ? activeSheet?.officeLayout : undefined;
+      const office = activeSheet?.officeLayout;
       if (office) {
         return Array.from({ length: displayColLimit }, (_, index) => {
           if (hiddenColSet.has(index)) return 0;
@@ -8290,7 +8290,7 @@ function XlsxGrid({
       return widths;
     },
     [
-      experimentalOfficeCharts,
+      hiddenColSet,
       activeSheet?.officeLayout,
       activeSheet?.colWidthOverridesPx,
       activeSheet?.colWidths,
@@ -8306,7 +8306,7 @@ function XlsxGrid({
   );
   const actualRowHeights = React.useMemo(
     () => {
-      const office = experimentalOfficeCharts ? activeSheet?.officeLayout : undefined;
+      const office = activeSheet?.officeLayout;
       if (office) {
         return Array.from({ length: displayRowLimit }, (_, index) => {
           if (hiddenRowSet.has(index)) return 0;
@@ -8422,7 +8422,7 @@ function XlsxGrid({
       return heights;
     },
     [
-      experimentalOfficeCharts,
+      hiddenRowSet,
       activeSheet?.officeLayout,
       activeSheet?.defaultRowHeightPx,
       activeSheet?.maxUsedRow,
@@ -9705,10 +9705,21 @@ function XlsxGrid({
       }
     }
 
-    const externalTarget = target && !target.startsWith("#") ? target : null;
-    if (externalTarget && typeof window !== "undefined") {
-      window.open(externalTarget, "_blank", "noopener,noreferrer");
+    const externalTarget = target?.trim();
+    if (!externalTarget || externalTarget.startsWith("#") || typeof window === "undefined") {
+      return;
     }
+
+    let url: URL;
+    try {
+      url = new URL(externalTarget, window.location.href);
+    } catch {
+      return;
+    }
+    if (!["http:", "https:", "mailto:", "tel:"].includes(url.protocol)) {
+      return;
+    }
+    window.open(url.href, "_blank", "noopener,noreferrer");
   }, [activeSheetIndex, selectCell, setActiveSheetIndex, sheets]);
 
   const startEditing = React.useCallback(
@@ -14144,7 +14155,7 @@ function XlsxGrid({
           }}
         >
           {charts.length > 0 ? charts.map((chart) => {
-            const sourceSize = experimentalOfficeCharts && chart.anchor.kind !== "two-cell" ? chart.anchor.sizeEmu : undefined;
+            const sourceSize = chart.anchor.kind !== "two-cell" ? chart.anchor.sizeEmu : undefined;
             const chartsheetRect = {
               height: sourceSize?.cy ? emuToPixels(sourceSize.cy) : 320,
               left: 0,
@@ -15195,7 +15206,11 @@ function XlsxGrid({
                     onChartElementDoubleClick={handleChartElementDoubleClick}
                     onChartElementPointerDown={handleChartElementPointerDown}
                     palette={palette}
-                    rect={rect}
+                    rect={{
+                      ...rect,
+                      width: Math.round(rect.width / zoomFactor * 1e6) / 1e6,
+                      height: Math.round(rect.height / zoomFactor * 1e6) / 1e6
+                    }}
                     selectedChartElement={selectedChartElement}
                   />
                 )}

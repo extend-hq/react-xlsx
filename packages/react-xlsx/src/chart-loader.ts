@@ -43,14 +43,10 @@ type OfficeChartModule = {
 };
 
 export const officeChartRenderer = createChartModule<OfficeChartModule>(async () => {
-  try {
-    const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
-      import("@extend-ai/rust-office-charts"), import("./shared-chart")
-    ]);
-    return { renderer: await loadOfficeCharts(), SharedChartSvg };
-  } catch {
-    return { renderer: null, SharedChartSvg: null };
-  }
+  const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
+    import("@extend-ai/rust-office-charts"), import("./shared-chart")
+  ]);
+  return { renderer: await loadOfficeCharts(), SharedChartSvg };
 });
 
 export const suppliedOfficeChartRenderer = createChartModule<OfficeChartModule>(async () => {
@@ -58,35 +54,26 @@ export const suppliedOfficeChartRenderer = createChartModule<OfficeChartModule>(
   return { renderer: null, SharedChartSvg };
 });
 
-export const chartRenderer = createChartModule(() => import("./chart-renderer"));
 export const officeExtendedChartRenderer = createChartModule<OfficeChartModule>(async () => {
   const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
     import("@extend-ai/rust-office-charts/full"), import("./shared-chart")
   ]);
   return { renderer: await loadOfficeCharts(typeof DecompressionStream === "function" ? undefined : new URL("./office_charts_full_bg.wasm", import.meta.url)), SharedChartSvg };
 });
-export const surfaceRenderer = createChartModule(() => import("./surface-webgl"));
 
 export function preloadChartRenderers(chartsBySheet: readonly (readonly XlsxChart[])[], experimentalOfficeCharts?: OfficeCharts) {
-  let hasCharts = false;
   let hasSharedCharts = false;
   let hasExtendedCharts = false;
 
-  let hasSurfaces = false;
   for (const charts of chartsBySheet) {
     for (const chart of charts) {
       const source = chart.renderSource;
       hasSharedCharts ||= Boolean(source && !source.experimental);
       hasExtendedCharts ||= Boolean(source?.experimental);
-      const fallback = !source;
-      hasCharts ||= fallback;
-      hasSurfaces ||= fallback && chart.chartType === "Surface";
     }
   }
 
   if (experimentalOfficeCharts && (hasExtendedCharts || hasSharedCharts)) void suppliedOfficeChartRenderer.load().catch(() => {});
   else if (hasSharedCharts) void officeChartRenderer.load().catch(() => {});
-  if (hasCharts) void chartRenderer.load().catch(() => {});
   if (hasExtendedCharts && !experimentalOfficeCharts) void officeExtendedChartRenderer.load().catch(() => {});
-  if (hasSurfaces) void surfaceRenderer.load().catch(() => {});
 }

@@ -20,6 +20,7 @@ import {
   applyChartSeriesFormula,
   buildChartSeriesFormula,
   hydrateWorkbookChartStyles,
+  refreshChartRenderSource,
   loadWorkbookChartAssets,
   updateWorkbookChartAnchor,
   updateWorkbookChartDefinition,
@@ -2095,7 +2096,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         return;
       }
       if (imageAssetsRef.current && !effectiveSkipXmlParsing) {
-        const chartOriginsById = hydrateWorkbookChartStyles(result.chartsByWorkbookSheetIndex, imageAssetsRef.current, result.chartsheets);
+        const chartOriginsById = hydrateWorkbookChartStyles(result.chartsByWorkbookSheetIndex, imageAssetsRef.current, result.chartsheets, targetWorkbook);
         chartAssetsRef.current = { ...result, chartOriginsById };
       }
       setChartsByWorkbookSheetIndex(result.chartsByWorkbookSheetIndex);
@@ -2297,17 +2298,15 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           throw new XlsxFileSizeLimitExceededError(buffer.byteLength, maxFileSizeBytes);
         }
 
-        await loadSpreadsheetFonts();
-        if (!isCurrent || abortController.signal.aborted) {
-          return;
-        }
-
         buffer = normalizeWorkbookArrayBuffer(buffer);
 
         const preflight = preflightWorkbookBuffer(buffer);
         if (preflight?.tooLarge) {
           throw createWorkbookTooLargeError(preflight);
         }
+
+        await loadSpreadsheetFonts(buffer);
+        if (!isCurrent || abortController.signal.aborted) return;
 
         const shouldForceReadOnly = shouldForceReadOnlyForBuffer(buffer.byteLength);
         setForcedReadOnly(shouldForceReadOnly);
@@ -2921,7 +2920,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    if (selectedChartElement.kind !== "chart") {
+    if (selectedChartElement.kind !== "chart" && selectedChartElement.kind !== "legend") {
       const selectedSeries = selectedChart.series[selectedChartElement.seriesIndex];
       if (!selectedSeries || selectedSeries.id !== selectedChartElement.seriesId) {
         setSelectedChartElement({ chartId: selectedChartId, kind: "chart" });
@@ -3318,6 +3317,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (
       !selectedChartElement
       || selectedChartElement.kind === "chart"
+      || selectedChartElement.kind === "legend"
       || selectedChartElement.seriesIndex < 0
     ) {
       return null;
@@ -3326,7 +3326,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     return getChartSeriesFormula(selectedChartElement.chartId, selectedChartElement.seriesIndex);
   }, [getChartSeriesFormula, selectedChartElement]);
   const selectedFormulaTarget = React.useMemo(() => {
-    if (selectedChartFormula && selectedChartElement && selectedChartElement.kind !== "chart") {
+    if (selectedChartFormula && selectedChartElement && selectedChartElement.kind !== "chart" && selectedChartElement.kind !== "legend") {
       return {
         chartId: selectedChartElement.chartId,
         kind: "chartSeries" as const,
@@ -4251,8 +4251,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setChartsByWorkbookSheetIndex((current) => current.map((sheetCharts) => (
       sheetCharts.map((chart) => {
         if (chart.id !== id) return chart;
-        const appearanceUnchanged = Object.keys(patch).every((key) => key === "anchor" || key === "title");
-        return { ...chart, renderSource: appearanceUnchanged ? chart.renderSource : undefined, ...patch };
+        const nextChart = { ...chart, ...patch, renderSource: patch.renderSource ?? chart.renderSource };
+        return imageAssetsRef.current ? refreshChartRenderSource(nextChart, imageAssetsRef.current, workbook) : nextChart;
       })
     )));
     setRevision((current) => current + 1);
@@ -4273,13 +4273,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return false;
     }
 
-    const source = chart.renderSource;
-    const indexedCategoryFormulaChanged = source?.indexedXSeries?.[seriesIndex]
-      && chart.series[seriesIndex]?.categoriesRef?.formula !== nextChart.series[seriesIndex]?.categoriesRef?.formula;
     updateChart(chartId, {
       series: nextChart.series,
       typeGroups: nextChart.typeGroups,
-      renderSource: source?.sourceSeries || indexedCategoryFormulaChanged ? undefined : source
+      raw: nextChart.raw
     });
     const selectedSeries = nextChart.series[seriesIndex];
     if (selectedSeries) {

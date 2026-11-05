@@ -1,0 +1,3 @@
+The chart renderer is bundled into the viewer from a checked browser package. The local archive is a development dependency, so installing the published viewer does not require the renderer source checkout.
+
+To update it, build and check the renderer browser package, run `node scripts/vendor-office-charts.mjs <renderer-checkout>`, and run `pnpm install --lockfile-only --offline --ignore-scripts` from this repository. Rebuild the viewer and verify its exported core and full WASM files against the adjacent provenance JSON before replacing the previous archive. The archive filename and lockfile integrity identify the exact bytes; the upstream package version remains unchanged until an upstream release.
