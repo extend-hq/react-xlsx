@@ -300,13 +300,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-office-art"
-version = "0.1.1"
+name = "roxmltree"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70f061c29711897d8287260da666bb1b2e0d00caacd450ffffd59582581bb1bf"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
+name = "rust-office-art"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "544dd30801b84cc0af1f773a77b46c208ea0514a0d142e39ce105c72b5436d6e"
 dependencies = [
  "base64",
  "image",
+ "roxmltree",
  "serde",
 ]
 

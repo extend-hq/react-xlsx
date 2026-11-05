@@ -25,13 +25,17 @@ for (const name of [".gitignore", "package.json", "office_art_bg.wasm", "office_
 const metadata = spawnSync("cargo", ["metadata", "--manifest-path", "rust/office-art-wasm/Cargo.toml", "--locked", "--format-version", "1", ...offline], { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
 if (metadata.status !== 0) throw new Error(metadata.stderr || "Unable to read Rust package metadata.");
 const packages = JSON.parse(metadata.stdout).packages;
+const rendererPackage = packages.find((pkg) => pkg.name === "rust-office-art");
+if (!rendererPackage?.source?.startsWith("registry+")) throw new Error("Office artwork must be built from its locked registry package.");
 const notices = packages.filter((pkg) => pkg.source).map((pkg) => {
   const directory = dirname(pkg.manifest_path);
-  const paths = [...new Set([pkg.license_file, "LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "LICENSE.txt", "LICENSE.md", "COPYING"].filter(Boolean))];
+  const bundledNotices = pkg.name === "rust-office-art" ? ["src/geometry_data/LICENSE.apache-poi", "src/geometry_data/NOTICE.apache-poi", "src/geometry_data/SOURCE.md"] : [];
+  if (bundledNotices.some((name) => !existsSync(join(directory, name)))) throw new Error("Office artwork preset license metadata is missing.");
+  const paths = [...new Set([pkg.license_file, "LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "LICENSE.txt", "LICENSE.md", "COPYING", ...bundledNotices].filter(Boolean))];
   const licenses = paths.map((name) => join(directory, name)).filter(existsSync).map((path) => readFileSync(path, "utf8").replace(/[ \t]+$/gm, ""));
   return `${pkg.name} ${pkg.version}\n${pkg.license ?? ""}\n${pkg.repository ?? ""}\n\n${licenses.join("\n\n")}`;
 });
 writeFileSync(`${output}/THIRD-PARTY-NOTICES.txt`, notices.join("\n\n--------------------\n\n").trimEnd() + "\n");
 if (officeArtSourceDigest() !== sourceDigest) throw new Error("Office artwork sources changed during compilation.");
 const names = ["office_art.js", "office_art.d.ts", "payload.js", "payload.d.ts", "THIRD-PARTY-NOTICES.txt"];
-writeFileSync(`${output}/provenance.json`, JSON.stringify({ crate: "rust-office-art", version: "0.1.1", sourceDigest, wasmSha256: sha256(bytes), outputs: Object.fromEntries(names.map((name) => [name, sha256(readFileSync(`${output}/${name}`))])) }, null, 2) + "\n");
+writeFileSync(`${output}/provenance.json`, JSON.stringify({ crate: "rust-office-art", version: rendererPackage.version, sourceDigest, wasmSha256: sha256(bytes), outputs: Object.fromEntries(names.map((name) => [name, sha256(readFileSync(`${output}/${name}`))])) }, null, 2) + "\n");
