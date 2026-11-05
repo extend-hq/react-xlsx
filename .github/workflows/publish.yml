@@ -108,7 +108,7 @@ jobs:
           pnpm add ${{ steps.pkg.outputs.name }}
           \`\`\`
 
-          This repository currently publishes the package privately on npm.
+          This package is public on npm.
           EOF
           if gh release view "${{ steps.pkg.outputs.tag }}" > /dev/null 2>&1; then
             echo "${{ steps.pkg.outputs.tag }} release already exists; skipping release creation."

@@ -1,4 +1,4 @@
-import type { OfficeCharts } from "@extend-ai/extend-office-charts";
+import type { OfficeCharts } from "./office-chart-types";
 import type * as React from "react";
 import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
 
@@ -1723,7 +1723,7 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   onFormControlAction?: (event: XlsxFormControlActionEvent) => void;
   /** Called after the built-in editor persists a checkbox, radio, list, dropdown, scrollbar, or spinner change. */
   onFormControlChange?: (event: XlsxFormControlChangeEvent) => void;
-  /** Use a supplied Office renderer for additional chart families and native chart sizing. */
+  /** Override the bundled Office renderer and enable native chart sizing. */
   experimentalOfficeCharts?: OfficeCharts;
   /** Replaces the loading placeholder for chart metadata, chart rendering code, and map geometry. */
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;

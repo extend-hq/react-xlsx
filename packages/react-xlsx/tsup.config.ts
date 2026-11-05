@@ -1,6 +1,7 @@
 import { defineConfig, type Options } from "tsup";
 
 const external = ["react", "react-dom"];
+const officeCharts = ["@extend-ai/rust-office-charts"];
 const virtualizer = ["@tanstack/react-virtual", "@tanstack/virtual-core"];
 
 function sharedCorePlugin(): NonNullable<Options["esbuildPlugins"]>[number] {
@@ -24,7 +25,7 @@ export default defineConfig([
     dts: true,
     entry: { vanilla: "src/vanilla-entry.ts", internal: "src/internal.ts" },
     format: ["esm", "cjs"],
-    noExternal: [...virtualizer, "preact", "react", "react-dom"],
+    noExternal: [...officeCharts, ...virtualizer, "preact", "react", "react-dom"],
     loader: { ".woff2": "dataurl" },
     esbuildOptions(options) {
       options.alias = { ...options.alias, react: "preact/compat", "react-dom": "preact/compat" };
@@ -41,7 +42,7 @@ export default defineConfig([
     esbuildPlugins: [sharedCorePlugin()],
     external: [...external, "@extend-ai/react-xlsx/vanilla", "@extend-ai/react-xlsx/internal"],
     format: ["esm", "cjs"],
-    noExternal: [...virtualizer],
+    noExternal: [...officeCharts, ...virtualizer],
     loader: { ".woff2": "dataurl" },
     shims: true,
     skipNodeModulesBundle: true,

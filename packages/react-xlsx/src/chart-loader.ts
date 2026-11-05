@@ -1,4 +1,4 @@
-import type { OfficeCharts } from "@extend-ai/extend-office-charts";
+import type { OfficeCharts } from "@extend-ai/rust-office-charts";
 import type { XlsxChart } from "./types";
 
 type ModuleSnapshot<T> = { module: T | null; error: unknown };
@@ -45,7 +45,7 @@ type OfficeChartModule = {
 export const officeChartRenderer = createChartModule<OfficeChartModule>(async () => {
   try {
     const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
-      import("@extend-ai/extend-office-charts"), import("./shared-chart")
+      import("@extend-ai/rust-office-charts"), import("./shared-chart")
     ]);
     return { renderer: await loadOfficeCharts(), SharedChartSvg };
   } catch {
@@ -59,11 +59,11 @@ export const suppliedOfficeChartRenderer = createChartModule<OfficeChartModule>(
 });
 
 export const chartRenderer = createChartModule(() => import("./chart-renderer"));
-export const officeMapRenderer = createChartModule<OfficeChartModule>(async () => {
+export const officeExtendedChartRenderer = createChartModule<OfficeChartModule>(async () => {
   const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
-    import("./office-maps/index.js"), import("./shared-chart")
+    import("@extend-ai/rust-office-charts/full"), import("./shared-chart")
   ]);
-  return { renderer: await loadOfficeCharts(), SharedChartSvg };
+  return { renderer: await loadOfficeCharts(typeof DecompressionStream === "function" ? undefined : new URL("./office_charts_full_bg.wasm", import.meta.url)), SharedChartSvg };
 });
 export const surfaceRenderer = createChartModule(() => import("./surface-webgl"));
 
@@ -71,18 +71,14 @@ export function preloadChartRenderers(chartsBySheet: readonly (readonly XlsxChar
   let hasCharts = false;
   let hasSharedCharts = false;
   let hasExtendedCharts = false;
-  let hasMaps = false;
+
   let hasSurfaces = false;
   for (const charts of chartsBySheet) {
     for (const chart of charts) {
-      if (chart.chartType === "RegionMap") {
-        hasMaps = true;
-        continue;
-      }
       const source = chart.renderSource;
       hasSharedCharts ||= Boolean(source && !source.experimental);
-      hasExtendedCharts ||= Boolean(source?.experimental && experimentalOfficeCharts);
-      const fallback = !source || Boolean(source.experimental && !experimentalOfficeCharts);
+      hasExtendedCharts ||= Boolean(source?.experimental);
+      const fallback = !source;
       hasCharts ||= fallback;
       hasSurfaces ||= fallback && chart.chartType === "Surface";
     }
@@ -91,6 +87,6 @@ export function preloadChartRenderers(chartsBySheet: readonly (readonly XlsxChar
   if (experimentalOfficeCharts && (hasExtendedCharts || hasSharedCharts)) void suppliedOfficeChartRenderer.load().catch(() => {});
   else if (hasSharedCharts) void officeChartRenderer.load().catch(() => {});
   if (hasCharts) void chartRenderer.load().catch(() => {});
-  if (hasMaps) void officeMapRenderer.load().catch(() => {});
+  if (hasExtendedCharts && !experimentalOfficeCharts) void officeExtendedChartRenderer.load().catch(() => {});
   if (hasSurfaces) void surfaceRenderer.load().catch(() => {});
 }

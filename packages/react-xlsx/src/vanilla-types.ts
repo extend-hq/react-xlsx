@@ -1,4 +1,4 @@
-import type { OfficeCharts } from "@extend-ai/extend-office-charts";
+import type { OfficeCharts } from "./office-chart-types";
 import type { Properties } from "csstype";
 import type {
   UseXlsxViewerControllerOptions,
