@@ -848,6 +848,7 @@ export interface XlsxChartWall {
 export interface XlsxChartRenderSource {
   kind: string;
   images?: Record<string, string>;
+  drawings?: Record<string, { xml: string; images?: Record<string, string> }>;
   seriesTypes?: string[];
   indexedXSeries?: boolean[];
   dateCategorySeries?: boolean[];

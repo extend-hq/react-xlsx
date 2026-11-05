@@ -11,6 +11,7 @@ import type {
   XlsxChartPointDataLabel,
   XlsxChartPointStyle,
   XlsxChartReference,
+  XlsxChartRenderSource,
   XlsxChartSeries,
   XlsxChartTypeGroup,
   XlsxChartWall,
@@ -1014,12 +1015,14 @@ function readChartImages(archive: Record<string, Uint8Array>, chartPath: string 
     if (!id || !target || relationship.getAttribute("TargetMode") === "External"
       || !relationship.getAttribute("Type")?.endsWith("/image")) continue;
     const bytes = archive[resolveRelationshipPath(relsPath, target)];
-    if (!bytes?.length) continue;
+    if (!bytes?.length || bytes.length > 72 * 1024 * 1024) continue;
     const signature = String.fromCharCode(...bytes.subarray(0, 12));
     const mime = bytes[0] === 137 && signature.slice(1, 4) === "PNG" ? "image/png"
       : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? "image/jpeg"
       : signature.startsWith("GIF87a") || signature.startsWith("GIF89a") ? "image/gif"
-      : signature.startsWith("RIFF") && signature.slice(8, 12) === "WEBP" ? "image/webp" : null;
+      : signature.startsWith("RIFF") && signature.slice(8, 12) === "WEBP" ? "image/webp"
+      : signature.startsWith("BM") ? "image/bmp"
+      : signature.startsWith("II*\0") || signature.startsWith("MM\0*") ? "image/tiff" : null;
     if (!mime) continue;
     const chunks: string[] = [];
     for (let index = 0; index < bytes.length; index += 0x8000) {
@@ -1028,6 +1031,24 @@ function readChartImages(archive: Record<string, Uint8Array>, chartPath: string 
     images[id] = `data:${mime};base64,${btoa(chunks.join(""))}`;
   }
   return Object.keys(images).length > 0 ? images : undefined;
+}
+
+function readChartDrawings(archive: Record<string, Uint8Array>, chartPath: string | undefined): XlsxChartRenderSource["drawings"] {
+  if (!chartPath) return undefined;
+  const relsPath = normalizeArchivePath(`${dirname(chartPath)}/_rels/${chartPath.split("/").pop()}.rels`);
+  const document = parseXml(readArchiveText(archive, relsPath) ?? "");
+  const drawings: NonNullable<XlsxChartRenderSource["drawings"]> = Object.create(null);
+  for (const relationship of getLocalDescendants(document, "Relationship")) {
+    const id = relationship.getAttribute("Id");
+    const target = relationship.getAttribute("Target");
+    if (!id || !target || relationship.getAttribute("TargetMode") === "External"
+      || !relationship.getAttribute("Type")?.endsWith("/chartUserShapes")) continue;
+    const path = resolveRelationshipPath(relsPath, target);
+    if (!archive[path]?.length || archive[path].length > 8 * 1024 * 1024) continue;
+    const xml = readArchiveText(archive, path);
+    if (xml) drawings[id] = { xml, images: readChartImages(archive, path) };
+  }
+  return Object.keys(drawings).length ? drawings : undefined;
 }
 
 function readChartColorPalette(
@@ -1857,6 +1878,7 @@ function applyChartStyleFromXml(
   const themePath = [...workbookRelationships].find(([type]) => type.endsWith("/theme"))?.[1];
   const themeXml = readArchiveText(archive, themePath ?? "xl/theme/theme1.xml") ?? undefined;
   const images = readChartImages(archive, chartPath);
+  const drawings = readChartDrawings(archive, chartPath);
   const fallbackPointStylesBySeries = parseFallbackPointStylesFromChartXml(chartXml, themePalette);
   const fallbackSeriesStyles = parseFallbackSeriesStylesFromChartXml(chartXml, themePalette);
   const fallbackBubbleSizesBySeries = parseFallbackBubbleSizesFromChartXml(chartXml);
@@ -2118,6 +2140,7 @@ function applyChartStyleFromXml(
         experimental: true,
         xml: chartXml,
         images,
+        drawings,
         themeXml,
         themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
           const color = themePalette.colorsByIndex[index];
@@ -2422,6 +2445,7 @@ function applyChartStyleFromXml(
     experimental: !stable,
     xml: chartDocument ? serializeXml(chartDocument) : chartXml,
     images,
+    drawings,
     themeXml,
     themeColors: themePalette ? Object.fromEntries(Object.entries(THEME_COLOR_INDEX_BY_NAME).flatMap(([key, index]) => {
       const color = themePalette.colorsByIndex[index];

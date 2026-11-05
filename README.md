@@ -725,6 +725,8 @@ The viewer currently renders these chart families directly from workbook chart d
 
 Charts with their original OOXML definitions use the bundled Rust Office Charts renderer, including filled maps, stock, hierarchy, and surface charts. Chart points and series remain selectable. Filled maps use cached Office geometry when present, with offline country and US state boundaries as a fallback; unavailable boundaries are reported explicitly.
 
+Chart artwork uses the shared Office Art renderer for tiled picture fills, supported image adjustments, picture markers, inner shadows, reflections, soft edges, blur, and supported effect trees. Saved chart drawings include preset and custom shapes, connectors, pictures, groups, and basic text layout. Original drawing parts remain in the workbook archive for export. Unsupported artwork retains explicit SVG descriptions; this does not establish full native Office text layout, 3D artwork, or SmartArt generation.
+
 If a workbook contains a chart type outside those renderers, the viewer falls back to an explicit unsupported-chart placeholder instead of silently failing.
 
 ### Example: Styled Cylindrical Columns

@@ -21,6 +21,7 @@ export interface RenderOptions {
   height?: number;
   themeColors?: Readonly<Record<string, string>>;
   images?: Readonly<Record<string, string>>;
+  drawings?: Readonly<Record<string, { xml: string; images?: Readonly<Record<string, string>> }>>;
   fontFamily?: string;
   themeXml?: string;
   themeOverrideXml?: string;

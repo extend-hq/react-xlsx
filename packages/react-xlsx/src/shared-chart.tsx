@@ -12,23 +12,29 @@ const allowedElements = new Set([
   "svg", "g", "defs", "clipPath", "rect", "circle", "ellipse", "path", "line", "polyline", "polygon",
   "title", "desc", "text", "tspan", "linearGradient", "radialGradient", "stop", "pattern", "image",
   "filter", "feGaussianBlur", "feFlood", "feComposite", "feMorphology", "feDiffuseLighting",
-  "feSpecularLighting", "feDistantLight"
+  "feSpecularLighting", "feDistantLight", "use", "mask", "marker", "feColorMatrix", "feComponentTransfer",
+  "feFuncR", "feFuncG", "feFuncB", "feFuncA", "feOffset", "feBlend"
 ]);
 const plainAttributes = new Set([
   "x", "y", "width", "height", "x1", "x2", "y1", "y2", "cx", "cy", "fx", "fy", "r", "rx", "ry", "fr",
   "viewBox", "preserveAspectRatio", "transform", "d", "points", "font-family", "font-weight", "font-style", "font-size", "font-style", "text-decoration", "text-anchor",
-  "dominant-baseline", "stroke-linecap", "stroke-linejoin", "stroke-width", "stroke-dasharray",
-  "opacity", "fill-opacity", "stroke-opacity", "fill-rule", "shape-rendering", "offset", "stop-opacity",
-  "gradientUnits", "gradientTransform", "patternUnits", "patternContentUnits",
+  "dominant-baseline", "stroke-linecap", "stroke-linejoin", "stroke-width", "stroke-dasharray", "stroke-miterlimit",
+  "opacity", "fill-opacity", "stroke-opacity", "fill-rule", "clip-rule", "shape-rendering", "offset", "stop-opacity",
+  "gradientUnits", "gradientTransform", "patternUnits", "patternContentUnits", "patternTransform", "color-interpolation",
+  "maskUnits", "maskContentUnits", "markerUnits", "markerWidth", "markerHeight", "refX", "refY", "orient", "overflow", "xml:space",
+  "dx", "dy", "type", "mode", "values", "slope", "intercept", "tableValues", "amplitude", "exponent",
   "filterUnits", "in", "in2", "result", "stdDeviation", "flood-color", "flood-opacity", "operator", "color-interpolation-filters",
   "radius", "surfaceScale", "diffuseConstant", "lighting-color", "specularConstant", "specularExponent", "azimuth", "elevation", "k1", "k2", "k3", "k4",
-  "pointer-events", "data-chart-kind", "data-chart-series", "data-chart-point", "data-chart-x", "data-chart-y", "data-chart-effect"
+  "pointer-events", "data-chart-kind", "data-chart-series", "data-chart-point", "data-chart-x", "data-chart-y", "data-chart-effect", "data-chart-drawing"
 ]);
 
-function safeChartSvg(markup: string, prefix: string, seriesCount: number, seriesMap?: number[], selectableSeries = true, pointMaps?: number[][]) {
+function safeChartSvg(markup: string, prefix: string, seriesCount: number, seriesMap?: number[], selectableSeries = true, pointMaps?: number[][], depth = 0): SVGSVGElement | null {
+  if (depth > 3 || markup.length > 128 * 1024 * 1024) return null;
   const svg = new DOMParser().parseFromString(markup, "image/svg+xml").documentElement;
   if (svg.localName !== "svg" || svg.namespaceURI !== svgNamespace) return null;
   let legendIndex = 0;
+  let imageIndex = 0;
+  const ids = new Set(Array.from(svg.querySelectorAll("[id]"), node => node.id));
 
   // Only local paint servers and inert geometry can enter the document.
   for (const node of [svg, ...Array.from(svg.querySelectorAll("*"))]) {
@@ -49,15 +55,32 @@ function safeChartSvg(markup: string, prefix: string, seriesCount: number, serie
         node.setAttribute(name, prefix + value);
         continue;
       }
-      if (name === "href" && node.localName === "image"
-        && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) continue;
-      if (name === "href" && /^(linearGradient|radialGradient)$/.test(node.localName) && /^#[\w-]+$/.test(value)) {
-        node.setAttribute(name, "#" + prefix + value.slice(1));
+      if ((name === "href" || name === "xlink:href") && node.localName === "image"
+        && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+        if (name !== "href") { node.removeAttribute(name); node.setAttribute("href", value); }
         continue;
       }
-      if (["fill", "stroke", "stop-color", "clip-path", "filter"].includes(name)) {
+      if ((name === "href" || name === "xlink:href") && node.localName === "image" && value.startsWith("data:image/svg+xml;base64,")) {
+        try {
+          const bytes = Uint8Array.from(atob(value.slice("data:image/svg+xml;base64,".length)), character => character.charCodeAt(0));
+          const nested = safeChartSvg(new TextDecoder().decode(bytes), `${prefix}image${imageIndex++}-`, 0, undefined, false, undefined, depth + 1);
+          if (!nested) return null;
+          const serialized = new TextEncoder().encode(new XMLSerializer().serializeToString(nested));
+          const chunks: string[] = [];
+          for (let offset = 0; offset < serialized.length; offset += 0x8000) chunks.push(String.fromCharCode(...serialized.subarray(offset, offset + 0x8000)));
+          node.removeAttribute(name);
+          node.setAttribute("href", `data:image/svg+xml;base64,${btoa(chunks.join(""))}`);
+          continue;
+        } catch { return null; }
+      }
+      if ((name === "href" || name === "xlink:href") && /^(linearGradient|radialGradient|use)$/.test(node.localName) && /^#[\w-]+$/.test(value) && ids.has(value.slice(1))) {
+        node.removeAttribute(name);
+        node.setAttribute("href", "#" + prefix + value.slice(1));
+        continue;
+      }
+      if (["fill", "stroke", "stop-color", "clip-path", "filter", "mask", "marker-start", "marker-mid", "marker-end"].includes(name)) {
         const local = /^url\(#([\w-]+)\)$/.exec(value);
-        if (local) {
+        if (local && ids.has(local[1])) {
           node.setAttribute(name, "url(#" + prefix + local[1] + ")");
           continue;
         }
@@ -66,7 +89,7 @@ function safeChartSvg(markup: string, prefix: string, seriesCount: number, serie
       node.removeAttribute(name);
     }
 
-    if (node.closest("[data-chart-effect]")) {
+    if (node.closest("defs,[data-chart-effect],[data-chart-drawing]")) {
       node.removeAttribute("data-chart-series");
       node.removeAttribute("data-chart-point");
       node.removeAttribute("data-chart-kind");
@@ -163,6 +186,7 @@ function renderSharedChart(renderer: OfficeCharts, chart: XlsxChart, source: Xls
       styleXml: source.styleXml,
       colorStyleXml: source.colorStyleXml,
       images: source.images,
+      drawings: source.drawings,
       width, height,
       interactive: true,
       spreadsheetDefaults: true,

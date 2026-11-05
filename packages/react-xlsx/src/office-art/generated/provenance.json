@@ -1,13 +1,13 @@
 {
   "crate": "rust-office-art",
-  "version": "0.1.2",
-  "sourceDigest": "92d943d1cb2f902fb73c064b82d847f3bb526d5ed78e3c322e51097eb5d0ce07",
-  "wasmSha256": "5bdba59581f1dded0a1f1d3f77c85d7b5e73c90f9685b600460be44fccd577dd",
+  "version": "0.1.3",
+  "sourceDigest": "b9ef661f34f8c0e0d6b9fecc545e3641c6820133eccdadb0df8c3c4087c7de30",
+  "wasmSha256": "8ad9b8b503161cd04191dabfc8574ca1da980fcb47c15b6db634813e99822009",
   "outputs": {
     "office_art.js": "f01641c16170efa7f83d5d9701c9042ac54b6d39ee40db5af8de6dd9f5844cb7",
     "office_art.d.ts": "0119040d4409f60693ac927066c3fea521f7eabfe8f23fad7f9181762335cf62",
-    "payload.js": "bde7009a1e33c68453a0cac7679c0fa0216edb653f2fc8741a2cc24f86987afb",
+    "payload.js": "769cdb38ffd45803b6778b6cda0400fc20ef82729b6ed436d73356c27a900fee",
     "payload.d.ts": "ba6fc442944c3f6b20366c3cb367704b6ea1d5f6354e7178658d580698bfd520",
-    "THIRD-PARTY-NOTICES.txt": "0db144ac0f4364f3b5535251f6e721cf3c19a535d5f699d76f6e14e309fbe8c4"
+    "THIRD-PARTY-NOTICES.txt": "a22258b413984f9fd8b2455c7311667e519ba9f3121eb7bfba3cf73b757cfd24"
   }
 }

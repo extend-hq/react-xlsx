@@ -19,8 +19,8 @@ for (const name of ["preact"]) {
 }
 
 const chartsDirectory = dirname(require.resolve("@extend-ai/rust-office-charts/package.json"));
-for (const name of ["LICENSE", "MAP-DATA-LICENSE"]) {
-  copyFileSync(join(chartsDirectory, name), new URL(`rust-office-charts-${name}.txt`, distDir));
+for (const name of ["LICENSE", "MAP-DATA-LICENSE", "THIRD-PARTY-NOTICES.txt"]) {
+  copyFileSync(join(chartsDirectory, name), new URL(`rust-office-charts-${name}${name.endsWith(".txt") ? "" : ".txt"}`, distDir));
 }
 copyFileSync(require.resolve("@extend-ai/rust-office-charts/office_charts_bg.wasm"), new URL("office_charts_bg.wasm", distDir));
 copyFileSync(require.resolve("@extend-ai/rust-office-charts/full/office_charts_bg.wasm"), new URL("office_charts_full_bg.wasm", distDir));
