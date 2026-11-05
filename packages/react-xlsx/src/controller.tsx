@@ -1739,7 +1739,7 @@ function mergeParsedAndApiImages(
       mediaPath: apiImage.mediaPath ?? image.mediaPath,
       mimeType: apiImage.mimeType,
       name: apiImage.name ?? image.name,
-      src: apiImage.src,
+      src: image.pictureRenderStatus ? image.src : apiImage.src,
       zIndex: apiImage.zIndex
     };
   });
@@ -1787,12 +1787,12 @@ function createBasicWorkbookAssets(workbook: Workbook): WorkbookImageAssets {
   };
 }
 
-function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook, skipXmlParsing = false) {
+async function loadWorkbookImageAssets(bytes: Uint8Array, workbook: Workbook, skipXmlParsing = false) {
   if (shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing) || !isZipWorkbook(bytes)) {
     return createBasicWorkbookAssets(workbook);
   }
 
-  const parsedAssets = parseWorkbookImageAssets(bytes, workbook);
+  const parsedAssets = await parseWorkbookImageAssets(bytes, workbook);
   const apiImagesByWorkbookSheetIndex = collectWorksheetApiImages(workbook, parsedAssets.objectUrls);
   const hiddenImageAnchorsByWorkbookSheetIndex = collectHiddenWorksheetImageAnchors(workbook);
 
@@ -2173,7 +2173,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const loadWorkbookOnMainThread = React.useCallback(async (buffer: ArrayBuffer) => {
     const nextParsedWorkbook = await parseWorkbookBuffer(buffer);
     const bytes = new Uint8Array(buffer);
-    const nextImageAssets = loadWorkbookImageAssets(
+    const nextImageAssets = await loadWorkbookImageAssets(
       bytes,
       nextParsedWorkbook.workbook,
       shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing)
@@ -2336,7 +2336,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
             const workerImageAssets = effectiveSkipXmlParsing
               ? null
-              : parseWorkbookImageAssets(new Uint8Array(buffer));
+              : await parseWorkbookImageAssets(new Uint8Array(buffer));
             if (!isCurrent || abortController.signal.aborted) {
               revokeWorkbookImageAssets(workerImageAssets);
               return;
@@ -2627,13 +2627,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (shouldUseWorkerForLoad) {
       void Promise.resolve()
         .then(() => getWorkerClient().loadWorkbook(deferredBuffer, effectiveSkipXmlParsing, showHiddenSheets))
-        .then((snapshot) => {
+        .then(async (snapshot) => {
           if (!effectiveSkipXmlParsing && hasIncompleteWorkerChartSnapshot(snapshot)) {
             throw new Error("Worker chart payload incomplete");
           }
           const workerImageAssets = effectiveSkipXmlParsing
             ? null
-            : parseWorkbookImageAssets(new Uint8Array(deferredBuffer));
+            : await parseWorkbookImageAssets(new Uint8Array(deferredBuffer));
           setImageAssets(workerImageAssets);
           const chartOriginsById = workerImageAssets
             ? hydrateWorkbookChartStyles(snapshot.chartsByWorkbookSheetIndex, workerImageAssets, snapshot.chartsheets)
@@ -2703,9 +2703,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     void parseWorkbookBuffer(deferredBuffer)
-      .then((nextParsedWorkbook) => {
+      .then(async (nextParsedWorkbook) => {
         const bytes = new Uint8Array(deferredBuffer);
-        const nextImageAssets = loadWorkbookImageAssets(
+        const nextImageAssets = await loadWorkbookImageAssets(
           bytes,
           nextParsedWorkbook.workbook,
           shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing)
@@ -3381,7 +3381,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const restoreHistoryEntry = React.useCallback(async (entry: SnapshotHistoryEntry) => {
     const wasmModule = await getSheetsWasmModule();
     const nextWorkbook = wasmModule.Workbook.fromBytes(cloneBytes(entry.bytes));
-    const nextImageAssets = loadWorkbookImageAssets(entry.bytes, nextWorkbook);
+    const nextImageAssets = await loadWorkbookImageAssets(entry.bytes, nextWorkbook);
     const nextSheets = buildSheetList(
       nextWorkbook,
       nextImageAssets.sheetStatesByWorkbookSheetIndex,

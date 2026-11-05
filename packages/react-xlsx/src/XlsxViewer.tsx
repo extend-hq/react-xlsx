@@ -17,6 +17,7 @@ import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./contr
 import { XlsxContextMenu } from "./context-menu";
 import { MemoChartSvg } from "./lazy-chart";
 import { preloadChartRenderers } from "./chart-loader";
+import { resolvePicturePaintRect } from "./picture-paint";
 import {
   emuToPixels,
   resizeImageRect,
@@ -12990,7 +12991,7 @@ function XlsxGrid({
         if (resolveDrawingPane(entry.rect) !== pane) {
           continue;
         }
-        const localRect = resolveBakedCanvasLocalRect(entry.rect, pane);
+        const localRect = resolveBakedCanvasLocalRect(entry.kind === "image" ? resolvePicturePaintRect(entry.image, entry.rect) : entry.rect, pane);
         if (
           localRect.left + localRect.width < 0
           || localRect.top + localRect.height < 0
@@ -14998,8 +14999,9 @@ function XlsxGrid({
     if (drawingPane !== pane) {
       return null;
     }
+    const paintRect = resolvePicturePaintRect(image, rect);
     const hasMeasuredViewport = drawingViewport.width > 0 && drawingViewport.height > 0;
-    if (pane === "scroll" && hasMeasuredViewport && !rectIntersectsViewport(rect, drawingViewport)) {
+    if (pane === "scroll" && hasMeasuredViewport && !rectIntersectsViewport(paintRect, drawingViewport)) {
       return null;
     }
 
@@ -15007,10 +15009,10 @@ function XlsxGrid({
     const canEditImage = !readOnly && image.editable !== false;
     const drawingSelectionSurface = paletteIsDark(palette) ? palette.canvas : DRAWING_SELECTION_HANDLE_FILL;
     const style: React.CSSProperties = {
-      contain: "layout paint",
+      contain: "layout",
       height: rect.height,
       left: rect.left,
-      overflow: "hidden",
+      overflow: "visible",
       pointerEvents: "none",
       position: "absolute",
       top: rect.top,
@@ -15020,14 +15022,21 @@ function XlsxGrid({
     const defaultNode = (
       <img
         alt={image.description ?? image.name ?? ""}
+        data-xlsx-picture-renderer={image.pictureRenderStatus ? "rust-office-art" : undefined}
+        data-xlsx-picture-status={image.pictureRenderStatus}
         draggable={false}
         src={image.src}
         style={{
           display: "block",
-          height: "100%",
+          height: paintRect.height,
+          maxWidth: "none",
+          maxHeight: "none",
+          left: paintRect.left - rect.left,
+          top: paintRect.top - rect.top,
+          position: "absolute",
           pointerEvents: "none",
           userSelect: "none",
-          width: "100%"
+          width: paintRect.width
         }}
       />
     );
@@ -18171,7 +18180,8 @@ export function useXlsxViewerThumbnails(
             } else {
               const imageElement = getThumbnailImage(entry.image);
               if (imageElement) {
-                context.drawImage(imageElement, entry.rect.left, entry.rect.top, entry.rect.width, entry.rect.height);
+                const paintRect = resolvePicturePaintRect(entry.image, entry.rect);
+                context.drawImage(imageElement, paintRect.left, paintRect.top, paintRect.width, paintRect.height);
               }
             }
           }

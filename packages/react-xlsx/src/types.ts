@@ -462,6 +462,15 @@ export interface XlsxImage {
   mediaPath?: string;
   mimeType: string;
   name?: string;
+  pictureRenderStatus?: "rendered" | "unchanged" | "unsupported";
+  paintBounds?: {
+    xPx: number;
+    yPx: number;
+    widthPx: number;
+    heightPx: number;
+    layoutWidthPx: number;
+    layoutHeightPx: number;
+  };
   sheetIndex: number;
   src: string;
   workbookSheetIndex: number;

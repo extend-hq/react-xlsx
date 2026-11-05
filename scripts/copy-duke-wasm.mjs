@@ -8,6 +8,7 @@ const wasmSource = join(dirname(dukeEntrypoint), "duke_sheets_wasm_bg.wasm");
 const distDir = new URL("../packages/react-xlsx/dist/", import.meta.url);
 
 mkdirSync(distDir, { recursive: true });
+copyFileSync(new URL("../packages/react-xlsx/src/office-art/generated/THIRD-PARTY-NOTICES.txt", import.meta.url), new URL("office-art-THIRD-PARTY-NOTICES.txt", distDir));
 copyFileSync(wasmSource, new URL("duke_sheets_wasm_bg.wasm", distDir));
 
 copyFileSync(require.resolve("@extend-ai/office-fonts/FONT-LICENSES.txt"), new URL("Office-Font-Licenses.txt", distDir));

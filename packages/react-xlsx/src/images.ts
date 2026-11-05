@@ -46,6 +46,7 @@ const MIN_ROW_HEIGHT_PX = 16;
 const DEFAULT_COL_WIDTH_EMU = 64 * EMU_PER_PIXEL;
 const DEFAULT_ROW_HEIGHT_EMU = 20 * EMU_PER_PIXEL;
 const DEFAULT_COLUMN_CHARACTER_WIDTH_PX = 7;
+const pictureSources = new WeakMap<XlsxImage, { node: Element; width: number; height: number; layoutWidth: number; layoutHeight: number }>();
 const columnCharacterWidthCache = new Map<string, number>();
 type DukeWorksheet = ReturnType<Workbook["getSheet"]>;
 
@@ -2936,7 +2937,8 @@ function parsePictureNode(
   workbookSheetIndex: number,
   imageId: string,
   zIndex: number,
-  parentGroup: GroupTransform | null
+  parentGroup: GroupTransform | null,
+  sheetState: WorkbookSheetState | null
 ) {
   const blipNode = getFirstDescendant(pictureNode, "blip");
   const svgBlipNode = blipNode ? getFirstDescendant(blipNode, "svgBlip") : null;
@@ -2957,20 +2959,34 @@ function parsePictureNode(
 
   const nonVisualProps = getFirstDescendant(pictureNode, "cNvPr");
   const transform = anchorFromNodeOrFallback(pictureNode, fallbackAnchor, parentGroup);
+  const image: XlsxImage = {
+    anchor: transform.anchor,
+    description: nonVisualProps?.getAttribute("descr") ?? undefined,
+    hyperlink: getHyperlinkTarget(nonVisualProps ?? pictureNode, drawingRelationships),
+    id: imageId,
+    mediaPath: mediaRelationship.target,
+    mimeType: resolveContentType(contentTypes, mediaRelationship.target),
+    name: nonVisualProps?.getAttribute("name") ?? undefined,
+    sheetIndex: workbookSheetIndex,
+    src: createImageSource(mediaBytes, resolveContentType(contentTypes, mediaRelationship.target), objectUrls),
+    workbookSheetIndex,
+    zIndex
+  };
+  const rect = anchorToAbsoluteRect(transform.anchor, sheetState);
+  const localRect = parseTransformRect(getFirstDescendant(pictureNode, "xfrm"));
+  const layoutWidth = emuToPixels(parentGroup && localRect ? localRect.cx : rect.cx);
+  const layoutHeight = emuToPixels(parentGroup && localRect ? localRect.cy : rect.cy);
+  const rotation = ((transform.rotationDeg % 180) + 180) % 180;
+  const swapAxes = !parentGroup && rotation >= 45 && rotation < 135;
+  pictureSources.set(image, {
+    node: pictureNode,
+    width: swapAxes ? layoutHeight : layoutWidth,
+    height: swapAxes ? layoutWidth : layoutHeight,
+    layoutWidth,
+    layoutHeight
+  });
   return {
-    image: {
-      anchor: transform.anchor,
-      description: nonVisualProps?.getAttribute("descr") ?? undefined,
-      hyperlink: getHyperlinkTarget(nonVisualProps ?? pictureNode, drawingRelationships),
-      id: imageId,
-      mediaPath: mediaRelationship.target,
-      mimeType: resolveContentType(contentTypes, mediaRelationship.target),
-      name: nonVisualProps?.getAttribute("name") ?? undefined,
-      sheetIndex: workbookSheetIndex,
-      src: createImageSource(mediaBytes, resolveContentType(contentTypes, mediaRelationship.target), objectUrls),
-      workbookSheetIndex,
-      zIndex
-    } satisfies XlsxImage,
+    image,
     mediaPath: mediaRelationship.target
   };
 }
@@ -3052,7 +3068,8 @@ function parseAnchorContents(
         workbookSheetIndex,
         imageId,
         ids.z++,
-        parentGroup
+        parentGroup,
+        sheetState
       );
       ids.image += 1;
       if (parsed) {
@@ -3330,10 +3347,98 @@ export function parseWorkbookChartStyleAssets(bytes: Uint8Array): WorkbookChartS
   };
 }
 
-export function parseWorkbookImageAssets(
+function serializePicture(node: Element): string {
+  const drawingNamespace = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const pictureNamespace = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+  const spreadsheetDrawingNamespace = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
+  const extensionNamespace = "http://schemas.microsoft.com/office/drawing/2010/main";
+  const document = node.ownerDocument.implementation.createDocument(pictureNamespace, "pic:pic", null);
+  const copy = (source: Element): Element => {
+    const namespace = source.namespaceURI === spreadsheetDrawingNamespace ? pictureNamespace : source.namespaceURI;
+    const prefix = namespace === drawingNamespace ? "a" : namespace === pictureNamespace ? "pic" : namespace === extensionNamespace ? "a14" : source.prefix;
+    const target = document.createElementNS(namespace, prefix ? `${prefix}:${source.localName}` : source.localName);
+    for (const attribute of Array.from(source.attributes)) {
+      if (attribute.namespaceURI === "http://www.w3.org/2000/xmlns/") continue;
+      target.setAttributeNS(attribute.namespaceURI, attribute.name, attribute.value);
+    }
+    for (const child of Array.from(source.childNodes)) {
+      target.appendChild(isElementNode(child) ? copy(child) : document.importNode(child, true));
+    }
+    return target;
+  };
+  return new XMLSerializer().serializeToString(copy(node));
+}
+
+function hasPictureDecoration(node: Element): boolean {
+  const transform = getFirstDescendant(node, "xfrm");
+  if (Number(transform?.getAttribute("rot") ?? 0) !== 0
+    || ["flipH", "flipV"].some((name) => ["1", "true", "on"].includes(transform?.getAttribute(name) ?? ""))) return true;
+  if ((getFirstDescendant(node, "prstGeom")?.getAttribute("prst") ?? "rect") !== "rect") return true;
+  if (["srcRect", "fillRect"].some((name) => {
+    const rectangle = getFirstDescendant(node, name);
+    return rectangle && Array.from(rectangle.attributes).some((attribute) => Number.parseFloat(attribute.value) !== 0);
+  })) return true;
+  if (["ln", "custGeom", "tile", "effectDag", "scene3d", "sp3d"].some((name) => getFirstDescendant(node, name))) return true;
+  return ["blip", "effectLst"].some((name) => Array.from(getFirstDescendant(node, name)?.children ?? []).some((child) => child.localName !== "extLst"));
+}
+
+async function renderWorkbookPictures(assets: WorkbookImageAssets, theme: ThemeState) {
+  const images = assets.imagesByWorkbookSheetIndex.flat();
+  if (images.length === 0) return;
+  const { loadOfficeArt } = await import("./office-art/loader");
+  const renderer = await loadOfficeArt();
+  const sources = new Map<string, string>();
+  const resolveColor = (xml: string) => {
+    const document = parseXml(`<root xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">${xml}</root>`);
+    const color = document && Array.from(document.getElementsByTagName("*")).find((element) => ["srgbClr", "schemeClr", "scrgbClr", "sysClr"].includes(element.localName));
+    return JSON.stringify(resolveColorValue(color || null, theme));
+  };
+  for (const image of images) {
+    const picture = pictureSources.get(image);
+    if (!picture || !image.mediaPath) continue;
+    let source = sources.get(image.mediaPath);
+    if (!source) {
+      const bytes = assets.archive[image.mediaPath];
+      if (!bytes) continue;
+      const chunks: string[] = [];
+      for (let offset = 0; offset < bytes.length; offset += 32768) chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 32768)));
+      source = `data:${image.mimeType};base64,${btoa(chunks.join(""))}`;
+      if (image.mimeType === "image/tiff" || image.mimeType === "image/x-tiff") {
+        const normalized = renderer.normalizeRaster(source);
+        if (normalized) {
+          source = normalized;
+          image.src = normalized;
+        }
+      }
+      sources.set(image.mediaPath, source);
+    } else if (image.mimeType === "image/tiff" || image.mimeType === "image/x-tiff") {
+      image.src = source;
+    }
+    const rendered = renderer.renderPicture(serializePicture(picture.node), source, picture.width, picture.height, resolveColor);
+    if (rendered) {
+      image.src = createImageSource(strToU8(rendered.svg), "image/svg+xml", assets.objectUrls);
+      const bounds = rendered.paintBounds;
+      image.paintBounds = bounds ? {
+        ...bounds,
+        xPx: bounds.xPx + (picture.layoutWidth - picture.width) / 2,
+        yPx: bounds.yPx + (picture.layoutHeight - picture.height) / 2,
+        layoutWidthPx: picture.layoutWidth,
+        layoutHeightPx: picture.layoutHeight
+      } : undefined;
+      image.pictureRenderStatus = "rendered";
+    } else {
+      const unsupportedRaster = (image.mimeType === "image/tiff" || image.mimeType === "image/x-tiff") && !source.startsWith("data:image/png;");
+      image.pictureRenderStatus = unsupportedRaster || hasPictureDecoration(picture.node) ? "unsupported" : "unchanged";
+      if (image.pictureRenderStatus === "unsupported") console.warn("An unsupported picture decoration could not be rendered; the original image is displayed.");
+    }
+    pictureSources.delete(image);
+  }
+}
+
+export async function parseWorkbookImageAssets(
   bytes: Uint8Array,
   workbook?: Workbook
-): WorkbookImageAssets {
+): Promise<WorkbookImageAssets> {
   const archive = unzipSync(bytes);
   const {
     contentTypes,
@@ -3403,7 +3508,7 @@ export function parseWorkbookImageAssets(
       : null;
   });
 
-  return {
+  const assets: WorkbookImageAssets = {
     archive,
     dirtyArchivePaths: new Set(),
     formControlsByWorkbookSheetIndex,
@@ -3419,6 +3524,13 @@ export function parseWorkbookImageAssets(
     tableStyleByName,
     themePalette
   };
+  try {
+    await renderWorkbookPictures(assets, theme);
+    return assets;
+  } catch (error) {
+    revokeWorkbookImageAssets(assets);
+    throw error;
+  }
 }
 
 function updateAnchorNode(anchorNode: Element, anchor: XlsxImage["anchor"]) {

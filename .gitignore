@@ -13,6 +13,8 @@ coverage/
 .playwright-mcp/
 xlsx-column*.png
 output/
+outputs/
 tmp/
 hs_err_pid*.log
 .tmp-fixtures/
+rust/office-art-wasm/target/
