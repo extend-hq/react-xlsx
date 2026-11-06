@@ -1,3 +1,4 @@
+import { coerceUserEnteredValue, getCellEditingValue, getUserEnteredFormula, isTextCell } from "./cell-input";
 import { localizeCellNumber, localizeRows } from "./number-locale";
 import * as React from "react";
 import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
@@ -9,6 +10,8 @@ import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { growScrollDisplayLimit } from "./scroll-display-limit";
 import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffset } from "./range-highlight";
+import { CellEditor } from "./cell-editor";
+import { getFormulaReferences, type FormulaReference } from "./formula-references";
 import { createMergedRangeLookup } from "./merged-range-lookup";
 import { getCellGeneralAlignment, type CellGeneralAlignment } from "./cell-alignment";
 import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
@@ -21,6 +24,7 @@ import { resolvePicturePaintRect } from "./picture-paint";
 import {
   emuToPixels,
   resizeImageRect,
+  resolveOfficeColumnWidthPixels,
   resolveRenderedSheetAxisPixels,
   resolveSheetColumnWidthPixels,
   resolveSheetRowHeightPixels
@@ -5363,6 +5367,7 @@ function resolveSelectionColors({
 }
 
 type CellRenderData = {
+  usesGeneralAlignment?: boolean;
   canvas?: CanvasCellStyleCache;
   chartHighlight?: CellChartHighlight | null;
   checkboxState?: boolean | null;
@@ -6725,6 +6730,8 @@ type GridRowProps = {
   actualRow: number;
   editingCell: XlsxCellAddress | null;
   editingValue: string;
+  formulaReferences: FormulaReference[];
+  editorBoxShadow: string;
   frozenRowHeaderZIndex: number;
   getCellData: (row: number, col: number) => CellRenderData;
   headerLabelLiveScale: number;
@@ -6757,6 +6764,8 @@ function GridRow({
   actualRow,
   editingCell,
   editingValue,
+  formulaReferences,
+  editorBoxShadow,
   frozenRowHeaderZIndex,
   getCellData,
   headerLabelLiveScale,
@@ -6906,6 +6915,9 @@ function GridRow({
         }
         if (isEditing) {
           cellStyle.padding = 0;
+          cellStyle.position = stickyTop !== undefined || stickyLeft !== undefined ? "sticky" : "relative";
+          cellStyle.overflow = "visible";
+          cellStyle.zIndex = 42;
         }
 
         const cellContentStyle: React.CSSProperties = {
@@ -7075,47 +7087,36 @@ function GridRow({
                 {renderConditionalIcon(cellData.conditionalIcon, zoomFactor)}
               </div>
             ) : null}
+            {isSpilling && !isEditing ? (
+              <div aria-hidden="true" style={{
+                backgroundColor: cellStyle.backgroundColor ?? palette.surface,
+                position: "absolute",
+                left: cellData.spillSide === "left" ? cellData.spillOffsetX : "calc(100% - 1px)",
+                top: 0,
+                width: cellData.spillSide === "left"
+                  ? -(cellData.spillOffsetX ?? 0) + 1
+                  : `calc(${(cellData.spillWidth ?? 0) + getHorizontalPadding(cellStyle.padding) + 1}px - 100%)`,
+                height: "calc(100% - 1px)", pointerEvents: "none"
+              }} />
+            ) : null}
             {isEditing ? (
-              <input
-                autoFocus
-                onBlur={onEditingBlur}
-                onChange={(event) => onEditingValueChange(event.target.value)}
-                onKeyDown={(event) => {
-                  event.stopPropagation();
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    onEditingCommit();
-                    return;
-                  }
-
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    onEditingCancel();
-                    return;
-                  }
-
-                  if (
-                    event.key === "ArrowDown" ||
-                    event.key === "ArrowLeft" ||
-                    event.key === "ArrowRight" ||
-                    event.key === "ArrowUp"
-                  ) {
-                    event.preventDefault();
-                    onEditingNavigate(event.key, event.currentTarget.value);
-                  }
-                }}
-                style={{
-                  backgroundColor: "transparent",
-                  border: 0,
-                  color: "inherit",
-                  font: "inherit",
-                  height: "100%",
-                  margin: 0,
-                  outline: "none",
-                  padding: scaleCssLengthExpression(DEFAULT_CELL_PADDING, zoomFactor),
-                  width: "100%"
-                }}
+              <CellEditor
                 value={editingValue}
+                references={formulaReferences}
+                onBlur={onEditingBlur}
+                onChange={onEditingValueChange}
+                onCommit={onEditingCommit}
+                onCancel={onEditingCancel}
+                onNavigate={onEditingNavigate}
+                style={{
+                  backgroundColor: cellStyle.backgroundColor ?? palette.surface,
+                  boxShadow: editorBoxShadow,
+                  color: cellStyle.color ?? palette.text,
+                  font: "inherit",
+                  lineHeight: cellData.style.lineHeight,
+                  verticalAlign: cellData.style.verticalAlign,
+                  padding: cellData.style.padding
+                }}
               />
             ) : isSpilling ? (
               <div
@@ -7221,7 +7222,7 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
     return false;
   }
 
-  if (prevEditingCol !== -1 && prev.editingValue !== next.editingValue) {
+  if (prevEditingCol !== -1 && (prev.editingValue !== next.editingValue || prev.formulaReferences !== next.formulaReferences || prev.editorBoxShadow !== next.editorBoxShadow)) {
     return false;
   }
 
@@ -7295,6 +7296,7 @@ function XlsxGrid({
     getRowsBatchAsync,
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
+    getCellFormula,
     locale,
     getFormControlItems,
     highlightedRanges,
@@ -7328,6 +7330,7 @@ function XlsxGrid({
     setChartRect,
     setImageRect,
     setCellValue,
+    setCellFormula,
     setZoomScale,
     sheets,
     tabs,
@@ -7423,8 +7426,9 @@ function XlsxGrid({
   const selectionCommitFrameRef = React.useRef<number | null>(null);
   const selectionRef = React.useRef<XlsxCellRange | null>(null);
   const editingCellRef = React.useRef<XlsxCellAddress | null>(null);
+  const editingOriginalValueRef = React.useRef<string | null>(null);
   const commitEditingRef = React.useRef<() => void>(() => {});
-  const editingInputRef = React.useRef<HTMLInputElement>(null);
+  const editingInputRef = React.useRef<HTMLTextAreaElement>(null);
   const readOnlyRef = React.useRef(readOnly);
   const committedZoomScaleRef = React.useRef(zoomScale);
   const gestureZoomScaleRef = React.useRef(zoomScale);
@@ -7537,6 +7541,14 @@ function XlsxGrid({
   >(null);
   const [editingCell, setEditingCell] = React.useState<XlsxCellAddress | null>(null);
   const [editingValue, setEditingValue] = React.useState("");
+  const formulaReferences = React.useMemo(
+    () => {
+      const worksheet = getActiveWorksheet();
+      return editingCell && worksheet && !isTextCell(worksheet, editingCell)
+        ? getFormulaReferences(editingValue, activeSheet?.name ?? "") : [];
+    },
+    [activeSheet?.name, editingCell, editingValue, getActiveWorksheet]
+  );
   const [openTableMenu, setOpenTableMenu] = React.useState<{ col: number; row: number; tableName: string } | null>(null);
   const [fillPreviewRange, setFillPreviewRange] = React.useState<XlsxCellRange | null>(null);
   const [chartPreviewRect, setChartPreviewRect] = React.useState<{ id: string; rect: XlsxImageRect } | null>(null);
@@ -8219,8 +8231,10 @@ function XlsxGrid({
           if (hiddenColSet.has(index)) return 0;
           const original = office.columns[index];
           const override = activeSheet?.colWidthOverridesPx[index];
-          return override !== undefined && override !== original?.sourcePx
-            ? override
+          if (override !== undefined && override !== original?.sourcePx) return override;
+          const width = worksheet?.getColumnWidth(index);
+          return width !== undefined && width !== null
+            ? resolveOfficeColumnWidthPixels(width, office.columnDigitWidthPt)
             : original?.sizePx ?? office.defaultColumnPx;
         });
       }
@@ -8313,8 +8327,10 @@ function XlsxGrid({
           if (hiddenRowSet.has(index)) return 0;
           const original = office.rows[index];
           const override = activeSheet?.rowHeightOverridesPx[index];
-          return override !== undefined && override !== original?.sourcePx
-            ? override
+          if (override !== undefined && override !== original?.sourcePx) return override;
+          const height = worksheet?.getRowHeight(index);
+          return height !== undefined && height !== null
+            ? Math.max(0, height * (4 / 3))
             : original?.sizePx ?? office.defaultRowPx;
         });
       }
@@ -9730,14 +9746,31 @@ function XlsxGrid({
       }
 
       selectCell(cell);
+      editingCellRef.current = cell;
       setEditingCell(cell);
-      setEditingValue(initialValue ?? getControllerCellDisplayValue(cell));
+      const formula = getCellFormula(cell);
+      const worksheet = getActiveWorksheet();
+      const value = formula ? (formula.startsWith("=") ? formula : `=${formula}`)
+        : worksheet ? getCellEditingValue(worksheet, cell, locale) : getControllerCellDisplayValue(cell);
+      editingOriginalValueRef.current = initialValue === undefined ? value : null;
+      setEditingValue(initialValue ?? value);
     },
-    [getControllerCellDisplayValue, readOnly, selectCell]
+    [getActiveWorksheet, getCellFormula, getControllerCellDisplayValue, locale, readOnly, selectCell]
   );
 
+  const saveEditingValue = React.useCallback((cell: XlsxCellAddress, value: string) => {
+    if (value === editingOriginalValueRef.current) return;
+    const worksheet = getActiveWorksheet();
+    const formula = worksheet && !isTextCell(worksheet, cell) ? getUserEnteredFormula(value, locale) : null;
+    if (formula) {
+      setCellFormula(cell, formula);
+    } else {
+      setCellValue(cell, value);
+    }
+  }, [getActiveWorksheet, locale, setCellFormula, setCellValue]);
+
   const commitEditing = React.useCallback(() => {
-    if (!editingCell) {
+    if (!editingCell || !editingCellRef.current) {
       return;
     }
 
@@ -9749,12 +9782,12 @@ function XlsxGrid({
       return;
     }
 
-    setCellValue(editingCell, editingValue);
+    saveEditingValue(editingCell, editingValue);
     editingCellRef.current = null;
     setEditingCell(null);
     setEditingValue("");
     focusGrid();
-  }, [editingCell, editingValue, focusGrid, readOnly, setCellValue]);
+  }, [editingCell, editingValue, focusGrid, readOnly, saveEditingValue]);
 
   const cancelEditing = React.useCallback(() => {
     editingCellRef.current = null;
@@ -9781,7 +9814,7 @@ function XlsxGrid({
     const currentColIndex = colIndexByActual.get(cell.col);
     if (currentRowIndex === undefined || currentColIndex === undefined) {
       if (!readOnlyRef.current) {
-        setCellValue(cell, value);
+        saveEditingValue(cell, value);
       }
       editingCellRef.current = null;
       setEditingCell(null);
@@ -9810,14 +9843,14 @@ function XlsxGrid({
     }
 
     if (!readOnlyRef.current) {
-      setCellValue(cell, value);
+      saveEditingValue(cell, value);
     }
     editingCellRef.current = null;
     setEditingCell(null);
     setEditingValue("");
     moveSelection(nextRowIndex, nextColIndex, false);
     focusGrid();
-  }, [colIndexByActual, focusGrid, rowIndexByActual, setCellValue, visibleCols, visibleRows]);
+  }, [colIndexByActual, focusGrid, rowIndexByActual, saveEditingValue, visibleCols, visibleRows]);
 
   React.useEffect(() => {
     commitEditingRef.current = commitEditing;
@@ -10208,6 +10241,7 @@ function XlsxGrid({
         generalAlignment: worksheet ? getCellGeneralAlignment(worksheet, row, col) : batchedCell?.generalAlignment,
         showGridLines: activeSheet?.showGridLines
       }), zoomFactor),
+      usesGeneralAlignment: !alignment?.horizontal || alignment.horizontal === "general",
       textRotationDeg,
       validation: resolveCellDataValidation(row, col, activeSheet),
       value: sparkline
@@ -10235,6 +10269,7 @@ function XlsxGrid({
       });
       if (styleOverrides) {
         nextData.style = { ...nextData.style, ...styleOverrides };
+        if (styleOverrides.textAlign !== undefined) nextData.usesGeneralAlignment = false;
         // getCellStyle is the final styling layer, so a host-provided
         // background replaces the cell's background fill — including a
         // conditional color-scale fill, since both target the full-cell
@@ -12764,6 +12799,7 @@ function XlsxGrid({
     const sheetSurface = resolveSheetSurface(activeSheet, palette);
     const deferredSpillTextsByPane: Record<FrozenDrawingPane, Array<{
       align: CanvasTextAlign;
+      background: { color: string; left: number; top: number; width: number; height: number };
       clipHeight: number;
       clipLeft: number;
       clipTop: number;
@@ -13591,6 +13627,17 @@ function XlsxGrid({
                 : contentLeft - textClipOverscan;
               deferredSpillTextsByPane[pane].push({
                 align,
+                background: {
+                  color: typeof cellStyle.backgroundColor === "string" ? cellStyle.backgroundColor : sheetSurface,
+                  left: cellData.spillSide === "left"
+                    ? localRect.left + (cellData.spillOffsetX ?? 0)
+                    : localRect.left + localRect.width - 1,
+                  top: localRect.top,
+                  width: cellData.spillSide === "left"
+                    ? -(cellData.spillOffsetX ?? 0) + 1
+                    : Math.max(0, spillMaxWidth + padding.left + padding.right - localRect.width + 1),
+                  height: Math.max(0, localRect.height - 1)
+                },
                 clipHeight: contentHeight + (textClipOverscan * 2),
                 clipLeft: spillClipLeft,
                 clipTop: contentTop - textClipOverscan,
@@ -13658,6 +13705,9 @@ function XlsxGrid({
         }
         for (const spillText of deferredSpillTextsByPane[pane]) {
           paneContext.save();
+          const background = spillText.background;
+          paneContext.fillStyle = background.color;
+          paneContext.fillRect(background.left, background.top, background.width, background.height);
           paneContext.beginPath();
           paneContext.rect(spillText.clipLeft, spillText.clipTop, spillText.clipWidth, spillText.clipHeight);
           paneContext.clip();
@@ -16233,9 +16283,37 @@ function XlsxGrid({
       }}
     />
   ] : []);
+  const formulaHighlightNodes = formulaReferences.flatMap((reference, index) => {
+    if (reference.sheetName && reference.sheetName.toLowerCase() !== activeSheet?.name.toLowerCase()) return [];
+    const range = expandHighlightedRange(reference.range, activeSheet?.mergedRanges ?? mergedRegions);
+    const rows = getHighlightAxisExtent(visibleRows, rowPrefixSums, range.start.row, range.end.row);
+    const cols = getHighlightAxisExtent(visibleCols, colPrefixSums, range.start.col, range.end.col);
+    if (!rows || !cols) return [];
+    return [
+      <div
+        key={index}
+        aria-hidden="true"
+        data-xlsx-formula-reference={editingValue.slice(reference.start, reference.end)}
+        style={{
+          position: "absolute", pointerEvents: "none", boxSizing: "border-box",
+          left: displayRowHeaderWidth + cols.start, top: displayHeaderHeight + rows.start,
+          width: cols.end - cols.start, height: rows.end - rows.start,
+          border: `2px solid ${reference.color}`, backgroundColor: `${reference.color}14`,
+          zIndex: maxDrawingOverlayZIndex + 2
+        }}
+      >
+        {["top", "bottom"].flatMap((vertical) => ["left", "right"].map((horizontal) => (
+          <span key={`${vertical}-${horizontal}`} style={{
+            position: "absolute", [vertical]: -4, [horizontal]: -4,
+            width: 6, height: 6, backgroundColor: reference.color, border: "1px solid white"
+          }} />
+        )))}
+      </div>
+    ];
+  });
   function renderSelectionOverlay(pane?: FrozenDrawingPane) {
     return (
-      <>
+      <div style={{ display: editingCell ? "none" : "contents" }}>
         <div
           ref={pane ? (element) => {
             if (element) {
@@ -16299,7 +16377,7 @@ function XlsxGrid({
             zIndex: 25
           }}
         />
-      </>
+      </div>
     );
   }
 
@@ -16337,7 +16415,7 @@ function XlsxGrid({
       ))}
     </div>
   ) : null;
-  const drawingOverlayPanes = (experimentalCanvas && hasCanvasDomDrawingOverlays) || rangeHighlightNodes.length > 0 ? (
+  const drawingOverlayPanes = (experimentalCanvas && hasCanvasDomDrawingOverlays) || rangeHighlightNodes.length > 0 || formulaHighlightNodes.length > 0 ? (
     <div style={{ ...canvasBodyViewportLayerStyle, zIndex: experimentalCanvas ? 23 : 34 }}>
       {overlayPanes.map(({ pane, style, ref, left, top }) => (
         <div key={pane} style={style}>
@@ -16356,6 +16434,7 @@ function XlsxGrid({
           >
             {experimentalCanvas ? paneDrawingNodes[pane] : null}
             {rangeHighlightNodes}
+            {formulaHighlightNodes}
           </div>
         </div>
       ))}
@@ -16463,7 +16542,14 @@ function XlsxGrid({
                   <canvas ref={cornerHeaderCanvasRef} style={canvasCornerHeaderStyle} />
                 </div>
                 {editingCell && editingOverlayRect ? (() => {
-                  const editingCellStyle = getCellData(editingCell.row, editingCell.col).style;
+                  const editingCellData = getCellData(editingCell.row, editingCell.col);
+                  const editingCellStyle = { ...editingCellData.style };
+                  if (editingCellData.usesGeneralAlignment) {
+                    const enteredValue = worksheet && isTextCell(worksheet, editingCell)
+                      ? editingValue : coerceUserEnteredValue(editingValue, locale);
+                    editingCellStyle.textAlign = typeof enteredValue === "number" ? "right"
+                      : typeof enteredValue === "boolean" ? "center" : "left";
+                  }
                   const editingBackground =
                     typeof editingCellStyle.backgroundColor === "string"
                       ? editingCellStyle.backgroundColor
@@ -16480,55 +16566,63 @@ function XlsxGrid({
                       top: editingOverlayRect.top,
                       width: editingOverlayRect.width,
                       height: editingOverlayRect.height,
-                      zIndex: 28
+                      zIndex: 42
                     }}
                   >
-                    <input
-                      ref={editingInputRef}
-                      autoFocus
-                      onBlur={handleEditingBlur}
-                      onChange={(event) => setEditingValue(event.target.value)}
-                      onKeyDown={(event) => {
-                        event.stopPropagation();
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          commitEditing();
-                          return;
-                        }
-
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          cancelEditing();
-                          return;
-                        }
-
-                        if (
-                          event.key === "ArrowDown" ||
-                          event.key === "ArrowLeft" ||
-                          event.key === "ArrowRight" ||
-                          event.key === "ArrowUp"
-                        ) {
-                          event.preventDefault();
-                          handleEditingNavigate(event.key, event.currentTarget.value);
-                        }
+                    <CellEditor
+                      canvasText
+                      canvasOffset={{
+                        left: editingOverlayRect.left - drawingViewport.left - (stickyLeftByCol.has(editingCell.col) ? displayRowHeaderWidth : scrollBodyCanvasLeft),
+                        top: editingOverlayRect.top - drawingViewport.top - (stickyTopByRow.has(editingCell.row) ? displayHeaderHeight : scrollBodyCanvasTop)
                       }}
+                      paintCanvasText={(context, width, _height, lines, textTop) => {
+                        const padding = resolveCanvasPadding(editingCellStyle.padding);
+                        const contentWidth = Math.max(0, width - padding.left - padding.right);
+                        const lineHeight = resolveCanvasLineHeight(editingCellStyle, 12 * zoomFactor);
+                        context.font = resolveCanvasFont(editingCellStyle, 12 * zoomFactor);
+                        context.textBaseline = "middle";
+                        context.fillStyle = editingColor;
+                        const align = editingCellStyle.textAlign === "right" ? "right" : editingCellStyle.textAlign === "center" ? "center" : "left";
+                        lines.forEach(({ text: line, start: lineStart }, lineIndex) => {
+                          const textWidth = context.measureText(line).width;
+                          const x = padding.left + (align === "right" ? contentWidth - textWidth : align === "center" ? (contentWidth - textWidth) / 2 : 0);
+                          const y = textTop + (lineIndex + 0.5) * lineHeight;
+                          context.fillStyle = editingColor;
+                          context.fillText(line, x, y);
+                          for (const reference of formulaReferences) {
+                            const from = Math.max(0, reference.start - lineStart);
+                            const to = Math.min(line.length, reference.end - lineStart);
+                            if (from >= to) continue;
+                            const left = x + context.measureText(line.slice(0, from)).width;
+                            const right = x + context.measureText(line.slice(0, to)).width;
+                            context.save();
+                            context.beginPath();
+                            context.rect(left, y - lineHeight / 2, right - left, lineHeight);
+                            context.clip();
+                            context.fillStyle = reference.color;
+                            context.fillText(line, x, y);
+                            context.restore();
+                          }
+                        });
+                      }}
+                      inputRef={editingInputRef}
+                      value={editingValue}
+                      references={formulaReferences}
+                      onBlur={handleEditingBlur}
+                      onChange={setEditingValue}
+                      onCommit={commitEditing}
+                      onCancel={cancelEditing}
+                      onNavigate={handleEditingNavigate}
                       style={{
                         backgroundColor: editingBackground,
-                        border: 0,
                         boxShadow: `inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`,
-                        boxSizing: "border-box",
                         color: editingColor,
-                        display: "block",
                         font: resolveCanvasFont(editingCellStyle, 12 * zoomFactor),
-                        height: "100%",
-                        margin: 0,
-                        minHeight: 0,
-                        outline: "none",
-                        overflow: "hidden",
-                        padding: scaleCssLengthExpression(DEFAULT_CELL_PADDING, zoomFactor),
-                        width: "100%"
+                        lineHeight: editingCellStyle.lineHeight,
+                        textAlign: editingCellStyle.textAlign,
+                        verticalAlign: editingCellStyle.verticalAlign,
+                        padding: editingCellStyle.padding
                       }}
-                      value={editingValue}
                     />
                   </div>
                   );
@@ -16662,6 +16756,8 @@ function XlsxGrid({
                           actualRow={actualRow}
                           editingCell={editingCell}
                           editingValue={editingValue}
+                          formulaReferences={formulaReferences}
+                          editorBoxShadow={`inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`}
                           frozenRowHeaderZIndex={frozenRowHeaderOverlayZIndex}
                           getCellData={getCellData}
                           key={virtualRow.key}

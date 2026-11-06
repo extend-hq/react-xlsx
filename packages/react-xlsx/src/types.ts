@@ -116,6 +116,7 @@ export interface XlsxFreezePanes {
 export type XlsxSheetVisibility = "hidden" | "veryHidden" | "visible";
 
 export interface XlsxOfficeLayout {
+  columnDigitWidthPt?: number;
   defaultColumnPx: number;
   defaultRowPx: number;
   columns: Record<number, { sourcePx: number; sizePx: number }>;

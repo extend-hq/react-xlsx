@@ -1678,12 +1678,11 @@ function parseSheetState(
 
   const defaultRowHeight = Number(sheetFormatNode?.getAttribute("defaultRowHeight") ?? 15);
   const digitWidthPt = measureOfficeDigitWidthPt(options?.defaultFont?.family, options?.defaultFont?.sizePt);
-  const storedColumnPixels = (width: number) => Math.max(0, Math.floor(
-    ((256 * width + Math.floor(128 / digitWidthPt)) / 256) * digitWidthPt
-  ) * (4 / 3));
+  const storedColumnPixels = (width: number) => resolveOfficeColumnWidthPixels(width, digitWidthPt);
   const explicitDefaultWidth = Number(sheetFormatNode?.getAttribute("defaultColWidth") ?? Number.NaN);
   const baseWidth = Number(sheetFormatNode?.getAttribute("baseColWidth") ?? 8);
   const officeLayout: XlsxOfficeLayout = {
+    columnDigitWidthPt: digitWidthPt,
     defaultColumnPx: Number.isFinite(explicitDefaultWidth) && explicitDefaultWidth > 0
       ? storedColumnPixels(explicitDefaultWidth)
       : ((Number.isFinite(baseWidth) && baseWidth > 0 ? baseWidth : 8) * digitWidthPt + 5) * (4 / 3),
@@ -3912,6 +3911,17 @@ export function pixelsToEmu(value: number) {
 
 export function pxToSheetColumnWidth(widthPx: number) {
   return (Math.max(widthPx, MIN_COL_WIDTH_PX) - 5) / 7;
+}
+
+export function resolveOfficeColumnWidthPixels(width: number, digitWidthPt = 6) {
+  return Math.max(0, Math.floor(
+    ((256 * width + Math.floor(128 / digitWidthPt)) / 256) * digitWidthPt
+  ) * (4 / 3));
+}
+
+export function pxToOfficeColumnWidth(widthPx: number, digitWidthPt = 6) {
+  const points = Math.round(Math.max(widthPx, MIN_COL_WIDTH_PX) * (3 / 4));
+  return (points + 0.5) / digitWidthPt - Math.floor(128 / digitWidthPt) / 256;
 }
 
 export function resolveSheetColumnWidthPixels(width: number, columnWidthCharacterWidthPx?: number) {

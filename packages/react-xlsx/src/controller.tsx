@@ -1,4 +1,5 @@
-import { localizeCellNumber, parseLocaleNumber } from "./number-locale";
+import { localizeCellNumber } from "./number-locale";
+import { applyInputNumberFormat, coerceUserEnteredValue, getUserEnteredFormula, isTextCell, normalizeFormulaReferences, parseClipboardText, quoteClipboardField } from "./cell-input";
 import { loadSpreadsheetFonts } from "./spreadsheet-fonts";
 import * as React from "react";
 import { formatBinaryBytes, XlsxFileSizeLimitExceededError } from "./errors";
@@ -32,6 +33,7 @@ import {
   dukeDrawingAnchorToXlsxAnchor,
   mergeWorkbookImageAssets,
   parseWorkbookImageAssets,
+  pxToOfficeColumnWidth,
   pxToSheetColumnWidth,
   rectToImageAnchor,
   refreshWorkbookFormControls,
@@ -1322,33 +1324,6 @@ function cloneCellStyle(style: unknown): unknown {
   }
 }
 
-function coerceUserEnteredValue(value: string, locale = "en-US"): unknown {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return "";
-  }
-
-  if (trimmed.startsWith("'")) {
-    return trimmed.slice(1);
-  }
-
-  if (/^(true|false)$/i.test(trimmed)) {
-    return trimmed.toLowerCase() === "true";
-  }
-
-  const localizedNumber = parseLocaleNumber(trimmed, locale);
-  if (localizedNumber !== undefined) return localizedNumber;
-
-  if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(trimmed)) {
-    const parsed = Number(trimmed);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return value;
-}
-
 function applyCellMutationState(
   worksheet: ReturnType<Workbook["getSheet"]>,
   cell: XlsxCellAddress,
@@ -1372,17 +1347,6 @@ function escapeHtml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function parseClipboardText(text: string): string[][] {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const rows = normalized.split("\n");
-
-  if (rows.length > 1 && rows[rows.length - 1] === "") {
-    rows.pop();
-  }
-
-  return rows.map((row) => row.split("\t"));
 }
 
 function createAbortError() {
@@ -3246,7 +3210,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           });
         }
 
-        textCells.push(value);
+        textCells.push(quoteClipboardField(value));
         htmlCells.push(
           `<td${rowSpan > 1 ? ` rowspan="${rowSpan}"` : ""}${colSpan > 1 ? ` colspan="${colSpan}"` : ""} style="${escapeHtml(cellStyles.join(";"))}">${escapeHtml(value)}</td>`
         );
@@ -3829,7 +3793,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    const contentSizePx = resolveContentSheetAxisPixels(sizePx, activeSheet.showGridLines);
+    const contentSizePx = activeSheet.officeLayout ? sizePx : resolveContentSheetAxisPixels(sizePx, activeSheet.showGridLines);
     const targetWorkbookSheetIndex = activeSheet.workbookSheetIndex;
     setSheets((currentSheets) => currentSheets.map((sheet) => {
       if (sheet.workbookSheetIndex !== targetWorkbookSheetIndex) {
@@ -3891,7 +3855,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
     worksheet.setColumnWidth(
       col,
-      pxToSheetColumnWidth(resolveContentSheetAxisPixels(widthPx, activeSheet.showGridLines))
+      activeSheet.officeLayout
+        ? pxToOfficeColumnWidth(widthPx, activeSheet.officeLayout.columnDigitWidthPt)
+        : pxToSheetColumnWidth(resolveContentSheetAxisPixels(widthPx, activeSheet.showGridLines))
     );
     refreshWorkbookState(workbook);
   }, [
@@ -3923,7 +3889,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
     worksheet.setRowHeight(
       row,
-      pxToSheetRowHeight(resolveContentSheetAxisPixels(heightPx, activeSheet.showGridLines))
+      activeSheet.officeLayout
+        ? Math.max(heightPx, MIN_ROW_HEIGHT_PX) * (3 / 4)
+        : pxToSheetRowHeight(resolveContentSheetAxisPixels(heightPx, activeSheet.showGridLines))
     );
     refreshWorkbookState(workbook);
   }, [
@@ -4387,8 +4355,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     if (locale !== "en-US" && value === getCellDisplayValue(cell)) return;
-    const nextValue = coerceUserEnteredValue(value, locale);
+    const nextValue = isTextCell(worksheet, cell) ? (value.startsWith("'") ? value.slice(1) : value) : coerceUserEnteredValue(value, locale);
     worksheet.setCell(cellAddressToA1(cell), nextValue);
+    if (typeof nextValue === "number") applyInputNumberFormat(worksheet, cell, value);
     const after = captureCellMutationState(cell);
     if (!after) {
       return;
@@ -4413,7 +4382,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (!formula.trim()) {
       worksheet.setCell(cellAddressToA1(cell), "");
     } else {
-      worksheet.setFormula(cellAddressToA1(cell), formula);
+      worksheet.setFormula(cellAddressToA1(cell), normalizeFormulaReferences(formula));
+      applyInputNumberFormat(worksheet, cell, formula);
     }
     const after = captureCellMutationState(cell);
     if (!after) {
@@ -4777,8 +4747,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         if (!before) {
           continue;
         }
-        if (rawValue.startsWith("=") && rawValue.length > 1) {
-          worksheet.setFormula(cellAddressToA1(nextCell), rawValue);
+        const textCell = isTextCell(worksheet, nextCell);
+        const formula = textCell ? null : getUserEnteredFormula(rawValue, locale);
+        if (formula) {
+          worksheet.setFormula(cellAddressToA1(nextCell), normalizeFormulaReferences(formula));
+          applyInputNumberFormat(worksheet, nextCell, formula);
           const after = captureCellMutationState(nextCell);
           if (!after) {
             continue;
@@ -4789,8 +4762,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
             cell: nextCell
           });
         } else {
-          const nextValue = coerceUserEnteredValue(rawValue, locale);
+          const nextValue = textCell ? rawValue : coerceUserEnteredValue(rawValue, locale, "paste");
           worksheet.setCell(cellAddressToA1(nextCell), nextValue);
+          if (typeof nextValue === "number") applyInputNumberFormat(worksheet, nextCell, rawValue);
           const after = captureCellMutationState(nextCell);
           if (!after) {
             continue;
