@@ -747,7 +747,7 @@ The viewer currently renders these chart families directly from workbook chart d
 - Combo charts: mixed column + line combinations when both groups are present in the workbook
 - Chartsheets: standalone chart tabs render alongside worksheet tabs
 
-Charts with their original OOXML definitions use the bundled Rust Office Charts renderer, including filled maps, stock, hierarchy, and surface charts. Chart points and series remain selectable. Filled maps use cached Office geometry when present, with offline country and US state boundaries as a fallback; unavailable boundaries are reported explicitly.
+Charts with their original OOXML definitions use the bundled Rust Office Charts renderer, including filled maps, stock, hierarchy, and surface charts. The viewer bundles chart browser package 0.3.3 (Office Charts 0.1.6 and Office Art 0.1.4) and separately rebuilds its picture-art WASM from Office Art 0.1.4. Chart points and series remain selectable. Filled maps use cached Office geometry when present, with offline country and US state boundaries as a fallback; unavailable boundaries are reported explicitly.
 
 Chart artwork uses the shared Office Art renderer for tiled picture fills, supported image adjustments, picture markers, inner shadows, reflections, soft edges, blur, and supported effect trees. Saved chart drawings include preset and custom shapes, connectors, pictures, groups, and basic text layout. Original drawing parts remain in the workbook archive for export. Unsupported artwork retains explicit SVG descriptions; this does not establish full native Office text layout, 3D artwork, or SmartArt generation.
 
