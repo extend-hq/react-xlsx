@@ -29,10 +29,13 @@ const rendererPackage = packages.find((pkg) => pkg.name === "rust-office-art");
 if (!rendererPackage?.source?.startsWith("registry+")) throw new Error("Office artwork must be built from its locked registry package.");
 const notices = packages.filter((pkg) => pkg.source).map((pkg) => {
   const directory = dirname(pkg.manifest_path);
-  const bundledNotices = pkg.name === "rust-office-art" ? ["src/geometry_data/LICENSE.apache-poi", "src/geometry_data/NOTICE.apache-poi", "src/geometry_data/SOURCE.md"] : [];
+  const bundledNotices = pkg.name === "rust-office-art" ? [
+    "src/geometry_data/LICENSE.apache-poi", "src/geometry_data/NOTICE.apache-poi", "src/geometry_data/SOURCE.md",
+    "src/geometry_data/LICENSE.ecma", ...["arimo", "carlito", "tinos", "cousine"].map(family => `src/fonts/${family}/LICENSE`),
+  ] : [];
   if (bundledNotices.some((name) => !existsSync(join(directory, name)))) throw new Error("Office artwork preset license metadata is missing.");
   const paths = [...new Set([pkg.license_file, "LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "LICENSE.txt", "LICENSE.md", "COPYING", ...bundledNotices].filter(Boolean))];
-  const licenses = paths.map((name) => join(directory, name)).filter(existsSync).map((path) => readFileSync(path, "utf8").replace(/[ \t]+$/gm, ""));
+  const licenses = paths.map((name) => join(directory, name)).filter(existsSync).map((path) => readFileSync(path, "utf8").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, ""));
   return `${pkg.name} ${pkg.version}\n${pkg.license ?? ""}\n${pkg.repository ?? ""}\n\n${licenses.join("\n\n")}`;
 });
 writeFileSync(`${output}/THIRD-PARTY-NOTICES.txt`, notices.join("\n\n--------------------\n\n").trimEnd() + "\n");

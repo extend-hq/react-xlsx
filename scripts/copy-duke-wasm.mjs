@@ -9,6 +9,7 @@ const distDir = new URL("../packages/react-xlsx/dist/", import.meta.url);
 
 mkdirSync(distDir, { recursive: true });
 copyFileSync(new URL("../packages/react-xlsx/src/office-art/generated/THIRD-PARTY-NOTICES.txt", import.meta.url), new URL("office-art-THIRD-PARTY-NOTICES.txt", distDir));
+copyFileSync(new URL("../packages/react-xlsx/src/office-art/generated/provenance.json", import.meta.url), new URL("office-art-provenance.json", distDir));
 copyFileSync(wasmSource, new URL("duke_sheets_wasm_bg.wasm", distDir));
 
 copyFileSync(require.resolve("@extend-ai/office-fonts/FONT-LICENSES.txt"), new URL("Office-Font-Licenses.txt", distDir));
@@ -19,7 +20,7 @@ for (const name of ["preact"]) {
 }
 
 const chartsDirectory = dirname(require.resolve("@extend-ai/rust-office-charts/package.json"));
-for (const name of ["LICENSE", "MAP-DATA-LICENSE", "THIRD-PARTY-NOTICES.txt"]) {
+for (const name of ["LICENSE", "MAP-DATA-LICENSE", "FONT-DATA-LICENSE", "THIRD-PARTY-NOTICES.txt"]) {
   copyFileSync(join(chartsDirectory, name), new URL(`rust-office-charts-${name}${name.endsWith(".txt") ? "" : ".txt"}`, distDir));
 }
 copyFileSync(require.resolve("@extend-ai/rust-office-charts/office_charts_bg.wasm"), new URL("office_charts_bg.wasm", distDir));

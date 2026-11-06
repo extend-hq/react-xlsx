@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.20.8",
+  "version": "0.20.9",
   "description": "JavaScript and React viewers for XLSX workbooks",
   "license": "MIT",
   "keywords": [
@@ -82,7 +82,7 @@
   "devDependencies": {
     "@tanstack/react-virtual": "^3.13.23",
     "preact": "^10.29.8",
-    "@extend-ai/rust-office-charts": "https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.3.1/extend-ai-rust-office-charts-0.3.1.tgz",
+    "@extend-ai/rust-office-charts": "https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.3.3/extend-ai-rust-office-charts-0.3.3.tgz",
     "@extend-ai/office-fonts": "https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz"
   }
 }
