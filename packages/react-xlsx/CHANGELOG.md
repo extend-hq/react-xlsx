@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.8
+
+- Add formula-aware cell editing and highlight referenced ranges while editing.
+- Render drawings across frozen pane boundaries and refine chart selection and source range highlights.
+- Improve canvas table header rendering and menu interaction.
+
 ## 0.20.7
 
 - Use the published OfficeArt 0.1.3 picture renderer and chart browser 0.3.1 release.
