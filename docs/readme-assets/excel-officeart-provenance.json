@@ -1,0 +1,450 @@
+{
+  "viewerVersion": "0.20.9",
+  "officeArtVersion": "0.1.4",
+  "nativeVersion": "16.107.3",
+  "nativeCaptureDate": "2026-11-05",
+  "viewerCaptureDate": "2026-11-06",
+  "browser": "157.0.8103.38",
+  "devicePixelRatio": 1,
+  "inputSha256": "9062ea2fe23034e660fff3147993f7d5522bbfdd2a23306bb1be6ea0fc6544e0",
+  "nativePdfSha256": "02a5b2c647ff59c99ac833923174ab49120604d5b5575d5dc0795567d9e874c6",
+  "nativeDpi": 96,
+  "nativePageOffsetPt": [
+    50,
+    54
+  ],
+  "cases": [
+    {
+      "sheet": 0,
+      "index": 1,
+      "name": "Original",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        116,
+        124,
+        296,
+        224
+      ],
+      "candidateSha256": "bb9f54c466547165cf0350c6cebc785ceaab1209c3ec7b966404e13ccfd34038",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "unchanged"
+    },
+    {
+      "sheet": 0,
+      "index": 2,
+      "name": "Crop",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        313,
+        124,
+        493,
+        224
+      ],
+      "candidateSha256": "b0c38a950d3f4dbfbb8ec33bf9c0d3a10dbd4972cb90dcd14960999cc632e3cc",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 3,
+      "name": "Negative crop",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        511,
+        124,
+        691,
+        224
+      ],
+      "candidateSha256": "3e87602884c00bbbb1eb935ba8de3660d0df408609342a972955c11fb485147a",
+      "candidateSizePx": [
+        180,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 4,
+      "name": "Inset stretch",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        116,
+        297,
+        296,
+        397
+      ],
+      "candidateSha256": "16f16df67cd42b78edf44cf5d73f5231d12dac6762a546117ab7578ba13172f9",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 5,
+      "name": "Horizontal flip",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        313,
+        297,
+        493,
+        397
+      ],
+      "candidateSha256": "85d5d98c6d759786693428ecc7c8bafda0c3c88577a7ab9dfb2f52590cde407f",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 6,
+      "name": "Vertical flip",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        511,
+        297,
+        691,
+        397
+      ],
+      "candidateSha256": "8923df653f9e4f4128710d2236772028e166effe88dfe957eb504783aa75076d",
+      "candidateSizePx": [
+        180,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 7,
+      "name": "Rotate 30",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        103,
+        432,
+        309,
+        609
+      ],
+      "candidateSha256": "1dfa0e5787320a2d5e49a206626a7d31a81c40a42099ef1fabd7ae8f2d516178",
+      "candidateSizePx": [
+        207,
+        178
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 8,
+      "name": "Rotate 90",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        313,
+        471,
+        493,
+        571
+      ],
+      "candidateSha256": "caad045ad880adcf2c4d042e6191cb59ba791e554fea05055bc33cf9bb0ca6d7",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 9,
+      "name": "Ellipse",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        511,
+        471,
+        691,
+        571
+      ],
+      "candidateSha256": "363b5edd5ea5b72b6a2765c2cbc726a72f25e9ca8cc0939eee8183173fbe3350",
+      "candidateSizePx": [
+        180,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 10,
+      "name": "Rounded rectangle",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        116,
+        644,
+        296,
+        744
+      ],
+      "candidateSha256": "813d3d374088150f2bea374f909784e361f6be181e16acddd7f30a5ce0d606b1",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 11,
+      "name": "Solid border",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        305,
+        636,
+        501,
+        752
+      ],
+      "candidateSha256": "288449b21b92ab77900378cb6a0e184a25d66c2fd0cfb8cede28f5494acfd796",
+      "candidateSizePx": [
+        197,
+        116
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 0,
+      "index": 12,
+      "name": "Theme border",
+      "nativePageSha256": "fa9154a589f830be2595a5365fb29f50c756093a7032bde549c5b98d07740c32",
+      "nativeCropPx": [
+        505,
+        638,
+        697,
+        750
+      ],
+      "candidateSha256": "fd4026c2d1126ecfd4fa0353db1c18e4b521526d69ccabea4d3b9d256b7f5e4e",
+      "candidateSizePx": [
+        192,
+        112
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 1,
+      "name": "Transparency",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        116,
+        124,
+        296,
+        224
+      ],
+      "candidateSha256": "a8188f7a686158ee66c96e93b519726a7df3fec70315f1f32a548eecbce6b868",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 2,
+      "name": "Grayscale",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        313,
+        124,
+        493,
+        224
+      ],
+      "candidateSha256": "c4bec9dfad9ed22ac224ff7301ee5408423805cfdabcb5d98dc72e7c1ab8071f",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 3,
+      "name": "Black and white",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        511,
+        124,
+        691,
+        224
+      ],
+      "candidateSha256": "424a1294f6089dad7b8e09bbad9364d73b4c3e910b3750aa06857296861a46c8",
+      "candidateSizePx": [
+        180,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 4,
+      "name": "Brightness contrast",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        116,
+        297,
+        296,
+        397
+      ],
+      "candidateSha256": "7a3a143a528be107f0fc428dbebc55579c2d7cbd9fc7c7494f2149f6faf23597",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 5,
+      "name": "Tint",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        313,
+        297,
+        493,
+        397
+      ],
+      "candidateSha256": "14de8b8c6921642183af5aa11ce2f41034475090fc5d10b5280773250ecaf3a0",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 6,
+      "name": "Duotone",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        511,
+        297,
+        691,
+        397
+      ],
+      "candidateSha256": "de469c47431de69a55888dc0f457fa3a45bd0f20947f2c22c52b08f43aa2d1cc",
+      "candidateSizePx": [
+        180,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 7,
+      "name": "Shadow",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        115,
+        470,
+        311,
+        586
+      ],
+      "candidateSha256": "93f593dd0dc42d58d1dd9df227b5c75b8031225cd3eb6e21a127092993eb5fc9",
+      "candidateSizePx": [
+        197,
+        117
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 8,
+      "name": "Glow",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        303,
+        461,
+        503,
+        581
+      ],
+      "candidateSha256": "a0af149233cade3eea71562049d0e102b25b0a547bcacf87ddcac9da0ed0b610",
+      "candidateSizePx": [
+        201,
+        120
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 9,
+      "name": "Soft edges",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        511,
+        471,
+        691,
+        571
+      ],
+      "candidateSha256": "e1e0c430a1832ee856a08183aed91106d8fa12196b1427c4a7b5ecb4b937b7c3",
+      "candidateSizePx": [
+        180,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 10,
+      "name": "Reflection",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        116,
+        644,
+        296,
+        848
+      ],
+      "candidateSha256": "097c4d81525c058f9d7ab7b83d8106fac297b43663db29922834bbecba81c3ed",
+      "candidateSizePx": [
+        181,
+        204
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 11,
+      "name": "Tile",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        313,
+        644,
+        493,
+        744
+      ],
+      "candidateSha256": "73853cc2545e6918f40288ca9ea2d04f24f473d9cb70bc01445f6fc13a91fa2f",
+      "candidateSizePx": [
+        181,
+        100
+      ],
+      "renderStatus": "rendered"
+    },
+    {
+      "sheet": 1,
+      "index": 12,
+      "name": "Color replacement",
+      "nativePageSha256": "f0cca7c287c3053f871aaf0d33fb8f2a62c82f593deb04dabd5c3b8484fa233d",
+      "nativeCropPx": [
+        511,
+        644,
+        691,
+        744
+      ],
+      "candidateSha256": "55d7c439887caf3f1e5159d18ea95796e10ac65e45bbfd1c0a3fe06b8d3a5a5c",
+      "candidateSizePx": [
+        180,
+        100
+      ],
+      "renderStatus": "rendered"
+    }
+  ]
+}
