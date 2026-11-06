@@ -177,6 +177,7 @@ export function CellEditor({
         maxWidth: bounds.width || "100%",
         textAlign: style.textAlign ?? "left",
         whiteSpace: "pre-wrap",
+        wordBreak: canvasText ? "break-all" : undefined,
         overflowWrap: "anywhere",
         padding: 0,
         lineHeight: style.lineHeight ?? "inherit",
@@ -201,7 +202,7 @@ export function CellEditor({
       >
         <span ref={textRef} style={{ display: "block", transform: "translateY(var(--xlsx-editor-baseline-offset, 0px))" }}>
           <span ref={baselineRef} style={{ display: "inline-block", width: 0, height: 0, verticalAlign: "baseline" }} />
-          {paintCanvasText ? <span ref={plainTextRef}>{value + "\u200b"}</span> : <>{parts}{"\u200b"}</>}
+          {paintCanvasText ? <span ref={plainTextRef}>{!value || /[\r\n]$/.test(value) ? value + "\u200b" : value}</span> : <>{parts}{"\u200b"}</>}
         </span>
       </div>
       {paintCanvasText ? <canvas ref={canvasRef} aria-hidden="true" style={{ position: "absolute", pointerEvents: "none" }} /> : null}
@@ -256,6 +257,7 @@ export function CellEditor({
           width: "100%",
           minWidth: 0,
           whiteSpace: "pre-wrap",
+          wordBreak: canvasText ? "break-all" : undefined,
           overflowWrap: "anywhere",
           resize: "none",
           overflow: "hidden",

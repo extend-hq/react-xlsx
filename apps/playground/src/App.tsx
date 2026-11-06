@@ -1427,7 +1427,7 @@ export function App() {
                       {defaultNode}
                     </>
                   )}
-                  renderTableHeaderMenu={({ column, direction, sortAscending, sortDescending, triggerProps }) => (
+                  renderTableHeaderMenu={experimentalCanvas ? undefined : ({ column, direction, sortAscending, sortDescending, triggerProps }) => (
                     <DropdownMenu>
                       <DropdownMenuTrigger
                         render={<Button size="icon-xs" variant="ghost" />}

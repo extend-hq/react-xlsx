@@ -3,7 +3,8 @@ import type { XlsxChartElementSelection } from "./types";
 const svgNamespace = "http://www.w3.org/2000/svg";
 const geometrySelector = "path,rect,circle,ellipse,line,polyline,polygon";
 const ownerSelector = "[data-chart-series]";
-const selectionColor = "#0078d4";
+const selectionColor = "#3276b5";
+const selectionHandleFill = "#cce7fc";
 type Point = { x: number; y: number };
 
 function keepHandleScreenSized(handle: SVGElement, owner: SVGGraphicsElement, point: Point) {
@@ -208,7 +209,7 @@ function pointHandles(node: SVGGraphicsElement, points: Point[]) {
     handle.setAttribute("cx", String(point.x));
     handle.setAttribute("cy", String(point.y));
     handle.setAttribute("r", "3");
-    handle.setAttribute("fill", "#ffffff");
+    handle.setAttribute("fill", selectionHandleFill);
     handle.setAttribute("stroke", selectionColor);
     handle.setAttribute("stroke-width", "1.1");
     handle.setAttribute("vector-effect", "non-scaling-stroke");

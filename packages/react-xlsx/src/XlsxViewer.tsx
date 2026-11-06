@@ -120,14 +120,13 @@ const THUMBNAIL_MAX_SOURCE_WIDTH_PX = 1440;
 const LIVE_ZOOM_COMMIT_IDLE_MS = 48;
 const WHEEL_ZOOM_SENSITIVITY = 0.0025;
 const WHEEL_LINE_DELTA_PX = 16;
-const CHART_SOURCE_HIGHLIGHT_COLORS = ["#2563eb", "#dc2626", "#7c3aed", "#059669", "#ea580c", "#db2777"];
 const CHART_SOURCE_HIGHLIGHT_COLOR_BY_ROLE = {
-  bubble: CHART_SOURCE_HIGHLIGHT_COLORS[3] ?? "#059669",
-  category: CHART_SOURCE_HIGHLIGHT_COLORS[2] ?? "#7c3aed",
-  name: CHART_SOURCE_HIGHLIGHT_COLORS[0] ?? "#2563eb",
-  point: CHART_SOURCE_HIGHLIGHT_COLORS[5] ?? "#db2777",
-  value: CHART_SOURCE_HIGHLIGHT_COLORS[4] ?? "#ea580c"
+  bubble: "#258447",
+  category: "#8157b6",
+  name: "#c53645",
+  value: "#326bc7"
 };
+const CHART_SELECTION_STROKE = "#a6a6a6";
 const SHEET_SURFACE = "#ffffff";
 const SHEET_GRIDLINE = "#d9d9d9";
 const DRAWING_SELECTION_STROKE = "#64748b";
@@ -1175,6 +1174,53 @@ type CellChartHighlight = {
   fillColor: string;
   strokeColor: string;
 };
+
+function ReferenceRangeHandles({ color, top = true, bottom = true, left = true, right = true }: {
+  color: string;
+  top?: boolean;
+  bottom?: boolean;
+  left?: boolean;
+  right?: boolean;
+}) {
+  return <>{([top && "top", bottom && "bottom"] as const).flatMap((vertical) => vertical
+    ? ([left && "left", right && "right"] as const).map((horizontal) => horizontal ? (
+      <span key={`${vertical}-${horizontal}`} style={{
+        position: "absolute", [vertical]: -4, [horizontal]: -4,
+        width: 6, height: 6, backgroundColor: color, border: "1px solid white"
+      }} />
+    ) : null) : [])}</>;
+}
+
+function ReferenceRangeOutline({
+  rect, color, fillColor, zIndex, formula, chartSourceIndex
+}: {
+  rect: XlsxImageRect;
+  color: string;
+  fillColor: string;
+  zIndex: number;
+  formula?: string;
+  chartSourceIndex?: number;
+}) {
+  return (
+    <div
+      aria-hidden="true"
+      data-xlsx-formula-reference={formula}
+      data-xlsx-chart-source-range={chartSourceIndex}
+      style={{
+        ...rect,
+        position: "absolute",
+        pointerEvents: "none",
+        boxSizing: "border-box",
+        border: `2px solid ${color}`,
+        borderRadius: 0,
+        backgroundColor: fillColor,
+        zIndex
+      }}
+    >
+      <ReferenceRangeHandles color={color} />
+    </div>
+  );
+}
 
 type WorksheetWithRowsBatch = Worksheet & {
   getRowsBatch?: (startRow: number, maxRows: number, options?: unknown) => unknown;
@@ -3997,24 +4043,6 @@ function resolveChartFormulaRange(
   };
 }
 
-function resolveRangePointCell(range: XlsxCellRange, pointIndex: number): XlsxCellRange | null {
-  const normalized = normalizeRange(range);
-  const rowCount = normalized.end.row - normalized.start.row + 1;
-  const colCount = normalized.end.col - normalized.start.col + 1;
-  const cellCount = rowCount * colCount;
-  if (pointIndex < 0 || pointIndex >= cellCount) {
-    return null;
-  }
-
-  const rowOffset = Math.floor(pointIndex / colCount);
-  const colOffset = pointIndex % colCount;
-  const cell = {
-    col: normalized.start.col + colOffset,
-    row: normalized.start.row + rowOffset
-  };
-  return { start: cell, end: cell };
-}
-
 function collectChartRangeHighlights(
   chart: XlsxChart | null,
   selectedElement: XlsxChartElementSelection | null,
@@ -4084,38 +4112,12 @@ function collectChartRangeHighlights(
     seenRanges.add(key);
     const strokeColor = CHART_SOURCE_HIGHLIGHT_COLOR_BY_ROLE[reference.role];
     highlights.push({
-      fillColor: applyAlphaToColor(strokeColor, isDark ? 0.24 : 0.14),
+      fillColor: applyAlphaToColor(strokeColor, isDark ? 0.2 : 0.1),
       range: resolved.range,
       strokeColor,
       workbookSheetIndex: resolved.workbookSheetIndex
     });
   });
-
-  if (selectedElement?.chartId === chart.id && selectedElement.kind === "point") {
-    references.forEach((reference) => {
-      if (!reference.formula || reference.role === "name") {
-        return;
-      }
-
-      const resolved = resolveChartFormulaRange(reference.formula, chart.workbookSheetIndex, sheets, workbook);
-      if (!resolved) {
-        return;
-      }
-
-      const range = resolveRangePointCell(resolved.range, selectedElement.pointIndex);
-      if (!range) {
-        return;
-      }
-
-      const strokeColor = CHART_SOURCE_HIGHLIGHT_COLOR_BY_ROLE.point;
-      highlights.push({
-        fillColor: applyAlphaToColor(strokeColor, isDark ? 0.34 : 0.22),
-        range,
-        strokeColor,
-        workbookSheetIndex: resolved.workbookSheetIndex
-      });
-    });
-  }
 
   return highlights;
 }
@@ -4798,6 +4800,48 @@ function resolveTableHeaderTriggerStyle(palette: ViewerPalette, zoomFactor: numb
   };
 }
 
+function drawCanvasTableHeaderTrigger(
+  context: CanvasRenderingContext2D,
+  rect: { left: number; top: number; width: number; height: number },
+  direction: "ascending" | "descending" | null,
+  palette: ViewerPalette,
+  zoomFactor: number
+) {
+  const size = 16 * zoomFactor;
+  const left = rect.left + Math.max(0, rect.width - size - zoomFactor);
+  const top = rect.top + Math.max(0, rect.height - size - zoomFactor);
+  context.save();
+  context.beginPath();
+  context.rect(rect.left, rect.top, rect.width, rect.height);
+  context.clip();
+  context.translate(left, top);
+  context.scale(zoomFactor, zoomFactor);
+  context.fillStyle = paletteIsDark(palette) ? palette.headerSurface : "#f8fafb";
+  context.fillRect(0, 0, 16, 16);
+  context.strokeStyle = paletteIsDark(palette) ? palette.mutedText : "#969c9e";
+  context.lineWidth = 1;
+  context.strokeRect(0.5, 0.5, 15, 15);
+  context.fillStyle = paletteIsDark(palette) ? palette.headerText : "#667174";
+  const triangleX = direction ? 2 : 4;
+  const triangleY = direction ? 10 : 6;
+  context.beginPath();
+  context.moveTo(triangleX, triangleY);
+  context.lineTo(triangleX + (direction ? 5 : 8), triangleY);
+  context.lineTo(triangleX + (direction ? 2.5 : 4), triangleY + (direction ? 3 : 4));
+  context.fill();
+  if (direction) {
+    const headY = direction === "ascending" ? 3 : 13;
+    const shoulderY = direction === "ascending" ? 6 : 10;
+    context.fillRect(10, 5, 2, 6);
+    context.beginPath();
+    context.moveTo(11, headY);
+    context.lineTo(7.5, shoulderY);
+    context.lineTo(14.5, shoulderY);
+    context.fill();
+  }
+  context.restore();
+}
+
 function SegmentedControl({
   items,
   onValueChange,
@@ -5431,6 +5475,7 @@ type PaintedBodyCanvasSignature = {
   palette: ViewerPalette;
   rowHeaderWidth: number;
   rowSignature: string;
+  tableHeaderSignature: string;
   viewportLeft: number;
   viewportTop: number;
   zoomFactor: number;
@@ -7026,16 +7071,24 @@ function GridRow({
                 aria-hidden="true"
                 style={{
                   backgroundColor: cellData.chartHighlight.fillColor,
-                  borderBottom: cellData.chartHighlight.borderBottom ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
-                  borderLeft: cellData.chartHighlight.borderLeft ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
-                  borderRight: cellData.chartHighlight.borderRight ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
-                  borderTop: cellData.chartHighlight.borderTop ? `${Math.max(1, zoomFactor)}px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  borderBottom: cellData.chartHighlight.borderBottom ? `2px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  borderLeft: cellData.chartHighlight.borderLeft ? `2px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  borderRight: cellData.chartHighlight.borderRight ? `2px solid ${cellData.chartHighlight.strokeColor}` : undefined,
+                  borderTop: cellData.chartHighlight.borderTop ? `2px solid ${cellData.chartHighlight.strokeColor}` : undefined,
                   boxSizing: "border-box",
-                  inset: Math.max(1, zoomFactor * 0.5),
+                  inset: 0,
                   pointerEvents: "none",
                   position: "absolute"
                 }}
-              />
+              >
+                <ReferenceRangeHandles
+                  color={cellData.chartHighlight.strokeColor}
+                  top={cellData.chartHighlight.borderTop}
+                  bottom={cellData.chartHighlight.borderBottom}
+                  left={cellData.chartHighlight.borderLeft}
+                  right={cellData.chartHighlight.borderRight}
+                />
+              </div>
             ) : null}
             {cellData.conditionalDataBar ? (
               <div
@@ -9064,7 +9117,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     setOpenTableMenu(null);
-  }, [activeSheet, activeSheetIndex]);
+  }, [activeSheetIndex, workbook]);
 
   React.useEffect(() => {
     if (!pendingNavigation || pendingNavigation.sheetIndex !== activeSheetIndex) {
@@ -12070,6 +12123,9 @@ function XlsxGrid({
 
     return (
       <button
+        aria-haspopup="menu"
+        aria-label={`Open menu for ${tableColumn.name}`}
+        aria-expanded={openTableMenu?.tableName === table.name && openTableMenu.col === cell.col && openTableMenu.row === cell.row}
         onPointerDown={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -12087,14 +12143,15 @@ function XlsxGrid({
           );
         }}
         style={{
-          ...resolveTableHeaderTriggerStyle(palette, zoomFactor)
+          ...resolveTableHeaderTriggerStyle(palette, zoomFactor),
+          ...(experimentalCanvas ? { bottom: zoomFactor, right: zoomFactor, top: undefined, maxHeight: "100%", maxWidth: "100%" } : {})
         }}
         type="button"
       >
-        {triggerIcon}
+        {experimentalCanvas ? null : triggerIcon}
       </button>
     );
-  }, [effectiveTables, palette, renderTableHeaderMenu, sortState, sortTable, zoomFactor]);
+  }, [effectiveTables, experimentalCanvas, openTableMenu, palette, renderTableHeaderMenu, sortState, sortTable, zoomFactor]);
   const resolveCanvasColumnHeaderRect = React.useCallback((actualCol: number) => {
     const colIndex = colIndexByActual.get(actualCol);
     if (colIndex === undefined) {
@@ -12312,6 +12369,28 @@ function XlsxGrid({
 
     event.preventDefault();
     focusGrid();
+    if (!renderTableHeaderMenu) {
+      const table = getTableAtCell(effectiveTables, cell.row, cell.col);
+      const column = getTableHeaderColumn(table, cell.row, cell.col);
+      const columnRect = resolveCanvasColumnHeaderRect(cell.col);
+      const rowRect = resolveCanvasRowHeaderRect(cell.row);
+      const viewportRect = scrollRef.current?.getBoundingClientRect();
+      if (table && column && columnRect && rowRect && viewportRect) {
+        const right = viewportRect.left + columnRect.left + columnRect.width - zoomFactor;
+        const bottom = viewportRect.top + rowRect.top + rowRect.height - zoomFactor;
+        if (event.clientX >= right - 16 * zoomFactor && event.clientX <= right
+          && event.clientY >= bottom - 16 * zoomFactor && event.clientY <= bottom) {
+          event.stopPropagation();
+          axisSelectionRef.current = null;
+          if (editingCellRef.current) {
+            commitEditingRef.current();
+          }
+          commitSelectionRange({ start: cell, end: cell });
+          setOpenTableMenu({ col: cell.col, row: cell.row, tableName: table.name });
+          return;
+        }
+      }
+    }
     axisSelectionRef.current = null;
     const currentSelection = selectionRef.current;
     const anchor = event.shiftKey && currentSelection ? currentSelection.start : cell;
@@ -12354,13 +12433,18 @@ function XlsxGrid({
     colIndexByActual,
     colPrefixSums,
     commitSelectionRange,
+    effectiveTables,
     focusGrid,
+    renderTableHeaderMenu,
+    resolveCanvasColumnHeaderRect,
+    resolveCanvasRowHeaderRect,
     resolveOverlayRect,
     resolveCellSelectionRange,
     resolvePointerCellFromClient,
     rowIndexByActual,
     rowPrefixSums,
-    startCellSelection
+    startCellSelection,
+    zoomFactor
   ]);
 
   const handleCanvasBodyClick = React.useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -12628,6 +12712,7 @@ function XlsxGrid({
       palette,
       rowHeaderWidth,
       rowSignature: buildRenderedAxisSignature(canvasVisibleRowItems, (item) => item.index),
+      tableHeaderSignature: `${sortState ? `${sortState.tableName}:${sortState.columnIndex}:${sortState.direction}` : ""}|${renderTableHeaderMenu && activeCell ? `${activeCell.row}:${activeCell.col}` : ""}`,
       viewportLeft: drawingViewport.left,
       viewportTop: drawingViewport.top,
       zoomFactor
@@ -12661,6 +12746,7 @@ function XlsxGrid({
       && previousBodyCanvasSignature.palette === nextBodyCanvasSignature.palette
       && previousBodyCanvasSignature.rowHeaderWidth === nextBodyCanvasSignature.rowHeaderWidth
       && previousBodyCanvasSignature.rowSignature === nextBodyCanvasSignature.rowSignature
+      && previousBodyCanvasSignature.tableHeaderSignature === nextBodyCanvasSignature.tableHeaderSignature
       && previousBodyCanvasSignature.viewportLeft === nextBodyCanvasSignature.viewportLeft
       && previousBodyCanvasSignature.viewportTop === nextBodyCanvasSignature.viewportTop
       && previousBodyCanvasSignature.zoomFactor === nextBodyCanvasSignature.zoomFactor
@@ -12692,6 +12778,7 @@ function XlsxGrid({
       && previousBodyCanvasSignature.palette === nextBodyCanvasSignature.palette
       && previousBodyCanvasSignature.rowHeaderWidth === nextBodyCanvasSignature.rowHeaderWidth
       && previousBodyCanvasSignature.zoomFactor === nextBodyCanvasSignature.zoomFactor
+      && previousBodyCanvasSignature.tableHeaderSignature === nextBodyCanvasSignature.tableHeaderSignature
     );
     const canBlitTopHeader = Boolean(
       shouldRepaintHeaders
@@ -13024,7 +13111,7 @@ function XlsxGrid({
       }
 
       for (const entry of bakedCanvasDrawingEntries) {
-        if (resolveDrawingPane(entry.rect) !== pane) {
+        if (!drawingIntersectsPane(entry.rect, pane)) {
           continue;
         }
         const localRect = resolveBakedCanvasLocalRect(entry.kind === "image" ? resolvePicturePaintRect(entry.image, entry.rect) : entry.rect, pane);
@@ -13260,15 +13347,6 @@ function XlsxGrid({
           }
           paneContext.fillStyle = gradientFill ?? fillColor;
           paneContext.fillRect(localRect.left, localRect.top, localRect.width, localRect.height);
-          if (cellData.chartHighlight) {
-            paneContext.fillStyle = cellData.chartHighlight.fillColor;
-            paneContext.fillRect(
-              localRect.left + 1,
-              localRect.top + 1,
-              Math.max(0, localRect.width - 2),
-              Math.max(0, localRect.height - 2)
-            );
-          }
 
           if (cellData.conditionalDataBar) {
             const barLeft = localRect.left + 4 * zoomFactor;
@@ -13375,25 +13453,6 @@ function XlsxGrid({
           }
           if (leftBorder && drawColIndex === 0) {
             drawCellBorder("left", localRect, leftBorder);
-          }
-          if (cellData.chartHighlight) {
-            const highlightBorder = {
-              color: cellData.chartHighlight.strokeColor,
-              style: "solid",
-              width: Math.max(1, zoomFactor)
-            };
-            if (cellData.chartHighlight.borderTop) {
-              strokeCanvasBorderSide(paneContext, "top", localRect, highlightBorder);
-            }
-            if (cellData.chartHighlight.borderRight) {
-              strokeCanvasBorderSide(paneContext, "right", localRect, highlightBorder);
-            }
-            if (cellData.chartHighlight.borderBottom) {
-              strokeCanvasBorderSide(paneContext, "bottom", localRect, highlightBorder);
-            }
-            if (cellData.chartHighlight.borderLeft) {
-              strokeCanvasBorderSide(paneContext, "left", localRect, highlightBorder);
-            }
           }
 
           const rawText = cellData.value ?? "";
@@ -13683,13 +13742,16 @@ function XlsxGrid({
             drawCanvasConditionalIcon(paneContext, cellData.conditionalIcon, iconX + (iconSize / 2), iconY, iconSize);
           }
 
-          if (cellData.isTableHeader) {
-            paneContext.fillStyle = palette.mutedText;
-            paneContext.textAlign = "center";
-            paneContext.fillText("▾", localRect.left + localRect.width - (10 * zoomFactor), localRect.top + (localRect.height / 2));
+          paneContext.restore();
+
+          if (cellData.isTableHeader && !(renderTableHeaderMenu && isSameCell(activeCell, drawCell))) {
+            const table = getTableAtCell(effectiveTables, drawCell.row, drawCell.col);
+            const column = getTableHeaderColumn(table, drawCell.row, drawCell.col);
+            const direction = table && column && sortState?.tableName === table.name && sortState.columnIndex === column.index
+              ? sortState.direction : null;
+            drawCanvasTableHeaderTrigger(paneContext, localRect, direction, palette, zoomFactor);
           }
 
-          paneContext.restore();
         }
       }
         flushPendingGridlines();
@@ -13936,6 +13998,7 @@ function XlsxGrid({
       }
     }
   }, [
+    activeCell,
     activeSheet,
     applyCanvasViewportCompensation,
     bakedCanvasDrawingSignature,
@@ -13953,6 +14016,7 @@ function XlsxGrid({
     displayHeaderHeight,
     displayRowHeaderWidth,
     displayedSelection,
+    effectiveTables,
     drawingViewport.left,
     drawingViewport.top,
     drawingViewport.height,
@@ -13965,11 +14029,13 @@ function XlsxGrid({
     getBodyBlitBufferCanvas,
     getHeaderBlitBufferCanvas,
     palette,
+    renderTableHeaderMenu,
     resolveCellDisplayRect,
     resolveMergeAnchorCell,
     rowIndexByActual,
     rowPrefixSums,
     selectionHeaderSurface,
+    sortState,
     shouldBakeCanvasStaticDrawings,
     stickyLeftByCol,
     stickyTopByRow,
@@ -14452,7 +14518,19 @@ function XlsxGrid({
   const activeCellOverlay = activeCellOverlayCell && activeCellOverlayRect
     ? renderActiveCellOverlay?.({ cell: activeCellOverlayCell, rect: activeCellOverlayRect })
     : null;
-  function resolveDrawingPane(rect: XlsxImageRect) {
+  function drawingIntersectsPane(rect: XlsxImageRect, pane: FrozenDrawingPane) {
+    if (experimentalCanvas) {
+      const frozenX = pane === "left" || pane === "corner";
+      const frozenY = pane === "top" || pane === "corner";
+      const left = frozenX ? displayRowHeaderWidth : frozenPaneRight;
+      const top = frozenY ? displayHeaderHeight : frozenPaneBottom;
+      const right = frozenX ? frozenPaneRight : Infinity;
+      const bottom = frozenY ? frozenPaneBottom : Infinity;
+      return right > left && bottom > top
+        && rect.left < right && rect.left + rect.width > left
+        && rect.top < bottom && rect.top + rect.height > top;
+    }
+
     return resolveFrozenDrawingPane(
       rect,
       frozenRows,
@@ -14468,12 +14546,11 @@ function XlsxGrid({
         headerHeight: displayHeaderHeight,
         rowHeaderWidth: displayRowHeaderWidth
       }
-    );
+    ) === pane;
   }
 
   function renderShapeDrawing(shape: XlsxShape, rect: XlsxImageRect, pane: FrozenDrawingPane) {
-    const drawingPane = resolveDrawingPane(rect);
-    if (drawingPane !== pane) {
+    if (!drawingIntersectsPane(rect, pane)) {
       return null;
     }
     const hasMeasuredViewport = drawingViewport.width > 0 && drawingViewport.height > 0;
@@ -14604,8 +14681,7 @@ function XlsxGrid({
   }
 
   function renderFormControlDrawing(control: XlsxFormControl, rect: XlsxImageRect, pane: FrozenDrawingPane) {
-    const drawingPane = resolveDrawingPane(rect);
-    if (drawingPane !== pane) {
+    if (!drawingIntersectsPane(rect, pane)) {
       return null;
     }
 
@@ -15045,8 +15121,7 @@ function XlsxGrid({
     rect: XlsxImageRect,
     pane: FrozenDrawingPane
   ) {
-    const drawingPane = resolveDrawingPane(rect);
-    if (drawingPane !== pane) {
+    if (!drawingIntersectsPane(rect, pane)) {
       return null;
     }
     const paintRect = resolvePicturePaintRect(image, rect);
@@ -15188,8 +15263,7 @@ function XlsxGrid({
     rect: XlsxImageRect,
     pane: FrozenDrawingPane
   ) {
-    const drawingPane = resolveDrawingPane(rect);
-    if (drawingPane !== pane) {
+    if (!drawingIntersectsPane(rect, pane)) {
       return null;
     }
     const hasMeasuredViewport = drawingViewport.width > 0 && drawingViewport.height > 0;
@@ -15213,6 +15287,7 @@ function XlsxGrid({
     };
     const selectionNode = selectedChartId === chart.id ? (
       <div
+        data-xlsx-chart-selection-frame=""
         style={{
           ...style,
           contain: "layout",
@@ -15223,7 +15298,7 @@ function XlsxGrid({
       >
         <div
           style={{
-            border: `${Math.max(1, zoomFactor)}px solid ${DRAWING_SELECTION_STROKE}`,
+            border: `${Math.max(1, zoomFactor)}px solid ${CHART_SELECTION_STROKE}`,
             boxShadow: `0 0 0 ${Math.max(1, zoomFactor)}px ${drawingSelectionSurface}`,
             boxSizing: "border-box",
             inset: 0,
@@ -15235,8 +15310,13 @@ function XlsxGrid({
             ? IMAGE_HANDLE_POSITIONS.map((position) => (
                 <div
                   key={position}
+                  data-xlsx-chart-resize-handle={position}
                   onPointerDown={(event) => startChartResize(event, chart, rect, position)}
-                  style={resolveImageHandleStyle(position, DRAWING_SELECTION_STROKE, drawingSelectionSurface, zoomFactor)}
+                  style={{
+                    ...resolveImageHandleStyle(position, CHART_SELECTION_STROKE, drawingSelectionSurface, zoomFactor * 0.8),
+                    borderRadius: 0,
+                    boxShadow: "none"
+                  }}
                 />
               ))
             : null}
@@ -15354,7 +15434,7 @@ function XlsxGrid({
     width: cornerBodyCanvasWidth,
     zIndex: 36
   };
-  const drawingViewportCacheSignature = `${Math.floor(drawingViewport.left / CANVAS_VIEWPORT_OVERSCAN_PX)}:${Math.floor(drawingViewport.top / CANVAS_VIEWPORT_OVERSCAN_PX)}:${drawingViewport.width}:${drawingViewport.height}`;
+  const drawingViewportCacheSignature = `${experimentalCanvas}:${frozenPaneRight}:${frozenPaneBottom}:${Math.floor(drawingViewport.left / CANVAS_VIEWPORT_OVERSCAN_PX)}:${Math.floor(drawingViewport.top / CANVAS_VIEWPORT_OVERSCAN_PX)}:${drawingViewport.width}:${drawingViewport.height}`;
   const previousPaneDrawingNodes = paneDrawingNodesCacheRef.current;
   const canReusePaneDrawingNodes =
     previousPaneDrawingNodes !== null
@@ -16283,6 +16363,25 @@ function XlsxGrid({
       }}
     />
   ] : []);
+  const chartSourceHighlightNodes = (experimentalCanvas ? activeSheetChartHighlights : []).flatMap((highlight, index) => {
+    const range = expandHighlightedRange(highlight.range, activeSheet?.mergedRanges ?? mergedRegions);
+    const rows = getHighlightAxisExtent(visibleRows, rowPrefixSums, range.start.row, range.end.row);
+    const cols = getHighlightAxisExtent(visibleCols, colPrefixSums, range.start.col, range.end.col);
+    if (!rows || !cols) return [];
+    return [
+      <ReferenceRangeOutline
+        key={index}
+        chartSourceIndex={index}
+        color={highlight.strokeColor}
+        fillColor={highlight.fillColor}
+        rect={{
+          left: displayRowHeaderWidth + cols.start, top: displayHeaderHeight + rows.start,
+          width: cols.end - cols.start, height: rows.end - rows.start
+        }}
+        zIndex={0}
+      />
+    ];
+  });
   const formulaHighlightNodes = formulaReferences.flatMap((reference, index) => {
     if (reference.sheetName && reference.sheetName.toLowerCase() !== activeSheet?.name.toLowerCase()) return [];
     const range = expandHighlightedRange(reference.range, activeSheet?.mergedRanges ?? mergedRegions);
@@ -16290,25 +16389,17 @@ function XlsxGrid({
     const cols = getHighlightAxisExtent(visibleCols, colPrefixSums, range.start.col, range.end.col);
     if (!rows || !cols) return [];
     return [
-      <div
+      <ReferenceRangeOutline
         key={index}
-        aria-hidden="true"
-        data-xlsx-formula-reference={editingValue.slice(reference.start, reference.end)}
-        style={{
-          position: "absolute", pointerEvents: "none", boxSizing: "border-box",
+        formula={editingValue.slice(reference.start, reference.end)}
+        color={reference.color}
+        fillColor={`${reference.color}14`}
+        rect={{
           left: displayRowHeaderWidth + cols.start, top: displayHeaderHeight + rows.start,
-          width: cols.end - cols.start, height: rows.end - rows.start,
-          border: `2px solid ${reference.color}`, backgroundColor: `${reference.color}14`,
-          zIndex: maxDrawingOverlayZIndex + 2
+          width: cols.end - cols.start, height: rows.end - rows.start
         }}
-      >
-        {["top", "bottom"].flatMap((vertical) => ["left", "right"].map((horizontal) => (
-          <span key={`${vertical}-${horizontal}`} style={{
-            position: "absolute", [vertical]: -4, [horizontal]: -4,
-            width: 6, height: 6, backgroundColor: reference.color, border: "1px solid white"
-          }} />
-        )))}
-      </div>
+        zIndex={maxDrawingOverlayZIndex + 2}
+      />
     ];
   });
   function renderSelectionOverlay(pane?: FrozenDrawingPane) {
@@ -16415,8 +16506,8 @@ function XlsxGrid({
       ))}
     </div>
   ) : null;
-  const drawingOverlayPanes = (experimentalCanvas && hasCanvasDomDrawingOverlays) || rangeHighlightNodes.length > 0 || formulaHighlightNodes.length > 0 ? (
-    <div style={{ ...canvasBodyViewportLayerStyle, zIndex: experimentalCanvas ? 23 : 34 }}>
+  const drawingOverlayPanes = (experimentalCanvas && hasCanvasDomDrawingOverlays) || chartSourceHighlightNodes.length > 0 || rangeHighlightNodes.length > 0 || formulaHighlightNodes.length > 0 ? (
+    <div style={{ ...canvasBodyViewportLayerStyle, zIndex: 34 }}>
       {overlayPanes.map(({ pane, style, ref, left, top }) => (
         <div key={pane} style={style}>
           <div
@@ -16432,6 +16523,7 @@ function XlsxGrid({
               width: totalWidth
             }}
           >
+            {chartSourceHighlightNodes}
             {experimentalCanvas ? paneDrawingNodes[pane] : null}
             {rangeHighlightNodes}
             {formulaHighlightNodes}
