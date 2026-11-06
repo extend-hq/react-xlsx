@@ -22,15 +22,15 @@ The November 5, 2026 run rendered **382 charts in 43 workbooks**, with **381 nat
 </details>
 
 <details open>
-<summary><strong>Office Art comparisons — shared renderer in Microsoft Word</strong></summary>
+<summary><strong>Microsoft Excel art comparisons</strong></summary>
 
-[![Microsoft Word and Rust Office Art: SmartArt, WordArt, 3D model previews, shapes, icons and ink](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-overview.png)](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/office-art-comparisons.md)
+[![Microsoft Excel and React XLSX artwork side by side: picture transforms, borders, color adjustments and effects](docs/readme-assets/excel-officeart-overview.png)](docs/excel-art-comparisons.md)
 
-The **30-case gallery** covers SmartArt, WordArt fills and warps, extruded text and shapes, 3D model and emoji previews, SVG icons, and ink. These November 6, 2026 comparisons use Microsoft Word and the shared Rust Office Art renderer through its native DOCX adapter. They show shared-renderer behavior; Excel worksheet artwork and this viewer's bundled Office Art runtime are not measured by this gallery.
+The **24-case gallery** compares worksheet pictures in Microsoft Excel with React XLSX 0.20.9 using Office Art 0.1.4. It covers crop, stretch, flips, rotation, clipping, borders, transparency, color adjustments, shadows, glow, soft edges, reflection and tiling. The viewer images were captured on November 6, 2026 against retained native Excel references from November 5.
 
-3D models use saved Office previews. Font substitution, curved-text fitting, fine 3D shading and pencil texture remain visible limitations.
+These are Excel picture comparisons. Rasterization, effect edges and subpixel placement still differ; the gallery does not establish support for every worksheet drawing type.
 
-[WordArt and 3D shapes](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-wordart-and-3d.png) · [Models and SmartArt](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-models-and-smartart.png) · [Icons and ink](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-icons-shapes-and-ink.png) · [Method and remaining gaps](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/office-art-comparisons.md)
+[Picture transforms](docs/readme-assets/excel-officeart-transforms.png) · [Picture effects](docs/readme-assets/excel-officeart-effects.png) · [All comparisons and capture method](docs/excel-art-comparisons.md)
 
 </details>
 
