@@ -1,5 +1,5 @@
 import { gunzipSync } from "fflate";
-import init, { normalizeRaster, renderPicture } from "./generated/office_art.js";
+import { initSync, normalizeRaster, renderPicture } from "./generated/office_art.js";
 import payload from "./generated/payload.js";
 
 export type PicturePaintBounds = {
@@ -18,7 +18,10 @@ let pending: Promise<void> | undefined;
 export async function loadOfficeArt() {
   pending ??= Promise.resolve().then(async () => {
     const compressed = Uint8Array.from(atob(payload), (character) => character.charCodeAt(0));
-    await init({ module_or_path: gunzipSync(compressed) });
+    // Keep compilation asynchronous without retaining wasm-bindgen's default
+    // URL loader: the standalone office_art_bg.wasm is not shipped in the package.
+    const module = await WebAssembly.compile(gunzipSync(compressed));
+    initSync({ module });
   }).catch((error: unknown) => {
     pending = undefined;
     throw error;
