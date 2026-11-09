@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-xlsx",
-  "version": "0.20.11",
+  "version": "0.20.12",
   "description": "JavaScript and React viewers for XLSX workbooks",
   "license": "MIT",
   "keywords": [

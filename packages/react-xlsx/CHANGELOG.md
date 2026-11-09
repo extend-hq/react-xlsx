@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.12
+
+- Use data-type-neutral ascending and descending sort labels.
+- Localize built-in menus, toolbar controls, status text, and accessibility labels with eight bundled languages and English fallback.
+- Add partial `messages` overrides to the React and vanilla viewers and shared controllers.
+
 ## 0.20.11
 
 - Restore table sort indicators along with row order during undo and redo.
