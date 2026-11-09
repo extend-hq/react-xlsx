@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.11
+
+- Restore table sort indicators along with row order during undo and redo.
+- Preserve cell selections when opening table sort menus or sorting, including custom menus and frozen headers in the canvas renderer.
+
 ## 0.20.10
 
 - Fix Next.js Turbopack production builds while keeping OfficeArt bundled and enabled by default.

@@ -12096,6 +12096,10 @@ function XlsxGrid({
         ? sortState.direction
         : null;
     const triggerIcon = direction === "ascending" ? "▲" : direction === "descending" ? "▼" : "▾";
+    const triggerStyle = {
+      ...resolveTableHeaderTriggerStyle(palette, zoomFactor),
+      ...(experimentalCanvas ? { bottom: zoomFactor, right: zoomFactor, top: undefined, maxHeight: "100%", maxWidth: "100%" } : {})
+    };
 
     if (renderTableHeaderMenu) {
       return renderTableHeaderMenu({
@@ -12115,7 +12119,7 @@ function XlsxGrid({
           onPointerDown: (event) => {
             event.stopPropagation();
           },
-          style: resolveTableHeaderTriggerStyle(palette, zoomFactor),
+          style: { ...triggerStyle, pointerEvents: "auto" },
           type: "button"
         }
       });
@@ -12142,10 +12146,7 @@ function XlsxGrid({
               : { col: cell.col, row: cell.row, tableName: table.name }
           );
         }}
-        style={{
-          ...resolveTableHeaderTriggerStyle(palette, zoomFactor),
-          ...(experimentalCanvas ? { bottom: zoomFactor, right: zoomFactor, top: undefined, maxHeight: "100%", maxWidth: "100%" } : {})
-        }}
+        style={triggerStyle}
         type="button"
       >
         {experimentalCanvas ? null : triggerIcon}
@@ -12385,7 +12386,6 @@ function XlsxGrid({
           if (editingCellRef.current) {
             commitEditingRef.current();
           }
-          commitSelectionRange({ start: cell, end: cell });
           setOpenTableMenu({ col: cell.col, row: cell.row, tableName: table.name });
           return;
         }
@@ -13744,7 +13744,7 @@ function XlsxGrid({
 
           paneContext.restore();
 
-          if (cellData.isTableHeader && !(renderTableHeaderMenu && isSameCell(activeCell, drawCell))) {
+          if (cellData.isTableHeader && !renderTableHeaderMenu) {
             const table = getTableAtCell(effectiveTables, drawCell.row, drawCell.col);
             const column = getTableHeaderColumn(table, drawCell.row, drawCell.col);
             const direction = table && column && sortState?.tableName === table.name && sortState.columnIndex === column.index
@@ -14503,12 +14503,28 @@ function XlsxGrid({
   const editingOverlayRect = experimentalCanvas && editingCell
     ? resolveCellDisplayRect(editingCell)
     : null;
-  const activeCellAdornment = experimentalCanvas && activeCell
+  const activeCellAdornment = experimentalCanvas && !renderTableHeaderMenu && activeCell
     ? renderCellAdornment(activeCell)
     : null;
   const activeCellAdornmentRect = activeCell && activeCellAdornment
     ? resolveCellDisplayRect(activeCell)
     : null;
+  const canvasTableHeaderAdornments = experimentalCanvas && renderTableHeaderMenu
+    ? effectiveTables.flatMap((table) => {
+      if (!canvasVisibleRowItems.some((row) => row.actualRow === table.start.row)) {
+        return [];
+      }
+      return canvasVisibleColItems.flatMap((column) => {
+        const cell = { row: table.start.row, col: column.actualCol };
+        if (!getTableHeaderColumn(table, cell.row, cell.col)) {
+          return [];
+        }
+        const rect = resolveCellDisplayRect(cell);
+        const adornment = renderCellAdornment(cell);
+        return rect && adornment ? [{ cell, rect, adornment }] : [];
+      });
+    })
+    : [];
   const activeCellOverlayCell = renderActiveCellOverlay && activeCell
     ? resolveMergeAnchorCell(activeCell)
     : null;
@@ -16478,6 +16494,31 @@ function XlsxGrid({
     { pane: "left", style: canvasLeftOverlayPaneStyle, ref: canvasLeftOverlayContentRef, left: -displayRowHeaderWidth, top: -drawingViewport.top - frozenPaneBottom },
     { pane: "corner", style: canvasCornerOverlayPaneStyle, ref: canvasCornerOverlayContentRef, left: -displayRowHeaderWidth, top: -displayHeaderHeight }
   ] as const;
+  const tableHeaderOverlayPanes = canvasTableHeaderAdornments.length > 0 ? (
+    <div style={{ ...canvasBodyViewportLayerStyle, zIndex: 27 }}>
+      {overlayPanes.map(({ pane, style, left, top }) => (
+        <div key={pane} style={style}>
+          {canvasTableHeaderAdornments.map(({ cell, rect, adornment }) => (
+            drawingIntersectsPane(rect, pane) ? (
+              <div
+                key={`${cell.row}:${cell.col}`}
+                style={{
+                  height: rect.height,
+                  left: rect.left + left,
+                  pointerEvents: "none",
+                  position: "absolute",
+                  top: rect.top + top,
+                  width: rect.width
+                }}
+              >
+                {adornment}
+              </div>
+            ) : null
+          ))}
+        </div>
+      ))}
+    </div>
+  ) : null;
   const selectionOverlayPanes = experimentalCanvas ? (
     <div style={{ ...canvasBodyViewportLayerStyle, zIndex: 40 }}>
       {overlayPanes.map(({ pane, style, left, top }) => (
@@ -16570,6 +16611,7 @@ function XlsxGrid({
             ) : null}
             {drawingOverlayPanes}
             {selectionOverlayPanes}
+            {tableHeaderOverlayPanes}
             {experimentalCanvas ? (
               <>
                 <div style={canvasBodyViewportLayerStyle}>

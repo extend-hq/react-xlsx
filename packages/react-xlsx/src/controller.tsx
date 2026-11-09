@@ -147,6 +147,7 @@ type SnapshotHistoryEntry = {
   activeSheetIndex: number;
   bytes: Uint8Array;
   selection: XlsxCellRange | null;
+  sortState: XlsxTableSortState | null;
 };
 
 type CellMutationState = {
@@ -181,6 +182,8 @@ type RangeEditHistoryEntry = {
   selectionAfter: XlsxCellRange | null;
   selectionBefore: XlsxCellRange | null;
   sheetIndex: number;
+  sortStateAfter: XlsxTableSortState | null;
+  sortStateBefore: XlsxTableSortState | null;
 };
 
 function clampZoomScale(zoomScale: number) {
@@ -3325,9 +3328,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       activeCell,
       activeSheetIndex,
       bytes: createSavedWorkbookBytes(workbook),
-      selection
+      selection,
+      sortState
     };
-  }, [activeCell, activeSheetIndex, createSavedWorkbookBytes, selection, workbook]);
+  }, [activeCell, activeSheetIndex, createSavedWorkbookBytes, selection, sortState, workbook]);
 
   const captureCellMutationState = React.useCallback((cell: XlsxCellAddress): CellMutationState | null => {
     const worksheet = getActiveWorksheet();
@@ -3371,6 +3375,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
     setActiveCell(entry.activeCell);
     setSelection(entry.selection);
+    setSortState(entry.sortState);
     selectionAnchorRef.current = entry.selection ? normalizeRange(entry.selection).start : entry.activeCell;
     setRevision((current) => current + 1);
   }, [setChartAssets, setImageAssets]);
@@ -3418,6 +3423,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     for (const mutation of entry.mutations) {
       applyCellMutationState(worksheet, mutation.cell, direction === "undo" ? mutation.before : mutation.after);
     }
+    setSortState(direction === "undo" ? entry.sortStateBefore : entry.sortStateAfter);
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
 
@@ -3596,9 +3602,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const recordRangeEditHistory = React.useCallback((
     mutations: RangeCellMutation[],
     selectionAfter: XlsxCellRange | null,
-    activeCellAfter: XlsxCellAddress | null
+    activeCellAfter: XlsxCellAddress | null,
+    sortStateAfter: XlsxTableSortState | null = sortState
   ) => {
-    if (!activeSheet || isApplyingHistoryRef.current || mutations.length === 0) {
+    if (!activeSheet || isApplyingHistoryRef.current || (mutations.length === 0 && sortStateAfter === sortState)) {
       return;
     }
 
@@ -3609,11 +3616,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       mutations,
       selectionAfter,
       selectionBefore: selection,
-      sheetIndex: activeSheet.workbookSheetIndex
+      sheetIndex: activeSheet.workbookSheetIndex,
+      sortStateAfter,
+      sortStateBefore: sortState
     });
     redoStackRef.current = [];
     setHistoryRevision((current) => current + 1);
-  }, [activeCell, activeSheet, selection]);
+  }, [activeCell, activeSheet, selection, sortState]);
 
   const sortTable = React.useCallback((tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => {
     const worksheet = getActiveWorksheet();
@@ -3683,8 +3692,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return direction === "ascending" ? comparedText : -comparedText;
     });
 
+    const nextSortState = { columnIndex, direction, tableName: targetTable.name };
     if (sortedRows.every((row, index) => row.index === rows[index]?.index)) {
-      setSortState({ columnIndex, direction, tableName: targetTable.name });
+      if (sortState?.tableName === targetTable.name && sortState.columnIndex === columnIndex && sortState.direction === direction) {
+        return;
+      }
+      setSortState(nextSortState);
+      recordRangeEditHistory([], selection, activeCell, nextSortState);
       return;
     }
 
@@ -3716,8 +3730,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
-    setSortState({ columnIndex, direction, tableName: targetTable.name });
-    recordRangeEditHistory(mutations, selection, activeCell);
+    setSortState(nextSortState);
+    recordRangeEditHistory(mutations, selection, activeCell, nextSortState);
   }, [
     activeCell,
     activeSheet,
@@ -3727,6 +3741,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     recordRangeEditHistory,
     refreshWorkbookState,
     selection,
+    sortState,
     tables,
     workbook
   ]);
