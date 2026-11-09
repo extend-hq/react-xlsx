@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.20.10
+
+- Fix Next.js Turbopack production builds while keeping OfficeArt bundled and enabled by default.
+
 ## 0.20.8
 
 - Add formula-aware cell editing and highlight referenced ranges while editing.
