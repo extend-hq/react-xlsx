@@ -1,3 +1,4 @@
+import { useXlsxMessages } from "./messages-context";
 import * as React from "react";
 import type { ChartData, OfficeCharts } from "./office-chart-types";
 import { projectChartData } from "./chart-data-projection";
@@ -206,6 +207,7 @@ export function SharedChartSvg(props: ChartSvgProps & {
   renderer: OfficeCharts;
   fallback: React.ReactNode;
 }) {
+  const messages = useXlsxMessages();
   const { chart, rect, renderer, source, selectedChartElement, fallback } = props;
   const id = React.useId();
   const width = Math.max(1, rect.width);
@@ -234,7 +236,7 @@ export function SharedChartSvg(props: ChartSvgProps & {
   if (!svg) return <div data-xlsx-chart-fallback="unsupported" style={{width:"100%",height:"100%"}}>{fallback}</div>;
   return (
     <svg
-      aria-label={chart.title ?? chart.name ?? "Chart"}
+      aria-label={chart.title ?? chart.name ?? messages.chart}
       data-xlsx-chart-renderer="office-charts"
       onDoubleClick={handleDoubleClick}
       onPointerDown={handlePointerDown}

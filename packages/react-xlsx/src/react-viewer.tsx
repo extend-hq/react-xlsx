@@ -2,6 +2,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { __createContentNode, __createContentRoot, __createControlledViewer } from "@extend-ai/react-xlsx/internal";
 import { useXlsxViewerController } from "./controller";
+import { mergeMessages } from "./messages";
 import { ViewerAppearanceContext, ViewerContext } from "./XlsxViewer";
 import type { XlsxViewerController, XlsxViewerProps } from "./types";
 
@@ -157,7 +158,9 @@ function renderOptions(
   };
 }
 
-function BoundViewer({ props, controller }: { props: XlsxViewerProps; controller: XlsxViewerController }) {
+function BoundViewer({ props, controller: sourceController }: { props: XlsxViewerProps; controller: XlsxViewerController }) {
+  const messages = React.useMemo(() => mergeMessages(sourceController.messages, props.messages), [sourceController.messages, props.messages]);
+  const controller = React.useMemo(() => ({ ...sourceController, messages }), [sourceController, messages]);
   const hostRef = React.useRef<HTMLDivElement>(null);
   const viewerRef = React.useRef<ReturnType<typeof __createControlledViewer> | null>(null);
   const slots = React.useMemo(() => new SlotStore(), []);

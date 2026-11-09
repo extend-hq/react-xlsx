@@ -1,3 +1,5 @@
+import { formatMessage, mergeMessages, type XlsxViewerMessages } from "./messages";
+import { XlsxMessagesContext, useXlsxMessages } from "./messages-context";
 import { coerceUserEnteredValue, getCellEditingValue, getUserEnteredFormula, isTextCell } from "./cell-input";
 import { localizeCellNumber, localizeRows } from "./number-locale";
 import * as React from "react";
@@ -1069,8 +1071,8 @@ function drawCanvasConditionalIcon(
   context.restore();
 }
 
-function formatZoomScale(zoomScale: number) {
-  return `${Math.round(zoomScale)}%`;
+function formatZoomScale(zoomScale: number, locale: string) {
+  return new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(zoomScale / 100);
 }
 
 function clampValue(value: number, min: number, max: number) {
@@ -4731,6 +4733,7 @@ function DefaultTableHeaderMenu({
   sortAscending,
   sortDescending
 }: XlsxTableHeaderMenuRenderProps) {
+  const messages = useXlsxMessages();
   return (
     <div
       style={{
@@ -4758,7 +4761,7 @@ function DefaultTableHeaderMenu({
         }}
         type="button"
       >
-        Sort A to Z
+        {messages.sortAscending}
       </button>
       <button
         onClick={sortDescending}
@@ -4774,7 +4777,7 @@ function DefaultTableHeaderMenu({
         }}
         type="button"
       >
-        Sort Z to A
+        {messages.sortDescending}
       </button>
     </div>
   );
@@ -4844,18 +4847,20 @@ function drawCanvasTableHeaderTrigger(
 
 function SegmentedControl({
   items,
+  messages,
   onValueChange,
   palette,
   value
 }: {
   items: Array<{ id: string; label: string; title?: string; visibility?: "hidden" | "veryHidden" | "visible" }>;
+  messages: XlsxViewerMessages;
   onValueChange: (value: string) => void;
   palette: ViewerPalette;
   value: string;
 }) {
   return (
     <div
-      aria-label="Workbook sheets"
+      aria-label={messages.workbookSheets}
       role="tablist"
       style={{
         alignItems: "center",
@@ -4909,6 +4914,8 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
     canZoomIn,
     canZoomOut,
     defaultZoomScale,
+    locale,
+    messages,
     displayFileName,
     download,
     resetZoom,
@@ -4960,6 +4967,7 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
             }}
           >
             <button
+              aria-label={messages.zoomOut}
               disabled={!canZoomOut}
               onClick={zoomOut}
               style={{
@@ -4976,6 +4984,7 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
               -
             </button>
             <button
+              aria-label={messages.resetZoom}
               onClick={resetZoom}
               style={{
                 background: Math.round(zoomScale) === Math.round(defaultZoomScale) ? "transparent" : palette.subtleSurface,
@@ -4991,9 +5000,10 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
               }}
               type="button"
             >
-              {formatZoomScale(zoomScale)}
+              {formatZoomScale(zoomScale, locale)}
             </button>
             <button
+              aria-label={messages.zoomIn}
               disabled={!canZoomIn}
               onClick={zoomIn}
               style={{
@@ -5012,7 +5022,7 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
           </div>
           {canDownload ? (
             <button
-              aria-label="Download workbook"
+              aria-label={messages.downloadWorkbook}
               onClick={download}
               style={{
                 alignItems: "center",
@@ -5029,7 +5039,7 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
                 padding: 0,
                 width: 32
               }}
-              title="Download workbook"
+              title={messages.downloadWorkbook}
               type="button"
             >
               ↓
@@ -5047,14 +5057,15 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
           }}
         >
           <SegmentedControl
+            messages={messages}
             items={tabs.map((tab, index) => ({
               id: String(index),
               label: tab.name,
               title:
                 tab.visibility === "hidden"
-                  ? `${tab.name} (hidden)`
+                  ? formatMessage(messages.hiddenSheet, { sheet: tab.name })
                   : tab.visibility === "veryHidden"
-                    ? `${tab.name} (very hidden)`
+                    ? formatMessage(messages.veryHiddenSheet, { sheet: tab.name })
                     : tab.name,
               visibility: tab.visibility
             }))}
@@ -5089,7 +5100,7 @@ function resolveToolbar(
   return <DefaultToolbar controller={controller} palette={palette} />;
 }
 
-function renderError(errorState: XlsxViewerProps["errorState"], error: Error, palette: ViewerPalette) {
+function renderError(errorState: XlsxViewerProps["errorState"], error: Error, palette: ViewerPalette, messages: XlsxViewerMessages) {
   if (typeof errorState === "function") {
     return errorState(error);
   }
@@ -5110,7 +5121,7 @@ function renderError(errorState: XlsxViewerProps["errorState"], error: Error, pa
         textAlign: "center"
       }}
     >
-      {error.message}
+      {messages.loadWorkbookFailed}
     </div>
   );
 }
@@ -5118,7 +5129,8 @@ function renderError(errorState: XlsxViewerProps["errorState"], error: Error, pa
 function renderLoading(
   loadingComponent: XlsxViewerProps["loadingComponent"],
   loadingState: XlsxViewerProps["loadingState"],
-  palette: ViewerPalette
+  palette: ViewerPalette,
+  messages: XlsxViewerMessages
 ) {
   if (loadingComponent !== undefined) {
     return loadingComponent;
@@ -5139,12 +5151,12 @@ function renderLoading(
         justifyContent: "center"
       }}
     >
-      Loading workbook...
+      {messages.loadingWorkbook}
     </div>
   );
 }
 
-function renderEmpty(emptyState: XlsxViewerProps["emptyState"], palette: ViewerPalette) {
+function renderEmpty(emptyState: XlsxViewerProps["emptyState"], palette: ViewerPalette, messages: XlsxViewerMessages) {
   if (emptyState !== undefined) {
     return emptyState;
   }
@@ -5162,25 +5174,26 @@ function renderEmpty(emptyState: XlsxViewerProps["emptyState"], palette: ViewerP
         textAlign: "center"
       }}
     >
-      No workbook loaded.
+      {messages.emptyWorkbook}
     </div>
   );
 }
 
-function formatBinaryBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "0 B";
-  }
-
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
+function formatBinaryBytes(bytes: number, locale: string) {
+  const units = ["byte", "kilobyte", "megabyte", "gigabyte"];
+  let value = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
   let unitIndex = 0;
   while (value >= 1024 && unitIndex < units.length - 1) {
     value /= 1024;
     unitIndex += 1;
   }
 
-  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+  return new Intl.NumberFormat(locale, {
+    style: "unit",
+    unit: units[unitIndex],
+    unitDisplay: "short",
+    maximumFractionDigits: value >= 10 || unitIndex === 0 ? 0 : 1
+  }).format(value);
 }
 
 function renderFileTooLarge(
@@ -5190,7 +5203,9 @@ function renderFileTooLarge(
     fileSizeBytes: number;
     maxFileSizeBytes: number;
   },
-  palette: ViewerPalette
+  palette: ViewerPalette,
+  messages: XlsxViewerMessages,
+  locale: string
 ) {
   const defaultNode = (
     <div
@@ -5211,8 +5226,10 @@ function renderFileTooLarge(
         {renderProps.displayFileName}
       </div>
       <div>
-        File size {formatBinaryBytes(renderProps.fileSizeBytes)} exceeds the configured limit of{" "}
-        {formatBinaryBytes(renderProps.maxFileSizeBytes)}.
+        {formatMessage(messages.fileTooLarge, {
+          size: formatBinaryBytes(renderProps.fileSizeBytes, locale),
+          limit: formatBinaryBytes(renderProps.maxFileSizeBytes, locale)
+        })}
       </div>
     </div>
   );
@@ -5240,22 +5257,26 @@ function renderCustomFileTooLarge(
     fileSizeBytes: number;
     maxFileSizeBytes: number;
   },
-  palette: ViewerPalette
+  palette: ViewerPalette,
+  messages: XlsxViewerMessages,
+  locale: string
 ) {
   if (fileTooLargeState === undefined) {
     return undefined;
   }
 
-  return renderFileTooLarge(fileTooLargeState, renderProps, palette);
+  return renderFileTooLarge(fileTooLargeState, renderProps, palette, messages, locale);
 }
 
-function renderDefaultChartLoadingCard(rect: XlsxImageRect) {
+function renderDefaultChartLoadingCard(rect: XlsxImageRect, messages: XlsxViewerMessages) {
   const bars = [18, 32, 24];
   const barWidth = Math.max(8, Math.min(12, Math.round(rect.width * 0.018)));
   const barGap = 8;
 
   return (
     <div
+      role="status"
+      aria-label={messages.loadingChart}
       style={{
         backgroundColor: "#ffffff",
         border: "1px solid #e5e7eb",
@@ -5296,9 +5317,10 @@ function renderChartLoadingNode(
   renderChartLoading: XlsxViewerProps["renderChartLoading"],
   chart: XlsxChart,
   rect: XlsxImageRect,
+  messages: XlsxViewerMessages,
   stage: "metadata" | "renderer" | "map" = "metadata"
 ) {
-  const defaultNode = renderDefaultChartLoadingCard(rect);
+  const defaultNode = renderDefaultChartLoadingCard(rect, messages);
   if (!renderChartLoading) {
     return defaultNode;
   }
@@ -5309,22 +5331,6 @@ function renderChartLoadingNode(
     rect,
     stage
   });
-}
-
-function formatBytes(value: number) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return "0 B";
-  }
-
-  const units = ["B", "KB", "MB", "GB"];
-  let size = value;
-  let unitIndex = 0;
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function renderDeferredLoad(
@@ -5353,12 +5359,9 @@ function renderDeferredLoad(
           width: "100%"
         }}
       >
-        <div style={{ fontSize: 16, fontWeight: 600 }}>Large workbook detected</div>
+        <div style={{ fontSize: 16, fontWeight: 600 }}>{controller.messages.largeWorkbook}</div>
         <div style={{ color: palette.mutedText, fontSize: 13, lineHeight: 1.5, marginTop: 8 }}>
-          This workbook is {formatBytes(controller.deferredLoadFileSize ?? 0)}. Loading it immediately can block the main thread and freeze the page.
-        </div>
-        <div style={{ color: palette.mutedText, fontSize: 13, lineHeight: 1.5, marginTop: 8 }}>
-          Best practice is to gate large files or move parsing into a worker. You can still load it manually below.
+          {formatMessage(controller.messages.deferredLoadDescription, { size: formatBinaryBytes(controller.deferredLoadFileSize ?? 0, controller.locale) })}
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
           <button
@@ -5376,7 +5379,7 @@ function renderDeferredLoad(
             }}
             type="button"
           >
-            Load Anyway
+            {controller.messages.loadAnyway}
           </button>
         </div>
       </div>
@@ -7351,6 +7354,7 @@ function XlsxGrid({
     getCellDisplayValue: getControllerCellDisplayValue,
     getCellFormula,
     locale,
+    messages,
     getFormControlItems,
     highlightedRanges,
     images,
@@ -12112,7 +12116,7 @@ function XlsxGrid({
         triggerIcon,
         triggerProps: {
           "aria-haspopup": "menu",
-          "aria-label": `Open menu for ${tableColumn.name}`,
+          "aria-label": formatMessage(messages.openMenuForColumn, { column: tableColumn.name }),
           onClick: (event) => {
             event.stopPropagation();
           },
@@ -12128,7 +12132,7 @@ function XlsxGrid({
     return (
       <button
         aria-haspopup="menu"
-        aria-label={`Open menu for ${tableColumn.name}`}
+        aria-label={formatMessage(messages.openMenuForColumn, { column: tableColumn.name })}
         aria-expanded={openTableMenu?.tableName === table.name && openTableMenu.col === cell.col && openTableMenu.row === cell.row}
         onPointerDown={(event) => {
           event.preventDefault();
@@ -12152,7 +12156,7 @@ function XlsxGrid({
         {experimentalCanvas ? null : triggerIcon}
       </button>
     );
-  }, [effectiveTables, experimentalCanvas, openTableMenu, palette, renderTableHeaderMenu, sortState, sortTable, zoomFactor]);
+  }, [effectiveTables, experimentalCanvas, messages, openTableMenu, palette, renderTableHeaderMenu, sortState, sortTable, zoomFactor]);
   const resolveCanvasColumnHeaderRect = React.useCallback((actualCol: number) => {
     const colIndex = colIndexByActual.get(actualCol);
     if (colIndex === undefined) {
@@ -14218,7 +14222,7 @@ function XlsxGrid({
   }, [selectChartElement]);
 
   if (isLoading) {
-    return <>{renderLoading(loadingComponent, loadingState, palette)}</>;
+    return <>{renderLoading(loadingComponent, loadingState, palette, messages)}</>;
   }
 
   if (isLoadDeferred) {
@@ -14236,13 +14240,15 @@ function XlsxGrid({
               fileSizeBytes: error.fileSizeBytes,
               maxFileSizeBytes: error.maxFileSizeBytes
             },
-            palette
+            palette,
+            messages,
+            locale
           )}
         </>
       );
     }
 
-    return <>{renderError(errorState, error, palette)}</>;
+    return <>{renderError(errorState, error, palette, messages)}</>;
   }
 
   if (!activeSheet && activeTab?.kind === "chartsheet") {
@@ -14288,12 +14294,12 @@ function XlsxGrid({
                 position: "relative"
               }}>
                   {isChartsLoading
-                    ? renderChartLoadingNode(renderChartLoading, chart, chartsheetRect)
+                    ? renderChartLoadingNode(renderChartLoading, chart, chartsheetRect, messages)
                     : (
                         <MemoChartSvg
                           experimentalOfficeCharts={experimentalOfficeCharts}
                           chart={chart}
-                          loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, chartsheetRect, stage)}
+                          loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, chartsheetRect, messages, stage)}
                           onChartElementDoubleClick={handleChartElementDoubleClick}
                           onChartElementPointerDown={handleChartElementPointerDown}
                           palette={palette}
@@ -14314,7 +14320,7 @@ function XlsxGrid({
                 minHeight: 320
               }}
             >
-              Chartsheet metadata is present, but no embedded chart payload was exposed for this tab.
+              {messages.chartsheetUnavailable}
             </div>
           )}
         </div>
@@ -14323,7 +14329,7 @@ function XlsxGrid({
   }
 
   if (!activeSheet) {
-    return <>{renderEmpty(emptyState, palette)}</>;
+    return <>{renderEmpty(emptyState, palette, messages)}</>;
   }
 
   const virtualRows = domExpandedWindow.rowIndices.map((index) => {
@@ -14984,7 +14990,7 @@ function XlsxGrid({
       return (
         <select
           aria-disabled={readOnly || control.controlIndex === undefined || controlItems.length === 0}
-          aria-label={controlLabel || control.name || "Dropdown form control"}
+          aria-label={controlLabel || control.name || messages.dropdownControl}
           disabled={!readOnly && (control.controlIndex === undefined || controlItems.length === 0)}
           key={`${pane}-${control.id}`}
           onChange={(event) => {
@@ -15019,7 +15025,7 @@ function XlsxGrid({
       return (
         <select
           aria-disabled={readOnly || control.controlIndex === undefined || controlItems.length === 0}
-          aria-label={controlLabel || control.name || "List box form control"}
+          aria-label={controlLabel || control.name || messages.listBoxControl}
           disabled={!readOnly && (control.controlIndex === undefined || controlItems.length === 0)}
           key={`${pane}-${control.id}`}
           multiple={allowsMultipleSelection}
@@ -15055,7 +15061,7 @@ function XlsxGrid({
       return (
         <input
           aria-disabled={readOnly || control.controlIndex === undefined}
-          aria-label={controlLabel || control.name || "Scrollbar form control"}
+          aria-label={controlLabel || control.name || messages.scrollbarControl}
           disabled={!readOnly && control.controlIndex === undefined}
           key={`${pane}-${control.id}`}
           max={max}
@@ -15087,7 +15093,7 @@ function XlsxGrid({
       return (
         <input
           aria-disabled={readOnly || control.controlIndex === undefined}
-          aria-label={controlLabel || control.name || "Spinner form control"}
+          aria-label={controlLabel || control.name || messages.spinnerControl}
           disabled={!readOnly && control.controlIndex === undefined}
           key={`${pane}-${control.id}`}
           max={max}
@@ -15352,12 +15358,12 @@ function XlsxGrid({
             }}
           >
             {isChartsLoading
-              ? renderChartLoadingNode(renderChartLoading, chart, rect)
+              ? renderChartLoadingNode(renderChartLoading, chart, rect, messages)
               : (
                   <MemoChartSvg
                     experimentalOfficeCharts={experimentalOfficeCharts}
                     chart={chart}
-                    loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, rect, stage)}
+                    loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, rect, messages, stage)}
                     onChartElementDoubleClick={handleChartElementDoubleClick}
                     onChartElementPointerDown={handleChartElementPointerDown}
                     palette={palette}
@@ -16256,7 +16262,7 @@ function XlsxGrid({
     ref: scrollRef,
     "aria-colcount": Math.max(activeSheet?.colCount ?? 0, displayColLimit),
     "aria-keyshortcuts": "ArrowUp ArrowDown ArrowLeft ArrowRight Home End PageUp PageDown Control+Home Control+End",
-    "aria-label": activeSheet ? `${activeSheet.name} worksheet grid` : "Workbook grid",
+    "aria-label": activeSheet ? formatMessage(messages.worksheetGrid, { sheet: activeSheet.name }) : messages.workbookGrid,
     "aria-readonly": readOnly,
     "aria-rowcount": Math.max(activeSheet?.rowCount ?? 0, displayRowLimit),
     role: "grid",
@@ -17077,7 +17083,8 @@ function XlsxViewerInner({
   allowResizeInReadOnly = false,
   autoScrollToHighlightedRanges = true,
   className,
-  controller,
+  controller: sourceController,
+  messages: messageOverrides,
   emptyState,
   enableCanvasSelectionAnimation = true,
   enableGestureZoom = true,
@@ -17117,6 +17124,11 @@ function XlsxViewerInner({
 }: XlsxViewerProps & {
   controller: XlsxViewerController;
 }) {
+  const messages = React.useMemo(
+    () => mergeMessages(sourceController.messages, messageOverrides),
+    [sourceController.messages, messageOverrides]
+  );
+  const controller = React.useMemo(() => ({ ...sourceController, messages }), [sourceController, messages]);
   const palette = useViewerPalette(isDark, headerBackgroundColor, headerTextColor);
   const { displayFileName, error } = controller;
   const appliedHighlightRef = React.useRef<{
@@ -17155,78 +17167,83 @@ function XlsxViewerInner({
             fileSizeBytes: error.fileSizeBytes,
             maxFileSizeBytes: error.maxFileSizeBytes
           },
-          palette
+          palette,
+          messages,
+          controller.locale
         )
       : undefined;
 
   return (
-    <ViewerAppearanceContext.Provider value={{ headerBackgroundColor, headerTextColor, isDark }}>
-      <ViewerContext.Provider value={controller}>
-        {customFileTooLarge !== undefined ? (
-          customFileTooLarge
-        ) : (
-          <div
-            className={classNames("react-xlsx-viewer", className)}
-            style={{
-              blockSize: height,
-              backgroundColor: palette.surface,
-              borderRadius: rounded ? 12 : 0,
-              color: palette.text,
-              display: "flex",
-              flex: "1 1 auto",
-              flexDirection: "column",
-              inlineSize: "100%",
-              isolation: "isolate",
-              maxHeight: "100%",
-              maxWidth: "100%",
-              minHeight: 0,
-              minWidth: 0,
-              overflow: "hidden",
-              position: "relative",
-              width: "100%"
-            }}
-          >
-            <style>{RANGE_HIGHLIGHT_STYLES}</style>
-            {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
-            <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
-              <XlsxGrid
-                allowResizeInReadOnly={allowResizeInReadOnly}
-                controller={controller}
-                emptyState={emptyState}
-                enableCanvasSelectionAnimation={enableCanvasSelectionAnimation}
-                enableGestureZoom={enableGestureZoom}
-                errorState={errorState}
-                experimentalCanvas={experimentalCanvas}
-                experimentalOfficeCharts={experimentalOfficeCharts}
-                fileTooLargeState={fileTooLargeState}
-                getCellStyle={getCellStyle}
-                highlightClassName={highlightClassName}
-                loadingComponent={loadingComponent}
-                loadingState={loadingState}
-                onFormControlAction={onFormControlAction}
-                onFormControlChange={onFormControlChange}
-                palette={palette}
-                renderChartLoading={renderChartLoading}
-                renderContextMenu={renderContextMenu}
-                enableContextMenu={enableContextMenu}
-                contextMenuClassName={contextMenuClassName}
-                contextMenuStyle={contextMenuStyle}
-                renderFormControl={renderFormControl}
-                renderImage={renderImage}
-                renderImageSelection={renderImageSelection}
-                renderScroller={renderScroller}
-                renderTableHeaderMenu={renderTableHeaderMenu}
-                renderActiveCellOverlay={renderActiveCellOverlay}
-                selectionColor={selectionColor}
-                selectionFillColor={selectionFillColor}
-                selectionHeaderColor={selectionHeaderColor}
-                showImages={showImages}
-              />
+    <XlsxMessagesContext.Provider value={messages}>
+      <ViewerAppearanceContext.Provider value={{ headerBackgroundColor, headerTextColor, isDark }}>
+        <ViewerContext.Provider value={controller}>
+          {customFileTooLarge !== undefined ? (
+            customFileTooLarge
+          ) : (
+            <div
+              lang={controller.locale}
+              className={classNames("react-xlsx-viewer", className)}
+              style={{
+                blockSize: height,
+                backgroundColor: palette.surface,
+                borderRadius: rounded ? 12 : 0,
+                color: palette.text,
+                display: "flex",
+                flex: "1 1 auto",
+                flexDirection: "column",
+                inlineSize: "100%",
+                isolation: "isolate",
+                maxHeight: "100%",
+                maxWidth: "100%",
+                minHeight: 0,
+                minWidth: 0,
+                overflow: "hidden",
+                position: "relative",
+                width: "100%"
+              }}
+            >
+              <style>{RANGE_HIGHLIGHT_STYLES}</style>
+              {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
+              <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
+                <XlsxGrid
+                  allowResizeInReadOnly={allowResizeInReadOnly}
+                  controller={controller}
+                  emptyState={emptyState}
+                  enableCanvasSelectionAnimation={enableCanvasSelectionAnimation}
+                  enableGestureZoom={enableGestureZoom}
+                  errorState={errorState}
+                  experimentalCanvas={experimentalCanvas}
+                  experimentalOfficeCharts={experimentalOfficeCharts}
+                  fileTooLargeState={fileTooLargeState}
+                  getCellStyle={getCellStyle}
+                  highlightClassName={highlightClassName}
+                  loadingComponent={loadingComponent}
+                  loadingState={loadingState}
+                  onFormControlAction={onFormControlAction}
+                  onFormControlChange={onFormControlChange}
+                  palette={palette}
+                  renderChartLoading={renderChartLoading}
+                  renderContextMenu={renderContextMenu}
+                  enableContextMenu={enableContextMenu}
+                  contextMenuClassName={contextMenuClassName}
+                  contextMenuStyle={contextMenuStyle}
+                  renderFormControl={renderFormControl}
+                  renderImage={renderImage}
+                  renderImageSelection={renderImageSelection}
+                  renderScroller={renderScroller}
+                  renderTableHeaderMenu={renderTableHeaderMenu}
+                  renderActiveCellOverlay={renderActiveCellOverlay}
+                  selectionColor={selectionColor}
+                  selectionFillColor={selectionFillColor}
+                  selectionHeaderColor={selectionHeaderColor}
+                  showImages={showImages}
+                />
+              </div>
             </div>
-          </div>
-        )}
-      </ViewerContext.Provider>
-    </ViewerAppearanceContext.Provider>
+          )}
+        </ViewerContext.Provider>
+      </ViewerAppearanceContext.Provider>
+    </XlsxMessagesContext.Provider>
   );
 }
 

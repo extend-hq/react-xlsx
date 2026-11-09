@@ -971,9 +971,9 @@ function WorkbookToolbar({
                   </SelectContent>
                 </Select>
               </RibbonGroup>
-              <RibbonGroup label="Number locale">
+              <RibbonGroup label="Locale">
                 <Select value={locale} onValueChange={(value) => value && setLocale(value)}>
-                  <SelectTrigger aria-label="Number locale" className="w-[170px]" size="sm">
+                  <SelectTrigger aria-label="Locale" className="w-[170px]" size="sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1426,28 +1426,6 @@ export function App() {
                       </div>
                       {defaultNode}
                     </>
-                  )}
-                  renderTableHeaderMenu={experimentalCanvas ? undefined : ({ column, direction, sortAscending, sortDescending, triggerProps }) => (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger
-                        render={<Button size="icon-xs" variant="ghost" />}
-                        {...triggerProps}
-                      >
-                        <PlaygroundIcon className="size-3" name="chevron-down" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuGroup>
-                          <DropdownMenuLabel>{column.name}</DropdownMenuLabel>
-                        </DropdownMenuGroup>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={sortAscending}>
-                          Sort A to Z{direction === "ascending" ? " ✓" : ""}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={sortDescending}>
-                          Sort Z to A{direction === "descending" ? " ✓" : ""}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
                   )}
                   rounded={true}
                   showDefaultToolbar={false}

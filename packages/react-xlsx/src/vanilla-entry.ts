@@ -97,6 +97,7 @@ export type {
   XlsxImageResizeHandlePosition,
   UseXlsxViewerControllerOptions,
   XlsxViewerController,
+  XlsxViewerMessages,
   XlsxViewerSelection,
   XlsxViewerZoom,
   XlsxContextMenuActionId,

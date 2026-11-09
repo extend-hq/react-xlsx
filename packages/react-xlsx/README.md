@@ -661,10 +661,10 @@ export function CustomWorkbook({ file }: { file: ArrayBuffer }) {
             {triggerIcon}
           </button>
           <button type="button" onClick={sortAscending}>
-            Sort A to Z{direction === "ascending" ? " selected" : ""}
+            Sort ascending{direction === "ascending" ? " selected" : ""}
           </button>
           <button type="button" onClick={sortDescending}>
-            Sort Z to A{direction === "descending" ? " selected" : ""}
+            Sort descending{direction === "descending" ? " selected" : ""}
           </button>
           <span>{column.name}</span>
         </span>
@@ -675,6 +675,29 @@ export function CustomWorkbook({ file }: { file: ArrayBuffer }) {
 ```
 
 Apply `triggerProps` to the table-header trigger button so clicks do not leak into grid selection.
+
+### Locale and UI text
+
+The built-in header and context menus use **Sort ascending** / **Sort descending** in English, with translations selected by `locale`. The toolbar, sheet and grid accessibility labels, cell editor, form-control fallback labels, loading/empty/error states, and chart fallbacks use the same locale. Changing `locale` or `messages` updates the UI without reloading the workbook.
+
+Bundled UI languages are English (`en`), French (`fr`), German (`de`), Spanish (`es`), Italian (`it`), Portuguese (`pt`), Japanese (`ja`), and Simplified Chinese (`zh`). Regional tags use their language catalog, so `fr-CA` uses French. Unsupported languages fall back to English for UI text; number formatting still uses the requested locale. Supply `messages` to add another language or change any wording.
+
+```tsx
+<XlsxViewer
+  file={file}
+  locale="fr-FR"
+  messages={{
+    sortAscending: "Ordre croissant",
+    sortDescending: "Ordre décroissant",
+    openMenuForColumn: "Options de {column}",
+  }}
+/>
+```
+
+`messages` is also accepted by `useXlsxViewerController`, `XlsxViewerProvider`, and the vanilla viewer options. With a supplied controller or provider, configure `locale` there so formatting and UI use the same locale. A viewer's `messages` prop overrides its controller's messages for that viewer. Resolved text is available as `controller.messages` for custom UI.
+
+Message values are plain strings. Keep `{column}` in `openMenuForColumn`, `{sheet}` in `worksheetGrid`, `hiddenSheet`, and `veryHiddenSheet`, `{size}` and `{limit}` in `fileTooLarge`, and `{size}` in `deferredLoadDescription` wherever those values should appear. Values are inserted as text. Workbook content and custom render callbacks keep the text supplied by the workbook or application. Default errors use localized messages; the original error is available through `controller.error` and `errorState`.
+
 
 Use `renderActiveCellOverlay` to render your own content over the active cell. The returned node sits in a container that exactly covers the cell (the full merge for merged cells) and moves with scrolling and zoom, so you can attach classes, data attributes, or a ref and measure it with `getBoundingClientRect()`. The container ignores pointer events; set `pointerEvents: "auto"` on your own elements to make them interactive.
 
@@ -763,7 +786,8 @@ Common source and loading props:
 - `fileName?: string`
 - `controller?: XlsxViewerController`
 - `useWorker?: boolean`
-- `locale?: string` — BCP 47 locale for numeric decimal and grouping separators, defaulting to `"en-US"`. Pass `"fr-FR"` for French or `navigator.language` for the browser locale. Dates retain their workbook format.
+- `locale?: string` — BCP 47 locale for numeric decimal and grouping separators and built-in UI text, defaulting to `"en-US"`. Pass `"fr-FR"` for French or `navigator.language` for the browser locale. Dates retain their workbook format.
+- `messages?: Partial<XlsxViewerMessages>` — Override individual localized labels, accessibility text, and state messages. Unspecified or `undefined` entries retain their locale defaults.
 - `maxFileSizeBytes?: number`
 - `readOnly?: boolean`
 - `readOnlyAboveBytes?: number`

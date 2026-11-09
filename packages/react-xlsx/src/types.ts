@@ -1,6 +1,9 @@
 import type { OfficeCharts } from "./office-chart-types";
 import type * as React from "react";
+import type { XlsxViewerMessages } from "./messages";
 import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
+
+export type { XlsxViewerMessages } from "./messages";
 
 export interface XlsxThemePalette {
   colorsByIndex: Record<number, string>;
@@ -1025,8 +1028,10 @@ export interface XlsxScrollerRenderProps {
 }
 
 export interface UseXlsxViewerControllerOptions {
-  /** BCP 47 locale for numeric decimal and grouping separators. Defaults to en-US. */
+  /** BCP 47 locale for number formatting and built-in UI text. Defaults to en-US. */
   locale?: string;
+  /** Partial overrides for localized UI text, including accessibility labels. */
+  messages?: Partial<XlsxViewerMessages>;
   /**
    * Allows row and column resizing even while editing is disabled by `readOnly`.
    *
@@ -1141,6 +1146,8 @@ export interface XlsxViewerController {
   defineNamedRange: (name: string, range?: XlsxCellRange | null) => void;
   displayFileName: string;
   locale: string;
+  /** Resolved UI text after applying locale defaults and message overrides. */
+  messages: XlsxViewerMessages;
   download: () => void;
   charts: XlsxChart[];
   chartsheets: XlsxChartsheet[];

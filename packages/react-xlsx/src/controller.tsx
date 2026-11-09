@@ -1,4 +1,5 @@
 import { localizeCellNumber } from "./number-locale";
+import { resolveMessages } from "./messages";
 import { applyInputNumberFormat, coerceUserEnteredValue, getUserEnteredFormula, isTextCell, normalizeFormulaReferences, parseClipboardText, quoteClipboardField } from "./cell-input";
 import { loadSpreadsheetFonts } from "./spreadsheet-fonts";
 import * as React from "react";
@@ -1837,6 +1838,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     file,
     fileName,
     locale = "en-US",
+    messages: messageOverrides,
     maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
     readOnly: requestedReadOnly = false,
     readOnlyAboveBytes = 0,
@@ -1845,6 +1847,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     src,
     useWorker = true
   } = options;
+  const messages = React.useMemo(() => resolveMessages(locale, messageOverrides), [locale, messageOverrides]);
   const [isLoading, setIsLoading] = React.useState(Boolean(file ?? src));
   const [error, setError] = React.useState<Error | null>(null);
   const [workbook, setWorkbook] = React.useState<Workbook | null>(null);
@@ -5110,6 +5113,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       defineNamedRange,
       displayFileName,
       locale,
+      messages,
       download,
       exportCsv,
       exportXlsx,
@@ -5234,6 +5238,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       defineNamedRange,
       displayFileName,
       locale,
+      messages,
       download,
       error,
       exportCsv,

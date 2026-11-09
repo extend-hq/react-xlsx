@@ -90,6 +90,7 @@ export type {
   XlsxViewerEditing,
   XlsxViewerImages,
   XlsxViewerProps,
+  XlsxViewerMessages,
   XlsxViewerProviderProps,
   XlsxViewerSelection,
   XlsxViewerThumbnails,

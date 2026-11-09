@@ -10,6 +10,17 @@ import type {
 import { isDarkViewerPalette, type ViewerPalette } from "./viewer-palette";
 import { expandHighlightedRange } from "./range-highlight";
 
+type MenuErrorKey = "clipboardCopyUnavailable" | "clipboardPasteUnavailable" | "nothingToPaste" | "actionFailed";
+
+class MenuActionError extends Error {
+  readonly key: MenuErrorKey;
+
+  constructor(key: MenuErrorKey) {
+    super(key);
+    this.key = key;
+  }
+}
+
 const menuStyles = `
 :where(.react-xlsx-context-menu) {
   background: var(--xlsx-context-menu-background);
@@ -48,13 +59,15 @@ export function XlsxContextMenu({
   editCell: () => void;
   selectExtent: (kind: "row" | "column" | "sheet") => void;
 }) {
+  const { messages } = controller;
   const rootRef = React.useRef<HTMLDivElement>(null);
   const controllerRef = React.useRef(controller);
   controllerRef.current = controller;
   const aliveRef = React.useRef(true);
   const runningRef = React.useRef(false);
   const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const [errorKey, setErrorKey] = React.useState<MenuErrorKey | null>(null);
+  const error = errorKey ? messages[errorKey] : null;
   const [location, setLocation] = React.useState(position);
   const modifier = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
   const table = controller.tables.find(({ start, end }) =>
@@ -63,26 +76,26 @@ export function XlsxContextMenu({
   const range = expandHighlightedRange(context.selection, controller.activeSheet?.mergedRanges ?? []);
   const multiple = range.start.row !== range.end.row || range.start.col !== range.end.col;
   const actions: XlsxContextMenuAction[] = [
-    ...(!controller.readOnly ? [{ id: "cut" as const, label: "Cut" }] : []),
-    { id: "copy", label: "Copy", shortcut: `${modifier}C` },
+    ...(!controller.readOnly ? [{ id: "cut" as const, label: messages.cut }] : []),
+    { id: "copy", label: messages.copy, shortcut: `${modifier}C` },
     ...(!controller.readOnly ? [
-      { id: "paste" as const, label: "Paste", shortcut: `${modifier}V` },
-      { id: "editCell" as const, label: "Edit cell", shortcut: "F2", separatorBefore: true },
-      { id: "clearContents" as const, label: "Clear contents", destructive: true },
-      { id: "undo" as const, label: "Undo", shortcut: `${modifier}Z`, separatorBefore: true, disabled: !controller.canUndo },
-      { id: "redo" as const, label: "Redo", shortcut: `${modifier}⇧Z`, disabled: !controller.canRedo },
-      { id: "mergeAndCenter" as const, label: "Merge & Center", separatorBefore: true, disabled: !multiple },
-      { id: "mergeAcross" as const, label: "Merge Across", disabled: range.start.col === range.end.col },
-      { id: "mergeCells" as const, label: "Merge Cells", disabled: !multiple },
-      { id: "unmergeCells" as const, label: "Unmerge Cells" },
+      { id: "paste" as const, label: messages.paste, shortcut: `${modifier}V` },
+      { id: "editCell" as const, label: messages.editCell, shortcut: "F2", separatorBefore: true },
+      { id: "clearContents" as const, label: messages.clearContents, destructive: true },
+      { id: "undo" as const, label: messages.undo, shortcut: `${modifier}Z`, separatorBefore: true, disabled: !controller.canUndo },
+      { id: "redo" as const, label: messages.redo, shortcut: `${modifier}⇧Z`, disabled: !controller.canRedo },
+      { id: "mergeAndCenter" as const, label: messages.mergeAndCenter, separatorBefore: true, disabled: !multiple },
+      { id: "mergeAcross" as const, label: messages.mergeAcross, disabled: range.start.col === range.end.col },
+      { id: "mergeCells" as const, label: messages.mergeCells, disabled: !multiple },
+      { id: "unmergeCells" as const, label: messages.unmergeCells },
       ...(table ? [
-        { id: "sortAscending" as const, label: "Sort A to Z", separatorBefore: true },
-        { id: "sortDescending" as const, label: "Sort Z to A" }
+        { id: "sortAscending" as const, label: messages.sortAscending, separatorBefore: true },
+        { id: "sortDescending" as const, label: messages.sortDescending }
       ] : [])
     ] : []),
-    { id: "selectRow", label: "Select row", separatorBefore: true },
-    { id: "selectColumn", label: "Select column" },
-    { id: "selectAll", label: "Select all", shortcut: `${modifier}A` }
+    { id: "selectRow", label: messages.selectRow, separatorBefore: true },
+    { id: "selectColumn", label: messages.selectColumn },
+    { id: "selectAll", label: messages.selectAll, shortcut: `${modifier}A` }
   ];
 
   React.useLayoutEffect(() => {
@@ -136,20 +149,20 @@ export function XlsxContextMenu({
     if (!isCurrent()) return false;
     runningRef.current = true;
     setBusy(true);
-    setError(null);
+    setErrorKey(null);
     try {
       switch (id) {
         case "copy":
         case "cut": {
           const copied = await controller.copySelectionToClipboard();
-          if (!copied) throw new Error("Clipboard access is unavailable. Use the keyboard shortcut to copy.");
+          if (!copied) throw new MenuActionError("clipboardCopyUnavailable");
           if (!isCurrent()) return false;
           if (id === "cut") controller.clearSelectedCells();
           break;
         }
         case "paste": {
           const clipboard = navigator.clipboard;
-          if (!clipboard) throw new Error("Clipboard access is unavailable. Use the keyboard shortcut to paste.");
+          if (!clipboard) throw new MenuActionError("clipboardPasteUnavailable");
           let structured: string | undefined;
           let text: string | undefined;
           if (clipboard.read) {
@@ -170,7 +183,7 @@ export function XlsxContextMenu({
           const pasted = structured !== undefined
             ? controller.pasteStructuredClipboardData(structured)
             : text !== undefined && controller.pasteText(text);
-          if (!pasted) throw new Error("No spreadsheet cells or text are available to paste.");
+          if (!pasted) throw new MenuActionError("nothingToPaste");
           break;
         }
         case "clearContents": controller.clearSelectedCells(); break;
@@ -192,7 +205,7 @@ export function XlsxContextMenu({
       closeMenu();
       return true;
     } catch (cause) {
-      if (aliveRef.current) setError(cause instanceof Error ? cause.message : "The action could not be completed.");
+      if (aliveRef.current) setErrorKey(cause instanceof MenuActionError ? cause.key : "actionFailed");
       return false;
     } finally {
       runningRef.current = false;
@@ -224,7 +237,8 @@ export function XlsxContextMenu({
 
   return createPortal(
     <div
-      aria-label="Spreadsheet context menu"
+      lang={controller.locale}
+      aria-label={messages.contextMenu}
       aria-busy={busy}
       className={["react-xlsx-context-menu", contextMenuClassName].filter(Boolean).join(" ")}
       data-dark={isDarkViewerPalette(palette) ? "true" : "false"}

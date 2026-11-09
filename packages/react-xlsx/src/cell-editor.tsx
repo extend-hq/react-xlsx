@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useXlsxMessages } from "./messages-context";
 import type { FormulaReference } from "./formula-references";
 
 export type EditorTextLine = { text: string; start: number };
@@ -31,6 +32,7 @@ export function CellEditor({
   onNavigate: (key: string, value: string) => void;
 }) {
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const messages = useXlsxMessages();
   const mirrorRef = React.useRef<HTMLDivElement>(null);
   const textRef = React.useRef<HTMLSpanElement>(null);
   const baselineRef = React.useRef<HTMLSpanElement>(null);
@@ -212,7 +214,7 @@ export function CellEditor({
           if (typeof inputRef === "function") inputRef(element);
           else if (inputRef) inputRef.current = element;
         }}
-        aria-label="Edit cell"
+        aria-label={messages.editCell}
         autoFocus
         autoComplete="off"
         spellCheck={false}
