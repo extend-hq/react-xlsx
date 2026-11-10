@@ -2,7 +2,13 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "baseUrl": "../.."
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@extend-ai/react-xlsx": ["../../packages/react-xlsx/src/index.ts"],
+      "@extend-ai/react-xlsx/vanilla": ["../../packages/react-xlsx/src/vanilla-entry.ts"],
+      "@extend-ai/react-xlsx/internal": ["../../packages/react-xlsx/src/internal.ts"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }
