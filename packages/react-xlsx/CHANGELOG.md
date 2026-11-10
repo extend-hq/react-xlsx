@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.0
+
+- Add opt-in custom cell editor overlays and selection popovers for React and vanilla JavaScript, with caller-owned UI, styling, animations, and callbacks.
+- Expose editor draft replacement, preview, discard, commit, focus, and cancellation commands with abort signals for asynchronous integrations.
+- Add guarded custom context-menu commits and batch cell styling with a single undo step.
+- Redesign the playground with Coss UI, formula and heatmap previews, and an always-visible read-only switch.
+
 ## 0.20.12
 
 - Use data-type-neutral ascending and descending sort labels.

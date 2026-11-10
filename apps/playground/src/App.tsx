@@ -17,7 +17,6 @@ import {
   Grid2x2,
   Italic,
   Link2,
-  Lock,
   Minus,
   Moon,
   PaintBucket,
@@ -625,16 +624,6 @@ function ReviewRibbon({ onLoadHighlightSample }: { onLoadHighlightSample: (autoS
 
   return (
     <>
-      <RibbonGroup>
-        <RibbonButton
-          active={settings.readOnly}
-          label={settings.readOnly ? "Unprotect workbook" : "Protect workbook"}
-          onClick={() => settings.set("readOnly", !settings.readOnly)}
-          showLabel
-        >
-          <Lock />
-        </RibbonButton>
-      </RibbonGroup>
       <RangeHighlightDemo
         customStyle={settings.customHighlightStyle}
         onCustomStyleChange={(value) => settings.set("customHighlightStyle", value)}
@@ -772,25 +761,33 @@ function Ribbon({
   onLoadUrl: (url: string) => void;
   onOpenFile: () => void;
 }) {
+  const settings = useSettings();
   const [tab, setTab] = React.useState<RibbonTab>("Home");
   const panelClass = "flex items-center";
 
   return (
     <Tabs className="shrink-0 gap-0 px-2 pb-2" onValueChange={(value) => setTab(value as RibbonTab)} value={tab}>
-      <TabsList
-        className="h-8 gap-0.5 p-0 *:data-[slot=tab-indicator]:bg-brand *:data-[slot=tabs-tab]:hover:bg-black/5 dark:*:data-[slot=tabs-tab]:hover:bg-white/5"
-        variant="underline"
-      >
-        {RIBBON_TABS.map((name) => (
-          <TabsTab
-            className="h-7 grow-0 rounded-sm px-2.5 text-[13px] font-normal text-foreground/75 hover:text-foreground data-active:font-semibold data-active:text-brand"
-            key={name}
-            value={name}
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 overflow-x-auto [scrollbar-width:none]">
+          <TabsList
+            className="h-8 gap-0.5 p-0 *:data-[slot=tab-indicator]:bg-brand *:data-[slot=tabs-tab]:hover:bg-black/5 dark:*:data-[slot=tabs-tab]:hover:bg-white/5"
+            variant="underline"
           >
-            {name}
-          </TabsTab>
-        ))}
-      </TabsList>
+            {RIBBON_TABS.map((name) => (
+              <TabsTab
+                className="h-7 grow-0 rounded-sm px-2.5 text-[13px] font-normal text-foreground/75 hover:text-foreground data-active:font-semibold data-active:text-brand"
+                key={name}
+                value={name}
+              >
+                {name}
+              </TabsTab>
+            ))}
+          </TabsList>
+        </div>
+        <div className="ms-auto flex shrink-0 items-center">
+          <ToggleRow checked={settings.readOnly} label="Read only" onCheckedChange={(value) => settings.set("readOnly", value)} />
+        </div>
+      </div>
       <div className="mt-1 flex h-11 items-center overflow-x-auto rounded-lg border bg-background px-2 shadow-xs/5 [scrollbar-width:none]">
         <TabsPanel className={panelClass} value="Home">
           <HomeRibbon />
