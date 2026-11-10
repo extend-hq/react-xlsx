@@ -8,6 +8,8 @@ export function CellEditor({
   value,
   references,
   inputRef,
+  editorRef,
+  onFocusOverlay,
   canvasText = false,
   canvasOffset,
   paintCanvasText,
@@ -21,12 +23,14 @@ export function CellEditor({
   value: string;
   references: FormulaReference[];
   inputRef?: React.Ref<HTMLTextAreaElement>;
+  editorRef?: React.Ref<HTMLDivElement>;
+  onFocusOverlay?: () => boolean;
   canvasText?: boolean;
   canvasOffset?: { left: number; top: number };
   paintCanvasText?: (context: CanvasRenderingContext2D, width: number, height: number, lines: EditorTextLine[], textTop: number) => void;
   style: React.CSSProperties;
   onChange: (value: string) => void;
-  onBlur: () => void;
+  onBlur: (event: React.FocusEvent<HTMLTextAreaElement>) => void;
   onCommit: () => void;
   onCancel: () => void;
   onNavigate: (key: string, value: string) => void;
@@ -163,7 +167,12 @@ export function CellEditor({
   parts.push(value.slice(offset));
   return (
     <div
-      ref={rootRef}
+      ref={(element) => {
+        rootRef.current = element;
+        if (typeof editorRef === "function") editorRef(element);
+        else if (editorRef) editorRef.current = element;
+      }}
+      data-xlsx-cell-editor=""
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
@@ -215,6 +224,7 @@ export function CellEditor({
           else if (inputRef) inputRef.current = element;
         }}
         aria-label={messages.editCell}
+        aria-keyshortcuts={onFocusOverlay ? "Alt+ArrowDown" : undefined}
         autoFocus
         autoComplete="off"
         spellCheck={false}
@@ -228,7 +238,9 @@ export function CellEditor({
         onKeyDown={(event) => {
           event.stopPropagation();
           if (event.nativeEvent.isComposing) return;
-          if (event.key === "Enter" && !event.altKey) {
+          if (event.key === "ArrowDown" && event.altKey && onFocusOverlay?.()) {
+            event.preventDefault();
+          } else if (event.key === "Enter" && !event.altKey) {
             event.preventDefault();
             onCommit();
           } else if (event.key === "Escape") {

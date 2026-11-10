@@ -112,4 +112,7 @@ export type {
   XlsxSheetThumbnail,
   XlsxViewerThumbnails,
   XlsxActiveCellOverlayRenderProps,
+  XlsxCellEditorContext,
+  XlsxCellEditorSession,
+  XlsxCellEditorOverlayRenderProps,
 } from "./types";

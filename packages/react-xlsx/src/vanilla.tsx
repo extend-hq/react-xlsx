@@ -37,6 +37,7 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
     fileTooLargeState,
     loadingState,
     renderActiveCellOverlay,
+    renderCellEditorOverlay,
     renderChartLoading,
     renderContextMenu,
     renderFormControl,
@@ -57,6 +58,9 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
     loadingState: toReactContent(loadingState),
     renderActiveCellOverlay: renderActiveCellOverlay
       ? (props) => toReactContent(renderActiveCellOverlay(props))
+      : undefined,
+    renderCellEditorOverlay: renderCellEditorOverlay
+      ? (props) => toReactContent(renderCellEditorOverlay(props))
       : undefined,
     renderChartLoading: renderChartLoading
       ? ({ defaultNode: _defaultNode, ...props }) => toReactContent(renderChartLoading(props))

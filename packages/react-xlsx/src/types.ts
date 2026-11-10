@@ -1588,6 +1588,41 @@ export interface XlsxActiveCellOverlayRenderProps {
   rect: XlsxImageRect;
 }
 
+export interface XlsxCellEditorContext {
+  cell: XlsxCellAddress;
+  sheetIndex: number;
+  sheetName: string;
+  /** The saved cell input before editing started, including a leading equals sign for formulas. */
+  originalValue: string;
+}
+
+export interface XlsxCellEditorSession {
+  context: XlsxCellEditorContext;
+  value: string;
+  isPreview: boolean;
+  /** Aborted when editing ends or the target changes. Pass to asynchronous requests. */
+  signal: AbortSignal;
+  /** Reads the latest draft, or null after this session ends. */
+  getValue: () => string | null;
+  /** Replaces the draft without writing to the workbook. Returns false after this session ends. */
+  setValue: (value: string) => boolean;
+  /** Replaces the draft for review. Leaving the editor cancels an unconfirmed preview. */
+  preview: (value: string) => boolean;
+  /** Restores the draft from before the preview and keeps editing. */
+  discardPreview: () => boolean;
+  /** Saves the supplied input, or the current draft, using the existing undo history. */
+  commit: (value?: string) => boolean;
+  /** Ends editing without saving. */
+  cancel: () => boolean;
+  /** Returns focus to the built-in input. */
+  focus: () => boolean;
+}
+
+export interface XlsxCellEditorOverlayRenderProps extends XlsxCellEditorSession {
+  /** The expanded editor rectangle in viewport pixels. The overlay container already fills it. */
+  rect: XlsxImageRect;
+}
+
 export interface XlsxCellStyleContext {
   /** Address of the cell being styled. */
   cell: XlsxCellAddress;
@@ -1839,6 +1874,10 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
    * ```
    */
   renderActiveCellOverlay?: (props: XlsxActiveCellOverlayRenderProps) => React.ReactNode;
+  /** Styling for the built-in editor. Layout and text measurement remain managed by the viewer. */
+  cellEditorStyle?: React.CSSProperties;
+  /** Opt-in decoration and actions around the editing input. Nothing is rendered on cell selection. */
+  renderCellEditorOverlay?: (props: XlsxCellEditorOverlayRenderProps) => React.ReactNode;
   /**
    * Shows worksheet images, charts, shapes, and form controls.
    *

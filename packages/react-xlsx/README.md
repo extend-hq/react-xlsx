@@ -266,7 +266,7 @@ viewer.destroy();
 
 `subscribe` also exposes `isLoadDeferred` and `continueDeferredLoad()` for deferred workbooks.
 
-`XlsxVanillaViewerOptions` supports the non-React viewer options, including `getCellStyle`, form-control events, themes, worker settings, and highlighting. `toolbar`, loading/empty/error states, and the `renderActiveCellOverlay`, `renderChartLoading`, `renderContextMenu`, `renderFormControl`, and `renderImage` callbacks accept text or DOM nodes. Their vanilla callback props omit React's `defaultNode`. React-specific custom scroller, image-selection, and table-header render callbacks are not available through this entry point.
+`XlsxVanillaViewerOptions` supports the non-React viewer options, including `getCellStyle`, form-control events, themes, worker settings, and highlighting. `toolbar`, loading/empty/error states, and the `renderActiveCellOverlay`, `renderCellEditorOverlay`, `renderChartLoading`, `renderContextMenu`, `renderFormControl`, and `renderImage` callbacks accept text or DOM nodes. Their vanilla callback props omit React's `defaultNode`. React-specific custom scroller, image-selection, and table-header render callbacks are not available through this entry point.
 
 The vanilla entry also exports `setWasmSource`, `initWasm`, `parseXlsxRange`, and workbook types. The same WASM, worker, font, and chart assets need to be served as in the React integration.
 
@@ -635,6 +635,110 @@ The hook receives `context` (target kind, cell, selection, sheet index/name, and
 
 Default styling follows the document theme. Override `.react-xlsx-context-menu`, `.react-xlsx-context-menu-item`, `.react-xlsx-context-menu-separator`, and `.react-xlsx-context-menu-shortcut`, or set `--xlsx-context-menu-background`, `--xlsx-context-menu-color`, `--xlsx-context-menu-border`, `--xlsx-context-menu-hover`, `--xlsx-context-menu-muted`, and `--xlsx-context-menu-danger` through `contextMenuStyle`. The menu is portaled to the document body, so use its class rather than a viewer-descendant selector. Set `enableContextMenu={false}` to retain the browser's native context menu.
 
+## Custom Cell Editor Overlays
+
+`renderCellEditorOverlay` adds your own decoration and actions around the live cell editor. It runs only while editing, never when merely selecting a cell. The library supplies no default menu, AI client, or animation. React callbacks return React content; vanilla callbacks return DOM nodes. `cellEditorStyle` customizes the built-in editor's appearance without replacing its input or text measurement.
+
+```tsx
+function FormulaActions({ editor, generateFormula }) {
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  async function generate() {
+    const prompt = editor.getValue();
+    if (prompt === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const formula = await generateFormula({
+        prompt,
+        context: editor.context,
+        signal: editor.signal,
+      });
+      if (editor.getValue() === prompt) editor.preview(formula);
+    } catch (cause) {
+      if (!editor.signal.aborted) setError(String(cause));
+    } finally {
+      if (!editor.signal.aborted) setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ position: "absolute", top: "calc(100% + 8px)", pointerEvents: "auto" }}>
+      {editor.isPreview ? (
+        <>
+          <button onClick={() => editor.commit()}>Keep</button>
+          <button onClick={() => editor.discardPreview()}>Discard</button>
+        </>
+      ) : (
+        <button disabled={busy} onClick={generate}>Write formula</button>
+      )}
+      {error && <div role="alert">{error}</div>}
+    </div>
+  );
+}
+
+<XlsxViewer
+  file={file}
+  cellEditorStyle={{ borderRadius: 4, boxShadow: "inset 0 0 0 2px #64748b" }}
+  renderCellEditorOverlay={(editor) => (
+    <FormulaActions editor={editor} generateFormula={callYourBackend} />
+  )}
+/>
+```
+
+`context` contains the zero-based `cell`, `sheetIndex` (an index in `controller.sheets`), `sheetName`, and the saved `originalValue` from before editing started. `value` is the current draft. `rect` is the expanded editor's rectangle in viewport pixels, updated as the input grows, the worksheet scrolls, or zoom changes.
+
+| Member | Behavior |
+| --- | --- |
+| `getValue()` | Reads the latest draft, or `null` after the session ends. |
+| `setValue(text)` | Replaces the draft without saving it. Ordinary editing commit behavior still applies. |
+| `preview(text)` | Shows a proposed replacement and marks it for review, retaining the previous draft. |
+| `isPreview` | Indicates that the draft is an unconfirmed preview. |
+| `discardPreview()` | Restores the draft from before the preview and focuses the input. |
+| `commit(text?)` | Saves the supplied input, or the current draft, and ends editing. Uses normal formula parsing and undo history. |
+| `cancel()` | Ends editing without saving any draft or preview. |
+| `focus()` | Returns focus to the native editor. |
+| `signal` | An `AbortSignal` cancelled when the editing session ends or changes target. |
+
+Commands return `false` after their session ends, so a delayed response cannot write to a different cell. For requests that depend on the draft, also compare `getValue()` with the submitted text before applying a result. Pass `signal` to your backend request. Use `commit(formula)` for direct application, or `preview(formula)` for a review flow. Previewing does not write to the workbook: Enter or `commit()` accepts it; Escape or leaving the editor cancels it. Tab/arrow navigation also leaves an unconfirmed preview unsaved. Repeated `preview()` calls preserve the draft from before the first preview.
+
+The overlay is an unstyled portal positioned over the actual expanded input in both canvas and DOM rendering. Its container ignores pointer events: set `pointerEvents: "auto"` on interactive content. Place actions below it with `top: "calc(100% + 8px)"`; render a full-size decorative wrapper to draw a custom border around it. Your wrapper may use CSS, a canvas shader, or an animation component. The native input remains underneath, preserving caret behavior and formula highlighting. `rect` lets your UI choose an alternate placement near window edges. Apply sizing and scrolling to your own panels as needed.
+
+Interactions inside the overlay keep the edit session open. Alt+ArrowDown from the editor focuses its first control. The overlay isolates keyboard events from grid navigation; your components own their roles and navigation. Return `null` to render no decoration or controls. Without `renderCellEditorOverlay`, no overlay is mounted.
+
+Vanilla JavaScript uses the same session commands:
+
+```js
+const viewer = createXlsxViewer(container, {
+  file: workbookBytes,
+  renderCellEditorOverlay(editor) {
+    const button = document.createElement("button");
+    button.textContent = editor.isPreview ? "Keep" : "Write formula";
+    Object.assign(button.style, {
+      position: "absolute", top: "calc(100% + 8px)", pointerEvents: "auto",
+    });
+    button.onclick = async () => {
+      if (editor.isPreview) { editor.commit(); return; }
+      const prompt = editor.getValue();
+      if (prompt === null) return;
+      button.disabled = true;
+      try {
+        const formula = await callYourBackend({ prompt, context: editor.context, signal: editor.signal });
+        if (editor.getValue() === prompt) editor.preview(formula);
+      } catch (error) {
+        if (!editor.signal.aborted) showError(error);
+      } finally {
+        if (!editor.signal.aborted) button.disabled = false;
+      }
+    };
+    return button;
+  },
+});
+```
+
+The render callback is called as the draft and editor geometry change. Return a stable DOM node when preserving state in custom vanilla controls. The playground opts into this API with a Border Beam decoration and a deterministic formula demo; it always returns `=SUM(10,20,30)` and does not call an AI backend.
+
 ## Custom Rendering
 
 The viewer exposes render props for common UI integration points.
@@ -827,6 +931,8 @@ Common rendering props:
 - `renderFormControl?: (props: XlsxFormControlRenderProps) => React.ReactNode`
 - `renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode`
 - `renderActiveCellOverlay?: (props: XlsxActiveCellOverlayRenderProps) => React.ReactNode`
+- `renderCellEditorOverlay?: (props: XlsxCellEditorOverlayRenderProps) => React.ReactNode`
+- `cellEditorStyle?: React.CSSProperties`
 - `renderScroller?: (props: XlsxScrollerRenderProps) => React.ReactNode`
 
 ### Persisted Cell Styling

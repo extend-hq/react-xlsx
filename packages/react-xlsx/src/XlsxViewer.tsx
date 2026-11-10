@@ -13,6 +13,8 @@ import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { growScrollDisplayLimit } from "./scroll-display-limit";
 import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffset } from "./range-highlight";
 import { CellEditor } from "./cell-editor";
+import { CellEditorOverlay } from "./cell-editor-overlay";
+import { useCellEditorSession } from "./cell-editor-session";
 import { getFormulaReferences, type FormulaReference } from "./formula-references";
 import { createMergedRangeLookup } from "./merged-range-lookup";
 import { getCellGeneralAlignment, type CellGeneralAlignment } from "./cell-alignment";
@@ -6780,6 +6782,10 @@ type GridRowProps = {
   editingValue: string;
   formulaReferences: FormulaReference[];
   editorBoxShadow: string;
+  editorRef: React.RefObject<HTMLDivElement | null>;
+  editorInputRef: React.RefObject<HTMLTextAreaElement | null>;
+  cellEditorStyle?: React.CSSProperties;
+  onFocusEditorOverlay?: () => boolean;
   frozenRowHeaderZIndex: number;
   getCellData: (row: number, col: number) => CellRenderData;
   headerLabelLiveScale: number;
@@ -6787,7 +6793,7 @@ type GridRowProps = {
   onCellDoubleClick: (cell: XlsxCellAddress) => void;
   onCellClick: (cell: XlsxCellAddress, cellData: CellRenderData) => void;
   onCellPointerDown: (event: React.PointerEvent<HTMLTableCellElement>, cell: XlsxCellAddress) => void;
-  onEditingBlur: () => void;
+  onEditingBlur: (event: React.FocusEvent<HTMLTextAreaElement>) => void;
   onEditingCancel: () => void;
   onEditingCommit: () => void;
   onEditingNavigate: (key: string, value: string) => void;
@@ -6814,6 +6820,10 @@ function GridRow({
   editingValue,
   formulaReferences,
   editorBoxShadow,
+  editorRef,
+  editorInputRef,
+  cellEditorStyle,
+  onFocusEditorOverlay,
   frozenRowHeaderZIndex,
   getCellData,
   headerLabelLiveScale,
@@ -7157,6 +7167,9 @@ function GridRow({
             ) : null}
             {isEditing ? (
               <CellEditor
+                editorRef={editorRef}
+                inputRef={editorInputRef}
+                onFocusOverlay={onFocusEditorOverlay}
                 value={editingValue}
                 references={formulaReferences}
                 onBlur={onEditingBlur}
@@ -7171,7 +7184,8 @@ function GridRow({
                   font: "inherit",
                   lineHeight: cellData.style.lineHeight,
                   verticalAlign: cellData.style.verticalAlign,
-                  padding: cellData.style.padding
+                  padding: cellData.style.padding,
+                  ...cellEditorStyle
                 }}
               />
             ) : isSpilling ? (
@@ -7268,6 +7282,8 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
     prev.onRowPointerDown !== next.onRowPointerDown ||
     prev.onRowResizePointerDown !== next.onRowResizePointerDown ||
     prev.renderCellAdornment !== next.renderCellAdornment
+    || prev.cellEditorStyle !== next.cellEditorStyle
+    || prev.onFocusEditorOverlay !== next.onFocusEditorOverlay
   ) {
     return false;
   }
@@ -7309,6 +7325,8 @@ function XlsxGrid({
   renderImageSelection,
   renderTableHeaderMenu,
   renderActiveCellOverlay,
+  renderCellEditorOverlay,
+  cellEditorStyle,
   renderScroller,
   enableGestureZoom = true,
   experimentalCanvas = true,
@@ -7319,7 +7337,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "experimentalOfficeCharts" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "experimentalOfficeCharts" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "renderCellEditorOverlay" | "cellEditorStyle" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -7486,6 +7504,9 @@ function XlsxGrid({
   const editingOriginalValueRef = React.useRef<string | null>(null);
   const commitEditingRef = React.useRef<() => void>(() => {});
   const editingInputRef = React.useRef<HTMLTextAreaElement>(null);
+  const editorElementRef = React.useRef<HTMLDivElement>(null);
+  const editorOverlayRef = React.useRef<HTMLDivElement>(null);
+  const editingSavedValueRef = React.useRef("");
   const readOnlyRef = React.useRef(readOnly);
   const committedZoomScaleRef = React.useRef(zoomScale);
   const gestureZoomScaleRef = React.useRef(zoomScale);
@@ -9697,6 +9718,7 @@ function XlsxGrid({
     rowPreviewRef.current = null;
     setResizeGuide(null);
     clearGlobalCursor();
+    editingCellRef.current = null;
     setEditingCell(null);
     setEditingValue("");
     setFillPreviewRange(null);
@@ -9803,13 +9825,15 @@ function XlsxGrid({
       }
 
       selectCell(cell);
-      editingCellRef.current = cell;
-      setEditingCell(cell);
+      const target = { ...cell };
+      editingCellRef.current = target;
+      setEditingCell(target);
       const formula = getCellFormula(cell);
       const worksheet = getActiveWorksheet();
       const value = formula ? (formula.startsWith("=") ? formula : `=${formula}`)
         : worksheet ? getCellEditingValue(worksheet, cell, locale) : getControllerCellDisplayValue(cell);
       editingOriginalValueRef.current = initialValue === undefined ? value : null;
+      editingSavedValueRef.current = value;
       setEditingValue(initialValue ?? value);
     },
     [getActiveWorksheet, getCellFormula, getControllerCellDisplayValue, locale, readOnly, selectCell]
@@ -9826,7 +9850,7 @@ function XlsxGrid({
     }
   }, [getActiveWorksheet, locale, setCellFormula, setCellValue]);
 
-  const commitEditing = React.useCallback(() => {
+  const commitEditing = React.useCallback((nextValue?: string) => {
     if (!editingCell || !editingCellRef.current) {
       return;
     }
@@ -9839,7 +9863,7 @@ function XlsxGrid({
       return;
     }
 
-    saveEditingValue(editingCell, editingValue);
+    saveEditingValue(editingCell, nextValue ?? editingValue);
     editingCellRef.current = null;
     setEditingCell(null);
     setEditingValue("");
@@ -9853,13 +9877,38 @@ function XlsxGrid({
     focusGrid();
   }, [focusGrid]);
 
-  const handleEditingBlur = React.useCallback(() => {
+  const { session: cellEditorSession, hasPreview: hasEditorPreview } = useCellEditorSession({
+    enabled: !!renderCellEditorOverlay && !readOnly && !isLoading,
+    cell: editingCell,
+    sheetIndex: activeSheetIndex,
+    sheetName: activeSheet?.name ?? "",
+    originalValue: editingSavedValueRef.current,
+    value: editingValue,
+    inputRef: editingInputRef,
+    isEditing: () => editingCell !== null && editingCellRef.current === editingCell && !readOnlyRef.current,
+    onChange: setEditingValue,
+    onCommit: commitEditing,
+    onCancel: cancelEditing
+  });
+  const exitEditorScope = React.useCallback(() => {
+    if (hasEditorPreview()) cancelEditing();
+    else commitEditing();
+  }, [cancelEditing, commitEditing, hasEditorPreview]);
+  const focusEditorOverlay = React.useCallback(() => {
+    const target = editorOverlayRef.current?.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]');
+    if (!target) return false;
+    target.focus({ preventScroll: true });
+    return true;
+  }, []);
+
+  const handleEditingBlur = React.useCallback((event: React.FocusEvent<HTMLTextAreaElement>) => {
     if (!editingCellRef.current) {
       return;
     }
 
-    commitEditing();
-  }, [commitEditing]);
+    if (event.relatedTarget && editorOverlayRef.current?.contains(event.relatedTarget as Node)) return;
+    exitEditorScope();
+  }, [exitEditorScope]);
 
   const handleEditingNavigate = React.useCallback((key: string, value: string) => {
     const cell = editingCellRef.current;
@@ -9870,7 +9919,7 @@ function XlsxGrid({
     const currentRowIndex = rowIndexByActual.get(cell.row);
     const currentColIndex = colIndexByActual.get(cell.col);
     if (currentRowIndex === undefined || currentColIndex === undefined) {
-      if (!readOnlyRef.current) {
+      if (!readOnlyRef.current && !hasEditorPreview()) {
         saveEditingValue(cell, value);
       }
       editingCellRef.current = null;
@@ -9899,7 +9948,7 @@ function XlsxGrid({
         return;
     }
 
-    if (!readOnlyRef.current) {
+    if (!readOnlyRef.current && !hasEditorPreview()) {
       saveEditingValue(cell, value);
     }
     editingCellRef.current = null;
@@ -9907,7 +9956,7 @@ function XlsxGrid({
     setEditingValue("");
     moveSelection(nextRowIndex, nextColIndex, false);
     focusGrid();
-  }, [colIndexByActual, focusGrid, rowIndexByActual, saveEditingValue, visibleCols, visibleRows]);
+  }, [colIndexByActual, focusGrid, hasEditorPreview, rowIndexByActual, saveEditingValue, visibleCols, visibleRows]);
 
   React.useEffect(() => {
     commitEditingRef.current = commitEditing;
@@ -16683,8 +16732,8 @@ function XlsxGrid({
                 </div>
                 {editingCell && editingOverlayRect ? (() => {
                   const editingCellData = getCellData(editingCell.row, editingCell.col);
-                  const editingCellStyle = { ...editingCellData.style };
-                  if (editingCellData.usesGeneralAlignment) {
+                  const editingCellStyle = { ...editingCellData.style, ...cellEditorStyle };
+                  if (editingCellData.usesGeneralAlignment && cellEditorStyle?.textAlign === undefined) {
                     const enteredValue = worksheet && isTextCell(worksheet, editingCell)
                       ? editingValue : coerceUserEnteredValue(editingValue, locale);
                     editingCellStyle.textAlign = typeof enteredValue === "number" ? "right"
@@ -16710,6 +16759,8 @@ function XlsxGrid({
                     }}
                   >
                     <CellEditor
+                      editorRef={editorElementRef}
+                      onFocusOverlay={renderCellEditorOverlay ? focusEditorOverlay : undefined}
                       canvasText
                       canvasOffset={{
                         left: editingOverlayRect.left - drawingViewport.left - (stickyLeftByCol.has(editingCell.col) ? displayRowHeaderWidth : scrollBodyCanvasLeft),
@@ -16749,9 +16800,9 @@ function XlsxGrid({
                       value={editingValue}
                       references={formulaReferences}
                       onBlur={handleEditingBlur}
-                      onChange={setEditingValue}
-                      onCommit={commitEditing}
-                      onCancel={cancelEditing}
+                      onChange={cellEditorSession?.setValue ?? setEditingValue}
+                      onCommit={cellEditorSession?.commit ?? commitEditing}
+                      onCancel={cellEditorSession?.cancel ?? cancelEditing}
                       onNavigate={handleEditingNavigate}
                       style={{
                         backgroundColor: editingBackground,
@@ -16761,7 +16812,8 @@ function XlsxGrid({
                         lineHeight: editingCellStyle.lineHeight,
                         textAlign: editingCellStyle.textAlign,
                         verticalAlign: editingCellStyle.verticalAlign,
-                        padding: editingCellStyle.padding
+                        padding: editingCellStyle.padding,
+                        ...cellEditorStyle
                       }}
                     />
                   </div>
@@ -16896,6 +16948,10 @@ function XlsxGrid({
                           actualRow={actualRow}
                           editingCell={editingCell}
                           editingValue={editingValue}
+                          editorRef={editorElementRef}
+                          editorInputRef={editingInputRef}
+                          cellEditorStyle={cellEditorStyle}
+                          onFocusEditorOverlay={renderCellEditorOverlay ? focusEditorOverlay : undefined}
                           formulaReferences={formulaReferences}
                           editorBoxShadow={`inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`}
                           frozenRowHeaderZIndex={frozenRowHeaderOverlayZIndex}
@@ -16906,10 +16962,10 @@ function XlsxGrid({
                           onCellDoubleClick={handleCellDoubleClick}
                           onCellPointerDown={handleCellPointerDown}
                           onEditingBlur={handleEditingBlur}
-                          onEditingCancel={cancelEditing}
-                          onEditingCommit={commitEditing}
+                          onEditingCancel={cellEditorSession?.cancel ?? cancelEditing}
+                          onEditingCommit={cellEditorSession?.commit ?? commitEditing}
                           onEditingNavigate={handleEditingNavigate}
-                          onEditingValueChange={setEditingValue}
+                          onEditingValueChange={cellEditorSession?.setValue ?? setEditingValue}
                           headerLabelLiveScale={headerLabelLiveScale}
                           onRowHeaderRef={setRowHeaderRef}
                           onRowPointerDown={handleRowPointerDown}
@@ -17061,6 +17117,16 @@ function XlsxGrid({
       {renderScroller
         ? renderScroller({ children: scrollerContent, viewportProps: scrollerViewportProps })
         : <div key={activeTabIndex} {...scrollerViewportProps}>{scrollerContent}</div>}
+      {renderCellEditorOverlay && cellEditorSession && (
+        <CellEditorOverlay
+          key={`${activeSheetIndex}:${editingCell?.row}:${editingCell?.col}`}
+          editorRef={editorElementRef}
+          overlayRef={editorOverlayRef}
+          session={cellEditorSession}
+          render={renderCellEditorOverlay}
+          onExit={exitEditorScope}
+        />
+      )}
       {enableContextMenu && contextMenu && (
         <XlsxContextMenu
           key={`${contextMenu.position.x}:${contextMenu.position.y}`}
@@ -17114,6 +17180,8 @@ function XlsxViewerInner({
   renderScroller,
   renderTableHeaderMenu,
   renderActiveCellOverlay,
+  renderCellEditorOverlay,
+  cellEditorStyle,
   rounded = true,
   selectionColor,
   selectionFillColor,
@@ -17233,6 +17301,8 @@ function XlsxViewerInner({
                   renderScroller={renderScroller}
                   renderTableHeaderMenu={renderTableHeaderMenu}
                   renderActiveCellOverlay={renderActiveCellOverlay}
+                  renderCellEditorOverlay={renderCellEditorOverlay}
+                  cellEditorStyle={cellEditorStyle}
                   selectionColor={selectionColor}
                   selectionFillColor={selectionFillColor}
                   selectionHeaderColor={selectionHeaderColor}

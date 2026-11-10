@@ -3,6 +3,7 @@ import type { Properties } from "csstype";
 import type {
   UseXlsxViewerControllerOptions,
   XlsxActiveCellOverlayRenderProps,
+  XlsxCellEditorOverlayRenderProps,
   XlsxCellAddress,
   XlsxChart,
   XlsxContextMenuAction,
@@ -113,6 +114,8 @@ export interface XlsxVanillaViewerOptions extends UseXlsxViewerControllerOptions
   selectionFillColor?: string;
   selectionHeaderColor?: string;
   renderActiveCellOverlay?: (props: XlsxActiveCellOverlayRenderProps) => XlsxVanillaContent;
+  cellEditorStyle?: XlsxVanillaStyle;
+  renderCellEditorOverlay?: (props: XlsxCellEditorOverlayRenderProps) => XlsxVanillaContent;
   showImages?: boolean;
   showDefaultToolbar?: boolean;
   toolbar?: XlsxVanillaContent | ((controller: XlsxViewerController) => XlsxVanillaContent);

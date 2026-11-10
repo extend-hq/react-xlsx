@@ -1,0 +1,44 @@
+.playground-editor-actions {
+  width: max-content;
+  max-width: min(292px, calc(100vw - 16px));
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+  font: 12px/1.5 var(--font-sans, system-ui, sans-serif);
+}
+.playground-editor-actions button,
+.playground-editor-actions select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.playground-editor-actions button:hover:not(:disabled) { background: var(--muted); }
+.playground-editor-actions :is(button, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.playground-editor-actions button:disabled { opacity: .55; cursor: wait; }
+.playground-editor-actions .playground-editor-menu-item { width: 180px; display: flex; justify-content: flex-start; }
+.playground-editor-actions .playground-editor-primary { background: var(--primary); color: var(--primary-foreground); }
+.playground-editor-actions .playground-editor-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--primary) 85%, var(--background)); }
+.playground-editor-heading { display: flex; align-items: center; gap: 7px; padding: 5px 7px 2px; font-weight: 600; }
+.playground-editor-heading span { margin-left: auto; font-size: 10px; font-weight: 400; color: var(--muted-foreground); }
+.playground-editor-note { padding: 4px 7px 7px; color: var(--muted-foreground); }
+.playground-editor-note code { font-size: 11px; }
+.playground-editor-buttons { display: flex; align-items: center; gap: 4px; }
+.playground-editor-actions select { border: 1px solid var(--border); background: var(--popover); padding-inline: 5px; }
+@media (prefers-reduced-motion: reduce) {
+  .playground-editor-beam,
+  .playground-editor-beam::before,
+  .playground-editor-beam::after,
+  .playground-editor-beam [data-beam-bloom] { animation: none !important; transition: none !important; }
+}

@@ -16,6 +16,9 @@ export {
 export type {
   UseXlsxViewerControllerOptions,
   XlsxActiveCellOverlayRenderProps,
+  XlsxCellEditorContext,
+  XlsxCellEditorSession,
+  XlsxCellEditorOverlayRenderProps,
   XlsxChart,
   XlsxChartAxis,
   XlsxChartDataLabels,
