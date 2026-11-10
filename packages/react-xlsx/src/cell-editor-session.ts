@@ -2,7 +2,7 @@ import * as React from "react";
 import type { XlsxCellAddress, XlsxCellEditorContext, XlsxCellEditorSession } from "./types";
 
 export function useCellEditorSession({
-  enabled, cell, sheetIndex, sheetName, originalValue, value, inputRef,
+  enabled, cell, sheetIndex, sheetName, originalValue, trigger, value, inputRef,
   isEditing, onChange, onCommit, onCancel
 }: {
   enabled: boolean;
@@ -10,6 +10,7 @@ export function useCellEditorSession({
   sheetIndex: number;
   sheetName: string;
   originalValue: string;
+  trigger: XlsxCellEditorContext["trigger"];
   value: string;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   isEditing: () => boolean;
@@ -19,11 +20,11 @@ export function useCellEditorSession({
 }) {
   const state = React.useMemo(() => enabled && cell ? {
     controller: new AbortController(),
-    context: { cell: { ...cell }, sheetIndex, sheetName, originalValue } satisfies XlsxCellEditorContext,
+    context: { cell: { ...cell }, sheetIndex, sheetName, originalValue, trigger } satisfies XlsxCellEditorContext,
     beforePreview: null as string | null
-  } : null, [enabled, cell, sheetIndex]);
-  const latest = React.useRef({ state, value, isEditing, onChange, onCommit, onCancel });
-  latest.current = { state, value, isEditing, onChange, onCommit, onCancel };
+  } : null, [enabled, cell]);
+  const latest = React.useRef({ state, sheetIndex, value, isEditing, onChange, onCommit, onCancel });
+  latest.current = { state, sheetIndex, value, isEditing, onChange, onCommit, onCancel };
   const [, refresh] = React.useReducer((revision: number) => revision + 1, 0);
 
   React.useLayoutEffect(() => () => {
@@ -32,10 +33,14 @@ export function useCellEditorSession({
       latest.current.onCancel();
     }
   }, [state]);
+  React.useLayoutEffect(() => {
+    if (state && state.context.sheetIndex !== sheetIndex) state.controller.abort();
+  }, [state, sheetIndex]);
 
   const commands = React.useMemo(() => {
     if (!state) return null;
-    const current = () => latest.current.state === state && !state.controller.signal.aborted && latest.current.isEditing();
+    const current = () => latest.current.state === state && latest.current.sheetIndex === state.context.sheetIndex
+      && !state.controller.signal.aborted && latest.current.isEditing();
     const setValue = (next: string) => {
       if (!current()) return false;
       latest.current.value = next;
@@ -82,7 +87,7 @@ export function useCellEditorSession({
     };
   }, [state, inputRef]);
   const hasPreview = React.useCallback(() => latest.current.state?.beforePreview != null, []);
-  const session: XlsxCellEditorSession | null = state && commands ? {
+  const session: XlsxCellEditorSession | null = state && commands && state.context.sheetIndex === sheetIndex ? {
     ...commands,
     context: state.context,
     signal: state.controller.signal,

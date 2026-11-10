@@ -6,8 +6,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { RibbonButton, RibbonGroup } from "@/components/ribbon";
 
-export const HIGHLIGHT_DEMO_RANGES = ["Overview!B24:D27", "Overview!F24:H27", "Details!B20:E24"];
-export const HIGHLIGHT_DEMO_URL = "/examples/range-highlights.xlsx";
+export const HIGHLIGHT_DEMO_RANGES = ["'Scatter Matrix'!B7:B17", "'Scatter Matrix'!C7:C17", "'Scatter Matrix'!D7:D17"];
+export const HIGHLIGHT_DEMO_URL = "/examples/crazy-chart-zoo-subtypes.xlsx";
 
 /** Ribbon contents for the "Review" tab: highlight arbitrary ranges in the workbook. */
 export function RangeHighlightDemo({ customStyle, onCustomStyleChange, onLoadSample }: {

@@ -266,7 +266,7 @@ viewer.destroy();
 
 `subscribe` also exposes `isLoadDeferred` and `continueDeferredLoad()` for deferred workbooks.
 
-`XlsxVanillaViewerOptions` supports the non-React viewer options, including `getCellStyle`, form-control events, themes, worker settings, and highlighting. `toolbar`, loading/empty/error states, and the `renderActiveCellOverlay`, `renderCellEditorOverlay`, `renderChartLoading`, `renderContextMenu`, `renderFormControl`, and `renderImage` callbacks accept text or DOM nodes. Their vanilla callback props omit React's `defaultNode`. React-specific custom scroller, image-selection, and table-header render callbacks are not available through this entry point.
+`XlsxVanillaViewerOptions` supports the non-React viewer options, including `getCellStyle`, form-control events, themes, worker settings, and highlighting. `toolbar`, loading/empty/error states, and the `renderActiveCellOverlay`, `renderCellEditorOverlay`, `renderSelectionPopover`, `renderChartLoading`, `renderContextMenu`, `renderFormControl`, and `renderImage` callbacks accept text or DOM nodes. Their vanilla callback props omit React's `defaultNode`. React-specific custom scroller, image-selection, and table-header render callbacks are not available through this entry point.
 
 The vanilla entry also exports `setWasmSource`, `initWasm`, `parseXlsxRange`, and workbook types. The same WASM, worker, font, and chart assets need to be served as in the React integration.
 
@@ -637,12 +637,17 @@ Default styling follows the document theme. Override `.react-xlsx-context-menu`,
 
 ## Custom Cell Editor Overlays
 
-`renderCellEditorOverlay` adds your own decoration and actions around the live cell editor. It runs only while editing, never when merely selecting a cell. The library supplies no default menu, AI client, or animation. React callbacks return React content; vanilla callbacks return DOM nodes. `cellEditorStyle` customizes the built-in editor's appearance without replacing its input or text measurement.
+`renderCellEditorOverlay` adds your own decoration and actions around the live cell editor. It runs only while editing, never when merely selecting a cell. The library supplies no default menu, AI client, or animation. The separate `renderSelectionPopover` callback handles selections outside editing. React callbacks return React content; vanilla callbacks return DOM nodes. `cellEditorStyle` customizes the built-in editor's appearance without replacing its input or text measurement.
 
 ```tsx
-function FormulaActions({ editor, generateFormula }) {
+import type { XlsxCellEditorContext, XlsxCellEditorOverlayRenderProps } from "@extend-ai/react-xlsx";
+
+function FormulaActions({ editor, generateFormula }: {
+  editor: XlsxCellEditorOverlayRenderProps;
+  generateFormula: (request: { prompt: string; context: XlsxCellEditorContext; signal: AbortSignal }) => Promise<string>;
+}) {
   const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState(null);
+  const [error, setError] = React.useState<string | null>(null);
 
   async function generate() {
     const prompt = editor.getValue();
@@ -687,7 +692,7 @@ function FormulaActions({ editor, generateFormula }) {
 />
 ```
 
-`context` contains the zero-based `cell`, `sheetIndex` (an index in `controller.sheets`), `sheetName`, and the saved `originalValue` from before editing started. `value` is the current draft. `rect` is the expanded editor's rectangle in viewport pixels, updated as the input grows, the worksheet scrolls, or zoom changes.
+`context` contains the zero-based `cell`, `sheetIndex` (an index in `controller.sheets`), `sheetName`, the saved `originalValue`, and the editing `trigger`: `"double-click"`, `"typing"`, `"keyboard"`, or `"context-menu"`. For assistance only after double-clicking and changing the text, check `context.trigger === "double-click" && value !== context.originalValue`. `value` is the current draft. `editorElement` is the native editor element, available for anchoring and scoped styles or effects; undo DOM changes when your component unmounts. `rect` is the expanded editor's rectangle in viewport pixels, updated as the input grows, the worksheet scrolls, or zoom changes.
 
 | Member | Behavior |
 | --- | --- |
@@ -706,6 +711,10 @@ Commands return `false` after their session ends, so a delayed response cannot w
 The overlay is an unstyled portal positioned over the actual expanded input in both canvas and DOM rendering. Its container ignores pointer events: set `pointerEvents: "auto"` on interactive content. Place actions below it with `top: "calc(100% + 8px)"`; render a full-size decorative wrapper to draw a custom border around it. Your wrapper may use CSS, a canvas shader, or an animation component. The native input remains underneath, preserving caret behavior and formula highlighting. `rect` lets your UI choose an alternate placement near window edges. Apply sizing and scrolling to your own panels as needed.
 
 Interactions inside the overlay keep the edit session open. Alt+ArrowDown from the editor focuses its first control. The overlay isolates keyboard events from grid navigation; your components own their roles and navigation. Return `null` to render no decoration or controls. Without `renderCellEditorOverlay`, no overlay is mounted.
+
+Your menu items and their callbacks belong entirely to your renderer. A callback can call `setValue(formula)` to replace the editor text and update your component's state or the `renderCellEditorOverlay` prop to display different controls. Use `preview(formula)` when you also want the library to retain the previous draft for Discard and prevent unconfirmed changes from saving on blur. To apply immediately, call `commit(formula)`; it saves the cell and closes the editor. There is no required menu model, review screen, or confirmation step. When using a UI component that creates its own portal, mount it into an element inside your overlay so focus and pointer interactions remain within the edit session.
+
+All animation belongs to your rendered component, including its origin, easing, duration, and exit behavior. The library does not animate the overlay container. Anchor a popover to an element that fills the overlay, animate its opacity and scale from that anchor, and disable position transitions on its positioning element to avoid movement from an initial unpositioned location. Retain the current menu content throughout an exit animation instead of switching back to suggestions while closing. Respect reduced-motion preferences in your renderer.
 
 Vanilla JavaScript uses the same session commands:
 
@@ -737,7 +746,35 @@ const viewer = createXlsxViewer(container, {
 });
 ```
 
-The render callback is called as the draft and editor geometry change. Return a stable DOM node when preserving state in custom vanilla controls. The playground opts into this API with a Border Beam decoration and a deterministic formula demo; it always returns `=SUM(10,20,30)` and does not call an AI backend.
+The render callback is called as the draft and editor geometry change. Return a stable DOM node when preserving state in custom vanilla controls. The playground opts into this API while typing in the cell editor, using animated Coss UI popovers and a text shimmer during preview. Its “Write formula (Demo formula)” callback immediately previews a deterministic formula referencing multiple ranges and switches the actions to Keep and Discard. In the starter workbook it averages the three curve columns, excluding the target cell to avoid a circular reference. Other worksheets use a deterministic three-range formula that excludes the target column. It does not call an AI backend. The effects and controls live entirely in the playground renderer.
+
+The playground also demonstrates a Coss UI “Generate formula” context-menu submenu through `renderContextMenu`. Its instruction input supports formula previews and a “heatmap” demo that previews numeric-cell colors through `getCellStyle`, then saves them through `setCellStyles` only on Keep. Discard removes the temporary styles. Context-menu render props expose `signal` and `commit(callback)` so custom backend actions can reject stale menus and apply arbitrary synchronous controller changes. Mount nested menu portals inside your custom renderer and stop keyboard propagation when your UI handles navigation.
+
+## Custom Selection Popovers
+
+`renderSelectionPopover` is independently opt-in and works for a cell or range selection in React and vanilla JavaScript. It is hidden during editing and supplies no default controls, styles, or animations. The callback receives `context` (`cell`, normalized `selection`, `sheetIndex`, `sheetName`, `readOnly`), the visible selection `rect` in viewport pixels, `signal`, `close()`, `applyFormula(formula)`, and `commit(callback)` for other synchronous mutations.
+
+`applyFormula` writes to the active cell with normal undo history, closes the popover, and returns `false` if the selection has expired or is read-only. `signal` aborts when the popover closes, the selection changes, or editing starts. Preview a backend result in your own component state before applying it; Discard can simply call `close()`. To update a range or perform another action, use `commit(() => controller.setCellStyles(updates))` or another synchronous controller mutation. `setCellStyles([{ cell, style }, ...])` applies individually styled cells as one undoable edit and preserves them in XLSX exports. Check the signal before applying async results.
+
+```tsx
+<XlsxViewer
+  controller={controller}
+  renderSelectionPopover={(selection) => (
+    <YourFormulaPopover
+      selection={selection.context.selection}
+      onGenerate={(instructions) => callYourBackend({
+        prompt: instructions,
+        context: selection.context,
+        signal: selection.signal,
+      })}
+      onKeep={selection.applyFormula}
+      onDiscard={selection.close}
+    />
+  )}
+/>
+```
+
+The unstyled portal fills the visible selection bounds. Set `pointerEvents: "auto"` on interactive content and position it below with `top: "calc(100% + 8px)"`, or use your own anchored popover. Mount nested UI portals into a host inside this container. Input focus and keyboard events are isolated from the worksheet. Vanilla renderers receive the same props and return DOM nodes. Both selection and editor renderers can be configured together or used separately.
 
 ## Custom Rendering
 

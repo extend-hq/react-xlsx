@@ -34,6 +34,7 @@ export function PopoverPopup({
   alignOffset = 0,
   tooltipStyle = false,
   anchor,
+  positionMethod,
   portalProps,
   ...props
 }: PopoverPrimitive.Popup.Props & {
@@ -44,6 +45,7 @@ export function PopoverPopup({
   alignOffset?: PopoverPrimitive.Positioner.Props["alignOffset"];
   tooltipStyle?: boolean;
   anchor?: PopoverPrimitive.Positioner.Props["anchor"];
+  positionMethod?: PopoverPrimitive.Positioner.Props["positionMethod"];
 }): React.ReactElement {
   return (
     <PopoverPrimitive.Portal {...portalProps}>
@@ -51,6 +53,7 @@ export function PopoverPopup({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
+        positionMethod={positionMethod}
         className="z-50 h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
         data-slot="popover-positioner"
         side={side}

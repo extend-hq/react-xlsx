@@ -4,6 +4,7 @@ import type {
   UseXlsxViewerControllerOptions,
   XlsxActiveCellOverlayRenderProps,
   XlsxCellEditorOverlayRenderProps,
+  XlsxSelectionPopoverRenderProps,
   XlsxCellAddress,
   XlsxChart,
   XlsxContextMenuAction,
@@ -32,6 +33,8 @@ export interface XlsxVanillaContextMenuRenderProps {
   actions: XlsxContextMenuAction[];
   runAction: (actionId: XlsxContextMenuActionId) => Promise<boolean>;
   closeMenu: () => void;
+  signal: AbortSignal;
+  commit: (apply: (context: XlsxContextMenuContext) => void) => boolean;
   position: { x: number; y: number };
   isDark: boolean;
   busy: boolean;
@@ -116,6 +119,7 @@ export interface XlsxVanillaViewerOptions extends UseXlsxViewerControllerOptions
   renderActiveCellOverlay?: (props: XlsxActiveCellOverlayRenderProps) => XlsxVanillaContent;
   cellEditorStyle?: XlsxVanillaStyle;
   renderCellEditorOverlay?: (props: XlsxCellEditorOverlayRenderProps) => XlsxVanillaContent;
+  renderSelectionPopover?: (props: XlsxSelectionPopoverRenderProps) => XlsxVanillaContent;
   showImages?: boolean;
   showDefaultToolbar?: boolean;
   toolbar?: XlsxVanillaContent | ((controller: XlsxViewerController) => XlsxVanillaContent);

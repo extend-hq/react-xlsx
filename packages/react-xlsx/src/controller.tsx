@@ -4433,6 +4433,29 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     recordCellEditHistory(cell, before, after);
   }, [captureCellMutationState, getActiveWorksheet, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
+  const setCellStyles = React.useCallback((updates: ReadonlyArray<{ cell: XlsxCellAddress; style: XlsxCellStyleInput }>) => {
+    const worksheet = getActiveWorksheet();
+    if (readOnly || !worksheet || !workbook) return;
+    const beforeStates = new Map<string, { cell: XlsxCellAddress; before: CellMutationState }>();
+    for (const { cell, style } of updates) {
+      const key = `${cell.row}:${cell.col}`;
+      if (!beforeStates.has(key)) {
+        const before = captureCellMutationState(cell);
+        if (!before) continue;
+        beforeStates.set(key, { cell: { ...cell }, before });
+      }
+      worksheet.setCellStyleAt(cell.row, cell.col, style);
+    }
+    if (!beforeStates.size) return;
+    const mutations: RangeCellMutation[] = [];
+    for (const { cell, before } of beforeStates.values()) {
+      const after = captureCellMutationState(cell);
+      if (after) mutations.push({ cell, before, after });
+    }
+    refreshWorkbookState(workbook);
+    recordRangeEditHistory(mutations, selection, activeCell);
+  }, [activeCell, captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+
   const setSelectedCellValue = React.useCallback((value: string) => {
     if (!activeCell) {
       return;
@@ -5163,6 +5186,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeRow,
       setCellFormula,
       setCellStyle,
+      setCellStyles,
       setCellValue,
       setRangeStyle,
       setSelectedFormula,
@@ -5287,6 +5311,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeRow,
       setCellFormula,
       setCellStyle,
+      setCellStyles,
       setCellValue,
       setRangeStyle,
       setSelectedFormula,

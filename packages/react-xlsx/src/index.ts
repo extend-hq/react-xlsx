@@ -17,6 +17,8 @@ export type {
   UseXlsxViewerControllerOptions,
   XlsxActiveCellOverlayRenderProps,
   XlsxCellEditorContext,
+  XlsxSelectionPopoverContext,
+  XlsxSelectionPopoverRenderProps,
   XlsxCellEditorSession,
   XlsxCellEditorOverlayRenderProps,
   XlsxChart,

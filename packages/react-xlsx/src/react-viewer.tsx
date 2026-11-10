@@ -111,7 +111,7 @@ function renderOptions(
   const runtime = (node: React.ReactNode) => <RuntimeContent content={node} />;
   const {
     emptyState, errorState, fileTooLargeState, loadingComponent, loadingState,
-    renderActiveCellOverlay, renderCellEditorOverlay, renderChartLoading, renderContextMenu, renderFormControl,
+    renderActiveCellOverlay, renderCellEditorOverlay, renderSelectionPopover, renderChartLoading, renderContextMenu, renderFormControl,
     renderImage, renderImageSelection, renderScroller, renderTableHeaderMenu, toolbar,
     ...other
   } = props;
@@ -133,6 +133,12 @@ function renderOptions(
       : slot("toolbar", toolbar),
     renderActiveCellOverlay: renderActiveCellOverlay
       ? (value) => slot(`active:${value.cell.row}:${value.cell.col}`, renderActiveCellOverlay(value))
+      : undefined,
+    renderSelectionPopover: renderSelectionPopover
+      ? (value) => {
+          const content = renderSelectionPopover(value);
+          return content == null || content === false ? null : slot("selection-popover", content);
+        }
       : undefined,
     renderCellEditorOverlay: renderCellEditorOverlay
       ? (value) => {

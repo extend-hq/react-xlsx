@@ -24,7 +24,7 @@ export function WorkbookViewer({ buffer }: { buffer: ArrayBuffer }) {
 
 Use `XlsxViewerProvider` and `useXlsxViewer()` for custom controls. `readOnly={false}` enables editing; controller actions support undo/redo and `exportXlsx()`. Vanilla apps use `createXlsxViewer` from `@extend-ai/react-xlsx/vanilla` and call `destroy()` on teardown.
 
-Use [`renderCellEditorOverlay`](./packages/react-xlsx/README.md#custom-cell-editor-overlays) for custom editor decoration, typing actions, and draft preview/keep/discard flows in React or vanilla JavaScript. The overlay is opt-in and appears only while editing.
+Use [`renderCellEditorOverlay`](./packages/react-xlsx/README.md#custom-cell-editor-overlays) for custom editor decoration, typing actions, and draft preview/keep/discard flows in React or vanilla JavaScript. The overlay is opt-in and appears only while editing. Custom selection popovers and context menus can expose their own callbacks, including batch style changes.
 
 [Full API and props](packages/react-xlsx/README.md) · [Vanilla API](packages/react-xlsx/README.md#vanilla-javascript) · [Hooks](packages/react-xlsx/README.md#useful-hooks)
 

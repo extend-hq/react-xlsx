@@ -56,6 +56,8 @@ import {
   type XlsxViewerProps,
 } from "@extend-ai/react-xlsx";
 import { FormulaEditorDemo } from "@/components/formula-editor-demo";
+import { FormulaContextMenu } from "@/components/formula-context-menu";
+import type { DemoStylePreview } from "@/components/formula-demo-actions";
 import { HIGHLIGHT_DEMO_RANGES, HIGHLIGHT_DEMO_URL, RangeHighlightDemo } from "@/components/range-highlight-demo";
 import { RibbonButton, RibbonColorButton, RibbonDivider, RibbonGroup, RibbonMenuButton } from "@/components/ribbon";
 import { Badge } from "@/components/ui/badge";
@@ -72,7 +74,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
-const PLAYGROUND_SAMPLE_URL = "/examples/welcome.xlsx";
+const PLAYGROUND_SAMPLE_URL = "/examples/crazy-chart-zoo-subtypes.xlsx";
 
 const RIBBON_TABS = ["Home", "Insert", "Formulas", "Data", "Review", "View", "Developer"] as const;
 type RibbonTab = (typeof RIBBON_TABS)[number];
@@ -1113,13 +1115,15 @@ const DEFAULT_SETTINGS: PlaygroundSettings = {
   useWorker: true,
 };
 
-const SAMPLE_SOURCE: ViewerSource = { type: "url", src: PLAYGROUND_SAMPLE_URL, fileName: "Welcome.xlsx" };
+const SAMPLE_SOURCE: ViewerSource = { type: "url", src: PLAYGROUND_SAMPLE_URL, fileName: "crazy-chart-zoo-subtypes.xlsx" };
 
 export function App() {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [settings, setSettings] = React.useState(DEFAULT_SETTINGS);
   const [source, setSource] = React.useState<ViewerSource>(SAMPLE_SOURCE);
   const [isDragActive, setIsDragActive] = React.useState(false);
+  const [stylePreview, setStylePreview] = React.useState<DemoStylePreview | null>(null);
+  const initializedSampleRef = React.useRef<unknown>(null);
   const pendingHighlightSampleRef = React.useRef<{ autoScroll: boolean } | null>(null);
   const dragDepthRef = React.useRef(0);
 
@@ -1129,11 +1133,13 @@ export function App() {
   );
 
   const getCellStyle = React.useCallback<NonNullable<XlsxViewerProps["getCellStyle"]>>(
-    ({ cell, isTableHeader }) => {
+    ({ cell, isTableHeader, sheetName }) => {
+      const preview = stylePreview?.sheetName === sheetName ? stylePreview.cells.get(`${cell.row}:${cell.col}`) : undefined;
+      if (preview) return preview;
       if (!settings.bandedRows || isTableHeader || cell.row % 2 !== 1) return undefined;
       return { backgroundColor: settings.documentDark ? "rgba(63, 178, 122, 0.14)" : "rgba(16, 124, 65, 0.06)" };
     },
-    [settings.bandedRows, settings.documentDark],
+    [settings.bandedRows, settings.documentDark, stylePreview],
   );
 
   const sharedOptions = {
@@ -1151,14 +1157,22 @@ export function App() {
         : sharedOptions,
   );
 
-  // Apply the highlight demo ranges once its workbook finishes loading.
+  React.useEffect(() => {
+    if (controller.src !== PLAYGROUND_SAMPLE_URL || controller.isLoading || !controller.workbook || initializedSampleRef.current === controller.workbook) return;
+    const index = controller.sheets.findIndex(sheet => sheet.name === "Scatter Matrix");
+    if (index < 0) return;
+    initializedSampleRef.current = controller.workbook;
+    controller.setActiveSheetIndex(index);
+  }, [controller]);
+
+  // Apply highlighted ranges after loading.
   React.useEffect(() => {
     const pending = pendingHighlightSampleRef.current;
     if (
       pending &&
       controller.src === HIGHLIGHT_DEMO_URL &&
       !controller.isLoading &&
-      controller.sheets.some((sheet) => sheet.name === "Overview") &&
+      controller.sheets.some((sheet) => sheet.name === "Scatter Matrix") &&
       controller.highlightRanges(HIGHLIGHT_DEMO_RANGES, pending)
     ) {
       pendingHighlightSampleRef.current = null;
@@ -1192,7 +1206,7 @@ export function App() {
   }, []);
   const loadHighlightSample = React.useCallback((autoScroll: boolean) => {
     pendingHighlightSampleRef.current = { autoScroll };
-    setSource({ type: "url", src: HIGHLIGHT_DEMO_URL, fileName: "Range highlights.xlsx" });
+    setSource({ type: "url", src: HIGHLIGHT_DEMO_URL, fileName: "crazy-chart-zoo-subtypes.xlsx" });
   }, []);
   const openFilePicker = () => fileInputRef.current?.click();
   const isFileDrag = (event: React.DragEvent) => event.dataTransfer.types.includes("Files");
@@ -1273,14 +1287,8 @@ export function App() {
                   <Spinner className="size-5" />
                 </div>
               )}
-              renderContextMenu={({ context, defaultNode }) => (
-                <>
-                  <div className="px-2.5 py-2 text-xs font-medium opacity-60">
-                    {context.sheetName} · {context.readOnly ? "Viewer" : "Editor"}
-                  </div>
-                  {defaultNode}
-                </>
-              )}
+              contextMenuStyle={{ background: "transparent", border: 0, boxShadow: "none", minWidth: 0, padding: 0 }}
+              renderContextMenu={menu => <FormulaContextMenu menu={menu} controller={controller} onPreview={setStylePreview} />}
               rounded={false}
               selectionColor="#107C41"
               showDefaultToolbar={false}

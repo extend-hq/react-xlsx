@@ -216,7 +216,7 @@ export function CellEditor({
           {paintCanvasText ? <span ref={plainTextRef}>{!value || /[\r\n]$/.test(value) ? value + "\u200b" : value}</span> : <>{parts}{"\u200b"}</>}
         </span>
       </div>
-      {paintCanvasText ? <canvas ref={canvasRef} aria-hidden="true" style={{ position: "absolute", pointerEvents: "none" }} /> : null}
+      {paintCanvasText ? <canvas ref={canvasRef} data-xlsx-formula-text="" aria-hidden="true" style={{ position: "absolute", pointerEvents: "none" }} /> : null}
       <textarea
         ref={(element) => {
           textareaRef.current = element;

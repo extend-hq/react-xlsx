@@ -35,6 +35,7 @@ export function ContextMenuPopup({
   alignOffset,
   side = "bottom",
   anchor,
+  positionMethod,
   portalProps,
   ...props
 }: ContextMenuPrimitive.Popup.Props & {
@@ -43,6 +44,7 @@ export function ContextMenuPopup({
   alignOffset?: ContextMenuPrimitive.Positioner.Props["alignOffset"];
   side?: ContextMenuPrimitive.Positioner.Props["side"];
   anchor?: ContextMenuPrimitive.Positioner.Props["anchor"];
+  positionMethod?: ContextMenuPrimitive.Positioner.Props["positionMethod"];
   portalProps?: ContextMenuPrimitive.Portal.Props;
 }): React.ReactElement {
   return (
@@ -51,6 +53,7 @@ export function ContextMenuPopup({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
+        positionMethod={positionMethod}
         className="z-50"
         data-slot="context-menu-positioner"
         side={side}

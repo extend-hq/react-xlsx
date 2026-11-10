@@ -38,6 +38,7 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
     loadingState,
     renderActiveCellOverlay,
     renderCellEditorOverlay,
+    renderSelectionPopover,
     renderChartLoading,
     renderContextMenu,
     renderFormControl,
@@ -58,6 +59,9 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
     loadingState: toReactContent(loadingState),
     renderActiveCellOverlay: renderActiveCellOverlay
       ? (props) => toReactContent(renderActiveCellOverlay(props))
+      : undefined,
+    renderSelectionPopover: renderSelectionPopover
+      ? (props) => toReactContent(renderSelectionPopover(props))
       : undefined,
     renderCellEditorOverlay: renderCellEditorOverlay
       ? (props) => toReactContent(renderCellEditorOverlay(props))

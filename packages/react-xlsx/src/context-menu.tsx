@@ -61,6 +61,7 @@ export function XlsxContextMenu({
 }) {
   const { messages } = controller;
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const abortController = React.useMemo(() => new AbortController(), []);
   const controllerRef = React.useRef(controller);
   controllerRef.current = controller;
   const aliveRef = React.useRef(true);
@@ -128,13 +129,14 @@ export function XlsxContextMenu({
     window.addEventListener("blur", dismiss);
     return () => {
       aliveRef.current = false;
+      abortController.abort();
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("focusin", outside);
       document.removeEventListener("scroll", outside, true);
       window.removeEventListener("resize", dismiss);
       window.removeEventListener("blur", dismiss);
     };
-  }, [closeMenu]);
+  }, [abortController, closeMenu]);
 
   const runAction = async (id: XlsxContextMenuActionId): Promise<boolean> => {
     const action = actions.find((item) => item.id === id);
@@ -231,8 +233,17 @@ export function XlsxContextMenu({
       </button>
     </React.Fragment>
   ));
+  const close = () => { abortController.abort(); closeMenu(); };
+  const commit = (apply: (target: XlsxContextMenuContext) => void) => {
+    if (!aliveRef.current || abortController.signal.aborted || controllerRef.current.readOnly
+      || controllerRef.current.workbook !== controller.workbook || controllerRef.current.activeSheetIndex !== context.sheetIndex
+      || controllerRef.current.selection !== controller.selection || controllerRef.current.revision !== controller.revision) return false;
+    apply(context);
+    close();
+    return true;
+  };
   const content = renderContextMenu
-    ? renderContextMenu({ context, actions, runAction, closeMenu, position: location, isDark: isDarkViewerPalette(palette), busy, error, defaultNode })
+    ? renderContextMenu({ context, actions, runAction, closeMenu: close, signal: abortController.signal, commit, position: location, isDark: isDarkViewerPalette(palette), busy, error, defaultNode })
     : defaultNode;
 
   return createPortal(

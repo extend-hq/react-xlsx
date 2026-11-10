@@ -1241,6 +1241,8 @@ export interface XlsxViewerController {
    * @param style Partial Excel style patch to apply to the target cell.
    */
   setCellStyle: (cell: XlsxCellAddress, style: XlsxCellStyleInput) => void;
+  /** Applies individual cell styles as one undoable workbook edit. */
+  setCellStyles: (updates: ReadonlyArray<{ cell: XlsxCellAddress; style: XlsxCellStyleInput }>) => void;
   /**
    * Sets the value for a cell in the active worksheet.
    *
@@ -1367,6 +1369,10 @@ export interface XlsxContextMenuRenderProps {
   /** Returns whether the command completed; failures remain visible in the menu. */
   runAction: (actionId: XlsxContextMenuActionId) => Promise<boolean>;
   closeMenu: () => void;
+  /** Aborted when the menu closes or its selection expires. */
+  signal: AbortSignal;
+  /** Applies a synchronous custom mutation, then closes the menu. Rejects stale or read-only menus. */
+  commit: (apply: (context: XlsxContextMenuContext) => void) => boolean;
   /** Viewport coordinates. The menu container handles positioning and edge clamping. */
   position: { x: number; y: number };
   isDark: boolean;
@@ -1420,6 +1426,8 @@ export interface XlsxViewerEditing {
    * @param style Partial Excel style patch to apply to the target cell.
    */
   setCellStyle: (cell: XlsxCellAddress, style: XlsxCellStyleInput) => void;
+  /** Applies individual cell styles as one undoable workbook edit. */
+  setCellStyles: (updates: ReadonlyArray<{ cell: XlsxCellAddress; style: XlsxCellStyleInput }>) => void;
   /**
    * Sets the value for a cell in the active worksheet.
    *
@@ -1594,6 +1602,8 @@ export interface XlsxCellEditorContext {
   sheetName: string;
   /** The saved cell input before editing started, including a leading equals sign for formulas. */
   originalValue: string;
+  /** The interaction that opened this editing session. */
+  trigger: "double-click" | "typing" | "keyboard" | "context-menu";
 }
 
 export interface XlsxCellEditorSession {
@@ -1619,8 +1629,31 @@ export interface XlsxCellEditorSession {
 }
 
 export interface XlsxCellEditorOverlayRenderProps extends XlsxCellEditorSession {
+  /** The live editor element, for anchoring and scoped visual effects. */
+  editorElement: HTMLDivElement;
   /** The expanded editor rectangle in viewport pixels. The overlay container already fills it. */
   rect: XlsxImageRect;
+}
+
+export interface XlsxSelectionPopoverContext {
+  cell: XlsxCellAddress;
+  selection: XlsxCellRange;
+  sheetIndex: number;
+  sheetName: string;
+  readOnly: boolean;
+}
+
+export interface XlsxSelectionPopoverRenderProps {
+  context: XlsxSelectionPopoverContext;
+  /** The visible selection rectangle in viewport pixels. The container already fills it. */
+  rect: XlsxImageRect;
+  /** Aborted when the selection changes, editing starts, or the popover closes. */
+  signal: AbortSignal;
+  /** Saves a formula in the active cell and closes. Returns false for stale or read-only selections. */
+  applyFormula: (formula: string) => boolean;
+  /** Runs a synchronous custom mutation for the current selection and closes. */
+  commit: (apply: (context: XlsxSelectionPopoverContext) => void) => boolean;
+  close: () => void;
 }
 
 export interface XlsxCellStyleContext {
@@ -1878,6 +1911,8 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   cellEditorStyle?: React.CSSProperties;
   /** Opt-in decoration and actions around the editing input. Nothing is rendered on cell selection. */
   renderCellEditorOverlay?: (props: XlsxCellEditorOverlayRenderProps) => React.ReactNode;
+  /** Opt-in custom content around a selected cell or range. Hidden while editing. No default UI. */
+  renderSelectionPopover?: (props: XlsxSelectionPopoverRenderProps) => React.ReactNode;
   /**
    * Shows worksheet images, charts, shapes, and form controls.
    *

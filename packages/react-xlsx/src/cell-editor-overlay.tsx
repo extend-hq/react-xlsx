@@ -9,7 +9,7 @@ export function CellEditorOverlay({ editorRef, overlayRef, session, render, onEx
   render: (props: XlsxCellEditorOverlayRenderProps) => React.ReactNode;
   onExit: () => void;
 }) {
-  const [geometry, setGeometry] = React.useState<{ owner: Document; rect: XlsxImageRect; visible: boolean } | null>(null);
+  const [geometry, setGeometry] = React.useState<{ owner: Document; editor: HTMLDivElement; rect: XlsxImageRect; visible: boolean } | null>(null);
   const latest = React.useRef({ onExit, session });
   latest.current = { onExit, session };
   React.useLayoutEffect(() => {
@@ -25,9 +25,9 @@ export function CellEditorOverlay({ editorRef, overlayRef, session, render, onEx
       const visible = bounds.width > 0 && bounds.height > 0 && bounds.right > Math.max(view.left, 0)
         && bounds.bottom > Math.max(view.top, 0) && bounds.left < Math.min(view.right, win.innerWidth)
         && bounds.top < Math.min(view.bottom, win.innerHeight);
-      setGeometry(previous => previous && previous.visible === visible && previous.rect.left === rect.left
+      setGeometry(previous => previous && previous.editor === editor && previous.visible === visible && previous.rect.left === rect.left
         && previous.rect.top === rect.top && previous.rect.width === rect.width && previous.rect.height === rect.height
-        ? previous : { owner, rect, visible });
+        ? previous : { owner, editor, rect, visible });
     };
     const outside = (event: Event) => {
       const target = event.target as Node | null;
@@ -52,7 +52,7 @@ export function CellEditorOverlay({ editorRef, overlayRef, session, render, onEx
     };
   }, [editorRef, overlayRef, session.signal]);
 
-  const content = geometry ? render({ ...session, rect: geometry.rect }) : null;
+  const content = geometry ? render({ ...session, rect: geometry.rect, editorElement: geometry.editor }) : null;
   if (!geometry || content == null || content === false) return null;
   return createPortal(
     <div
