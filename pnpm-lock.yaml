@@ -135,9 +135,6 @@ importers:
 
   packages/react-xlsx:
     dependencies:
-      '@dukelib/sheets-wasm':
-        specifier: 0.1.24
-        version: 0.1.24
       csstype:
         specifier: ^3.1.0
         version: 3.2.3
@@ -357,9 +354,6 @@ packages:
   '@dotenvx/dotenvx@1.59.1':
     resolution: {integrity: sha512-Qg+meC+XFxliuVSDlEPkKnaUjdaJKK6FNx/Wwl2UxhQR8pyPIuLhMavsF7ePdB9qFZUWV1jEK3ckbJir/WmF4w==}
     hasBin: true
-
-  '@dukelib/sheets-wasm@0.1.24':
-    resolution: {integrity: sha512-nqAJwmMXCZahWrO5/7SVPSazhhXaPk3F6HyzAoQRKFGpl0ySiHft5Lx2Xq0xVPWlIE4p3HBSQHovBiSoCEeb2Q==}
 
   '@ecies/ciphers@0.2.6':
     resolution: {integrity: sha512-patgsRPKGkhhoBjETV4XxD0En4ui5fbX0hzayqI3M8tvNMGUoUvmyYAIWwlxBc1KX5cturfqByYdj5bYGRpN9g==}
@@ -3935,8 +3929,6 @@ snapshots:
       object-treeify: 1.1.33
       picomatch: 4.0.7
       which: 4.0.0
-
-  '@dukelib/sheets-wasm@0.1.24': {}
 
   '@ecies/ciphers@0.2.6(@noble/ciphers@1.3.0)':
     dependencies:

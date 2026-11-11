@@ -3,13 +3,14 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 const require = createRequire(new URL("../packages/react-xlsx/package.json", import.meta.url));
-const dukeEntrypoint = require.resolve("@dukelib/sheets-wasm");
-const wasmSource = join(dirname(dukeEntrypoint), "duke_sheets_wasm_bg.wasm");
+const wasmSource = new URL("../packages/react-xlsx/src/duke-sheets/generated/duke_sheets_wasm_bg.wasm", import.meta.url);
 const distDir = new URL("../packages/react-xlsx/dist/", import.meta.url);
 
 mkdirSync(distDir, { recursive: true });
 copyFileSync(new URL("../packages/react-xlsx/src/office-art/generated/THIRD-PARTY-NOTICES.txt", import.meta.url), new URL("office-art-THIRD-PARTY-NOTICES.txt", distDir));
 copyFileSync(new URL("../packages/react-xlsx/src/office-art/generated/provenance.json", import.meta.url), new URL("office-art-provenance.json", distDir));
+copyFileSync(new URL("../packages/react-xlsx/src/duke-sheets/generated/LICENSE", import.meta.url), new URL("duke-sheets-LICENSE.txt", distDir));
+copyFileSync(new URL("../packages/react-xlsx/src/duke-sheets/generated/provenance.json", import.meta.url), new URL("duke-sheets-provenance.json", distDir));
 copyFileSync(wasmSource, new URL("duke_sheets_wasm_bg.wasm", distDir));
 
 copyFileSync(require.resolve("@extend-ai/office-fonts/FONT-LICENSES.txt"), new URL("Office-Font-Licenses.txt", distDir));

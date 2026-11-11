@@ -104,7 +104,7 @@ export function WorkbookPreview({ file }: { file: ArrayBuffer }) {
 
 If several routes use the viewer, import the same setup module from a shared client boundary such as `app/providers.tsx`. Calling `setWasmSource()` more than once with the same source is fine before initialization, but the source must not change after the first parse because the WASM module is initialized once per JavaScript context.
 
-Configured string, URL, Request URL, bytes, and `WebAssembly.Module` sources are forwarded into the XLSX worker. `Response` sources are supported on the main thread; worker-backed parsing is skipped for that source type.
+Configured string, URL, Request, Response, bytes, and `WebAssembly.Module` sources all support worker parsing. Requests retain their fetch options. The asynchronously compiled module is shared with workers so subsequent loads can reuse it. Self-hosted WASM must come from the same package build as the JavaScript bindings.
 
 In Vite development, exclude the vanilla entry from dependency optimization so Vite can resolve the worker asset. Production builds do not need this setting:
 
@@ -236,11 +236,11 @@ const controller = viewer.getController();
 if (controller && !controller.isLoading && controller.sheets.length > 0) {
   controller.highlightRanges("A1:C5");
   if (!controller.readOnly) controller.setCellValue({ row: 0, col: 0 }, "42");
-  if (controller.canExport) controller.exportXlsx();
+  if (controller.canExport) await controller.exportXlsx();
 }
 ```
 
-`setCellValue` requires an editable workbook. `exportXlsx()` downloads the current workbook in the browser, and `getXlsxBytes()` returns the same bytes as a `Uint8Array` (or `null` before a workbook loads) for saving elsewhere, such as uploading to your own storage.
+`setCellValue` requires an editable workbook. `await exportXlsx()` exports in the parser worker and downloads the current workbook in the browser, and `await getXlsxBytes()` resolves to the same bytes as a `Uint8Array` (or `null` before a workbook loads) for saving elsewhere, such as uploading to your own storage.
 
 Change options or load another workbook with `setOptions`:
 
@@ -914,7 +914,7 @@ Notes:
 - `maxFileSizeBytes` defaults to `25 MB`.
 - `readOnlyAboveBytes` can disable mutation actions for larger files.
 - `deferLoadingAboveBytes` waits for `controller.continueDeferredLoad()` before parsing files above the threshold.
-- `useWorker` defaults to `true` when browser workers are available.
+- `useWorker` defaults to `true`. Parsing requires browser worker support; `false` keeps a local editable/queryable model after worker parsing.
 
 ## Viewer Props
 
@@ -1148,3 +1148,5 @@ The package exports the main types you are likely to use for custom integrations
 ## License
 
 See the repository license for usage terms.
+
+Workbook ZIP/XML decoding and the bundled chart parser run in a Web Worker. The viewer requires worker support; it reports worker startup failures instead of falling back to parsing on the main thread. `useWorker: false` hydrates a local model for synchronous cell access after worker parsing. A custom `experimentalOfficeCharts` renderer remains a host callback and controls its own execution. The patched parser is maintained in [patches/duke-sheets](../../patches/duke-sheets/README.md); `pnpm build:duke-sheets` rebuilds the checked-in WASM without a fork.

@@ -54,11 +54,12 @@ export default defineConfig([
     entry: ["src/xlsx-worker.ts"],
     external,
     format: ["esm"],
-    noExternal: ["@dukelib/sheets-wasm", "fflate"],
+    noExternal: [...officeCharts, "fflate"],
+    loader: { ".woff2": "dataurl" },
     outDir: "dist",
     platform: "browser",
     skipNodeModulesBundle: false,
-    splitting: false,
+    splitting: true,
     sourcemap: true
   }
 ]);

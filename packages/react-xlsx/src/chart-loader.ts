@@ -43,23 +43,11 @@ type OfficeChartModule = {
 };
 
 export const officeChartRenderer = createChartModule<OfficeChartModule>(async () => {
-  const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
-    import("@extend-ai/rust-office-charts"), import("./shared-chart")
-  ]);
-  return { renderer: await loadOfficeCharts(), SharedChartSvg };
-});
-
-export const suppliedOfficeChartRenderer = createChartModule<OfficeChartModule>(async () => {
   const { SharedChartSvg } = await import("./shared-chart");
   return { renderer: null, SharedChartSvg };
 });
-
-export const officeExtendedChartRenderer = createChartModule<OfficeChartModule>(async () => {
-  const [{ loadOfficeCharts }, { SharedChartSvg }] = await Promise.all([
-    import("@extend-ai/rust-office-charts/full"), import("./shared-chart")
-  ]);
-  return { renderer: await loadOfficeCharts(typeof DecompressionStream === "function" ? undefined : new URL("./office_charts_full_bg.wasm", import.meta.url)), SharedChartSvg };
-});
+export const suppliedOfficeChartRenderer = officeChartRenderer;
+export const officeExtendedChartRenderer = officeChartRenderer;
 
 export function preloadChartRenderers(chartsBySheet: readonly (readonly XlsxChart[])[], experimentalOfficeCharts?: OfficeCharts) {
   let hasSharedCharts = false;

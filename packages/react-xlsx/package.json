@@ -69,12 +69,11 @@
     }
   },
   "dependencies": {
-    "@dukelib/sheets-wasm": "0.1.24",
     "csstype": "^3.1.0",
     "fflate": "^0.8.3"
   },
   "scripts": {
-    "build": "node ../../scripts/check-office-art.mjs && tsup --config tsup.config.ts && node ../../scripts/copy-duke-wasm.mjs",
+    "build": "node ../../scripts/check-duke-sheets.mjs && node ../../scripts/check-office-art.mjs && tsup --config tsup.config.ts && node ../../scripts/copy-duke-wasm.mjs",
     "test": "node --experimental-strip-types --test src/safe-calculate.test.ts src/builtin-table-styles.test.ts src/cell-text-clip.test.ts src/colors.test.ts src/zip-entry-names.test.ts src/viewer-palette.test.ts src/scroll-display-limit.test.ts src/merged-range-lookup.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"

@@ -1,3 +1,4 @@
+import { parseWorkbookXml } from "./workbook-xml";
 import { strFromU8 } from "fflate";
 import type { WorkbookImageSheetOrigin } from "./images";
 import type { XlsxChartsheet } from "./types";
@@ -8,8 +9,8 @@ type Relationship = { target: string; type: string };
 
 function readXml(archive: Record<string, Uint8Array>, path: string) {
   const bytes = archive[path];
-  if (!bytes || typeof DOMParser === "undefined") return null;
-  const document = new DOMParser().parseFromString(strFromU8(bytes), "application/xml");
+  if (!bytes) return null;
+  const document = parseWorkbookXml(strFromU8(bytes));
   return document.getElementsByTagName("parsererror").length > 0 ? null : document;
 }
 

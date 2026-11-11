@@ -1,3 +1,4 @@
+import { parseWorkbookXml, serializeWorkbookXml } from "./workbook-xml";
 import type { ChartData, ChartPoint } from "./office-chart-types";
 
 const chartNamespace = "http://schemas.openxmlformats.org/drawingml/2006/chart";
@@ -31,7 +32,7 @@ export function projectChartData(xml: string, data: ChartData, exclusions: Reado
   if (!exclusions.some(indices => indices?.length)) return { xml, data, pointMaps: undefined };
   const excluded = exclusions.map(indices => new Set(indices ?? []));
   const pointMaps = data.series.map((series, index) => series.points.filter(point => !excluded[index]?.has(point.index)).map(point => point.index));
-  const document = new DOMParser().parseFromString(xml, "application/xml");
+  const document = parseWorkbookXml(xml);
   if (document.getElementsByTagName("parsererror").length) throw new Error("Unable to read chart definition.");
   const seriesNodes = Array.from(document.getElementsByTagNameNS(chartNamespace, "ser"));
   if (seriesNodes.length !== data.series.length) return { xml, data, pointMaps: undefined };
@@ -103,7 +104,7 @@ export function projectChartData(xml: string, data: ChartData, exclusions: Reado
     }
   }
   return {
-    xml: new XMLSerializer().serializeToString(document),
+    xml: serializeWorkbookXml(document),
     data: { ...data, series: data.series.map((series, index) => ({ ...series, points: projectPoints(series.points, excluded[index] ?? new Set()) })) },
     pointMaps
   };

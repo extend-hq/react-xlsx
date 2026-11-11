@@ -1,3 +1,4 @@
+import { decodeWorkbookArchive, parseWorkbookXml, serializeWorkbookXml } from "./workbook-xml";
 import type {
   DrawingAnchor as DukeDrawingAnchor,
   DrawingColor as DukeDrawingColor,
@@ -6,8 +7,8 @@ import type {
   FormControlDrawing as DukeFormControlDrawing,
   FormControlKind as DukeFormControlKind,
   Workbook
-} from "@dukelib/sheets-wasm";
-import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+} from "./duke-sheets/generated/duke_sheets_wasm.js";
+import { strFromU8, strToU8, zipSync } from "fflate";
 import { resolveWorkbookColor } from "./colors";
 import type {
   XlsxOfficeLayout,
@@ -108,12 +109,29 @@ function measureOfficeDigitWidthPt(fontFamily?: string | null, fontSizePt?: numb
   const key = `office|${family}|${size}`;
   const cached = columnCharacterWidthCache.get(key);
   if (cached !== undefined) return cached;
-  const context = typeof document !== "undefined" ? document.createElement("canvas").getContext("2d") : null;
+  const context = typeof document !== "undefined" ? document.createElement("canvas").getContext("2d")
+    : typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(32, 32).getContext("2d") : null;
   if (!context) return 6;
   context.font = `${size}px ${JSON.stringify(family)}, "Carlito"`;
   const width = Math.max(1, Math.round(Math.max(...Array.from("0123456789", digit => context.measureText(digit).width))));
   columnCharacterWidthCache.set(key, width);
   return width;
+}
+
+export function getColumnFontMeasurements() {
+  return Array.from(columnCharacterWidthCache);
+}
+
+export function restoreColumnFontMeasurements(entries: Array<[string, number]>) {
+  for (const [key, value] of entries) columnCharacterWidthCache.set(key, value);
+}
+
+export function getUnmeasuredWorkbookFont(archive: ArchiveEntries): string | null {
+  const font = parseWorkbookStyles(archive).defaultFont;
+  const family = font?.family?.trim() || "Calibri";
+  const size = font?.sizePt && font.sizePt > 0 ? font.sizePt : 11;
+  return columnCharacterWidthCache.has(`${family}|${size}`) && columnCharacterWidthCache.has(`office|${family}|${size}`)
+    ? null : family;
 }
 
 function sheetColumnWidthToPixels(width: number, columnCharacterWidthPx = DEFAULT_COLUMN_CHARACTER_WIDTH_PX) {
@@ -470,16 +488,11 @@ function relsPathForDocument(documentPath: string) {
 }
 
 function parseXml(xml: string) {
-  const parser = new DOMParser();
-  const document = parser.parseFromString(xml, "application/xml");
-  if (document.querySelector("parsererror")) {
-    return null;
-  }
-  return document;
+  try { return parseWorkbookXml(xml); } catch { return null; }
 }
 
 function serializeXml(document: XMLDocument) {
-  return new XMLSerializer().serializeToString(document);
+  return serializeWorkbookXml(document);
 }
 
 function readArchiveText(archive: ArchiveEntries, path: string) {
@@ -3285,7 +3298,7 @@ export function parseWorkbookStructureAssets(
   bytes: Uint8Array,
   options?: ParseWorkbookStructureOptions
 ): WorkbookStructureAssets {
-  const archive = unzipSync(bytes);
+  const archive = decodeWorkbookArchive(bytes);
   const {
     namedCellStyleByName,
     sheetStatesByWorkbookSheetIndex,
@@ -3306,7 +3319,7 @@ export function parseWorkbookStructureAssets(
 }
 
 export function parseWorkbookChartStyleAssets(bytes: Uint8Array): WorkbookChartStyleAssets {
-  const archive = unzipSync(bytes);
+  const archive = decodeWorkbookArchive(bytes);
   const {
     themePalette,
     workbookSheets
@@ -3365,7 +3378,7 @@ function serializePicture(node: Element): string {
     }
     return target;
   };
-  return new XMLSerializer().serializeToString(copy(node));
+  return serializeWorkbookXml(copy(node));
 }
 
 function hasPictureDecoration(node: Element): boolean {
@@ -3436,9 +3449,10 @@ async function renderWorkbookPictures(assets: WorkbookImageAssets, theme: ThemeS
 
 export async function parseWorkbookImageAssets(
   bytes: Uint8Array,
-  workbook?: Workbook
+  workbook?: Workbook,
+  parsedArchive?: ArchiveEntries
 ): Promise<WorkbookImageAssets> {
-  const archive = unzipSync(bytes);
+  const archive = parsedArchive ?? decodeWorkbookArchive(bytes);
   const {
     contentTypes,
     namedCellStyleByName,
@@ -3788,14 +3802,15 @@ function appendSheetDrawingReference(
 export function mergeWorkbookImageAssets(
   savedBytes: Uint8Array,
   sourceAssets: WorkbookImageAssets | null,
-  sheetOrigins: Array<WorkbookImageSheetOrigin | null>
+  sheetOrigins: Array<WorkbookImageSheetOrigin | null>,
+  parsedArchive?: ArchiveEntries
 ) {
   if (!sourceAssets) {
     return cloneBytes(savedBytes);
   }
 
   try {
-    const archive = unzipSync(savedBytes);
+    const archive = parsedArchive ?? decodeWorkbookArchive(savedBytes);
     const workbookSheets = parseWorkbookSheets(archive);
     const originalContentTypesDocument = parseXml(readArchiveText(sourceAssets.archive, "[Content_Types].xml") ?? "");
     const targetContentTypesDocument = ensureContentTypesDocument(archive);

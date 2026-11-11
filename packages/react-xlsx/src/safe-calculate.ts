@@ -1,4 +1,4 @@
-import type { Workbook } from "@dukelib/sheets-wasm";
+import type { Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
 
 const SHEET_REF_REGEX = /'((?:[^']|'')+)'!|([A-Za-z_\u0080-\uFFFF][\w.\u0080-\uFFFF]*)!/g;
 

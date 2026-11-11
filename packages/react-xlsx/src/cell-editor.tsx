@@ -6,6 +6,7 @@ export type EditorTextLine = { text: string; start: number };
 
 export function CellEditor({
   value,
+  wrapText,
   references,
   inputRef,
   editorRef,
@@ -21,6 +22,7 @@ export function CellEditor({
   onNavigate
 }: {
   value: string;
+  wrapText: boolean;
   references: FormulaReference[];
   inputRef?: React.Ref<HTMLTextAreaElement>;
   editorRef?: React.Ref<HTMLDivElement>;
@@ -45,7 +47,7 @@ export function CellEditor({
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const baselineOffsetRef = React.useRef(0);
   const measuringContextRef = React.useRef<CanvasRenderingContext2D | null>(null);
-  const [bounds, setBounds] = React.useState({ width: 0, height: 0 });
+  const [bounds, setBounds] = React.useState({ width: 0, height: 0, cellWidth: 0 });
 
   React.useLayoutEffect(() => {
     const root = rootRef.current;
@@ -63,7 +65,9 @@ export function CellEditor({
       const viewportRight = viewportRect.right - (viewport.offsetWidth - viewport.clientWidth - viewport.clientLeft) * viewportScale;
       const width = Math.max(anchor.clientWidth, (viewportRight - anchorRect.left) / (scale || 1));
       const height = anchorRect.height / (scale || 1);
-      setBounds((previous) => previous.width === width && previous.height === height ? previous : { width, height });
+      const cellWidth = anchorRect.width / (scale || 1);
+      setBounds((previous) => previous.width === width && previous.height === height && previous.cellWidth === cellWidth
+        ? previous : { width, height, cellWidth });
     };
     updateBounds();
     const observer = new ResizeObserver(updateBounds);
@@ -85,17 +89,10 @@ export function CellEditor({
     if (!text || !textarea || !root || !baseline || !mirror) return;
     const computedStyle = getComputedStyle(text);
     const lineHeight = parseFloat(computedStyle.lineHeight) || parseFloat(computedStyle.fontSize) * 1.2;
-    mirror.style.padding = typeof style.padding === "number" ? `${style.padding}px` : style.padding ?? "0";
-    const mirrorStyle = getComputedStyle(mirror);
-    const paddingTop = parseFloat(mirrorStyle.paddingTop) || 0;
-    const paddingBottom = parseFloat(mirrorStyle.paddingBottom) || 0;
-    const spareHeight = Math.max(0, bounds.height - paddingTop - paddingBottom - lineHeight);
-    const editorTextTop = paddingTop + (style.verticalAlign === "top" ? 0 : style.verticalAlign === "middle" ? spareHeight / 2 : spareHeight);
-    if (canvasText) mirror.style.paddingTop = `${editorTextTop}px`;
     const rootRect = root.getBoundingClientRect();
     const scale = rootRect.width / parseFloat(getComputedStyle(root).width) || 1;
-    const textTop = (text.getBoundingClientRect().top - rootRect.top) / scale - baselineOffsetRef.current;
-    textarea.style.paddingTop = `${Math.max(0, textTop)}px`;
+    const editorTextTop = Math.max(0, (text.getBoundingClientRect().top - rootRect.top) / scale - baselineOffsetRef.current);
+    textarea.style.paddingTop = `${editorTextTop}px`;
     let baselineOffset = 0;
     if (canvasText) {
       const context = measuringContextRef.current ??= document.createElement("canvas").getContext("2d");
@@ -184,11 +181,11 @@ export function CellEditor({
         left: 0,
         minHeight: "100%",
         minWidth: "100%",
-        width: "max-content",
-        maxWidth: bounds.width || "100%",
+        width: wrapText ? "100%" : "max-content",
+        maxWidth: wrapText ? "100%" : bounds.width || "100%",
         textAlign: style.textAlign ?? "left",
         whiteSpace: "pre-wrap",
-        wordBreak: canvasText ? "break-all" : undefined,
+        wordBreak: "normal",
         overflowWrap: "anywhere",
         padding: 0,
         lineHeight: style.lineHeight ?? "inherit",
@@ -203,7 +200,7 @@ export function CellEditor({
           boxSizing: "border-box",
           padding: style.padding,
           minHeight: bounds.height,
-          display: canvasText ? "block" : "flex",
+          display: "flex",
           flexDirection: "column",
           justifyContent: style.verticalAlign === "top" ? "flex-start" : style.verticalAlign === "middle" ? "center" : "flex-end",
           overflow: "hidden",
@@ -271,7 +268,7 @@ export function CellEditor({
           width: "100%",
           minWidth: 0,
           whiteSpace: "pre-wrap",
-          wordBreak: canvasText ? "break-all" : undefined,
+          wordBreak: "normal",
           overflowWrap: "anywhere",
           resize: "none",
           overflow: "hidden",

@@ -12,7 +12,8 @@
     "clean": "pnpm -r --filter './packages/*' run clean",
     "dev": "pnpm --filter @react-xlsx/playground dev",
     "test": "pnpm --filter @extend-ai/react-xlsx test",
-    "typecheck": "pnpm -r --filter './packages/*' run typecheck && pnpm --filter @react-xlsx/playground typecheck"
+    "typecheck": "pnpm -r --filter './packages/*' run typecheck && pnpm --filter @react-xlsx/playground typecheck",
+    "build:duke-sheets": "node scripts/build-duke-sheets.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

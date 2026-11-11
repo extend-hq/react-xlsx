@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/guseggert/duke-sheets.git",
+  "commit": "fec1cd04dbefa5eb65a41d29399ca4a7edc220f2",
+  "version": "0.1.24",
+  "sourceDigest": "1f42997ba99bd7b0b17621b6dd4ed4b87b75737d4bc72b1df6126a5bfc12de28",
+  "outputs": {
+    "duke_sheets_wasm.js": "a710095cca817ae4a85738984dbc3713cf08b6525fd43e13f7962ff2592d0d52",
+    "duke_sheets_wasm.d.ts": "fd070a70f06221648cc4ab0f5b0426566399777d0a7f4571ad8aee7aefd89624",
+    "duke_sheets_wasm_bg.wasm": "c561d6909ae6f2f347deea3227e40eaf7ecdf74156c15f99754eda9a73915ecd",
+    "duke_sheets_wasm_bg.wasm.d.ts": "11a6f81e48068bc3b7eca2020905d513ca043f086f7bfc8697e4644d39a6c7cc",
+    "LICENSE": "ebb2e920800c6353474e3e23d84f714ee8aaecd8f5a71851aa03594a4129d855"
+  }
+}

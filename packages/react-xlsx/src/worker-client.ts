@@ -1,22 +1,40 @@
+import type { ChartWorkerResult, RenderChartAsync } from "./chart-renderer-types";
+import type { WorkbookImageAssets, WorkbookImageSheetOrigin } from "./images";
+import type { WorkbookChartOrigin } from "./charts";
+import type { takeWorkbookXmlRecords } from "./workbook-xml";
+
+const columnFontMeasurements = new Map<string, number>();
+
+export type XlsxWorkerLoadResult = {
+  columnFontMeasurements: Array<[string, number]>;
+  chartsByWorkbookSheetIndex: XlsxChart[][];
+  chartsheets: XlsxChartsheet[];
+  formControlsByWorkbookSheetIndex: XlsxFormControl[][];
+  sheets: XlsxSheetData[];
+  tablesByWorkbookSheetIndex: XlsxTable[][];
+  tabs: XlsxWorkbookTab[];
+  chartOriginsById: Map<string, WorkbookChartOrigin>;
+  imageAssets: WorkbookImageAssets | null;
+  xmlRecords: ReturnType<typeof takeWorkbookXmlRecords>;
+  fontFamilies: string[];
+  workbookSnapshot?: Uint8Array;
+  shouldAutoCalculate: boolean;
+};
+
 import type { XlsxChart, XlsxChartsheet, XlsxFormControl, XlsxSheetData, XlsxTable, XlsxWorkbookTab } from "./types";
 import { getConfiguredWorkerWasmSource, type WorkerWasmSource } from "./wasm";
 
 type WorkerMessage =
+  | { id: number; type: "renderChart"; payload: Parameters<RenderChartAsync> }
+  | { id: number; type: "export"; payload: { snapshot: Uint8Array; assets: WorkbookImageAssets | null; origins: Array<WorkbookImageSheetOrigin | null> } }
+
   | {
       id: number;
       type: "load";
       payload: {
         buffer: ArrayBuffer;
-        showHiddenSheets?: boolean;
-        skipXmlParsing?: boolean;
-        wasmSource?: WorkerWasmSource;
-      };
-    }
-  | {
-      id: number;
-      type: "parseCharts";
-      payload: {
-        buffer: ArrayBuffer;
+        includeSnapshot?: boolean;
+        columnFontMeasurements?: Array<[string, number]>;
         showHiddenSheets?: boolean;
         skipXmlParsing?: boolean;
         wasmSource?: WorkerWasmSource;
@@ -159,25 +177,16 @@ export class XlsxWorkerClient {
     this.worker.terminate();
   }
 
-  loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false) {
+  async loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false, includeSnapshot = false) {
     const workerBuffer = cloneArrayBufferForTransfer(buffer);
-    return this.request<{
-      chartsByWorkbookSheetIndex: XlsxChart[][];
-      chartsheets: XlsxChartsheet[];
-      formControlsByWorkbookSheetIndex: XlsxFormControl[][];
-      sheets: XlsxSheetData[];
-      tablesByWorkbookSheetIndex: XlsxTable[][];
-      tabs: XlsxWorkbookTab[];
-    }>({
+    const result = await this.request<XlsxWorkerLoadResult>({
       id: 0,
-      payload: {
-        buffer: workerBuffer,
-        showHiddenSheets,
-        skipXmlParsing,
-        wasmSource: getConfiguredWorkerWasmSource()
-      },
+      payload: { buffer: workerBuffer, columnFontMeasurements: Array.from(columnFontMeasurements), includeSnapshot, showHiddenSheets, skipXmlParsing, wasmSource: await getConfiguredWorkerWasmSource() },
       type: "load"
     }, [workerBuffer]);
+    for (const [key, value] of result.columnFontMeasurements) columnFontMeasurements.set(key, value);
+    while (columnFontMeasurements.size > 256) columnFontMeasurements.delete(columnFontMeasurements.keys().next().value!);
+    return result;
   }
 
   getCellSnapshot(workbookSheetIndex: number, row: number, col: number, locale?: string) {
@@ -191,22 +200,10 @@ export class XlsxWorkerClient {
     });
   }
 
-  parseCharts(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false) {
-    const workerBuffer = cloneArrayBufferForTransfer(buffer);
-    return this.request<{
-      chartsByWorkbookSheetIndex: XlsxChart[][];
-      chartsheets: XlsxChartsheet[];
-      tabs: XlsxWorkbookTab[];
-    }>({
-      id: 0,
-      payload: {
-        buffer: workerBuffer,
-        showHiddenSheets,
-        skipXmlParsing,
-        wasmSource: getConfiguredWorkerWasmSource()
-      },
-      type: "parseCharts"
-    }, [workerBuffer]);
+  renderChart: RenderChartAsync = (...payload) => this.request<ChartWorkerResult>({ id: 0, type: "renderChart", payload });
+
+  exportWorkbook(snapshot: Uint8Array, assets: WorkbookImageAssets | null, origins: Array<WorkbookImageSheetOrigin | null>) {
+    return this.request<Uint8Array>({ id: 0, type: "export", payload: { snapshot, assets, origins } }, [snapshot.buffer as ArrayBuffer]);
   }
 
   getRowsBatch(workbookSheetIndex: number, startRow: number, rowCount: number, locale?: string) {

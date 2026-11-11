@@ -3,7 +3,7 @@ import { XlsxMessagesContext, useXlsxMessages } from "./messages-context";
 import { coerceUserEnteredValue, getCellEditingValue, getUserEnteredFormula, isTextCell } from "./cell-input";
 import { localizeCellNumber, localizeRows } from "./number-locale";
 import * as React from "react";
-import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
+import type { Workbook, Worksheet } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import {
   type VirtualItem,
   useVirtualizer
@@ -1232,7 +1232,11 @@ type WorksheetWithRowsBatch = Worksheet & {
   getRowsBatch?: (startRow: number, maxRows: number, options?: unknown) => unknown;
 };
 
+type RichCellRun = { text: string; font?: Record<string, unknown> | null };
+type StyledCellRun = { text: string; style: React.CSSProperties };
+
 type WorksheetBatchCellEntry = {
+  richText?: RichCellRun[];
   col?: unknown;
   formula?: unknown;
   generalAlignment?: unknown;
@@ -1250,6 +1254,7 @@ type WorksheetBatchRowEntry = {
 };
 
 type BatchedCellData = {
+  richText?: RichCellRun[];
   formula: string | null;
   generalAlignment?: CellGeneralAlignment;
   numericValue?: number | null;
@@ -4337,6 +4342,7 @@ function buildWorksheetBatchWindow(
         const formula = typeof cellEntry.formula === "string" ? cellEntry.formula : null;
         cells.set(`${row}:${col}`, {
           formula,
+          richText: cellEntry.richText,
           numericValue: typeof cellEntry.numericValue === "number" ? cellEntry.numericValue : cellEntry.numericValue === null ? null : undefined,
           generalAlignment: cellEntry.generalAlignment === "right" || cellEntry.generalAlignment === "center"
             ? cellEntry.generalAlignment
@@ -5418,6 +5424,7 @@ function resolveSelectionColors({
 }
 
 type CellRenderData = {
+  richText?: StyledCellRun[];
   usesGeneralAlignment?: boolean;
   canvas?: CanvasCellStyleCache;
   chartHighlight?: CellChartHighlight | null;
@@ -5470,6 +5477,108 @@ type CellRenderData = {
   value: string;
   textRotationDeg?: number | null;
 };
+
+function resolveRichCellRuns(raw: unknown, value: string, base: React.CSSProperties, theme: XlsxThemePalette | undefined, zoom: number): StyledCellRun[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.map((run: RichCellRun) => run.text).join("") !== value) return undefined;
+  return raw.map((run: RichCellRun) => {
+    const font = run.font;
+    const style: React.CSSProperties = { ...base };
+    if (font) {
+      const family = buildSpreadsheetFontFamily(font, theme);
+      if (family) style.fontFamily = family;
+      if (typeof font.size === "number" && font.size > 0) style.fontSize = font.size * (4 / 3) * zoom;
+      if (typeof font.bold === "boolean") style.fontWeight = font.bold ? "bold" : "normal";
+      if (typeof font.italic === "boolean") style.fontStyle = font.italic ? "italic" : "normal";
+      const color = resolveWorkbookColor(font.color as Record<string, unknown> | undefined, theme);
+      if (color) style.color = color;
+      const decorations = new Set(String(base.textDecoration ?? "").split(/\s+/).filter(Boolean));
+      if (font.underline != null) { decorations.delete("underline"); if (font.underline !== "none") decorations.add("underline"); }
+      if (font.strikethrough != null) { decorations.delete("line-through"); if (font.strikethrough) decorations.add("line-through"); }
+      style.textDecoration = [...decorations].join(" ") || "none";
+      if (font.verticalAlign === "superscript" || font.verticalAlign === "subscript") {
+        style.verticalAlign = font.verticalAlign === "superscript" ? "super" : "sub";
+        style.fontSize = resolveCanvasFontSizePx(style, 14 * zoom) * 0.65;
+      }
+    }
+    return { text: run.text, style };
+  });
+}
+
+function renderRichCellText(cell: CellRenderData): React.ReactNode {
+  const scale = cell.shrinkToFitFontSizePx === undefined ? 1
+    : cell.shrinkToFitFontSizePx / resolveCanvasFontSizePx(cell.style, 14);
+  return cell.richText ? cell.richText.map((run, index) => <span key={index} style={{
+    fontFamily: run.style.fontFamily, fontSize: resolveCanvasFontSizePx(run.style, 14) * scale, fontWeight: run.style.fontWeight,
+    fontStyle: run.style.fontStyle, color: run.style.color, textDecoration: run.style.textDecoration,
+    verticalAlign: run.style.verticalAlign === "super" || run.style.verticalAlign === "sub" ? run.style.verticalAlign : undefined
+  }}>{run.text}</span>) : cell.value;
+}
+
+function measureCellTextWidth(cell: CellRenderData) {
+  return cell.richText ? cell.richText.reduce((sum, run) => sum + measureTextWidth(run.text, run.style), 0) : measureTextWidth(cell.value, cell.style);
+}
+
+function drawRichCellText(context: CanvasRenderingContext2D, cell: CellRenderData, rect: { left: number; top: number; width: number; height: number }) {
+  if (!cell.richText) return;
+  context.save();
+  const naturalWidth = measureCellTextWidth(cell);
+  const scale = cell.shrinkToFitFontSizePx !== undefined
+    ? cell.shrinkToFitFontSizePx / resolveCanvasFontSizePx(cell.style, 14)
+    : cell.shrinkToFit && naturalWidth > rect.width ? Math.max(0.4, rect.width / naturalWidth) : 1;
+  const wrap = !cell.textRotationDeg && (cell.style.whiteSpace === "pre-wrap" || cell.value.includes("\n"));
+  type Fragment = { text: string; style: React.CSSProperties; width: number; height: number };
+  const lines: Fragment[][] = [[]];
+  let width = 0;
+  for (const run of cell.richText) {
+    const style = { ...run.style, fontSize: resolveCanvasFontSizePx(run.style, 14) * scale };
+    context.font = resolveCanvasFontWithPxSize(style, Number(style.fontSize));
+    const height = resolveCanvasLineHeight(style, Number(style.fontSize));
+    const parts = wrap ? run.text.split(/(\r?\n|[^\S\r\n]+|[^\s]+)/).filter(Boolean) : [run.text];
+    for (const part of parts) {
+      if (part === "\n" || part === "\r\n") { lines.push([]); width = 0; continue; }
+      const partWidth = context.measureText(part).width;
+      if (wrap && width > 0 && width + partWidth > rect.width) { lines.push([]); width = 0; }
+      if (wrap && partWidth > rect.width) {
+        for (const character of part) {
+          const characterWidth = context.measureText(character).width;
+          if (width > 0 && width + characterWidth > rect.width) { lines.push([]); width = 0; }
+          lines[lines.length - 1]!.push({ text: character, style, width: characterWidth, height });
+          width += characterWidth;
+        }
+      } else {
+        lines[lines.length - 1]!.push({ text: part, style, width: partWidth, height });
+        width += partWidth;
+      }
+    }
+  }
+  const heights = lines.map(line => Math.max(resolveCanvasLineHeight(cell.style, 14) * scale, ...line.map(part => part.height)));
+  const totalHeight = heights.reduce((sum, height) => sum + height, 0);
+  let y = rect.top + (cell.style.verticalAlign === "top" ? 0 : cell.style.verticalAlign === "middle" ? (rect.height - totalHeight) / 2 : rect.height - totalHeight);
+  if (cell.textRotationDeg) {
+    context.translate(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    context.rotate(cell.textRotationDeg * Math.PI / 180);
+    rect = { left: -naturalWidth * scale / 2, top: -totalHeight / 2, width: naturalWidth * scale, height: totalHeight };
+    y = rect.top;
+  }
+  context.textBaseline = "middle";
+  context.textAlign = "left";
+  lines.forEach((line, index) => {
+    const lineWidth = line.reduce((sum, part) => sum + part.width, 0);
+    let x = rect.left + (cell.style.textAlign === "right" ? rect.width - lineWidth : cell.style.textAlign === "center" ? (rect.width - lineWidth) / 2 : 0);
+    const height = heights[index]!;
+    for (const part of line) {
+      context.font = resolveCanvasFontWithPxSize(part.style, Number(part.style.fontSize));
+      context.fillStyle = String(part.style.color ?? "#000000");
+      const offset = part.style.verticalAlign === "super" ? -height * 0.25 : part.style.verticalAlign === "sub" ? height * 0.2 : 0;
+      const middle = y + height / 2 + offset;
+      context.fillText(part.text, x, middle);
+      drawCanvasTextDecorations(context, { align: "left", color: String(part.style.color ?? "#000000"), decoration: String(part.style.textDecoration ?? ""), lineThroughY: middle, maxWidth: part.width, text: part.text, textX: x, underlineY: middle + height * 0.25, zoomFactor: 1 });
+      x += part.width;
+    }
+    y += height;
+  });
+  context.restore();
+}
 
 type PaintedBodyCanvasSignature = {
   activeSheet: XlsxSheetData | null;
@@ -7040,7 +7149,7 @@ function GridRow({
           cellContentStyle.fontSize = cellData.shrinkToFitFontSizePx;
           cellContentStyle.lineHeight = `${resolveCanvasLineHeight(cellData.style, cellData.shrinkToFitFontSizePx)}px`;
         }
-        const rotatedTextWidth = cellData.textRotationDeg ? measureTextWidth(cellData.value, cellData.style) : 0;
+        const rotatedTextWidth = cellData.textRotationDeg ? measureCellTextWidth(cellData) : 0;
         const rotatedTextHeight = resolveCanvasLineHeight(cellData.style, 12 * zoomFactor);
         const rotatedTextBounds = cellData.textRotationDeg
           ? resolveRotatedTextBounds(rotatedTextWidth, rotatedTextHeight, cellData.textRotationDeg)
@@ -7173,6 +7282,7 @@ function GridRow({
                 inputRef={editorInputRef}
                 onFocusOverlay={onFocusEditorOverlay}
                 value={editingValue}
+                wrapText={cellData.style.whiteSpace === "pre-wrap"}
                 references={formulaReferences}
                 onBlur={onEditingBlur}
                 onChange={onEditingValueChange}
@@ -7202,7 +7312,7 @@ function GridRow({
                   width: cellData.spillWidth
                 }}
               >
-                {cellData.value}
+                {renderRichCellText(cellData)}
               </div>
             ) : cellData.sparkline ? (
               <div
@@ -7233,10 +7343,10 @@ function GridRow({
             ) : (
               <div style={cellContentStyle}>
                 {rotatedTextStyle
-                  ? <span style={{ ...rotatedTextBounds, flex: "0 0 auto", position: "relative" }}><span style={rotatedTextStyle}>{cellData.value}</span></span>
+                  ? <span style={{ ...rotatedTextBounds, flex: "0 0 auto", position: "relative" }}><span style={rotatedTextStyle}>{renderRichCellText(cellData)}</span></span>
                   : wrappedTextStyle
-                    ? <span style={wrappedTextStyle}>{cellData.value}</span>
-                    : cellData.value}
+                    ? <span style={wrappedTextStyle}>{renderRichCellText(cellData)}</span>
+                    : renderRichCellText(cellData)}
               </div>
             )}
           </td>
@@ -7751,11 +7861,6 @@ function XlsxGrid({
   }, [findMergedRange]);
   const resolveCellSelectionRange = React.useCallback((range: XlsxCellRange): XlsxCellRange => {
     const normalized = normalizeRange(range);
-    const start = resolveMergeAnchorCell(normalized.start);
-    const end = resolveMergeAnchorCell(normalized.end);
-    if (isSameCell(start, end)) {
-      return { start, end };
-    }
     return expandHighlightedRange(normalized, activeSheet?.mergedRanges ?? mergedRegions);
   }, [activeSheet?.mergedRanges, mergedRegions, resolveMergeAnchorCell]);
   const highlightedCellRanges = React.useMemo(
@@ -9937,24 +10042,8 @@ function XlsxGrid({
       return;
     }
 
-    let nextRowIndex = currentRowIndex;
-    let nextColIndex = currentColIndex;
-    switch (key) {
-      case "ArrowDown":
-        nextRowIndex += 1;
-        break;
-      case "ArrowLeft":
-        nextColIndex -= 1;
-        break;
-      case "ArrowRight":
-        nextColIndex += 1;
-        break;
-      case "ArrowUp":
-        nextRowIndex -= 1;
-        break;
-      default:
-        return;
-    }
+    if (!["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp"].includes(key)) return;
+    const { row: nextRowIndex, col: nextColIndex } = mergedNavigationIndices(cell, key);
 
     if (!readOnlyRef.current && !hasEditorPreview()) {
       saveEditingValue(cell, value);
@@ -9964,7 +10053,7 @@ function XlsxGrid({
     setEditingValue("");
     moveSelection(nextRowIndex, nextColIndex, false);
     focusGrid();
-  }, [colIndexByActual, focusGrid, hasEditorPreview, rowIndexByActual, saveEditingValue, visibleCols, visibleRows]);
+  }, [colIndexByActual, findMergedRange, focusGrid, hasEditorPreview, rowIndexByActual, saveEditingValue, visibleCols, visibleRows]);
 
   React.useEffect(() => {
     commitEditingRef.current = commitEditing;
@@ -10365,6 +10454,11 @@ function XlsxGrid({
           : readDisplayValue()
     };
 
+    nextData.richText = resolveRichCellRuns(
+      batchCoversRow ? batchedCell?.richText : worksheet?.getRichTextAt(row, col),
+      nextData.value, nextData.style, activeSheet?.themePalette, zoomFactor
+    );
+
     if (getCellStyle) {
       const styleOverrides = getCellStyle({
         cell: { row, col },
@@ -10383,6 +10477,7 @@ function XlsxGrid({
       });
       if (styleOverrides) {
         nextData.style = { ...nextData.style, ...styleOverrides };
+        nextData.richText = nextData.richText?.map(run => ({ ...run, style: { ...run.style, ...styleOverrides } }));
         if (styleOverrides.textAlign !== undefined) nextData.usesGeneralAlignment = false;
         // getCellStyle is the final styling layer, so a host-provided
         // background replaces the cell's background fill — including a
@@ -10416,7 +10511,7 @@ function XlsxGrid({
           endColIndex += 1;
         }
         const horizontalPadding = getHorizontalPadding(nextData.style.padding);
-        const textWidth = measureTextWidth(nextData.value, nextData.style);
+        const textWidth = measureCellTextWidth(nextData);
         const requiredWidth = textWidth + horizontalPadding + 2;
         const baseWidth = Math.max(
           displayEffectiveColWidths[startColIndex] ?? displayDefaultColWidth,
@@ -10475,7 +10570,7 @@ function XlsxGrid({
         );
         const availableTextWidth = Math.max(0, availableWidth - horizontalPadding - trailingInset);
         if (availableTextWidth > 0) {
-          const textWidth = measureTextWidth(nextData.value, nextData.style);
+          const textWidth = measureCellTextWidth(nextData);
           if (textWidth > availableTextWidth) {
             const baseFontSizePx = resolveCanvasFontSizePx(nextData.style, 12 * zoomFactor);
             const minimumFontSizePx = Math.max(6 * zoomFactor, baseFontSizePx * 0.4);
@@ -10490,7 +10585,9 @@ function XlsxGrid({
                 font: undefined,
                 fontSize: candidateFontSizePx
               } as React.CSSProperties;
-              const candidateWidth = measureTextWidth(nextData.value, candidateStyle);
+              const candidateWidth = nextData.richText
+                ? textWidth * (candidateFontSizePx / baseFontSizePx)
+                : measureTextWidth(nextData.value, candidateStyle);
               if (candidateWidth <= availableTextWidth) {
                 bestFontSizePx = candidateFontSizePx;
                 lowerBound = candidateFontSizePx;
@@ -11342,14 +11439,14 @@ function XlsxGrid({
       : [fillHandleRef.current];
     for (const fillHandle of fillHandles) {
       if (fillHandle) {
-        fillHandle.style.left = `${nextRect.left + nextRect.width - (4 * zoomFactor)}px`;
-        fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
+        fillHandle.style.left = `${nextRect.left + nextRect.width - 4}px`;
+        fillHandle.style.top = `${nextRect.top + nextRect.height - 4}px`;
       }
     }
     if (options?.updateHeaderSelection !== false) {
       applyHeaderSelection(range);
     }
-  }, [applyHeaderSelection, experimentalCanvas, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect, zoomFactor]);
+  }, [applyHeaderSelection, experimentalCanvas, resolveDragPreviewRect, resolveGeometryOverlayRect, resolveOverlayRect]);
 
   const applyPreviewOverlayFromElement = React.useCallback((element: HTMLElement, range: XlsxCellRange) => {
     if (experimentalCanvas || !isSameCell(range.start, range.end)) {
@@ -11375,11 +11472,11 @@ function XlsxGrid({
     overlay.style.visibility = "visible";
     const fillHandle = fillHandleRef.current;
     if (fillHandle) {
-      fillHandle.style.left = `${nextRect.left + nextRect.width - (4 * zoomFactor)}px`;
-      fillHandle.style.top = `${nextRect.top + nextRect.height - (4 * zoomFactor)}px`;
+      fillHandle.style.left = `${nextRect.left + nextRect.width - 4}px`;
+      fillHandle.style.top = `${nextRect.top + nextRect.height - 4}px`;
     }
     applyHeaderSelection(range);
-  }, [applyHeaderSelection, applyPreviewOverlay, experimentalCanvas, resolveMountedCellOverlayRect, resolveOverlayRect, zoomFactor]);
+  }, [applyHeaderSelection, applyPreviewOverlay, experimentalCanvas, resolveMountedCellOverlayRect, resolveOverlayRect]);
 
   const syncActiveValidationOverlay = React.useCallback((cell: XlsxCellAddress | null) => {
     const overlay = activeValidationOverlayRef.current;
@@ -12956,6 +13053,8 @@ function XlsxGrid({
       ellipsize: boolean;
       font: string;
       maxWidth: number;
+      richCell?: CellRenderData;
+      richRect?: { left: number; top: number; width: number; height: number };
       text: string;
       textDecoration?: string;
       textX: number;
@@ -13706,7 +13805,9 @@ function XlsxGrid({
               ? resolveCanvasLineHeight(cellStyle, cellData.shrinkToFitFontSizePx)
               : resolveCanvasLineHeight(cellStyle, 12 * zoomFactor);
 
-            if (cellData.textRotationDeg && rawText.length > 0) {
+            if (cellData.richText && (spillMaxWidth == null || shouldWrapText || cellData.textRotationDeg)) {
+              drawRichCellText(paneContext, cellData, { left: textLeft, top: contentTop, width: maxTextWidth, height: contentHeight });
+            } else if (cellData.textRotationDeg && rawText.length > 0) {
               drawRotatedCellText(paneContext, rawText, cellData.textRotationDeg, {
                 left: textLeft, top: contentTop, width: maxTextWidth, height: contentHeight
               }, align, cellStyle.verticalAlign, singleLineHeight);
@@ -13766,6 +13867,8 @@ function XlsxGrid({
                 ellipsize: shouldEllipsizeText,
                 font: paneContext.font,
                 maxWidth: spillMaxWidth,
+                richCell: cellData.richText ? cellData : undefined,
+                richRect: { left: textLeft, top: contentTop, width: maxTextWidth, height: contentHeight },
                 text,
                 textDecoration: canvasCellStyle.textDecoration,
                 textX,
@@ -13838,7 +13941,11 @@ function XlsxGrid({
           paneContext.fillStyle = spillText.color;
           paneContext.textAlign = spillText.align;
           paneContext.textBaseline = "middle";
-          paneContext.fillText(spillText.text, spillText.textX, spillText.textY);
+          if (spillText.richCell && spillText.richRect) {
+            drawRichCellText(paneContext, spillText.richCell, spillText.richRect);
+          } else {
+            paneContext.fillText(spillText.text, spillText.textX, spillText.textY);
+          }
           drawCanvasTextDecorations(paneContext, {
             align: spillText.align,
             color: spillText.color,
@@ -14354,6 +14461,7 @@ function XlsxGrid({
                     ? renderChartLoadingNode(renderChartLoading, chart, chartsheetRect, messages)
                     : (
                         <MemoChartSvg
+                          renderChartAsync={controller.renderChartAsync}
                           experimentalOfficeCharts={experimentalOfficeCharts}
                           chart={chart}
                           loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, chartsheetRect, messages, stage)}
@@ -15418,6 +15526,7 @@ function XlsxGrid({
               ? renderChartLoadingNode(renderChartLoading, chart, rect, messages)
               : (
                   <MemoChartSvg
+                    renderChartAsync={controller.renderChartAsync}
                     experimentalOfficeCharts={experimentalOfficeCharts}
                     chart={chart}
                     loadingFallback={(stage) => renderChartLoadingNode(renderChartLoading, chart, rect, messages, stage)}
@@ -16012,6 +16121,26 @@ function XlsxGrid({
     syncDrawingViewport(scroller, { immediate: true });
   }
 
+  function mergedNavigationIndices(cell: XlsxCellAddress, direction: string) {
+    const range = findMergedRange(cell) ?? { start: cell, end: cell };
+    const after = (indices: number[], boundary: number) => {
+      let low = 0;
+      let high = indices.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (indices[middle]! <= boundary) low = middle + 1;
+        else high = middle;
+      }
+      return low;
+    };
+    return {
+      row: direction === "ArrowDown" ? after(visibleRows, range.end.row)
+        : direction === "ArrowUp" ? after(visibleRows, range.start.row - 1) - 1 : rowIndexByActual.get(cell.row) ?? 0,
+      col: direction === "ArrowRight" ? after(visibleCols, range.end.col)
+        : direction === "ArrowLeft" ? after(visibleCols, range.start.col - 1) - 1 : colIndexByActual.get(cell.col) ?? 0
+    };
+  }
+
   function moveSelection(nextRowIndex: number, nextColIndex: number, extend: boolean) {
     const clampedRowIndex = Math.max(0, Math.min(nextRowIndex, visibleRows.length - 1));
     const clampedColIndex = Math.max(0, Math.min(nextColIndex, visibleCols.length - 1));
@@ -16021,7 +16150,7 @@ function XlsxGrid({
       return;
     }
 
-    const nextRange = { start: { row: nextRow, col: nextCol }, end: { row: nextRow, col: nextCol } };
+    const nextRange = resolveCellSelectionRange({ start: { row: nextRow, col: nextCol }, end: { row: nextRow, col: nextCol } });
     axisSelectionRef.current = null;
     selectionPreviewRangeRef.current = null;
     displayedSelectionRef.current = nextRange;
@@ -16163,6 +16292,8 @@ function XlsxGrid({
       return;
     }
 
+    const nextMerged = mergedNavigationIndices(currentCell, event.key);
+
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -16176,7 +16307,7 @@ function XlsxGrid({
         moveSelection(
           isCommandNavigation
             ? (rowIndexByActual.get(resolveLastUsedVisibleIndex(visibleRows, activeSheet?.maxUsedRow ?? -1)) ?? visibleRows.length - 1)
-            : currentRowIndex + 1,
+            : nextMerged.row,
           currentColIndex,
           event.shiftKey
         );
@@ -16193,7 +16324,7 @@ function XlsxGrid({
         moveSelection(
           isCommandNavigation
             ? (rowIndexByActual.get(resolveFirstUsedVisibleIndex(visibleRows, activeSheet?.minUsedRow ?? -1)) ?? 0)
-            : currentRowIndex - 1,
+            : nextMerged.row,
           currentColIndex,
           event.shiftKey
         );
@@ -16211,7 +16342,7 @@ function XlsxGrid({
           currentRowIndex,
           isCommandNavigation
             ? (colIndexByActual.get(resolveFirstUsedVisibleIndex(visibleCols, activeSheet?.minUsedCol ?? -1)) ?? 0)
-            : currentColIndex - 1,
+            : nextMerged.col,
           event.shiftKey
         );
         break;
@@ -16228,7 +16359,7 @@ function XlsxGrid({
           currentRowIndex,
           isCommandNavigation
             ? (colIndexByActual.get(resolveLastUsedVisibleIndex(visibleCols, activeSheet?.maxUsedCol ?? -1)) ?? visibleCols.length - 1)
-            : currentColIndex + 1,
+            : nextMerged.col,
           event.shiftKey
         );
         break;
@@ -16268,33 +16399,20 @@ function XlsxGrid({
         }
         moveSelection(resolvePageRowIndex(currentRowIndex, -1), currentColIndex, event.shiftKey);
         break;
-      case "Tab":
+      case "Tab": {
         event.preventDefault();
-        if (event.shiftKey) {
-          moveSelection(
-            currentColIndex > 0 ? currentRowIndex : currentRowIndex - 1,
-            currentColIndex > 0 ? currentColIndex - 1 : visibleCols.length - 1,
-            false
-          );
-        } else {
-          moveSelection(
-            currentColIndex < visibleCols.length - 1 ? currentRowIndex : currentRowIndex + 1,
-            currentColIndex < visibleCols.length - 1 ? currentColIndex + 1 : 0,
-            false
-          );
-        }
+        const next = mergedNavigationIndices(currentCell, event.shiftKey ? "ArrowLeft" : "ArrowRight");
+        moveSelection(next.col < 0 ? currentRowIndex - 1 : next.col >= visibleCols.length ? currentRowIndex + 1 : currentRowIndex,
+          next.col < 0 ? visibleCols.length - 1 : next.col >= visibleCols.length ? 0 : next.col, false);
         break;
-      case "Enter":
+      }
+      case "Enter": {
         event.preventDefault();
-        if (event.metaKey || event.ctrlKey || event.altKey) {
-          break;
-        }
-        if (event.shiftKey) {
-          moveSelection(currentRowIndex - 1, currentColIndex, false);
-          break;
-        }
-        moveSelection(currentRowIndex + 1, currentColIndex, false);
+        if (event.metaKey || event.ctrlKey || event.altKey) break;
+        const next = mergedNavigationIndices(currentCell, event.shiftKey ? "ArrowUp" : "ArrowDown");
+        moveSelection(next.row, next.col, false);
         break;
+      }
       case "Backspace":
       case "Delete":
         if (!readOnly) {
@@ -16530,20 +16648,21 @@ function XlsxGrid({
           }}
           style={{
             backgroundColor: selectionStroke,
-            border: `${Math.max(1, zoomFactor)}px solid ${palette.surface}`,
+            border: `1px solid ${palette.surface}`,
+            boxSizing: "border-box",
             contain: "layout paint",
             cursor: "crosshair",
             display: !readOnly && resolvedSelectionOverlay ? "block" : "none",
-            height: 8 * zoomFactor,
-            left: resolvedSelectionOverlay ? resolvedSelectionOverlay.left + resolvedSelectionOverlay.width - (4 * zoomFactor) : 0,
+            height: 8,
+            left: resolvedSelectionOverlay ? resolvedSelectionOverlay.left + resolvedSelectionOverlay.width - 4 : 0,
             pointerEvents: "auto",
             position: "absolute",
-            top: resolvedSelectionOverlay ? resolvedSelectionOverlay.top + resolvedSelectionOverlay.height - (4 * zoomFactor) : 0,
+            top: resolvedSelectionOverlay ? resolvedSelectionOverlay.top + resolvedSelectionOverlay.height - 4 : 0,
             transition: shouldAnimateCanvasSelectionGeometry
               ? "left 120ms cubic-bezier(0.22, 1, 0.36, 1), top 120ms cubic-bezier(0.22, 1, 0.36, 1)"
               : "none",
             willChange: shouldAnimateCanvasSelectionGeometry ? "left, top" : undefined,
-            width: 8 * zoomFactor,
+            width: 8,
             zIndex: 25
           }}
         />
@@ -16806,6 +16925,7 @@ function XlsxGrid({
                       }}
                       inputRef={editingInputRef}
                       value={editingValue}
+                      wrapText={editingCellData.style.whiteSpace === "pre-wrap"}
                       references={formulaReferences}
                       onBlur={handleEditingBlur}
                       onChange={cellEditorSession?.setValue ?? setEditingValue}
@@ -18308,6 +18428,10 @@ export function useXlsxViewerThumbnails(
                   : batchedCell?.value ?? ""
           };
 
+          nextData.richText = resolveRichCellRuns(
+            worksheet ? worksheet.getRichTextAt(row, col) : batchedCell?.richText,
+            nextData.value, nextData.style, sheet.themePalette, 1
+          );
           nextData.canvas = buildCanvasCellStyleCache(nextData.style);
           cellRenderCache.set(cacheKey, nextData);
           return nextData;
@@ -18485,7 +18609,9 @@ export function useXlsxViewerThumbnails(
                   : textLeft;
               const singleLineHeight = resolveCanvasLineHeight(cellData.style, 12);
 
-              if (cellData.textRotationDeg) {
+              if (cellData.richText) {
+                drawRichCellText(context, cellData, { left: textLeft, top: contentTop, width: maxTextWidth, height: contentHeight });
+              } else if (cellData.textRotationDeg) {
                 drawRotatedCellText(context, rawText, cellData.textRotationDeg, {
                   left: textLeft, top: contentTop, width: maxTextWidth, height: contentHeight
                 }, align, cellData.style.verticalAlign, singleLineHeight);

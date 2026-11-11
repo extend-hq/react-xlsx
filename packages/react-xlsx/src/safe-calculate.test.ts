@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { before, describe, it } from "node:test";
-import initSheetsWasm, { Workbook } from "@dukelib/sheets-wasm";
+import initSheetsWasm, { Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import { strToU8, zipSync } from "fflate";
 import { safeCalculate } from "./safe-calculate.ts";
 
@@ -75,7 +75,7 @@ function calculate(bytes: Uint8Array) {
 describe("safeCalculate", () => {
   before(async () => {
     const wasmFile = readFileSync(
-      new URL(import.meta.resolve("@dukelib/sheets-wasm/duke_sheets_wasm_bg.wasm"))
+      new URL(import.meta.resolve("./duke-sheets/generated/duke_sheets_wasm_bg.wasm"))
     );
     await initSheetsWasm({ module_or_path: wasmFile });
   });

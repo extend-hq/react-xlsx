@@ -1,7 +1,7 @@
 import { useXlsxMessages } from "./messages-context";
 import * as React from "react";
-import type { ChartData, OfficeCharts } from "./office-chart-types";
-import { projectChartData } from "./chart-data-projection";
+import type { OfficeCharts } from "./office-chart-types";
+import { renderChartInWorker } from "./chart-worker-render";
 import { useChartEvents } from "./chart-interaction";
 import { applyChartSelection } from "./chart-selection";
 import { officeFontFallback } from "@extend-ai/office-fonts";
@@ -141,79 +141,41 @@ function safeChartSvg(markup: string, prefix: string, seriesCount: number, serie
   return svg as unknown as SVGSVGElement;
 }
 
-function renderSharedChart(renderer: OfficeCharts, chart: XlsxChart, source: XlsxChartRenderSource, width: number, height: number, prefix: string) {
-  try {
-    const data: ChartData = {
-      title: chart.title,
-      series: (source.sourceSeries ?? chart.series).map((series, ordinal) => {
-        const chartType = source.seriesTypes?.[ordinal] ?? source.kind;
-        const xy = chartType === "scatter" || chartType === "bubble";
-        const indexedX = source.indexedXSeries?.[ordinal] === true;
-        const numericCategories = series.raw?.chartCategoryNumericValues as Array<number | null> | undefined;
-        const useNumericCategories = source.dateCategorySeries?.[ordinal] === true || (xy && !indexedX);
-        const hierarchy = series.raw?.chartExHierarchyCategories as string[][] | undefined;
-        const colorStrings = series.raw?.chartExColorStrings as Array<string | null> | undefined;
-        const classicHierarchy = series.raw?.chartHierarchyCategories as Array<Array<{ level: number; label: string }>> | undefined;
-        return {
-          chartType,
-          name: series.name,
-          points: Array.from({ length: Math.max(series.values.length, indexedX ? 0 : series.categories.length, series.bubbleSizes?.length ?? 0) }, (_, index) => {
-            const value = series.values[index];
-            const label = useNumericCategories && numericCategories?.[index] != null ? numericCategories[index] : series.categories[index];
-            const bubble = series.bubbleSizes?.[index];
-            return {
-              index,
-              value: xy ? undefined : colorStrings?.[index] ?? (value == null ? null : String(value)),
-              x: indexedX ? String(index + 1) : xy && label != null ? String(label) : undefined,
-              y: xy && value != null ? String(value) : undefined,
-              bubbleSize: bubble == null ? undefined : String(bubble),
-              categories: xy ? [] : hierarchy?.[index]?.length
-                ? [...hierarchy[index]].reverse().map((label, level) => ({level, label}))
-                : classicHierarchy?.[index]?.length ? classicHierarchy[index]
-                : series.categories.length || series.categoriesRef?.formula
-                  ? [{ level: 0, label: label == null ? "" : String(label) }]
-                  : []
-            };
-          })
-        };
-      })
-    };
-    const projected = projectChartData(source.xml, data, (source.sourceSeries ?? chart.series)
-      .map(series => series.raw?.chartExcludedPointIndices as number[] | undefined));
-    const svg = renderer.renderChart(projected.xml, {
-      themeColors: source.themeColors,
-      themeXml: source.themeXml,
-      themeOverrideXml: source.themeOverrideXml,
-      styleXml: source.styleXml,
-      colorStyleXml: source.colorStyleXml,
-      images: source.images,
-      drawings: source.drawings,
-      width, height,
-      interactive: true,
-      spreadsheetDefaults: true,
-      fontFamily: chart.fontFamily,
-      data: projected.data
-    });
-    return svg ? safeChartSvg(svg, prefix, chart.series.length,
-      source.sourceSeries?.map(series => chart.series.findIndex(candidate => candidate.id === series.id)),
-      chart.chartType !== "Surface", projected.pointMaps) : null;
-  } catch {
-    return null;
-  }
-}
-
 export function SharedChartSvg(props: ChartSvgProps & {
   source: XlsxChartRenderSource;
-  renderer: OfficeCharts;
+  renderer?: OfficeCharts | null;
   fallback: React.ReactNode;
+  loadingFallback?: (stage: "renderer" | "map") => React.ReactNode;
 }) {
   const messages = useXlsxMessages();
-  const { chart, rect, renderer, source, selectedChartElement, fallback } = props;
+  const { chart, rect, renderer, source, selectedChartElement, fallback, renderChartAsync } = props;
   const id = React.useId();
   const width = Math.max(1, rect.width);
   const height = Math.max(1, rect.height);
-  const svg = React.useMemo(() => renderSharedChart(renderer, chart, source, width, height,
-    "oc-" + id.replace(/[^\w-]/g, "") + "-"), [renderer, chart, source, width, height, id]);
+  const [rendered, setRendered] = React.useState<{
+    chart: XlsxChart; source: XlsxChartRenderSource; width: number; height: number; svg: SVGSVGElement | null;
+  } | null>(null);
+  const renderChartRef = React.useRef(chart);
+  const previous = renderChartRef.current;
+  if (Object.keys(chart).some(key => key !== "anchor" && chart[key as keyof XlsxChart] !== previous[key as keyof XlsxChart])
+    || Object.keys(previous).some(key => key !== "anchor" && !(key in chart))) renderChartRef.current = chart;
+  const renderChart = renderChartRef.current;
+  const isPending = rendered?.chart !== renderChart || rendered?.source !== source || rendered?.width !== width || rendered?.height !== height;
+  const svg = rendered?.chart.id === chart.id ? rendered.svg : null;
+  React.useEffect(() => {
+    let active = true;
+    const request = renderer
+      ? Promise.resolve(renderChartInWorker(renderer, renderChart, source, width, height))
+      : renderChartAsync?.(renderChart, source, width, height) ?? Promise.resolve(null);
+    void request.then(result => {
+      if (!active) return;
+      const nextSvg = result?.svg ? safeChartSvg(result.svg, "oc-" + id.replace(/[^\w-]/g, "") + "-", chart.series.length,
+        source.sourceSeries?.map(series => chart.series.findIndex(candidate => candidate.id === series.id)),
+        chart.chartType !== "Surface", result.pointMaps) : null;
+      setRendered({ chart: renderChart, source, width, height, svg: nextSvg });
+    }).catch(() => { if (active) setRendered({ chart: renderChart, source, width, height, svg: null }); });
+    return () => { active = false; };
+  }, [renderer, renderChart, source, width, height, id, renderChartAsync]);
   const graphics = React.useRef<SVGGElement>(null);
   React.useLayoutEffect(() => {
     if (!graphics.current || !svg) return;
@@ -233,6 +195,7 @@ export function SharedChartSvg(props: ChartSvgProps & {
     };
   }, [svg, chart.id, chart.is3d, selectedChartElement]);
   const { handlePointerDown, handleDoubleClick } = useChartEvents(props);
+  if (!svg && isPending) return <>{props.loadingFallback?.("renderer") ?? <div aria-busy="true" />}</>;
   if (!svg) return <div data-xlsx-chart-fallback="unsupported" style={{width:"100%",height:"100%"}}>{fallback}</div>;
   return (
     <svg

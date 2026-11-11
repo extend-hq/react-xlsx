@@ -1,5 +1,6 @@
+import { parseWorkbookXml, serializeWorkbookXml } from "./workbook-xml";
 import { getBuiltinChartColor, getBuiltinChartSurfaceStyle, resolveBuiltinChartColor } from "./builtin-chart-styles";
-import type { Workbook } from "@dukelib/sheets-wasm";
+import type { Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import { collectChartsheetDrawingOrigins } from "./chartsheet-payload";
 import { strFromU8, strToU8 } from "fflate";
 import type { WorkbookImageAssets, WorkbookImageSheetOrigin } from "./images";
@@ -2545,19 +2546,15 @@ function readArchiveText(archive: Record<string, Uint8Array>, path: string | nul
 }
 
 function parseXml(xml: string) {
-  if (typeof DOMParser === "undefined") {
-    return null;
-  }
-
   try {
-    return new DOMParser().parseFromString(xml, "application/xml");
+    return parseWorkbookXml(xml);
   } catch {
     return null;
   }
 }
 
 function serializeXml(document: XMLDocument) {
-  return new XMLSerializer().serializeToString(document);
+  return serializeWorkbookXml(document);
 }
 
 function getLocalChildren(parent: ParentNode | null | undefined, localName: string) {

@@ -1,7 +1,7 @@
 import type { OfficeCharts } from "./office-chart-types";
 import type * as React from "react";
 import type { XlsxViewerMessages } from "./messages";
-import type { Workbook, Worksheet } from "@dukelib/sheets-wasm";
+import type { Workbook, Worksheet } from "./duke-sheets/generated/duke_sheets_wasm.js";
 
 export type { XlsxViewerMessages } from "./messages";
 
@@ -1093,7 +1093,7 @@ export interface UseXlsxViewerControllerOptions {
    */
   showHiddenSheets?: boolean;
   /**
-   * Skips OOXML ZIP/XML parsing and relies on `@dukelib/sheets-wasm` metadata only.
+   * Skips supplemental viewer metadata and uses the bundled native workbook metadata.
    * This is automatically used for legacy `.xls` files.
    *
    * @default false
@@ -1109,7 +1109,8 @@ export interface UseXlsxViewerControllerOptions {
    */
   src?: string;
   /**
-   * Parses supported workbook data in a Web Worker so large files do not block React rendering.
+   * Keeps read-only workbook queries in the parser worker. When false, hydrates a local model from a binary snapshot.
+   * Source archive and XML decoding always run in the worker.
    *
    * @default true
    */
@@ -1152,9 +1153,10 @@ export interface XlsxViewerController {
   charts: XlsxChart[];
   chartsheets: XlsxChartsheet[];
   exportCsv: () => void;
-  exportXlsx: () => void;
-  /** The current workbook as XLSX bytes, the same bytes `exportXlsx()` downloads; `null` before a workbook loads. */
-  getXlsxBytes: () => Uint8Array | null;
+  exportXlsx: () => Promise<void>;
+  /** Resolves to the current workbook as XLSX bytes, or null before an editable model loads. */
+  renderChartAsync?: import("./chart-renderer-types").RenderChartAsync;
+  getXlsxBytes: () => Promise<Uint8Array | null>;
   error: Error | null;
   file?: ArrayBuffer;
   fillSelection: (targetRange: XlsxCellRange) => void;

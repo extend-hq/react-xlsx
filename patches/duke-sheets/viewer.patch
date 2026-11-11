@@ -1,0 +1,1724 @@
+diff --git a/bindings/wasm/Cargo.lock b/bindings/wasm/Cargo.lock
+index 69945c5..f285e9f 100644
+--- a/bindings/wasm/Cargo.lock
++++ b/bindings/wasm/Cargo.lock
+@@ -41,2 +41,3 @@ dependencies = [
+  "once_cell",
++ "serde",
+  "version_check",
+@@ -101,2 +102,11 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+ 
++[[package]]
++name = "bincode"
++version = "1.3.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
++dependencies = [
++ "serde",
++]
++
+ [[package]]
+@@ -249,2 +259,3 @@ dependencies = [
+  "num-traits",
++ "serde",
+  "wasm-bindgen",
+@@ -434,2 +445,3 @@ dependencies = [
+  "quick-xml",
++ "serde",
+  "thiserror 1.0.69",
+@@ -444,2 +456,3 @@ dependencies = [
+  "duke-sheets-chart",
++ "serde",
+  "ssfmt",
+@@ -507,2 +520,3 @@ version = "0.1.24"
+ dependencies = [
++ "bincode",
+  "chrono",
+@@ -519,6 +533,9 @@ dependencies = [
+  "js-sys",
++ "quick-xml",
+  "serde",
+  "serde-wasm-bindgen",
++ "serde_json",
+  "wasm-bindgen",
+  "wasm-bindgen-test",
++ "zip",
+ ]
+@@ -568,2 +585,3 @@ dependencies = [
+  "quick-xml",
++ "serde",
+  "thiserror 1.0.69",
+diff --git a/bindings/wasm/Cargo.toml b/bindings/wasm/Cargo.toml
+index 94c14b2..571c95e 100644
+--- a/bindings/wasm/Cargo.toml
++++ b/bindings/wasm/Cargo.toml
+@@ -13,3 +13,3 @@ crate-type = ["cdylib", "rlib"]
+ duke-sheets = { path = "../../crates/duke-sheets", features = ["full"] }
+-duke-sheets-core = { path = "../../crates/duke-sheets-core" }
++duke-sheets-core = { path = "../../crates/duke-sheets-core", features = ["serde"] }
+ duke-sheets-crypto = { path = "../../crates/duke-sheets-crypto" }
+@@ -24,2 +24,6 @@ serde = { version = "1.0", features = ["derive"] }
+ serde-wasm-bindgen = "0.6"
++bincode = "1.3"
++quick-xml = "0.37"
++serde_json = "1"
++zip = { version = "2.1", default-features = false, features = ["deflate"] }
+ # For WASM random number generation
+@@ -36,3 +40,3 @@ wasm-bindgen-test = "0.3"
+ [profile.release]
+-opt-level = "s"
++opt-level = 3
+ lto = true
+@@ -40,2 +44,2 @@ lto = true
+ [package.metadata.wasm-pack.profile.release]
+-wasm-opt = ["-Os", "--enable-reference-types"]
++wasm-opt = ["-O3", "--enable-reference-types"]
+diff --git a/bindings/wasm/src/lib.rs b/bindings/wasm/src/lib.rs
+index d65219b..d17d6f8 100644
+--- a/bindings/wasm/src/lib.rs
++++ b/bindings/wasm/src/lib.rs
+@@ -56,2 +56,3 @@ pub(crate) mod drawings;
+ mod workbook_read;
++mod viewer;
+ mod worksheet_read;
+@@ -71,2 +72,3 @@ export interface JsRowCell {
+   value: string;
++  richText?: Array<{ text: string; font?: FontStyleInput | null }>;
+   style?: any;
+@@ -1196,2 +1198,3 @@ pub struct Workbook {
+     pub(crate) inner: Rc<RefCell<CoreWorkbook>>,
++    viewer_archive: Option<duke_sheets_xlsx::viewer::ViewerArchive>,
+ }
+@@ -1204,2 +1207,3 @@ impl Workbook {
+             inner: Rc::new(RefCell::new(CoreWorkbook::new())),
++            viewer_archive: None,
+         }
+@@ -1217,2 +1221,3 @@ impl Workbook {
+             inner: Rc::new(RefCell::new(wb)),
++            viewer_archive: None,
+         })
+@@ -1225,2 +1230,17 @@ impl Workbook {
+ 
++    #[wasm_bindgen(js_name = exportSnapshot)]
++    pub fn export_snapshot(&self) -> Result<Vec<u8>, JsError> {
++        let inner = self.inner.borrow();
++        let roundtrip = duke_sheets_xlsx::export_roundtrip_snapshot(&inner);
++        bincode::serialize(&(&*inner, roundtrip)).map_err(to_js_error)
++    }
++
++    #[wasm_bindgen(js_name = fromSnapshot)]
++    pub fn from_snapshot(data: &[u8]) -> Result<Workbook, JsError> {
++        let (mut inner, roundtrip): (CoreWorkbook, duke_sheets_xlsx::RoundtripSnapshot) = bincode::deserialize(data).map_err(to_js_error)?;
++        for sheet in inner.worksheets_mut() { sheet.restore_snapshot_state(); }
++        duke_sheets_xlsx::restore_roundtrip_snapshot(&inner, roundtrip);
++        Ok(Self { inner: Rc::new(RefCell::new(inner)), viewer_archive: None })
++    }
++
+     /// Load a workbook from bytes, auto-detecting the format (XLSX or XLS).
+@@ -1233,2 +1253,3 @@ impl Workbook {
+             inner: Rc::new(RefCell::new(wb)),
++            viewer_archive: None,
+         })
+@@ -1255,2 +1276,3 @@ impl Workbook {
+             inner: Rc::new(RefCell::new(wb)),
++            viewer_archive: None,
+         })
+diff --git a/bindings/wasm/src/types.rs b/bindings/wasm/src/types.rs
+index 82e2718..d420524 100644
+--- a/bindings/wasm/src/types.rs
++++ b/bindings/wasm/src/types.rs
+@@ -20,2 +20,4 @@ pub struct WasmRowCell {
+     #[serde(skip_serializing_if = "Option::is_none")]
++    pub rich_text: Option<Vec<WasmRichTextRun>>,
++    #[serde(skip_serializing_if = "Option::is_none")]
+     pub style: Option<WasmStyle>,
+@@ -2014,2 +2016,5 @@ pub struct WasmRunFont {
+     pub vertical_align: Option<String>,
++    pub family: Option<u8>,
++    pub charset: Option<u8>,
++    pub scheme: Option<String>,
+ }
+@@ -2019,2 +2024,5 @@ impl From<&core::RunFont> for WasmRunFont {
+         Self {
++            family: f.family,
++            charset: f.charset,
++            scheme: f.scheme.clone(),
+             bold: f.bold,
+diff --git a/bindings/wasm/src/viewer.rs b/bindings/wasm/src/viewer.rs
+new file mode 100644
+index 0000000..f5f95ff
+--- /dev/null
++++ b/bindings/wasm/src/viewer.rs
+@@ -0,0 +1,241 @@
++use crate::{to_js_error, Workbook};
++use quick_xml::{events::Event, Reader};
++use serde::Serialize;
++use std::cell::RefCell;
++use std::io::{Cursor, Read};
++use std::rc::Rc;
++use wasm_bindgen::prelude::*;
++
++#[derive(Serialize)]
++#[serde(untagged)]
++enum XmlChild {
++    Element(XmlElement),
++    Text(String),
++}
++#[derive(Serialize)]
++struct XmlElement(String, Vec<(String, String)>, Vec<XmlChild>);
++
++#[wasm_bindgen(js_name = parseXmlTree)]
++pub fn parse_xml_tree(xml: &str) -> Result<String, JsError> {
++    let normalized;
++    let xml = if xml.contains('\r') {
++        normalized = xml.replace("\r\n", "\n").replace('\r', "\n");
++        normalized.as_str()
++    } else {
++        xml
++    };
++    let mut reader = Reader::from_str(xml);
++    reader.config_mut().trim_text(false);
++    let mut stack = vec![XmlElement(String::new(), Vec::new(), Vec::new())];
++    loop {
++        match reader.read_event().map_err(to_js_error)? {
++            event @ (Event::Start(_) | Event::Empty(_)) => {
++                let empty = matches!(event, Event::Empty(_));
++                let e = match event {
++                    Event::Start(e) | Event::Empty(e) => e,
++                    _ => unreachable!(),
++                };
++                let name = reader
++                    .decoder()
++                    .decode(e.name().as_ref())
++                    .map_err(to_js_error)?
++                    .into_owned();
++                let attrs = e
++                    .attributes()
++                    .map(|a| {
++                        let a = a.map_err(to_js_error)?;
++                        Ok((
++                            reader
++                                .decoder()
++                                .decode(a.key.as_ref())
++                                .map_err(to_js_error)?
++                                .into_owned(),
++                            quick_xml::escape::unescape(
++                                &reader
++                                    .decoder()
++                                    .decode(a.value.as_ref())
++                                    .map_err(to_js_error)?
++                                    .replace(['\t', '\n'], " "),
++                            )
++                            .map_err(to_js_error)?
++                            .into_owned(),
++                        ))
++                    })
++                    .collect::<Result<Vec<_>, JsError>>()?;
++                let node = XmlElement(name, attrs, Vec::new());
++                if empty {
++                    stack.last_mut().unwrap().2.push(XmlChild::Element(node));
++                } else {
++                    if stack.len() >= 512 {
++                        return Err(JsError::new("XML nesting limit exceeded"));
++                    }
++                    stack.push(node);
++                }
++            }
++            Event::End(_) => {
++                if stack.len() <= 1 {
++                    return Err(JsError::new("Unexpected XML closing element"));
++                }
++                let node = stack.pop().unwrap();
++                stack.last_mut().unwrap().2.push(XmlChild::Element(node));
++            }
++            Event::Text(e) => {
++                let text = e.unescape().map_err(to_js_error)?.into_owned();
++                if stack.len() > 1 {
++                    stack.last_mut().unwrap().2.push(XmlChild::Text(text));
++                } else if !text.trim().is_empty() {
++                    return Err(JsError::new("Text outside XML root"));
++                }
++            }
++            Event::CData(e) => stack.last_mut().unwrap().2.push(XmlChild::Text(
++                reader
++                    .decoder()
++                    .decode(e.as_ref())
++                    .map_err(to_js_error)?
++                    .into_owned(),
++            )),
++            Event::DocType(_) => return Err(JsError::new("XML document types are not supported")),
++            Event::Eof => break,
++            _ => {}
++        }
++    }
++    if stack.len() != 1 {
++        return Err(JsError::new("Unclosed XML element"));
++    }
++    let root = stack.pop().unwrap();
++    if root.2.len() != 1 {
++        return Err(JsError::new("XML must contain one root element"));
++    }
++    serde_json::to_string(&root).map_err(to_js_error)
++}
++
++#[wasm_bindgen(js_name = decodeArchive)]
++pub fn decode_archive(data: &[u8]) -> Result<JsValue, JsError> {
++    let mut zip = zip::ZipArchive::new(Cursor::new(data)).map_err(to_js_error)?;
++    let object = js_sys::Object::new();
++    for i in 0..zip.len() {
++        let mut file = zip.by_index(i).map_err(to_js_error)?;
++        if file.is_dir() {
++            continue;
++        }
++        let name = file.name().replace('\\', "/");
++        let mut bytes = Vec::new();
++        file.read_to_end(&mut bytes).map_err(to_js_error)?;
++        js_sys::Reflect::set(
++            &object,
++            &JsValue::from_str(name.trim_start_matches('/')),
++            &js_sys::Uint8Array::from(bytes.as_slice()),
++        )
++        .map_err(|_| JsError::new("Unable to expose archive entry"))?;
++    }
++    Ok(object.into())
++}
++
++#[wasm_bindgen]
++impl Workbook {
++    #[wasm_bindgen(js_name = fromBytesForViewer)]
++    pub fn from_bytes_for_viewer(data: &[u8]) -> Result<Workbook, JsError> {
++        use duke_sheets::WorkbookExt;
++        let (workbook, archive) = duke_sheets_xlsx::viewer::capture_archive(|| {
++            duke_sheets_core::Workbook::from_bytes(data)
++        });
++        Ok(Workbook {
++            inner: Rc::new(RefCell::new(workbook.map_err(to_js_error)?)),
++            viewer_archive: archive,
++        })
++    }
++    #[wasm_bindgen(js_name = takeViewerArchive)]
++    pub fn take_viewer_archive(&mut self) -> Result<JsValue, JsError> {
++        let object = js_sys::Object::new();
++        for (name, bytes) in self.viewer_archive.take().unwrap_or_default() {
++            js_sys::Reflect::set(
++                &object,
++                &JsValue::from_str(&name),
++                &js_sys::Uint8Array::from(bytes.as_ref()),
++            )
++            .map_err(|_| JsError::new("Unable to expose archive entry"))?;
++        }
++        Ok(object.into())
++    }
++}
++
++#[wasm_bindgen(js_name = inspectArchive)]
++pub fn inspect_archive(data: &[u8]) -> Result<JsValue, JsError> {
++    #[derive(Serialize, Default)]
++    #[serde(rename_all = "camelCase")]
++    struct Sizes {
++        largest_worksheet_xml_bytes: u64,
++        total_worksheet_xml_bytes: u64,
++        shared_strings_bytes: u64,
++        too_large: bool,
++    }
++    let mut sizes = Sizes::default();
++    if !data.starts_with(b"PK") {
++        return crate::to_js_value(&sizes);
++    }
++    let mut zip = zip::ZipArchive::new(Cursor::new(data)).map_err(to_js_error)?;
++    for i in 0..zip.len() {
++        let file = zip.by_index(i).map_err(to_js_error)?;
++        let name = file.name().replace('\\', "/").to_ascii_lowercase();
++        if name.starts_with("xl/worksheets/") && name.ends_with(".xml") {
++            sizes.largest_worksheet_xml_bytes = sizes.largest_worksheet_xml_bytes.max(file.size());
++            sizes.total_worksheet_xml_bytes += file.size();
++        } else if name == "xl/sharedstrings.xml" {
++            sizes.shared_strings_bytes = file.size();
++        }
++    }
++    sizes.too_large = sizes.largest_worksheet_xml_bytes > 200 * 1024 * 1024
++        || sizes.shared_strings_bytes > 50 * 1024 * 1024
++        || sizes.total_worksheet_xml_bytes + sizes.shared_strings_bytes > 256 * 1024 * 1024;
++    crate::to_js_value(&sizes)
++}
++
++#[wasm_bindgen]
++impl Workbook {
++    #[wasm_bindgen(js_name = fontFamilies)]
++    pub fn font_families(&self) -> Vec<String> {
++        let mut names =
++            std::collections::BTreeSet::from(["Calibri".to_string(), "Arial".to_string()]);
++        let Some(archive) = &self.viewer_archive else {
++            return names.into_iter().collect();
++        };
++        for (path, bytes) in archive {
++            if !(path == "xl/styles.xml"
++                || path == "xl/sharedStrings.xml"
++                || path.starts_with("xl/theme/")
++                || path.starts_with("xl/charts/")
++                || path.starts_with("xl/drawings/"))
++                || !path.ends_with(".xml")
++            {
++                continue;
++            }
++            let mut reader = Reader::from_reader(bytes.as_ref());
++            let mut buffer = Vec::new();
++            loop {
++                match reader.read_event_into(&mut buffer) {
++                    Ok(Event::Start(e) | Event::Empty(e))
++                        if matches!(
++                            e.local_name().as_ref(),
++                            b"name" | b"rFont" | b"latin" | b"ea" | b"cs"
++                        ) =>
++                    {
++                        for attr in e.attributes().flatten() {
++                            if matches!(attr.key.as_ref(), b"val" | b"typeface") {
++                                if let Ok(value) = attr.decode_and_unescape_value(reader.decoder())
++                                {
++                                    if !value.is_empty() && !value.starts_with('+') {
++                                        names.insert(value.into_owned());
++                                    }
++                                }
++                            }
++                        }
++                    }
++                    Ok(Event::Eof) | Err(_) => break,
++                    _ => {}
++                }
++                buffer.clear();
++            }
++        }
++        names.into_iter().collect()
++    }
++}
+diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_read.rs
+index 197a5c2..53e3bec 100644
+--- a/bindings/wasm/src/worksheet_read.rs
++++ b/bindings/wasm/src/worksheet_read.rs
+@@ -116,2 +116,30 @@ impl Worksheet {
+ 
++    #[wasm_bindgen(js_name = getValueSnapshotAt)]
++    pub fn get_value_snapshot_at(&self, row: u32, col: u32) -> Result<Vec<u8>, JsError> {
++        let wb = self.workbook.borrow();
++        let ws = wb.worksheet(self.sheet_index).ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        bincode::serialize(&ws.get_value_at(row, col as u16)).map_err(to_js_error)
++    }
++
++    #[wasm_bindgen(js_name = restoreValueSnapshotAt)]
++    pub fn restore_value_snapshot_at(&self, row: u32, col: u32, bytes: &[u8]) -> Result<(), JsError> {
++        let value: duke_sheets_core::CellValue = bincode::deserialize(bytes).map_err(to_js_error)?;
++        let mut wb = self.workbook.borrow_mut();
++        let ws = wb.worksheet_mut(self.sheet_index).ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        ws.set_cell_value_at(row, col as u16, value).map_err(to_js_error)
++    }
++
++    #[wasm_bindgen(js_name = getRichTextAt)]
++    pub fn get_rich_text_at(&self, row: u32, col: u32) -> Result<JsValue, JsError> {
++        let wb = self.workbook.borrow();
++        let ws = wb.worksheet(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        match ws.get_value_at(row, col as u16) {
++            duke_sheets_core::CellValue::RichText(runs) => {
++                to_js_value(&runs.iter().map(crate::types::WasmRichTextRun::from).collect::<Vec<_>>())
++            }
++            _ => Ok(JsValue::NULL),
++        }
++    }
++
+     #[wasm_bindgen(js_name = getFormattedValue)]
+@@ -341,2 +369,6 @@ impl Worksheet {
+                 value,
++                rich_text: match ws.get_value_at(row, col) {
++                    duke_sheets_core::CellValue::RichText(runs) => Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect()),
++                    _ => None,
++                },
+                 style,
+diff --git a/crates/duke-sheets-chart/src/axis.rs b/crates/duke-sheets-chart/src/axis.rs
+index c703b24..c270fd9 100644
+--- a/crates/duke-sheets-chart/src/axis.rs
++++ b/crates/duke-sheets-chart/src/axis.rs
+@@ -7,2 +7,3 @@ use crate::text_properties::TextProperties;
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum AxisType {
+@@ -17,2 +18,3 @@ pub enum AxisType {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Axis {
+@@ -103,2 +105,3 @@ impl Axis {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum AxisPosition {
+@@ -113,2 +116,3 @@ pub enum AxisPosition {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TickMark {
+@@ -122,2 +126,3 @@ pub enum TickMark {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TickLabelPosition {
+@@ -131,2 +136,3 @@ pub enum TickLabelPosition {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum AxisCrosses {
+@@ -139,2 +145,3 @@ pub enum AxisCrosses {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum CrossBetween {
+diff --git a/crates/duke-sheets-chart/src/chart.rs b/crates/duke-sheets-chart/src/chart.rs
+index c6584c7..4f5b254 100644
+--- a/crates/duke-sheets-chart/src/chart.rs
++++ b/crates/duke-sheets-chart/src/chart.rs
+@@ -14,2 +14,3 @@ use crate::text_properties::TextProperties;
+ #[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ChartType {
+@@ -56,2 +57,3 @@ pub enum ChartType {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartLines {
+@@ -62,2 +64,3 @@ pub struct ChartLines {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct UpDownBars {
+@@ -71,2 +74,3 @@ pub struct UpDownBars {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartTypeGroup {
+@@ -105,2 +109,3 @@ pub struct ChartTypeGroup {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartAxis {
+@@ -113,2 +118,3 @@ pub struct ChartAxis {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Chart {
+@@ -250,2 +256,3 @@ impl Chart {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CellMarker {
+@@ -263,2 +270,3 @@ pub struct CellMarker {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum EditAs {
+@@ -271,2 +279,3 @@ pub enum EditAs {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum DrawingAnchor {
+@@ -359,2 +368,3 @@ impl DrawingAnchor {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ImageFormat {
+@@ -404,2 +414,3 @@ impl ImageFormat {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct EmbeddedImage {
+@@ -435,2 +446,3 @@ impl EmbeddedImage {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Surface {
+@@ -441,2 +453,3 @@ pub struct Surface {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum OfPieType {
+@@ -447,2 +460,3 @@ pub enum OfPieType {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum SplitType {
+@@ -456,2 +470,3 @@ pub enum SplitType {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum BarShape {
+diff --git a/crates/duke-sheets-chart/src/chart_ex.rs b/crates/duke-sheets-chart/src/chart_ex.rs
+index e285c31..0a5ceb6 100644
+--- a/crates/duke-sheets-chart/src/chart_ex.rs
++++ b/crates/duke-sheets-chart/src/chart_ex.rs
+@@ -14,2 +14,3 @@ use crate::formatting::{ChartShapeProperties, NumberFormat};
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ChartExLayout {
+@@ -41,2 +42,3 @@ pub enum ChartExLayout {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartEx {
+@@ -101,2 +103,3 @@ pub struct ChartEx {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExTitle {
+@@ -124,2 +127,3 @@ pub struct ChartExTitle {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExPlotArea {
+@@ -139,2 +143,3 @@ pub struct ChartExPlotArea {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExData {
+@@ -150,2 +155,3 @@ pub struct ChartExData {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExExternalData {
+@@ -159,2 +165,3 @@ pub struct ChartExExternalData {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ChartExDimension {
+@@ -186,2 +193,3 @@ pub enum ChartExDimension {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum StringDimType {
+@@ -197,2 +205,3 @@ pub enum StringDimType {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum NumericDimType {
+@@ -212,2 +221,3 @@ pub enum NumericDimType {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExStringLevel {
+@@ -223,2 +233,3 @@ pub struct ChartExStringLevel {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExNumericLevel {
+@@ -236,2 +247,3 @@ pub struct ChartExNumericLevel {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExSeries {
+@@ -271,2 +283,3 @@ pub struct ChartExSeries {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExText {
+@@ -280,2 +293,3 @@ pub struct ChartExText {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExTextData {
+@@ -289,2 +303,3 @@ pub struct ChartExTextData {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExValueColors {
+@@ -300,2 +315,3 @@ pub struct ChartExValueColors {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExValueColorPositions {
+@@ -313,2 +329,3 @@ pub struct ChartExValueColorPositions {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ChartExColorPosition {
+@@ -324,2 +341,3 @@ pub enum ChartExColorPosition {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExLayoutPr {
+@@ -353,2 +371,3 @@ pub struct ChartExLayoutPr {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExSeriesVisibility {
+@@ -368,2 +387,3 @@ pub struct ChartExSeriesVisibility {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExBinning {
+@@ -383,2 +403,3 @@ pub struct ChartExBinning {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExGeography {
+@@ -401,2 +422,3 @@ pub struct ChartExGeography {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExStatistics {
+@@ -408,2 +430,3 @@ pub struct ChartExStatistics {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExAxis {
+@@ -449,2 +472,3 @@ pub struct ChartExAxis {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExGridlines {
+@@ -456,2 +480,3 @@ pub struct ChartExGridlines {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ChartExScaling {
+@@ -477,2 +502,3 @@ pub enum ChartExScaling {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExAxisTitle {
+@@ -492,2 +518,3 @@ pub struct ChartExAxisTitle {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExAxisUnits {
+@@ -503,2 +530,3 @@ pub struct ChartExAxisUnits {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExAxisUnitsLabel {
+@@ -516,2 +544,3 @@ pub struct ChartExAxisUnitsLabel {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExOffset {
+@@ -525,2 +554,3 @@ pub struct ChartExOffset {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExLegend {
+@@ -544,2 +574,3 @@ pub struct ChartExLegend {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExDataLabels {
+@@ -571,2 +602,3 @@ pub struct ChartExDataLabels {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExDataLabel {
+@@ -596,2 +628,3 @@ pub struct ChartExDataLabel {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExDataPoint {
+@@ -607,2 +640,3 @@ pub struct ChartExDataPoint {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExFormatOverride {
+@@ -618,2 +652,3 @@ pub struct ChartExFormatOverride {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExPrintSettings {
+@@ -629,2 +664,3 @@ pub struct ChartExPrintSettings {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExHeaderFooter {
+@@ -652,2 +688,3 @@ pub struct ChartExHeaderFooter {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExPageMargins {
+@@ -669,2 +706,3 @@ pub struct ChartExPageMargins {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartExPageSetup {
+diff --git a/crates/duke-sheets-chart/src/chart_style.rs b/crates/duke-sheets-chart/src/chart_style.rs
+index e37a0db..53b117e 100644
+--- a/crates/duke-sheets-chart/src/chart_style.rs
++++ b/crates/duke-sheets-chart/src/chart_style.rs
+@@ -18,2 +18,3 @@
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct StyleReference {
+@@ -40,2 +41,3 @@ impl Default for StyleReference {
+ #[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum FontCollection {
+@@ -73,2 +75,3 @@ impl FontCollection {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct FontReference {
+@@ -84,2 +87,3 @@ pub struct FontReference {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct StyleEntry {
+@@ -117,2 +121,3 @@ impl StyleEntry {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct MarkerLayout {
+@@ -130,2 +135,3 @@ pub struct MarkerLayout {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartStyle {
+@@ -204,2 +210,3 @@ pub struct ChartStyle {
+ #[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ColorMethod {
+@@ -250,2 +257,3 @@ impl ColorMethod {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartColorStyle {
+@@ -268,2 +276,3 @@ pub struct ChartColorStyle {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ChartStylePart {
+@@ -278,2 +287,3 @@ pub enum ChartStylePart {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ChartColorStylePart {
+diff --git a/crates/duke-sheets-chart/src/config.rs b/crates/duke-sheets-chart/src/config.rs
+index 34def52..2496049 100644
+--- a/crates/duke-sheets-chart/src/config.rs
++++ b/crates/duke-sheets-chart/src/config.rs
+@@ -4,2 +4,3 @@
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct View3D {
+@@ -15,2 +16,3 @@ pub struct View3D {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartDataTable {
+@@ -24,2 +26,3 @@ pub struct ChartDataTable {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum DisplayBlanksAs {
+@@ -32,2 +35,3 @@ pub enum DisplayBlanksAs {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Layout {
+@@ -38,2 +42,3 @@ pub struct Layout {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ManualLayout {
+diff --git a/crates/duke-sheets-chart/src/data_labels.rs b/crates/duke-sheets-chart/src/data_labels.rs
+index 3c7e18d..3313e0f 100644
+--- a/crates/duke-sheets-chart/src/data_labels.rs
++++ b/crates/duke-sheets-chart/src/data_labels.rs
+@@ -10,2 +10,3 @@ use crate::text_properties::TextProperties;
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DataLabels {
+@@ -28,2 +29,3 @@ pub struct DataLabels {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum DataLabelPosition {
+@@ -42,2 +44,3 @@ pub enum DataLabelPosition {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DataPoint {
+@@ -52,2 +55,3 @@ pub struct DataPoint {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DataLabel {
+diff --git a/crates/duke-sheets-chart/src/drawing.rs b/crates/duke-sheets-chart/src/drawing.rs
+index 11bc839..7e559b5 100644
+--- a/crates/duke-sheets-chart/src/drawing.rs
++++ b/crates/duke-sheets-chart/src/drawing.rs
+@@ -74,2 +74,3 @@ pub fn row_height_to_emu(points: f64) -> i64 {
+ #[derive(Debug, Clone, Copy, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DefaultDrawingMetrics;
+@@ -214,2 +215,3 @@ pub fn marker_at_emu(
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct GroupTransform {
+@@ -241,2 +243,3 @@ pub struct GroupTransform {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChildTransform {
+diff --git a/crates/duke-sheets-chart/src/drawing_part/mod.rs b/crates/duke-sheets-chart/src/drawing_part/mod.rs
+index a25109c..9637ac4 100644
+--- a/crates/duke-sheets-chart/src/drawing_part/mod.rs
++++ b/crates/duke-sheets-chart/src/drawing_part/mod.rs
+@@ -18,2 +18,3 @@ pub mod write;
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct TwinText {
+@@ -25,2 +26,3 @@ pub struct TwinText {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct TwinTextRun {
+@@ -31,2 +33,3 @@ pub struct TwinTextRun {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct TwinRunFont {
+@@ -44,2 +47,3 @@ pub struct TwinRunFont {
+ #[derive(Debug, Clone, Copy)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TwinColor {
+@@ -81,2 +85,3 @@ impl Eq for TwinColor {}
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TwinUnderline {
+@@ -89,2 +94,3 @@ pub enum TwinUnderline {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TwinHorizontalAlignment {
+@@ -98,2 +104,3 @@ pub enum TwinHorizontalAlignment {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TwinVerticalAlignment {
+@@ -108,2 +115,3 @@ pub enum TwinVerticalAlignment {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ShapeFill {
+@@ -116,2 +124,3 @@ pub enum ShapeFill {
+ #[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ShapeLine {
+diff --git a/crates/duke-sheets-chart/src/error_bars.rs b/crates/duke-sheets-chart/src/error_bars.rs
+index 068a62e..b19df80 100644
+--- a/crates/duke-sheets-chart/src/error_bars.rs
++++ b/crates/duke-sheets-chart/src/error_bars.rs
+@@ -5,2 +5,3 @@ use crate::series::DataReference;
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ErrorBars {
+@@ -19,2 +20,3 @@ pub struct ErrorBars {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ErrorBarDirection {
+@@ -26,2 +28,3 @@ pub enum ErrorBarDirection {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ErrorBarType {
+@@ -34,2 +37,3 @@ pub enum ErrorBarType {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ErrorValueType {
+diff --git a/crates/duke-sheets-chart/src/formatting.rs b/crates/duke-sheets-chart/src/formatting.rs
+index 8e97243..16b54e0 100644
+--- a/crates/duke-sheets-chart/src/formatting.rs
++++ b/crates/duke-sheets-chart/src/formatting.rs
+@@ -4,2 +4,3 @@
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct NumberFormat {
+@@ -20,2 +21,3 @@ impl Default for NumberFormat {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartShapeProperties {
+@@ -28,2 +30,3 @@ pub struct ChartShapeProperties {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartColor {
+@@ -35,2 +38,3 @@ pub struct ChartColor {
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartLine {
+@@ -46,2 +50,3 @@ pub struct ChartLine {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct PictureOptions {
+diff --git a/crates/duke-sheets-chart/src/legend.rs b/crates/duke-sheets-chart/src/legend.rs
+index 93a75ec..1495562 100644
+--- a/crates/duke-sheets-chart/src/legend.rs
++++ b/crates/duke-sheets-chart/src/legend.rs
+@@ -5,2 +5,3 @@ use crate::text_properties::TextProperties;
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Legend {
+@@ -31,2 +32,3 @@ impl Legend {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum LegendPosition {
+@@ -42,2 +44,3 @@ pub enum LegendPosition {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct LegendEntry {
+diff --git a/crates/duke-sheets-chart/src/marker.rs b/crates/duke-sheets-chart/src/marker.rs
+index 4c5bcd6..274d6ba 100644
+--- a/crates/duke-sheets-chart/src/marker.rs
++++ b/crates/duke-sheets-chart/src/marker.rs
+@@ -4,2 +4,3 @@
+ #[derive(Debug, Clone, Default, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Marker {
+@@ -12,2 +13,3 @@ pub struct Marker {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum MarkerSymbol {
+diff --git a/crates/duke-sheets-chart/src/raw_rel.rs b/crates/duke-sheets-chart/src/raw_rel.rs
+index 566df46..daa2aae 100644
+--- a/crates/duke-sheets-chart/src/raw_rel.rs
++++ b/crates/duke-sheets-chart/src/raw_rel.rs
+@@ -4,2 +4,3 @@
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct RawRel {
+diff --git a/crates/duke-sheets-chart/src/series.rs b/crates/duke-sheets-chart/src/series.rs
+index 92ab4b4..53c0629 100644
+--- a/crates/duke-sheets-chart/src/series.rs
++++ b/crates/duke-sheets-chart/src/series.rs
+@@ -10,2 +10,3 @@ use crate::trendline::Trendline;
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DataSeries {
+@@ -70,2 +71,3 @@ impl DataSeries {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum DataReference {
+diff --git a/crates/duke-sheets-chart/src/text_properties.rs b/crates/duke-sheets-chart/src/text_properties.rs
+index 9947aab..5b77524 100644
+--- a/crates/duke-sheets-chart/src/text_properties.rs
++++ b/crates/duke-sheets-chart/src/text_properties.rs
+@@ -5,2 +5,3 @@
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct TextProperties {
+@@ -15,2 +16,3 @@ pub struct TextProperties {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TextVertical {
+@@ -24,2 +26,3 @@ pub enum TextVertical {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TextAnchor {
+@@ -31,2 +34,3 @@ pub enum TextAnchor {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TextWrap {
+diff --git a/crates/duke-sheets-chart/src/trendline.rs b/crates/duke-sheets-chart/src/trendline.rs
+index d326528..be4d4c3 100644
+--- a/crates/duke-sheets-chart/src/trendline.rs
++++ b/crates/duke-sheets-chart/src/trendline.rs
+@@ -7,2 +7,3 @@ use crate::text_properties::TextProperties;
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Trendline {
+@@ -26,2 +27,3 @@ pub struct Trendline {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TrendlineType {
+@@ -37,2 +39,3 @@ pub enum TrendlineType {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct TrendlineLabel {
+diff --git a/crates/duke-sheets-core/Cargo.toml b/crates/duke-sheets-core/Cargo.toml
+index b0a1f76..83c4062 100644
+--- a/crates/duke-sheets-core/Cargo.toml
++++ b/crates/duke-sheets-core/Cargo.toml
+@@ -26,2 +26,2 @@ proptest.workspace = true
+ default = []
+-serde = ["dep:serde", "chrono/serde"]
++serde = ["dep:serde", "serde/rc", "chrono/serde", "ahash/serde", "duke-sheets-chart/serde"]
+diff --git a/crates/duke-sheets-core/src/auto_filter.rs b/crates/duke-sheets-core/src/auto_filter.rs
+index 2680f29..620786a 100644
+--- a/crates/duke-sheets-core/src/auto_filter.rs
++++ b/crates/duke-sheets-core/src/auto_filter.rs
+@@ -15,2 +15,3 @@ use crate::cell::CellRange;
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct AutoFilter {
+@@ -37,2 +38,3 @@ impl AutoFilter {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct FilterColumn {
+@@ -62,2 +64,3 @@ impl FilterColumn {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ColumnFilter {
+@@ -78,2 +81,3 @@ pub enum ColumnFilter {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ValueFilter {
+@@ -87,2 +91,3 @@ pub struct ValueFilter {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CustomFilters {
+@@ -97,2 +102,3 @@ pub struct CustomFilters {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CustomFilterCondition {
+@@ -106,2 +112,3 @@ pub struct CustomFilterCondition {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum FilterOperator {
+@@ -144,2 +151,3 @@ impl FilterOperator {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Top10Filter {
+@@ -157,2 +165,3 @@ pub struct Top10Filter {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DynamicFilter {
+@@ -168,2 +177,3 @@ pub struct DynamicFilter {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum DynamicFilterType {
+@@ -293,2 +303,3 @@ impl DynamicFilterType {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ColorFilter {
+diff --git a/crates/duke-sheets-core/src/cell/address.rs b/crates/duke-sheets-core/src/cell/address.rs
+index fa2b796..0fd7544 100644
+--- a/crates/duke-sheets-core/src/cell/address.rs
++++ b/crates/duke-sheets-core/src/cell/address.rs
+@@ -12,2 +12,3 @@ use std::str::FromStr;
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CellAddress {
+@@ -233,2 +234,3 @@ impl FromStr for CellAddress {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CellRange {
+@@ -377,2 +379,3 @@ impl FromStr for CellRange {
+ /// Iterator over cells in a range
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CellRangeIterator {
+diff --git a/crates/duke-sheets-core/src/cell/storage.rs b/crates/duke-sheets-core/src/cell/storage.rs
+index e2d0158..55accee 100644
+--- a/crates/duke-sheets-core/src/cell/storage.rs
++++ b/crates/duke-sheets-core/src/cell/storage.rs
+@@ -13,2 +13,3 @@ use crate::style::StylePool;
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum StorageMode {
+@@ -24,2 +25,3 @@ pub enum StorageMode {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CellData {
+@@ -67,2 +69,3 @@ impl Default for CellData {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct SpillInfo {
+@@ -96,2 +99,3 @@ impl SpillInfo {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CellStorage {
+@@ -101,2 +105,3 @@ pub struct CellStorage {
+     /// Shared string pool for deduplication
++    #[cfg_attr(feature = "serde", serde(skip))]
+     pub(crate) string_pool: StringPool,
+@@ -156,2 +161,3 @@ pub struct CellStorage {
+ #[derive(Debug, Clone, Copy)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ struct CachedBounds {
+@@ -164,2 +170,9 @@ struct CachedBounds {
+ impl CellStorage {
++    pub(crate) fn restore_snapshot_state(&mut self) {
++        self.style_pool.restore_index();
++        for cell in self.cells.values_mut() {
++            if let CellValue::String(text) = &cell.value { cell.value = CellValue::String(self.string_pool.intern(text.as_str())); }
++        }
++    }
++
+     /// Create a new empty cell storage
+diff --git a/crates/duke-sheets-core/src/cell/value.rs b/crates/duke-sheets-core/src/cell/value.rs
+index f18538b..f7bd40f 100644
+--- a/crates/duke-sheets-core/src/cell/value.rs
++++ b/crates/duke-sheets-core/src/cell/value.rs
+@@ -14,2 +14,3 @@ use crate::rich_text::{rich_text_to_plain, RichTextRun};
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct FormulaData {
+@@ -42,2 +43,3 @@ impl FormulaData {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum CellValue {
+@@ -236,2 +238,3 @@ impl From<CellError> for CellValue {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum CellError {
+@@ -321,2 +324,3 @@ impl fmt::Display for CellError {
+ #[derive(Clone, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct SharedString(Arc<str>);
+@@ -380,2 +384,3 @@ impl From<String> for SharedString {
+ #[derive(Debug, Default, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct StringPool {
+diff --git a/crates/duke-sheets-core/src/column.rs b/crates/duke-sheets-core/src/column.rs
+index b7a5fc4..a9eec37 100644
+--- a/crates/duke-sheets-core/src/column.rs
++++ b/crates/duke-sheets-core/src/column.rs
+@@ -4,2 +4,3 @@
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Column {
+@@ -48,2 +49,3 @@ impl Column {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ColumnData {
+diff --git a/crates/duke-sheets-core/src/comment.rs b/crates/duke-sheets-core/src/comment.rs
+index e6ed73c..575b3c6 100644
+--- a/crates/duke-sheets-core/src/comment.rs
++++ b/crates/duke-sheets-core/src/comment.rs
+@@ -35,2 +35,3 @@ use crate::drawing::DrawingText;
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CellComment {
+diff --git a/crates/duke-sheets-core/src/conditional_format.rs b/crates/duke-sheets-core/src/conditional_format.rs
+index 4bd38fe..f51eb98 100644
+--- a/crates/duke-sheets-core/src/conditional_format.rs
++++ b/crates/duke-sheets-core/src/conditional_format.rs
+@@ -27,2 +27,3 @@ use crate::style::{Color, Style};
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ConditionalFormatRule {
+@@ -311,2 +312,3 @@ impl ConditionalFormatRule {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum CfRuleType {
+@@ -416,2 +418,3 @@ impl CfRuleType {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum CfOperator {
+@@ -469,2 +472,3 @@ impl CfOperator {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CfValue {
+@@ -515,2 +519,3 @@ impl CfValue {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct CfColorValue {
+@@ -537,2 +542,3 @@ impl CfColorValue {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum CfValueType {
+@@ -590,2 +596,3 @@ impl CfValueType {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum IconSetStyle {
+@@ -719,2 +726,3 @@ impl IconSetStyle {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TimePeriod {
+diff --git a/crates/duke-sheets-core/src/drawing.rs b/crates/duke-sheets-core/src/drawing.rs
+index 467a137..672fd6d 100644
+--- a/crates/duke-sheets-core/src/drawing.rs
++++ b/crates/duke-sheets-core/src/drawing.rs
+@@ -46,2 +46,3 @@ use crate::{
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DrawingText {
+@@ -246,2 +247,3 @@ impl From<&str> for DrawingText {
+ #[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ShapeGeometry {
+@@ -260,2 +262,3 @@ impl Default for ShapeGeometry {
+ #[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ShapeFill {
+@@ -270,2 +273,3 @@ pub enum ShapeFill {
+ #[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ShapeLine {
+@@ -291,2 +295,3 @@ pub struct ShapeLine {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Shape {
+@@ -525,2 +530,3 @@ impl Shape {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DrawingMeta {
+@@ -560,2 +566,3 @@ impl Default for DrawingMeta {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DrawingObject {
+@@ -571,2 +578,3 @@ pub struct DrawingObject {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum DrawingKind {
+@@ -675,2 +683,3 @@ impl DrawingKind {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct RawDrawing {
+@@ -688,2 +697,3 @@ pub struct RawDrawing {
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Group {
+@@ -698,2 +708,3 @@ pub struct Group {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct GroupChild {
+@@ -719,2 +730,3 @@ pub type DrawingPath = Vec<usize>;
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct RectEmu {
+diff --git a/crates/duke-sheets-core/src/form_control.rs b/crates/duke-sheets-core/src/form_control.rs
+index 4686270..5212465 100644
+--- a/crates/duke-sheets-core/src/form_control.rs
++++ b/crates/duke-sheets-core/src/form_control.rs
+@@ -68,2 +68,3 @@ pub type ControlText = crate::drawing::DrawingText;
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum CheckState {
+@@ -81,2 +82,3 @@ pub enum CheckState {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ListSelection {
+@@ -93,2 +95,3 @@ pub enum ListSelection {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum FormControlKind {
+@@ -404,2 +407,3 @@ fn validate_numeric_control(value: u16, min: u16, max: u16, increment: u16) -> R
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct FormControl {
+@@ -494,2 +498,3 @@ pub type PlacedControl<'a> = Placed<'a, FormControl>;
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct FormControlInteractionResult {
+diff --git a/crates/duke-sheets-core/src/hyperlink.rs b/crates/duke-sheets-core/src/hyperlink.rs
+index d79e566..701bb61 100644
+--- a/crates/duke-sheets-core/src/hyperlink.rs
++++ b/crates/duke-sheets-core/src/hyperlink.rs
+@@ -2,2 +2,3 @@
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Hyperlink {
+diff --git a/crates/duke-sheets-core/src/locale.rs b/crates/duke-sheets-core/src/locale.rs
+index a933c88..88be361 100644
+--- a/crates/duke-sheets-core/src/locale.rs
++++ b/crates/duke-sheets-core/src/locale.rs
+@@ -28,2 +28,3 @@
+ #[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Locale {
+diff --git a/crates/duke-sheets-core/src/named_range.rs b/crates/duke-sheets-core/src/named_range.rs
+index c282f0d..a1c7a84 100644
+--- a/crates/duke-sheets-core/src/named_range.rs
++++ b/crates/duke-sheets-core/src/named_range.rs
+@@ -19,2 +19,3 @@ use std::collections::HashMap;
+ #[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum NameScope {
+@@ -34,2 +35,3 @@ pub enum NameScope {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct NamedRange {
+@@ -109,2 +111,3 @@ impl NamedRange {
+ #[derive(Debug, Default, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct NamedRangeCollection {
+diff --git a/crates/duke-sheets-core/src/protection.rs b/crates/duke-sheets-core/src/protection.rs
+index 64b0b8e..2541dc5 100644
+--- a/crates/duke-sheets-core/src/protection.rs
++++ b/crates/duke-sheets-core/src/protection.rs
+@@ -10,2 +10,3 @@ use crate::CellRange;
+ #[derive(Debug, Clone, Default, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct WorkbookProtection {
+@@ -43,2 +44,3 @@ impl WorkbookProtection {
+ #[derive(Debug, Clone, Default, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ProtectedRange {
+diff --git a/crates/duke-sheets-core/src/rich_text.rs b/crates/duke-sheets-core/src/rich_text.rs
+index 50daa8d..61f32a8 100644
+--- a/crates/duke-sheets-core/src/rich_text.rs
++++ b/crates/duke-sheets-core/src/rich_text.rs
+@@ -10,2 +10,3 @@ use crate::style::{Color, FontVerticalAlign, Underline};
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct RunFont {
+@@ -58,2 +59,3 @@ impl RunFont {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct RichTextRun {
+diff --git a/crates/duke-sheets-core/src/row.rs b/crates/duke-sheets-core/src/row.rs
+index 043bfcb..5426b70 100644
+--- a/crates/duke-sheets-core/src/row.rs
++++ b/crates/duke-sheets-core/src/row.rs
+@@ -6,2 +6,3 @@ use crate::cell::CellData;
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Row {
+diff --git a/crates/duke-sheets-core/src/style/alignment.rs b/crates/duke-sheets-core/src/style/alignment.rs
+index 47bbf75..1dbcd7e 100644
+--- a/crates/duke-sheets-core/src/style/alignment.rs
++++ b/crates/duke-sheets-core/src/style/alignment.rs
+@@ -4,2 +4,3 @@
+ #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Alignment {
+@@ -66,2 +67,3 @@ impl Alignment {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum HorizontalAlignment {
+@@ -88,2 +90,3 @@ pub enum HorizontalAlignment {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum VerticalAlignment {
+@@ -104,2 +107,3 @@ pub enum VerticalAlignment {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ReadingOrder {
+diff --git a/crates/duke-sheets-core/src/style/border.rs b/crates/duke-sheets-core/src/style/border.rs
+index d6ecacd..47e39a2 100644
+--- a/crates/duke-sheets-core/src/style/border.rs
++++ b/crates/duke-sheets-core/src/style/border.rs
+@@ -6,2 +6,3 @@ use super::Color;
+ #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct BorderStyle {
+@@ -81,2 +82,3 @@ impl BorderStyle {
+ #[derive(Debug, Clone, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct BorderEdge {
+@@ -112,2 +114,3 @@ impl BorderEdge {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum BorderLineStyle {
+@@ -146,2 +149,3 @@ pub enum BorderLineStyle {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum DiagonalDirection {
+diff --git a/crates/duke-sheets-core/src/style/color.rs b/crates/duke-sheets-core/src/style/color.rs
+index 4a81c9e..77caab6 100644
+--- a/crates/duke-sheets-core/src/style/color.rs
++++ b/crates/duke-sheets-core/src/style/color.rs
+@@ -8,2 +8,3 @@ use std::fmt;
+ #[derive(Debug, Clone, Copy, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum Color {
+diff --git a/crates/duke-sheets-core/src/style/fill.rs b/crates/duke-sheets-core/src/style/fill.rs
+index 7f8a9ef..a106355 100644
+--- a/crates/duke-sheets-core/src/style/fill.rs
++++ b/crates/duke-sheets-core/src/style/fill.rs
+@@ -6,2 +6,3 @@ use super::Color;
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum FillStyle {
+@@ -96,2 +97,3 @@ impl Eq for FillStyle {}
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum PatternType {
+@@ -140,2 +142,3 @@ pub enum PatternType {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum GradientType {
+@@ -150,2 +153,3 @@ pub enum GradientType {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct GradientStop {
+diff --git a/crates/duke-sheets-core/src/style/font.rs b/crates/duke-sheets-core/src/style/font.rs
+index a9b74ba..69b2df3 100644
+--- a/crates/duke-sheets-core/src/style/font.rs
++++ b/crates/duke-sheets-core/src/style/font.rs
+@@ -6,2 +6,3 @@ use super::Color;
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct FontStyle {
+@@ -136,2 +137,3 @@ impl Eq for FontStyle {}
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum Underline {
+@@ -152,2 +154,3 @@ pub enum Underline {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum FontVerticalAlign {
+diff --git a/crates/duke-sheets-core/src/style/mod.rs b/crates/duke-sheets-core/src/style/mod.rs
+index 5dac009..9e04617 100644
+--- a/crates/duke-sheets-core/src/style/mod.rs
++++ b/crates/duke-sheets-core/src/style/mod.rs
+@@ -30,2 +30,3 @@ pub use pool::StylePool;
+ #[derive(Debug, Clone, PartialEq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Style {
+@@ -134,2 +135,3 @@ impl Style {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Protection {
+diff --git a/crates/duke-sheets-core/src/style/number_format.rs b/crates/duke-sheets-core/src/style/number_format.rs
+index df7e64a..af4ec90 100644
+--- a/crates/duke-sheets-core/src/style/number_format.rs
++++ b/crates/duke-sheets-core/src/style/number_format.rs
+@@ -4,2 +4,3 @@
+ #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum NumberFormat {
+diff --git a/crates/duke-sheets-core/src/style/pool.rs b/crates/duke-sheets-core/src/style/pool.rs
+index 787320d..30f812d 100644
+--- a/crates/duke-sheets-core/src/style/pool.rs
++++ b/crates/duke-sheets-core/src/style/pool.rs
+@@ -11,2 +11,3 @@ use ahash::AHashMap;
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct StylePool {
+@@ -15,2 +16,3 @@ pub struct StylePool {
+     /// Fast lookup for deduplication
++    #[cfg_attr(feature = "serde", serde(skip))]
+     index_map: AHashMap<StyleKey, u32>,
+@@ -20,2 +22,3 @@ pub struct StylePool {
+ #[derive(Debug, Clone, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ struct StyleKey(u64);
+@@ -32,2 +35,6 @@ impl StyleKey {
+ impl StylePool {
++    pub(crate) fn restore_index(&mut self) {
++        self.index_map = self.styles.iter().enumerate().map(|(i, style)| (StyleKey::from_style(style), i as u32)).collect();
++    }
++
+     /// Create a new style pool with default style at index 0
+diff --git a/crates/duke-sheets-core/src/table.rs b/crates/duke-sheets-core/src/table.rs
+index fc93ff4..fd451cc 100644
+--- a/crates/duke-sheets-core/src/table.rs
++++ b/crates/duke-sheets-core/src/table.rs
+@@ -42,2 +42,3 @@ use crate::cell::CellRange;
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Table {
+@@ -98,2 +99,3 @@ impl Table {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct TableColumn {
+@@ -129,2 +131,3 @@ impl TableColumn {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum TotalsRowFunction {
+@@ -189,2 +192,3 @@ impl TotalsRowFunction {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct TableStyleInfo {
+diff --git a/crates/duke-sheets-core/src/validation.rs b/crates/duke-sheets-core/src/validation.rs
+index 70b685e..1e5b0bc 100644
+--- a/crates/duke-sheets-core/src/validation.rs
++++ b/crates/duke-sheets-core/src/validation.rs
+@@ -29,2 +29,3 @@ use crate::cell::CellRange;
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct DataValidation {
+@@ -289,2 +290,3 @@ impl DataValidation {
+ #[derive(Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ValidationType {
+@@ -361,2 +363,3 @@ impl ValidationType {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ValidationOperator {
+@@ -422,2 +425,3 @@ impl ValidationOperator {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ValidationErrorStyle {
+diff --git a/crates/duke-sheets-core/src/workbook.rs b/crates/duke-sheets-core/src/workbook.rs
+index 45d0d70..6d51674 100644
+--- a/crates/duke-sheets-core/src/workbook.rs
++++ b/crates/duke-sheets-core/src/workbook.rs
+@@ -18,2 +18,4 @@ use duke_sheets_chart::Chart;
+ 
++fn next_workbook_nonce() -> u64 { NEXT_WORKBOOK_NONCE.fetch_add(1, Ordering::Relaxed) }
++
+ static NEXT_WORKBOOK_NONCE: AtomicU64 = AtomicU64::new(1);
+@@ -22,2 +24,3 @@ static NEXT_WORKBOOK_NONCE: AtomicU64 = AtomicU64::new(1);
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum SheetSlot {
+@@ -31,2 +34,3 @@ pub enum SheetSlot {
+ #[derive(Debug)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Workbook {
+@@ -52,2 +56,3 @@ pub struct Workbook {
+     /// on `duke-sheets-formula`.
++    #[cfg_attr(feature = "serde", serde(skip))]
+     calc_cache: Option<Box<dyn Any + Send + Sync>>,
+@@ -57,2 +62,3 @@ pub struct Workbook {
+     /// Unique identity for roundtrip state lookup (not persisted).
++    #[cfg_attr(feature = "serde", serde(skip, default = "next_workbook_nonce"))]
+     nonce: u64,
+@@ -1238,2 +1244,3 @@ impl Default for Workbook {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct WorkbookSettings {
+@@ -1265,2 +1272,3 @@ impl Default for WorkbookSettings {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ChartSheet {
+diff --git a/crates/duke-sheets-core/src/worksheet.rs b/crates/duke-sheets-core/src/worksheet.rs
+index aca776d..15928bb 100644
+--- a/crates/duke-sheets-core/src/worksheet.rs
++++ b/crates/duke-sheets-core/src/worksheet.rs
+@@ -31,2 +31,3 @@ use crate::{MAX_COLS, MAX_ROWS};
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum SheetVisibility {
+@@ -43,2 +44,3 @@ pub enum SheetVisibility {
+ #[derive(Debug)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Worksheet {
+@@ -93,2 +95,3 @@ pub struct Worksheet {
+     /// Cached ssfmt locale (rebuilt on set_locale).
++    #[cfg_attr(feature = "serde", serde(skip, default = "ssfmt::Locale::en_us"))]
+     ssfmt_locale: ssfmt::Locale,
+@@ -148,2 +151,3 @@ impl Clone for Worksheet {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum ImageSizing {
+@@ -161,2 +165,3 @@ pub enum ImageSizing {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct ImageInfo {
+@@ -175,2 +180,7 @@ pub struct ImageInfo {
+ impl Worksheet {
++    pub fn restore_snapshot_state(&mut self) {
++        self.cells.restore_snapshot_state();
++        self.set_locale(self.locale.clone());
++    }
++
+     /// Create a new worksheet with the given name
+@@ -2387,2 +2397,3 @@ impl duke_sheets_chart::DrawingMetrics for Worksheet {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct FreezePanes {
+@@ -2396,2 +2407,3 @@ pub struct FreezePanes {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct SplitPanes {
+@@ -2414,2 +2426,3 @@ pub struct SplitPanes {
+ #[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct Selection {
+@@ -2426,2 +2439,3 @@ pub struct Selection {
+ #[derive(Debug, Clone, Default, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct SheetProtection {
+@@ -2498,2 +2512,3 @@ mod protection_tests {
+ #[derive(Debug, Clone)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct PageSetup {
+@@ -2588,2 +2603,3 @@ impl Default for PageSetup {
+ #[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub struct PageBreak {
+@@ -2605,2 +2621,3 @@ pub struct PageBreak {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+ pub enum PageOrientation {
+diff --git a/crates/duke-sheets-xlsx/Cargo.toml b/crates/duke-sheets-xlsx/Cargo.toml
+index 1ae737d..189b8a6 100644
+--- a/crates/duke-sheets-xlsx/Cargo.toml
++++ b/crates/duke-sheets-xlsx/Cargo.toml
+@@ -10,3 +10,3 @@ description = "XLSX (Office Open XML) reader/writer for duke-sheets"
+ [dependencies]
+-duke-sheets-core.workspace = true
++duke-sheets-core = { workspace = true, features = ["serde"] }
+ duke-sheets-formula.workspace = true
+@@ -23,2 +23,3 @@ chrono.workspace = true
+ log.workspace = true
++serde.workspace = true
+ 
+diff --git a/crates/duke-sheets-xlsx/src/lib.rs b/crates/duke-sheets-xlsx/src/lib.rs
+index 5c21c27..10fe642 100644
+--- a/crates/duke-sheets-xlsx/src/lib.rs
++++ b/crates/duke-sheets-xlsx/src/lib.rs
+@@ -15 +15,21 @@ pub use reader::{XlsxReadOptions, XlsxReadReport, XlsxReader};
+ pub use writer::{EncryptionProfile, XlsxWriter};
++
++#[derive(serde::Serialize, serde::Deserialize)]
++pub struct RoundtripSnapshot {
++    styles: Option<styles::RoundtripStyleData>,
++    theme: Option<Vec<u8>>,
++}
++
++pub fn export_roundtrip_snapshot(workbook: &duke_sheets_core::Workbook) -> RoundtripSnapshot {
++    RoundtripSnapshot {
++        styles: styles::roundtrip_style_data_for(workbook),
++        theme: styles::roundtrip_theme_data_for(workbook),
++    }
++}
++
++pub fn restore_roundtrip_snapshot(workbook: &duke_sheets_core::Workbook, snapshot: RoundtripSnapshot) {
++    if let Some(styles) = snapshot.styles { styles::register_roundtrip_style_data(workbook, styles); }
++    if let Some(theme) = snapshot.theme { styles::register_roundtrip_theme_data(workbook, theme); }
++}
++
++pub mod viewer;
+diff --git a/crates/duke-sheets-xlsx/src/opc/package.rs b/crates/duke-sheets-xlsx/src/opc/package.rs
+index c9a81b0..c0341db 100644
+--- a/crates/duke-sheets-xlsx/src/opc/package.rs
++++ b/crates/duke-sheets-xlsx/src/opc/package.rs
+@@ -23,2 +23,3 @@ pub(crate) struct OpcPackage<R: Read + Seek> {
+     archive: zip::ZipArchive<R>,
++    viewer_parts: HashMap<usize, Arc<[u8]>>,
+     entries: HashMap<PartName, PackageEntry>,
+@@ -155,3 +156,3 @@ impl<R: Read + Seek> OpcPackage<R> {
+         let (content_types, content_types_usable) =
+-            match ContentTypes::parse(Cursor::new(content_types_xml), &mut diagnostics) {
++            match ContentTypes::parse(Cursor::new(&content_types_xml), &mut diagnostics) {
+                 Ok(content_types) => (content_types, true),
+@@ -170,4 +171,10 @@ impl<R: Read + Seek> OpcPackage<R> {
+ 
++        let viewer_parts = if crate::viewer::is_capturing() {
++            let bytes: Arc<[u8]> = content_types_xml.into();
++            crate::viewer::record("[Content_Types].xml", bytes.clone());
++            HashMap::from([(content_types_index, bytes)])
++        } else { HashMap::new() };
+         Ok(Self {
+             archive,
++            viewer_parts,
+             entries,
+@@ -181,2 +188,15 @@ impl<R: Read + Seek> OpcPackage<R> {
+ 
++    pub(crate) fn finish_viewer_archive(&mut self) -> XlsxResult<()> {
++        if !crate::viewer::is_capturing() { return Ok(()); }
++        for index in 0..self.archive.len() {
++            if self.viewer_parts.contains_key(&index) { continue; }
++            let mut file = self.archive.by_index(index)?;
++            if file.is_dir() { continue; }
++            let mut bytes = Vec::new();
++            file.read_to_end(&mut bytes)?;
++            crate::viewer::record(file.name(), bytes.into());
++        }
++        Ok(())
++    }
++
+     pub(crate) fn policy(&self) -> XlsxPackagePolicy {
+@@ -353,3 +373,3 @@ impl<R: Read + Seek> OpcPackage<R> {
+ 
+-    pub(crate) fn open_part(&mut self, part_name: &PartName) -> XlsxResult<zip::read::ZipFile<'_>> {
++    pub(crate) fn open_part(&mut self, part_name: &PartName) -> XlsxResult<Cursor<Arc<[u8]>>> {
+         self.validate_content_type_presence(part_name)?;
+@@ -373,6 +393,15 @@ impl<R: Read + Seek> OpcPackage<R> {
+             .ok_or_else(|| XlsxError::MissingPart(part_name.zip_name().to_string()))?;
+-        Ok(self.archive.by_index(index)?)
++        if let Some(bytes) = self.viewer_parts.get(&index) { return Ok(Cursor::new(bytes.clone())); }
++        let mut file = self.archive.by_index(index)?;
++        let mut bytes = Vec::new();
++        file.read_to_end(&mut bytes)?;
++        let bytes: Arc<[u8]> = bytes.into();
++        if crate::viewer::is_capturing() {
++            crate::viewer::record(file.name(), bytes.clone());
++            self.viewer_parts.insert(index, bytes.clone());
++        }
++        Ok(Cursor::new(bytes))
+     }
+ 
+-    pub(crate) fn open_zip_name(&mut self, path: &str) -> XlsxResult<zip::read::ZipFile<'_>> {
++    pub(crate) fn open_zip_name(&mut self, path: &str) -> XlsxResult<Cursor<Arc<[u8]>>> {
+         self.open_part(&PartName::from_zip_name(path)?)
+@@ -442,3 +471,3 @@ impl<R: Read + Seek> OpcPackage<R> {
+         relationship: &super::relationships::Relationship,
+-    ) -> XlsxResult<Option<zip::read::ZipFile<'_>>> {
++    ) -> XlsxResult<Option<Cursor<Arc<[u8]>>>> {
+         let Some(part_name) = relationship.internal_part().cloned() else {
+diff --git a/crates/duke-sheets-xlsx/src/reader/mod.rs b/crates/duke-sheets-xlsx/src/reader/mod.rs
+index c168b2a..b35e313 100644
+--- a/crates/duke-sheets-xlsx/src/reader/mod.rs
++++ b/crates/duke-sheets-xlsx/src/reader/mod.rs
+@@ -1125,2 +1125,3 @@ impl XlsxReader {
+ 
++        package.finish_viewer_archive()?;
+         let diagnostics = package.into_diagnostics();
+diff --git a/crates/duke-sheets-xlsx/src/styles.rs b/crates/duke-sheets-xlsx/src/styles.rs
+index 714238a..16663ba 100644
+--- a/crates/duke-sheets-xlsx/src/styles.rs
++++ b/crates/duke-sheets-xlsx/src/styles.rs
+@@ -41,3 +41,3 @@ pub(crate) struct XlsxStyleTable {
+ 
+-#[derive(Debug, Clone)]
++#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub(crate) struct NamedCellStyle {
+@@ -48,3 +48,3 @@ pub(crate) struct NamedCellStyle {
+ 
+-#[derive(Debug, Clone)]
++#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+ pub(crate) struct RoundtripStyleData {
+@@ -92,3 +92,3 @@ pub(crate) fn register_roundtrip_style_data(workbook: &Workbook, data: Roundtrip
+ 
+-fn roundtrip_style_data_for(workbook: &Workbook) -> Option<RoundtripStyleData> {
++pub(crate) fn roundtrip_style_data_for(workbook: &Workbook) -> Option<RoundtripStyleData> {
+     let key = workbook_style_fingerprint(workbook);
+diff --git a/crates/duke-sheets-xlsx/src/viewer.rs b/crates/duke-sheets-xlsx/src/viewer.rs
+new file mode 100644
+index 0000000..b5d2fd0
+--- /dev/null
++++ b/crates/duke-sheets-xlsx/src/viewer.rs
+@@ -0,0 +1,35 @@
++use std::cell::RefCell;
++use std::collections::HashMap;
++use std::sync::Arc;
++
++pub type ViewerArchive = HashMap<String, Arc<[u8]>>;
++thread_local! {
++    static CAPTURE: RefCell<Option<ViewerArchive>> = const { RefCell::new(None) };
++}
++
++pub fn capture_archive<T>(read: impl FnOnce() -> T) -> (T, Option<ViewerArchive>) {
++    struct Reset;
++    impl Drop for Reset {
++        fn drop(&mut self) {
++            CAPTURE.with(|c| *c.borrow_mut() = None);
++        }
++    }
++    CAPTURE.with(|c| *c.borrow_mut() = Some(HashMap::new()));
++    let _reset = Reset;
++    let result = read();
++    let archive = CAPTURE.with(|c| c.borrow_mut().take());
++    (result, archive)
++}
++
++pub(crate) fn is_capturing() -> bool {
++    CAPTURE.with(|c| c.borrow().is_some())
++}
++pub(crate) fn record(name: &str, bytes: Arc<[u8]>) {
++    CAPTURE.with(|c| {
++        if let Some(parts) = &mut *c.borrow_mut() {
++            parts
++                .entry(name.replace('\\', "/").trim_start_matches('/').to_string())
++                .or_insert(bytes);
++        }
++    });
++}

@@ -37,7 +37,7 @@ function SharedChart(props: LazyChartProps & { source: NonNullable<ChartSvgProps
   if (!module) return <>{props.loadingFallback(props.chart.chartType === "RegionMap" ? "map" : "renderer")}</>;
   const fallback = <UnsupportedChart chart={props.chart} />;
   const renderer = props.experimentalOfficeCharts ?? module.renderer;
-  return renderer && module.SharedChartSvg
+  return module.SharedChartSvg
     ? <module.SharedChartSvg {...props} renderer={renderer} fallback={fallback} />
     : fallback;
 }

@@ -1,4 +1,4 @@
-import type { Worksheet } from "@dukelib/sheets-wasm";
+import type { Worksheet } from "./duke-sheets/generated/duke_sheets_wasm.js";
 
 export type CellGeneralAlignment = "left" | "center" | "right";
 
