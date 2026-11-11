@@ -16,7 +16,7 @@ export {
   XlsxViewerProvider
 } from "./XlsxViewer";
 export type * from "./pivot-types";
-export type * from "./pivot-editor";
+export type { XlsxPivotFieldArea, XlsxPivotTableEditor, XlsxPivotTableEditorOptions, XlsxPivotTableControlsRenderProps } from "./pivot-editor";
 export type { XlsxPivotTableHeaderMenuRenderProps } from "./pivot-header-controls";
 export { DefaultXlsxPivotTableFieldList, type DefaultXlsxPivotTableFieldListProps } from "./pivot-field-list";
 export type {

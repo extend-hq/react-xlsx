@@ -5,10 +5,14 @@ import type { XlsxPivotTable, XlsxPivotSourceField, XlsxPivotDrillDown } from ".
 
 export type XlsxPivotFieldArea = "rows" | "columns" | "values" | "reportFilters";
 export interface XlsxPivotTableEditorOptions {
+  /** Follow the active pivot when no draft changes are pending. Defaults to true. */
   autoSelect?: boolean;
+  /** Set field-list visibility on workbook changes; omit to retain automatic opening. */
   initialOpen?: boolean;
+  /** Enable automatic draft synchronization and draft edits. Defaults to true. */
   enabled?: boolean;
 }
+/** Shared headless field-list state. Draft edits take effect when apply() succeeds. */
 export interface XlsxPivotTableEditor {
   viewer: XlsxViewerController;
   readOnly: boolean;
@@ -16,7 +20,9 @@ export interface XlsxPivotTableEditor {
   setOpen: (open: boolean) => void;
   draft: XlsxPivotTable | null;
   dirty: boolean;
+  /** The saved report changed while this editor had unapplied changes. */
   stale: boolean;
+  /** The draft source changed and must be inspected with readFields() before applying. */
   sourceNeedsLoad: boolean;
   error: string | null;
   status: string | null;
@@ -28,13 +34,16 @@ export interface XlsxPivotTableEditor {
   remove: () => void;
   refresh: (all?: boolean) => void;
   readFields: () => void;
+  /** Add a zero-based source field index to a report area. */
   addField: (area: XlsxPivotFieldArea, field: number) => void;
+  /** Remove an entry by its zero-based position within the area. */
   removeField: (area: XlsxPivotFieldArea, index: number) => void;
   moveField: (fromArea: XlsxPivotFieldArea, fromIndex: number, toArea: XlsxPivotFieldArea, toIndex?: number) => void;
   details: XlsxPivotDrillDown | null;
   detailContext: { id: string; row: number; col: number } | null;
   showDetails: () => void;
   clearDetails: () => void;
+  /** Run a synchronous action and capture any thrown error in editor.error. */
   run: (action: () => void) => void;
 }
 export interface XlsxPivotTableControlsRenderProps {

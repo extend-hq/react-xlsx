@@ -1897,15 +1897,20 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   /** Accent color used for selected row and column headers. */
   selectionHeaderColor?: string;
   /**
-   * Replaces the table header sort/filter trigger menu.
+   * Replaces ordinary table and pivot header sort/filter trigger menus.
+   * Pivot headers provide `kind: "pivot"` and a `pivot` context.
    * Apply `triggerProps` to your actual trigger button so clicks do not leak into grid selection.
    */
   renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode;
+  /** Overrides only pivot header menus, taking precedence over renderTableHeaderMenu. */
   renderPivotTableHeaderMenu?: (props: XlsxPivotTableHeaderMenuRenderProps) => React.ReactNode;
+  /** Color of the active pivot's field guides, shown while its field list is visible. */
   pivotTableHighlightColor?: string;
   /** Enables the built-in pivot pane. Hidden by default. */
   showPivotTableControls?: boolean;
+  /** Share an editor from useXlsxPivotTableEditor with external field panes or toolbars. */
   pivotTableEditor?: XlsxPivotTableEditor;
+  /** Replace pane content when showPivotTableControls is enabled and the field list is open. */
   renderPivotTableControls?: (props: XlsxPivotTableControlsRenderProps) => React.ReactNode;
   /**
    * Renders custom content positioned over the active cell. The returned node is placed in a

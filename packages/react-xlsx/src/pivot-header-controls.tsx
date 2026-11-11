@@ -8,6 +8,7 @@ export interface XlsxPivotTableHeaderMenuRenderProps {
   pivot: XlsxPivotTable;
   header: XlsxPivotHeader;
   field: XlsxPivotHeaderField;
+  /** Choose an effective field by its header depth, including grouped levels. */
   setField: (depth: number) => void;
   members: XlsxPivotMember[];
   filters: XlsxPivotFilter[];
@@ -17,10 +18,14 @@ export interface XlsxPivotTableHeaderMenuRenderProps {
   setOpen: (open: boolean) => void;
   close: () => void;
   error: string | null;
+  /** Forward the ref, events, and positioning style to the actual trigger button. */
   triggerProps: React.ComponentPropsWithRef<"button">;
+  /** Forward the ref and events to the popup; contain nested popup portals within it. */
   popupProps: React.ComponentPropsWithRef<"div">;
   defaultNode: React.ReactNode;
+  /** Sort labels or values; measure is a zero-based index in the report's values array. */
   sortBy: (direction: XlsxPivotAxisField["sort"], measure?: number) => void;
+  /** Select typed member keys, or pass null to remove the member filter. */
   setMembers: (keys: string[] | null) => void;
   setFilter: (filter: XlsxPivotFilter) => void;
   clearFilters: () => void;

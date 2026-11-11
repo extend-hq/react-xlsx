@@ -122,9 +122,13 @@ export interface XlsxVanillaViewerOptions extends UseXlsxViewerControllerOptions
   cellEditorStyle?: XlsxVanillaStyle;
   renderCellEditorOverlay?: (props: XlsxCellEditorOverlayRenderProps) => XlsxVanillaContent;
   renderSelectionPopover?: (props: XlsxSelectionPopoverRenderProps) => XlsxVanillaContent;
+  /** Enable the built-in pivot pane. Defaults to false. */
   showPivotTableControls?: boolean;
+  /** Replace pane content when the built-in pane is enabled and the field list is open. */
   renderPivotTableControls?: (props: Omit<XlsxPivotTableControlsRenderProps, "defaultNode">) => XlsxVanillaContent;
+  /** Replace pivot header triggers/popups; forward triggerProps and popupProps to their elements. */
   renderPivotTableHeaderMenu?: (props: Omit<XlsxPivotTableHeaderMenuRenderProps, "defaultNode">) => XlsxVanillaContent;
+  /** Color of the active pivot's field guides while its field list is visible. */
   pivotTableHighlightColor?: string;
   showImages?: boolean;
   showDefaultToolbar?: boolean;

@@ -4,7 +4,7 @@
 [![Monthly npm downloads](https://img.shields.io/npm/dm/%40extend-ai%2Freact-xlsx)](https://www.npmjs.com/package/@extend-ai/react-xlsx)
 [![release](https://img.shields.io/github/v/release/extend-hq/react-xlsx?label=release)](https://github.com/extend-hq/react-xlsx/releases)
 
-JavaScript and React XLSX viewer/editor with worksheet rendering, charts, images, selection, formatting and export. DukeSheets handles workbook parsing/calculation; [Rust Office](https://github.com/extend-hq/rust-office) supplies chart and picture rendering.
+JavaScript and React XLSX viewer/editor with worksheet rendering, pivot tables, charts, images, selection, formatting and export. DukeSheets handles workbook parsing/calculation; [Rust Office](https://github.com/extend-hq/rust-office) supplies chart and picture rendering.
 
 ## Quick start
 
@@ -28,8 +28,17 @@ Use [`renderCellEditorOverlay`](./packages/react-xlsx/README.md#custom-cell-edit
 
 [Full API and props](packages/react-xlsx/README.md) · [Vanilla API](packages/react-xlsx/README.md#vanilla-javascript) · [Hooks](packages/react-xlsx/README.md#useful-hooks)
 
+## Pivot tables
+
+Worksheet-backed pivots support creation, editing, refresh, grouping, filters, calculations, drill-through, PivotCharts, undo/redo, and native XLSX import/export. Use `useXlsxViewerPivots()` or the viewer controller for workbook operations, and `useXlsxPivotTableEditor()` for a shared editing draft.
+
+The built-in field pane is disabled by default. Enable `showPivotTableControls`, replace its content with `renderPivotTableControls`, or render a separate pane from the editor hook. `pivotFieldListVisible` and `setPivotFieldListVisible()` share state with the context menu and automatic open/hide behavior. `renderTableHeaderMenu` customizes table and pivot triggers/popovers; `renderPivotTableHeaderMenu` overrides pivots specifically. The playground uses these hooks for a resizable COSS pane and custom menus.
+
+The React and vanilla entries export the pivot model, operation, editor, and render-context types. See [API, customization, and examples](packages/react-xlsx/README.md#pivot-tables) and [compatibility limits](docs/pivot-tables.md#compatibility-boundary). Data Model/OLAP/external pivots and unsupported native slicer/timeline dependencies remain view-only.
+
 ## Integration notes
 
+- Upgrading from 0.21.x: exports are asynchronous, workbook parsing requires Web Workers, and self-hosted WASM must match the viewer package. See [migration notes](packages/react-xlsx/README.md#upgrading-from-021x).
 - WASM loads lazily. For custom hosting, call `setWasmSource` before parsing. Next.js Turbopack uses a public/CDN URL instead of `.wasm?url`; Vite development needs dependency exclusions. See [WASM and bundler setup](packages/react-xlsx/README.md#webassembly-asset).
 - `.xlsx` is the primary format; `.xls` and `.xlsm` support is limited by DukeSheets and format-specific XML handling. The default file limit is 25 MB; configure `maxFileSizeBytes` for larger inputs.
 - `setCellStyle`, `setSelectedCellStyle` and `setRangeStyle` persist formatting through undo/export. `getCellStyle` changes display only; the canvas renderer supports a subset of CSS. See [cell styling](packages/react-xlsx/README.md#persisted-cell-styling).

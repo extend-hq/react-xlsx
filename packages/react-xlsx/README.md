@@ -9,6 +9,7 @@ React components, hooks, and a vanilla JavaScript API for rendering `.xlsx` work
 - A provider/controller API for custom spreadsheet experiences
 - Worksheet rendering with frozen panes, tables, merged cells, conditional formatting, sparklines, selection, resizing, copy/paste, and zoom
 - Embedded worksheet images, shapes, form controls, charts, and chartsheet tabs
+- Worksheet-backed pivot editing, refresh, PivotCharts, and XLSX import/export
 - Worker-backed parsing and large-file guardrails
 - Thumbnail helpers for building sheet strips, previews, and navigation UIs
 - TypeScript types for viewer state, workbook metadata, charts, images, tables, and render hooks
@@ -24,6 +25,13 @@ pnpm add @extend-ai/react-xlsx
 ```
 
 For the React entry, install `react` and `react-dom` as well. They are optional peer dependencies and are not needed by the vanilla entry.
+
+### Upgrading from 0.21.x
+
+- `getXlsxBytes()` now returns `Promise<Uint8Array | null>` and `exportXlsx()` returns `Promise<void>`. Await these calls before consuming the bytes or handling export completion/errors.
+- Workbook loading requires browser Web Workers. `useWorker={false}` keeps a local model after worker parsing; it no longer disables worker usage.
+- If you host the parser WASM yourself, deploy the `@extend-ai/react-xlsx/duke_sheets_wasm_bg.wasm` asset from the same package version as the viewer. The patched runtime includes the pivot APIs.
+- `renderTableHeaderMenu` now receives pivot headers as well as ordinary table headers. Check `menu.pivot` or `menu.kind`, or provide `renderPivotTableHeaderMenu` separately.
 
 ## Automatic Chart Loading
 
@@ -395,6 +403,8 @@ These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 - `useXlsxViewerZoom()` for zoom controls and limits
 - `useXlsxViewerEditing()` for editing, persisted style writes, formulas, undo/redo, fill, merge, clipboard, and export actions
 - `useXlsxViewerTables()` for table metadata and table sorting
+- `useXlsxViewerPivots()` for pivot metadata, mutations, charts, drill-through, and field-list visibility
+- `useXlsxPivotTableEditor(options?)` for a shared pivot draft and custom field-pane controls
 - `useXlsxViewerImages()` for embedded image and chart selection, movement, and resizing
 - `useXlsxViewerCharts()` for chart, chart element, formula, and chartsheet state
 - `useXlsxViewerThumbnails(options)` for painting worksheet thumbnails into your own canvases
@@ -403,9 +413,113 @@ These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 
 Worksheet-backed pivot tables are available through `useXlsxViewerPivots()` and the viewer controller. Create and edit reports with `upsertPivotTable()`, read their metadata from `pivotTables`, and refresh source data with `refreshPivotTable()` or `refreshAllPivotTables()`. Pivot changes, detail worksheets, and linked PivotCharts participate in undo/redo and XLSX export. Report layout and filter changes use the saved cache until an explicit refresh.
 
-The playground exposes a **PivotTable** ribbon, field panel, source/destination selection, grouping, filters, calculations, layout settings, drill-through, and chart creation. The sample pivot workbook is available from that ribbon. Direct cell edits inside pivot results are blocked; source data and cell formatting remain editable.
+### Create, edit, refresh, and export
 
-This targets worksheet-backed XLSX pivots. Unsupported imported features are preserved without editing and reported in metadata. Visual member/date filters are pivot filters, not standalone Excel slicer/timeline objects. See [pivot table APIs and compatibility](../../docs/pivot-tables.md) for the current scope.
+Sources can use a worksheet range, table, or supported static name. The source must have unique, nonempty column headers. Field indexes are zero-based source column indexes; worksheet cell addresses passed as objects also use zero-based rows and columns. The destination worksheet must already exist.
+
+```tsx
+import type { XlsxViewerController } from "@extend-ai/react-xlsx";
+
+async function createSummary(controller: XlsxViewerController) {
+  const pivot = controller.upsertPivotTable({
+    name: "Summary",
+    source: { sheet: "Data", range: "A1:C100" },
+    target: { sheet: "Report", cell: "A3" },
+    rows: [{ field: 0, sort: "ascending", subtotals: true, collapsed: [] }],
+    values: [{ field: 2, name: "Total", aggregation: "sum", showAs: "normal" }],
+    layout: "compact",
+    rowGrandTotals: true,
+    columnGrandTotals: true,
+  });
+
+  controller.upsertPivotTable({ ...pivot, layout: "tabular", repeatLabels: true });
+  controller.refreshPivotTable(pivot.id);
+  return await controller.getXlsxBytes();
+}
+```
+
+Pass an existing `id` to update a report. Source edits do not silently refresh pivots. `refreshOnLoad` opts into refresh when a workbook opens; failures retain saved results and appear in `refreshError`. Invalid configurations, overlapping reports, occupied destinations, protected sheets, and unsupported features reject mutations without replacing the original workbook. Direct edits to pivot results, paste, fill, merge, and ordinary table sorting are blocked; source data and cell formatting remain editable.
+
+| Controller / `useXlsxViewerPivots()` member | Purpose |
+| --- | --- |
+| `pivotTables` | All pivot definitions, fields, members, headers, toggles, charts, output ranges, and unsupported-feature reasons. |
+| `getPivotSourceFields(source)` | Inspect source fields and typed member keys. |
+| `getPivotTableAtCell(cell, sheetName?)` | Find the report containing a cell. |
+| `upsertPivotTable(input)` | Create or update a report; returns its metadata. |
+| `refreshPivotTable(id)` / `refreshAllPivotTables()` | Rebuild caches and results from source data. Refresh-all is one undoable transaction. |
+| `removePivotTable(id)` | Remove a report and detach its PivotCharts. |
+| `pivotDrillDown(id, row, col)` | Read source records behind a result cell. |
+| `showPivotDetails(id, row, col)` | Create a details worksheet and return its name. |
+| `togglePivotGroup(id, toggle)` | Expand or collapse a row/column group from `pivot.toggles`. |
+| `createPivotChart(id, options?)` | Create a linked chart; refresh keeps its data synchronized. |
+| `pivotFieldListVisible` / `setPivotFieldListVisible(visible)` | Share visibility between default panes, custom panes, and the context menu. |
+
+Supported settings include compact/outline/tabular layouts, repeated labels, row/column grand totals, subtotal position and functions, multiple values on rows or columns, report filters, sorting by label or value, member/label/value/top filters, numeric/date/manual grouping, calculated fields/items, number formats, formatting preservation, and Show Values As calculations. Aggregates include sum, count, count numbers, average, min/max, product, variance, and standard deviation. Filter and base-item keys come from member metadata; captions are not interchangeable with those keys. Date hierarchy levels can share a field index and are distinguished by their grouping unit.
+
+### Default and custom field panes
+
+The built-in pane is **disabled by default**. Enable it with `showPivotTableControls={true}`. Use `renderPivotTableControls` to replace its content, or keep it disabled and render a separate pane using `useXlsxPivotTableEditor()` inside `XlsxViewerProvider`. Pass the same editor to `pivotTableEditor` so the toolbar, pane, and viewer share one draft.
+
+```tsx
+import {
+  DefaultXlsxPivotTableFieldList,
+  useXlsxPivotTableEditor,
+  XlsxViewer,
+} from "@extend-ai/react-xlsx";
+
+function PivotWorkspace() {
+  const editor = useXlsxPivotTableEditor();
+  return (
+    <>
+      <button type="button" disabled={editor.readOnly} onClick={editor.create}>
+        Insert PivotTable
+      </button>
+      <XlsxViewer pivotTableEditor={editor} showPivotTableControls={false} />
+      {editor.open && (
+        <aside aria-label="PivotTable fields">
+          <button type="button" onClick={() => editor.setOpen(false)}>Hide field list</button>
+          <DefaultXlsxPivotTableFieldList editor={editor} />
+        </aside>
+      )}
+    </>
+  );
+}
+```
+
+Replace `DefaultXlsxPivotTableFieldList` with your own controls for complete control over the appearance. The editor provides `draft`, `dirty`, `stale`, `sourceNeedsLoad`, `readOnly`, `error`, and `status`; `edit(updater)`, `select(id)`, `create()`, `apply()`, `reset()`, `remove()`, `refresh(all?)`, and `readFields()`; field placement through `addField`, `removeField`, and `moveField`; and `details`, `detailContext`, `showDetails`, and `clearDetails`. `run(action)` captures a custom synchronous action's error in the editor. `viewer` exposes the full controller for chart creation, export, and other actions. Draft changes become workbook mutations only when applied.
+
+Editor options are `autoSelect` (defaults to true), `enabled` (defaults to true), and `initialOpen` (omit to retain automatic opening). Selecting a pivot opens the field list automatically. Clicking outside hides it temporarily; returning restores it. Explicitly closing it keeps it closed until Show Field List is chosen again. `initialOpen: false` opts out of automatic opening on workbook load. This visibility preference persists for the controller's lifetime and is shared with the checked Show/Hide Field List context-menu action, even when the built-in pane is disabled.
+
+| Viewer prop | Customization |
+| --- | --- |
+| `showPivotTableControls` | Enable the built-in pane; defaults to false. |
+| `pivotTableEditor` | Share a React editor between the viewer and external controls. |
+| `renderPivotTableControls` | Render from `{ editor, controller, isDark, defaultNode }`. |
+| `renderTableHeaderMenu` | Customize both ordinary table and pivot header triggers/popovers. |
+| `renderPivotTableHeaderMenu` | Override only pivot header triggers/popovers. |
+| `pivotTableHighlightColor` | Override the pivot field-guide color. |
+
+`DefaultXlsxPivotTableFieldList` also accepts `className`, `style`, and `isDark`. The playground demonstrates a separate resizable COSS field pane, ribbon controls, visual filters, and header popovers built from these APIs.
+
+### Header menus, visibility, and selection
+
+The shared header callback receives `kind: "pivot"` and `pivot: XlsxPivotTableHeaderMenuRenderProps` for pivot headers. The dedicated callback receives that pivot context directly. It includes the report, header, selected field, members, filters, sort state, `readOnly`, `error`, and controlled `isOpen`/`setOpen`/`close` actions. Use `setField(depth)` for multiple fields on the same header; `sortBy(direction, measure?)`, `setMembers(keys)`, `setFilter(filter)`, and `clearFilters()` control sorting and filtering. `setMembers(null)` removes the member filter.
+
+Forward `triggerProps`, including its ref, events, and positioning style, to the trigger. Forward `popupProps`, including its ref and events, to the popup. Use an anchored popover library or the trigger's client rectangle for positioning; place nested popup portals within the popup element so outside-click handling preserves them. `defaultNode` retains the default UI. Cell-attached controls follow scrolling and zoom and clip at frozen-pane boundaries. Pivot popovers close when their trigger leaves the visible pane; custom ordinary-table popovers should hide when their own anchor is clipped.
+
+`pivotFieldListVisible` controls the field guides shown for the active report. They outline its row, column, and data regions while preserving the active-cell border. Header menus remain available when the field list is hidden. Custom context menus receive `togglePivotFieldList` with the current `checked` state and can invoke it through `runAction`.
+
+### Types and vanilla JavaScript
+
+The React and vanilla entries export the pivot model and operation types: `XlsxViewerPivots`, `XlsxPivotTable`, `XlsxPivotTableInput`, source/target/field/member types, axis/value/filter/grouping/calculated-item types, aggregation and Show Values As unions, chart input/metadata/type unions, drill-down results, and header/toggle metadata. Editor types include `XlsxPivotTableEditor`, `XlsxPivotTableEditorOptions`, `XlsxPivotFieldArea`, and `XlsxPivotTableControlsRenderProps`; header customization uses `XlsxPivotTableHeaderMenuRenderProps`. The React entry also exports `DefaultXlsxPivotTableFieldListProps`.
+
+Vanilla viewers access the same pivot methods through `viewer.getController()`. `showPivotTableControls`, `renderPivotTableControls`, `renderPivotTableHeaderMenu`, and `pivotTableHighlightColor` are available in vanilla options. Render callbacks return DOM content; their contexts omit the React `defaultNode`. React hooks and the React default field-list component belong to the React entry.
+
+### Compatibility
+
+This targets worksheet-backed XLSX pivots. Data Model/OLAP/external connections and unsupported native slicer/timeline dependencies are preserved without editing and reported in `unsupportedFeatures`. Visual member/date filters edit pivot filters; they do not create standalone Excel slicer/timeline objects. Pivot styles approximate Excel palettes, and exact Excel visual parity is not established. Refresh dependent reports in source order; refresh-all does not automatically sort dependency chains.
+
+Exports contain native pivot definitions, cache definitions/records, relationships, and PivotChart associations. See [pivot table APIs and compatibility](https://github.com/extend-hq/react-xlsx/blob/main/docs/pivot-tables.md) for calculation limits and the detailed compatibility boundary.
 
 ## Merging Cells
 
