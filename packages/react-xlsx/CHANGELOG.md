@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.0
+
+- Add worksheet-backed pivot tables with editing, refresh, filtering, grouping, calculations, drill-through, PivotCharts, undo/redo, and XLSX import/export.
+- Expose React pivot editor hooks and customizable field panes and header menus for React and vanilla JavaScript.
+- Use workers by default for parsing, charts, export, and read-only queries, with automatic main-thread fallback and a complete `useWorker: false` opt-out.
+- Keep worksheet images available after worker failures and preserve edited workbook data during export fallback.
+- Update the bundled spreadsheet and Office rendering runtimes.
+- Breaking: `getXlsxBytes()` and `exportXlsx()` now return promises and must be awaited. Self-hosted parser WASM must come from the same package version; shared table header menus also receive pivot headers.
+
 ## 0.21.0
 
 - Add opt-in custom cell editor overlays and selection popovers for React and vanilla JavaScript, with caller-owned UI, styling, animations, and callbacks.
