@@ -1,5 +1,5 @@
-import type { ChartWorkerResult, RenderChartAsync } from "./chart-renderer-types";
 import { loadWorkbookImageAssets } from "./workbook-assets";
+import { takeWorkerImageBlobs } from "./workbook-object-urls";
 import { configureWorkbookArchiveDecoder, configureWorkbookXmlDecoder, installWorkerXmlAdapters, takeWorkbookXmlRecords } from "./workbook-xml";
 import { loadSpreadsheetFonts } from "./spreadsheet-fonts";
 import type { WorkerMessage, XlsxWorkerLoadResult } from "./worker-client";
@@ -9,11 +9,11 @@ import { strFromU8, strToU8 } from "fflate";
 import { hydrateWorkbookChartStyles, loadWorkbookChartAssets } from "./charts";
 import { buildThemePaletteFromHex } from "./colors";
 import { getCellGeneralAlignment } from "./cell-alignment";
-import { getColumnFontMeasurements, getUnmeasuredWorkbookFont, restoreColumnFontMeasurements, collectWorkbookFormControls, mergeWorkbookImageAssets, type WorkbookImageAssets, type WorkbookImageSheetOrigin, resolveSheetColumnWidthPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetMergeMetadata } from "./images";
+import { getColumnFontMeasurements, getUnmeasuredWorkbookFont, restoreColumnFontMeasurements, collectWorkbookFormControls, mergeWorkbookImageAssets, revokeWorkbookImageAssets, type WorkbookImageAssets, resolveSheetColumnWidthPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetMergeMetadata } from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { safeCalculate } from "./safe-calculate";
 import { pivotWorkbook, readPivotTables } from "./pivots";
-import { getSheetsWasmModule, setWasmSource } from "./wasm";
+import { getSheetsWasmModule } from "./wasm";
 import type { XlsxChart, XlsxChartsheet, XlsxCellAddress, XlsxCellRange, XlsxDataValidation, XlsxFormControl, XlsxFreezePanes, XlsxSheetData, XlsxSheetVisibility, XlsxTable, XlsxThemePalette, XlsxWorkbookTab } from "./types";
 
 const DEFAULT_ROW_HEIGHT = 24;
@@ -583,6 +583,8 @@ function cellAddressToA1(cell: XlsxCellAddress) {
 }
 
 export function createWorkbookRuntime() {
+  let disposed = false;
+  let loadedImageAssets: WorkbookImageAssets | null = null;
   let workbook: Workbook | null = null;
   let workbookFontFamilies: string[] = [];
   let chartsByWorkbookSheetIndex: XlsxChart[][] = [];
@@ -594,6 +596,7 @@ export function createWorkbookRuntime() {
 
   async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false, includeSnapshot = false): Promise<XlsxWorkerLoadResult> {
     const wasmModule = await getSheetsWasmModule();
+    if (disposed) throw new DOMException("Aborted", "AbortError");
     configureWorkbookXmlDecoder(wasmModule.parseXmlTree);
     configureWorkbookArchiveDecoder(wasmModule.decodeArchive);
     if (typeof document === "undefined") installWorkerXmlAdapters();
@@ -602,75 +605,87 @@ export function createWorkbookRuntime() {
     if (preflight.tooLarge) throw new Error("XLSX is too large to preview interactively.");
     const effectiveSkipXmlParsing = shouldSkipXmlParsingForWorkbook(bytes, skipXmlParsing);
     let activeWorkbook = wasmModule.Workbook.fromBytesForViewer(bytes);
-    const fontFamilies = activeWorkbook.fontFamilies();
-    const archive = activeWorkbook.takeViewerArchive() as Record<string, Uint8Array>;
-    let totalFormulas = 0;
-    for (let index = 0; index < activeWorkbook.sheetCount; index += 1) totalFormulas += activeWorkbook.getSheet(index).formulaCount;
-    const refreshOnLoadPivots = readPivotTables(activeWorkbook).filter(pivot => pivot.refreshOnLoad && !pivot.unsupportedFeatures.length);
-    let sourceCalculated = totalFormulas === 0;
-    let shouldAutoCalculate = totalFormulas === 0;
-    if (totalFormulas > 0 && (totalFormulas <= FORMULA_COUNT_THRESHOLD || refreshOnLoadPivots.length > 0)) {
-      const snapshot = activeWorkbook.exportSnapshot();
-      const result = safeCalculate(activeWorkbook, { reparse: () => wasmModule.Workbook.fromSnapshot(snapshot) });
-      activeWorkbook = result.workbook;
-      sourceCalculated = result.calculated;
-      shouldAutoCalculate = result.calculated && totalFormulas <= FORMULA_COUNT_THRESHOLD;
-    }
-    const pivotRefreshErrors = new Map<string, string>();
-    let recalculatedPivotFormulas = false;
-    for (const pivot of refreshOnLoadPivots) {
-      if (!sourceCalculated) {
-        pivotRefreshErrors.set(pivot.id, "The workbook formulas could not be recalculated safely. The saved pivot table has been kept.");
-        continue;
+    try {
+      const fontFamilies = activeWorkbook.fontFamilies();
+      const archive = activeWorkbook.takeViewerArchive() as Record<string, Uint8Array>;
+      let totalFormulas = 0;
+      for (let index = 0; index < activeWorkbook.sheetCount; index += 1) totalFormulas += activeWorkbook.getSheet(index).formulaCount;
+      const refreshOnLoadPivots = readPivotTables(activeWorkbook).filter(pivot => pivot.refreshOnLoad && !pivot.unsupportedFeatures.length);
+      let sourceCalculated = totalFormulas === 0;
+      let shouldAutoCalculate = totalFormulas === 0;
+      if (totalFormulas > 0 && (totalFormulas <= FORMULA_COUNT_THRESHOLD || refreshOnLoadPivots.length > 0)) {
+        const snapshot = activeWorkbook.exportSnapshot();
+        const result = safeCalculate(activeWorkbook, { reparse: () => wasmModule.Workbook.fromSnapshot(snapshot) });
+        activeWorkbook = result.workbook;
+        sourceCalculated = result.calculated;
+        shouldAutoCalculate = result.calculated && totalFormulas <= FORMULA_COUNT_THRESHOLD;
       }
-      try { pivotWorkbook(activeWorkbook).refreshPivotTable(pivot.id); }
-      catch (error) {
-        pivotRefreshErrors.set(pivot.id, error instanceof Error ? error.message : String(error));
-        continue;
+      const pivotRefreshErrors = new Map<string, string>();
+      let recalculatedPivotFormulas = false;
+      for (const pivot of refreshOnLoadPivots) {
+        if (!sourceCalculated) {
+          pivotRefreshErrors.set(pivot.id, "The workbook formulas could not be recalculated safely. The saved pivot table has been kept.");
+          continue;
+        }
+        try { pivotWorkbook(activeWorkbook).refreshPivotTable(pivot.id); }
+        catch (error) {
+          pivotRefreshErrors.set(pivot.id, error instanceof Error ? error.message : String(error));
+          continue;
+        }
+        const snapshot = activeWorkbook.exportSnapshot();
+        const result = safeCalculate(activeWorkbook, { reparse: () => wasmModule.Workbook.fromSnapshot(snapshot), preserveSavedValues: false });
+        activeWorkbook = result.workbook;
+        sourceCalculated = result.calculated;
+        recalculatedPivotFormulas ||= result.calculated;
+        if (!result.calculated) {
+          shouldAutoCalculate = false;
+          pivotRefreshErrors.set(pivot.id, "The pivot table refreshed, but dependent formulas could not be recalculated.");
+        }
       }
-      const snapshot = activeWorkbook.exportSnapshot();
-      const result = safeCalculate(activeWorkbook, { reparse: () => wasmModule.Workbook.fromSnapshot(snapshot), preserveSavedValues: false });
-      activeWorkbook = result.workbook;
-      sourceCalculated = result.calculated;
-      recalculatedPivotFormulas ||= result.calculated;
-      if (!result.calculated) {
-        shouldAutoCalculate = false;
-        pivotRefreshErrors.set(pivot.id, "The pivot table refreshed, but dependent formulas could not be recalculated.");
+      const nextWorkbook = activeWorkbook;
+      const unmeasuredFont = effectiveSkipXmlParsing ? null : getUnmeasuredWorkbookFont(archive);
+      if (unmeasuredFont) await loadSpreadsheetFonts([unmeasuredFont], typeof document === "undefined" ? globalThis as unknown as Document : document);
+      workbookFontFamilies = fontFamilies;
+      const imageAssets = await loadWorkbookImageAssets(bytes, nextWorkbook, effectiveSkipXmlParsing, archive);
+      if (disposed) {
+        revokeWorkbookImageAssets(imageAssets);
+        throw new DOMException("Aborted", "AbortError");
       }
+      revokeWorkbookImageAssets(loadedImageAssets);
+      loadedImageAssets = imageAssets;
+      if (recalculatedPivotFormulas) {
+        for (const sheet of imageAssets?.sheetStatesByWorkbookSheetIndex ?? []) if (sheet) sheet.cachedFormulaValues = {};
+      }
+      const structureAssets = imageAssets;
+      const themePalette = structureAssets?.themePalette ?? buildThemePaletteFromHex(nextWorkbook.themePalette);
+      formControlsByWorkbookSheetIndex = collectWorkbookFormControls(nextWorkbook, themePalette).map(
+        (controls, sheetIndex) => controls.map(control => ({ ...control, items: resolveFormControlItems(nextWorkbook, sheetIndex, control) }))
+      );
+      workbook?.free();
+      workbook = nextWorkbook;
+      sheets = buildSheetList(nextWorkbook, themePalette, structureAssets, undefined, showHiddenSheets);
+      tablesByWorkbookSheetIndex = Array.from({ length: nextWorkbook.sheetCount }, (_, index) =>
+        mapWorksheetTables(nextWorkbook.getSheet(index), structureAssets?.sheetStatesByWorkbookSheetIndex[index]?.autoFilterRanges ?? [])
+      );
+      const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
+      const chartAssets = loadWorkbookChartAssets(nextWorkbook, null, visibleSheetIndexByWorkbookSheetIndex, showHiddenSheets);
+      if (imageAssets) chartAssets.chartOriginsById = hydrateWorkbookChartStyles(chartAssets.chartsByWorkbookSheetIndex, imageAssets, chartAssets.chartsheets, nextWorkbook);
+      chartsByWorkbookSheetIndex = chartAssets.chartsByWorkbookSheetIndex;
+      chartsheets = chartAssets.chartsheets;
+      tabs = chartAssets.tabs;
+      return {
+        chartsByWorkbookSheetIndex, chartsheets, formControlsByWorkbookSheetIndex, sheets, tablesByWorkbookSheetIndex, tabs,
+        pivotTables: readPivotTables(nextWorkbook).map(pivot => ({ ...pivot, ...(pivotRefreshErrors.has(pivot.id) ? { refreshError: pivotRefreshErrors.get(pivot.id) } : {}) })),
+        chartOriginsById: chartAssets.chartOriginsById,
+        columnFontMeasurements: getColumnFontMeasurements(),
+        fontFamilies, imageAssets, xmlRecords: takeWorkbookXmlRecords(includeSnapshot ? undefined : new Set(chartsByWorkbookSheetIndex.flat().flatMap(chart => chart.renderSource ? [chart.renderSource.xml] : []))), shouldAutoCalculate,
+        workbookSnapshot: includeSnapshot ? nextWorkbook.exportSnapshot() : undefined,
+        imageBlobs: takeWorkerImageBlobs(imageAssets?.objectUrls ?? [])
+      };
+    } catch (error) {
+      if (workbook !== activeWorkbook) activeWorkbook.free();
+      throw error;
     }
-    const nextWorkbook = activeWorkbook;
-    const unmeasuredFont = effectiveSkipXmlParsing ? null : getUnmeasuredWorkbookFont(archive);
-    if (unmeasuredFont) await loadSpreadsheetFonts([unmeasuredFont], typeof document === "undefined" ? globalThis as unknown as Document : document);
-    workbookFontFamilies = fontFamilies;
-    const imageAssets = await loadWorkbookImageAssets(bytes, nextWorkbook, effectiveSkipXmlParsing, archive);
-    if (recalculatedPivotFormulas) {
-      for (const sheet of imageAssets?.sheetStatesByWorkbookSheetIndex ?? []) if (sheet) sheet.cachedFormulaValues = {};
-    }
-    const structureAssets = imageAssets;
-    const themePalette = structureAssets?.themePalette ?? buildThemePaletteFromHex(nextWorkbook.themePalette);
-    formControlsByWorkbookSheetIndex = collectWorkbookFormControls(nextWorkbook, themePalette).map(
-      (controls, sheetIndex) => controls.map(control => ({ ...control, items: resolveFormControlItems(nextWorkbook, sheetIndex, control) }))
-    );
-    workbook?.free();
-    workbook = nextWorkbook;
-    sheets = buildSheetList(nextWorkbook, themePalette, structureAssets, undefined, showHiddenSheets);
-    tablesByWorkbookSheetIndex = Array.from({ length: nextWorkbook.sheetCount }, (_, index) =>
-      mapWorksheetTables(nextWorkbook.getSheet(index), structureAssets?.sheetStatesByWorkbookSheetIndex[index]?.autoFilterRanges ?? [])
-    );
-    const visibleSheetIndexByWorkbookSheetIndex = new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index]));
-    const chartAssets = loadWorkbookChartAssets(nextWorkbook, null, visibleSheetIndexByWorkbookSheetIndex, showHiddenSheets);
-    if (imageAssets) chartAssets.chartOriginsById = hydrateWorkbookChartStyles(chartAssets.chartsByWorkbookSheetIndex, imageAssets, chartAssets.chartsheets, nextWorkbook);
-    chartsByWorkbookSheetIndex = chartAssets.chartsByWorkbookSheetIndex;
-    chartsheets = chartAssets.chartsheets;
-    tabs = chartAssets.tabs;
-    return {
-      chartsByWorkbookSheetIndex, chartsheets, formControlsByWorkbookSheetIndex, sheets, tablesByWorkbookSheetIndex, tabs,
-      pivotTables: readPivotTables(nextWorkbook).map(pivot => ({ ...pivot, ...(pivotRefreshErrors.has(pivot.id) ? { refreshError: pivotRefreshErrors.get(pivot.id) } : {}) })),
-      chartOriginsById: chartAssets.chartOriginsById,
-      columnFontMeasurements: getColumnFontMeasurements(),
-      fontFamilies, imageAssets, xmlRecords: takeWorkbookXmlRecords(includeSnapshot ? undefined : new Set(chartsByWorkbookSheetIndex.flat().flatMap(chart => chart.renderSource ? [chart.renderSource.xml] : []))), shouldAutoCalculate,
-      workbookSnapshot: includeSnapshot ? nextWorkbook.exportSnapshot() : undefined
-    };
   }
 
   async function handleMessage(message: WorkerMessage) {
@@ -702,9 +717,6 @@ export function createWorkbookRuntime() {
         } finally { restored.free(); takeWorkbookXmlRecords(); }
       }
       case "load": {
-        if (message.payload.wasmSource !== undefined) {
-          setWasmSource(message.payload.wasmSource);
-        }
         restoreColumnFontMeasurements(message.payload.columnFontMeasurements ?? []);
         return loadWorkbook(message.payload.buffer, message.payload.skipXmlParsing, message.payload.showHiddenSheets, message.payload.includeSnapshot);
       }
@@ -760,8 +772,11 @@ export function createWorkbookRuntime() {
   return {
     handleMessage,
     dispose() {
+      disposed = true;
       workbook?.free();
       workbook = null;
+      revokeWorkbookImageAssets(loadedImageAssets);
+      loadedImageAssets = null;
     }
   };
 }

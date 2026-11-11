@@ -1,5 +1,6 @@
 import { createWorkbookRuntime } from "./workbook-runtime";
 import type { WorkerMessage } from "./worker-client";
+import { setWasmSource } from "./wasm";
 
 type WorkerResponse =
   | { id: number; success: true; result: unknown }
@@ -24,6 +25,7 @@ function respond(message: WorkerResponse) {
 
 self.addEventListener("message", (event: MessageEvent<WorkerMessage>) => {
   const message = event.data;
+  if (message.type === "load" && message.payload.wasmSource !== undefined) setWasmSource(message.payload.wasmSource);
   void runtime.handleMessage(message)
     .then((result) => {
       respond({

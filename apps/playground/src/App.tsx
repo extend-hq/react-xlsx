@@ -695,21 +695,20 @@ function ViewRibbon() {
 }
 
 function useRuntimeStatus() {
-  const { isLoadDeferred, isLoading, isWorkerBacked, sheets } = useXlsxViewer();
+  const { isLoadDeferred, isLoading, sheets } = useXlsxViewer();
+  const { useWorker } = useSettings();
   const workerApiAvailable = typeof Worker !== "undefined";
   const label = isLoading
     ? "Loading"
     : isLoadDeferred
       ? "Deferred"
       : sheets.length > 0
-        ? "Worker parser"
+        ? "Ready"
         : "Idle";
-  const detail = !workerApiAvailable
-    ? "Worker API unavailable in this runtime."
-    : isWorkerBacked
-      ? "Parsing and cell queries run in a worker."
-      : "Parsing runs in a worker; editing and cell queries use a local model.";
-  const tone = workerApiAvailable && sheets.length > 0 ? "bg-emerald-500" : "bg-neutral-400";
+  const detail = !useWorker || !workerApiAvailable
+    ? "Processing runs on the main thread."
+    : "Workers are preferred, with automatic main-thread fallback.";
+  const tone = sheets.length > 0 ? "bg-emerald-500" : "bg-neutral-400";
   return { detail, label, tone };
 }
 
@@ -721,7 +720,7 @@ function DeveloperRibbon() {
   return (
     <>
       <RibbonGroup>
-        <ToggleRow checked={settings.useWorker} label="Worker cell queries" onCheckedChange={(value) => settings.set("useWorker", value)} />
+        <ToggleRow checked={settings.useWorker} label="Use web workers" onCheckedChange={(value) => settings.set("useWorker", value)} />
         <ToggleRow
           checked={settings.allowResizeInReadOnly}
           label="Resize when read-only"

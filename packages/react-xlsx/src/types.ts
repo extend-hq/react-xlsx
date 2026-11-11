@@ -1114,8 +1114,8 @@ export interface UseXlsxViewerControllerOptions {
    */
   src?: string;
   /**
-   * Keeps read-only workbook queries in the parser worker. When false, hydrates a local model from a binary snapshot.
-   * Source archive and XML decoding always run in the worker.
+   * Uses a worker for parsing, chart rendering, export, and read-only queries when available.
+   * Falls back to the main thread if the worker cannot run. Set false to disable workers entirely.
    *
    * @default true
    */

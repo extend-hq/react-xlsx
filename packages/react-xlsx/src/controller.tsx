@@ -1372,11 +1372,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const getWorkerClient = React.useCallback(() => {
     if (!workerClientRef.current) {
-      workerClientRef.current = new XlsxWorkerClient();
+      workerClientRef.current = new XlsxWorkerClient(useWorker);
     }
 
     return workerClientRef.current;
-  }, []);
+  }, [useWorker]);
 
   const clearImageAssets = React.useCallback(() => {
     releaseXmlRecordsRef.current?.();

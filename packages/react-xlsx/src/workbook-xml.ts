@@ -5,7 +5,7 @@ let decodeArchive: ((bytes: Uint8Array) => Record<string, Uint8Array>) | undefin
 
 export function configureWorkbookArchiveDecoder(decode: NonNullable<typeof decodeArchive>) { decodeArchive = decode; }
 export function decodeWorkbookArchive(bytes: Uint8Array) {
-  if (!decodeArchive) throw new Error("Workbook archives must be decoded in the parser worker.");
+  if (!decodeArchive) throw new Error("The workbook archive decoder is not initialized.");
   return decodeArchive(bytes);
 }
 
@@ -210,7 +210,7 @@ function hydrate(tree: XmlTree, document: ParsedDocument, parent: ParsedNode) {
 export function parseWorkbookXml(xml: string): Document {
   let tree = trees.get(xml);
   if (!tree) {
-    if (!decodeXml) throw new Error("Workbook XML must be decoded in the parser worker.");
+    if (!decodeXml) throw new Error("The workbook XML decoder is not initialized.");
     tree = JSON.parse(decodeXml(xml)) as XmlTree;
     trees.set(xml, tree);
   }

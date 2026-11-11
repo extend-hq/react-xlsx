@@ -3,6 +3,7 @@ import type { WorkbookImageAssets, WorkbookImageSheetOrigin } from "./images";
 import type { WorkbookChartOrigin } from "./charts";
 import type { takeWorkbookXmlRecords } from "./workbook-xml";
 import type { XlsxPivotTable } from "./pivot-types";
+import { restoreWorkerImageBlobs } from "./workbook-object-urls";
 
 const columnFontMeasurements = new Map<string, number>();
 
@@ -17,6 +18,7 @@ export type XlsxWorkerLoadResult = {
   tabs: XlsxWorkbookTab[];
   chartOriginsById: Map<string, WorkbookChartOrigin>;
   imageAssets: WorkbookImageAssets | null;
+  imageBlobs?: Array<[string, Blob]>;
   xmlRecords: ReturnType<typeof takeWorkbookXmlRecords>;
   fontFamilies: string[];
   workbookSnapshot?: Uint8Array;
@@ -26,7 +28,7 @@ export type XlsxWorkerLoadResult = {
 import type { XlsxChart, XlsxChartsheet, XlsxFormControl, XlsxSheetData, XlsxTable, XlsxWorkbookTab } from "./types";
 import { getConfiguredWorkerWasmSource, type WorkerWasmSource } from "./wasm";
 
-type WorkerMessage =
+export type WorkerMessage =
   | { id: number; type: "renderChart"; payload: Parameters<RenderChartAsync> }
   | { id: number; type: "export"; payload: { snapshot: Uint8Array; assets: WorkbookImageAssets | null; origins: Array<WorkbookImageSheetOrigin | null> } }
 
@@ -130,7 +132,13 @@ export class XlsxWorkerUnavailableError extends Error {
 }
 
 export class XlsxWorkerClient {
-  private readonly worker: Worker;
+  private worker: Worker | null = null;
+
+  private mainRuntime: Promise<ReturnType<typeof import("./workbook-runtime")["createWorkbookRuntime"]>> | null = null;
+
+  private mainLoad: Promise<XlsxWorkerLoadResult> | null = null;
+
+  private loadPayload: Extract<WorkerMessage, { type: "load" }>["payload"] | null = null;
 
   private nextRequestId = 1;
 
@@ -142,11 +150,12 @@ export class XlsxWorkerClient {
 
   private startupTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor() {
+  constructor(useWorker = true) {
+    if (!useWorker || typeof Worker === "undefined") return;
     try {
       this.worker = new Worker(new URL("./xlsx-worker.js", import.meta.url), { type: "module" });
     } catch {
-      throw new XlsxWorkerUnavailableError("The workbook worker could not be started.");
+      return;
     }
     this.worker.addEventListener("message", this.handleMessage);
     this.worker.addEventListener("error", this.handleError);
@@ -168,31 +177,38 @@ export class XlsxWorkerClient {
       request.reject(abortError);
     }
     this.pendingRequests.clear();
+    void this.mainRuntime?.then(runtime => runtime.dispose(), () => undefined);
+    this.loadPayload = null;
   }
 
   private stopWorker() {
     if (this.startupTimer !== null) clearTimeout(this.startupTimer);
     this.startupTimer = null;
-    this.worker.removeEventListener("message", this.handleMessage);
-    this.worker.removeEventListener("error", this.handleError);
-    this.worker.removeEventListener("messageerror", this.handleError);
-    this.worker.terminate();
+    this.worker?.removeEventListener("message", this.handleMessage);
+    this.worker?.removeEventListener("error", this.handleError);
+    this.worker?.removeEventListener("messageerror", this.handleError);
+    this.worker?.terminate();
   }
 
   async loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHiddenSheets = false, includeSnapshot = false) {
-    const workerBuffer = cloneArrayBufferForTransfer(buffer);
-    const result = await this.request<XlsxWorkerLoadResult>({
-      id: 0,
-      payload: { buffer: workerBuffer, columnFontMeasurements: Array.from(columnFontMeasurements), includeSnapshot, showHiddenSheets, skipXmlParsing, wasmSource: await getConfiguredWorkerWasmSource() },
-      type: "load"
-    }, [workerBuffer]);
+    this.loadPayload = { buffer, columnFontMeasurements: Array.from(columnFontMeasurements), includeSnapshot, showHiddenSheets, skipXmlParsing };
+    const result = await this.withFallback(async () => {
+      const workerBuffer = cloneArrayBufferForTransfer(buffer);
+      return this.request<XlsxWorkerLoadResult>({
+        id: 0,
+        payload: { ...this.loadPayload!, buffer: workerBuffer, wasmSource: await getConfiguredWorkerWasmSource() },
+        type: "load"
+      }, [workerBuffer]);
+    }, () => this.loadOnMainThread());
+    restoreWorkerImageBlobs(result.imageAssets, result.imageBlobs);
+    delete result.imageBlobs;
     for (const [key, value] of result.columnFontMeasurements) columnFontMeasurements.set(key, value);
     while (columnFontMeasurements.size > 256) columnFontMeasurements.delete(columnFontMeasurements.keys().next().value!);
     return result;
   }
 
   getCellSnapshot(workbookSheetIndex: number, row: number, col: number, locale?: string) {
-    return this.request<{
+    return this.requestWithFallback<{
       displayValue: string;
       formula: string;
     }>({
@@ -202,17 +218,65 @@ export class XlsxWorkerClient {
     });
   }
 
-  renderChart: RenderChartAsync = (...payload) => this.request<ChartWorkerResult>({ id: 0, type: "renderChart", payload });
+  renderChart: RenderChartAsync = (...payload) => this.requestWithFallback<ChartWorkerResult>({ id: 0, type: "renderChart", payload });
 
   exportWorkbook(snapshot: Uint8Array, assets: WorkbookImageAssets | null, origins: Array<WorkbookImageSheetOrigin | null>) {
-    return this.request<Uint8Array>({ id: 0, type: "export", payload: { snapshot, assets, origins } }, [snapshot.buffer as ArrayBuffer]);
+    return this.requestWithFallback<Uint8Array>({ id: 0, type: "export", payload: { snapshot, assets, origins } });
   }
 
   getRowsBatch(workbookSheetIndex: number, startRow: number, rowCount: number, locale?: string) {
-    return this.request<unknown[] | null>({
+    return this.requestWithFallback<unknown[] | null>({
       id: 0,
       payload: { rowCount, startRow, workbookSheetIndex, locale },
       type: "getRowsBatch"
+    });
+  }
+
+  private async withFallback<TResult>(runWorker: () => Promise<TResult>, runMain: () => Promise<TResult>): Promise<TResult> {
+    if (this.disposed) throw createAbortError();
+    if (this.worker && !this.failure) {
+      try {
+        return await runWorker();
+      } catch (error) {
+        if (this.disposed || (error instanceof Error && error.name === "AbortError")) throw error;
+        this.fail(new XlsxWorkerUnavailableError("The workbook worker is unavailable; using the main thread."));
+      }
+    }
+    if (this.disposed) throw createAbortError();
+    return runMain();
+  }
+
+  private async getMainRuntime() {
+    if (this.disposed) throw createAbortError();
+    this.mainRuntime ??= import("./workbook-runtime").then(({ createWorkbookRuntime }) => createWorkbookRuntime());
+    const runtime = await this.mainRuntime;
+    if (this.disposed) {
+      runtime.dispose();
+      throw createAbortError();
+    }
+    return runtime;
+  }
+
+  private loadOnMainThread(): Promise<XlsxWorkerLoadResult> {
+    this.mainLoad ??= (async () => {
+      const runtime = await this.getMainRuntime();
+      if (!this.loadPayload) throw createAbortError();
+      const result = await runtime.handleMessage({ id: 0, type: "load", payload: { ...this.loadPayload, includeSnapshot: true } }) as XlsxWorkerLoadResult;
+      if (this.disposed) {
+        runtime.dispose();
+        throw createAbortError();
+      }
+      return result;
+    })();
+    return this.mainLoad;
+  }
+
+  private requestWithFallback<TResult>(message: WorkerMessage): Promise<TResult> {
+    return this.withFallback(() => this.request<TResult>(message), async () => {
+      const runtime = await this.getMainRuntime();
+      if (this.loadPayload) await this.loadOnMainThread();
+      if (this.disposed) throw createAbortError();
+      return await runtime.handleMessage(message) as TResult;
     });
   }
 
@@ -231,7 +295,7 @@ export class XlsxWorkerClient {
       this.nextRequestId += 1;
       this.pendingRequests.set(id, { reject, resolve: resolve as (value: unknown) => void });
       try {
-        this.worker.postMessage({ ...message, id }, transfer);
+        this.worker!.postMessage({ ...message, id }, transfer);
       } catch {
         this.fail(new XlsxWorkerUnavailableError("The workbook worker could not receive a request."));
       }

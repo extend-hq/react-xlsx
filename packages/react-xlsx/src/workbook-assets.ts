@@ -1,6 +1,7 @@
 import type { DrawingAnchor as DukeDrawingAnchor, ImageDrawing as DukeImageDrawing, Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import { collectWorkbookFormControls, dukeDrawingAnchorToXlsxAnchor, parseWorkbookImageAssets, type WorkbookImageAssets, type WorkbookImageSheetOrigin } from "./images";
 import type { XlsxImage } from "./types";
+import { createWorkbookObjectUrl } from "./workbook-object-urls";
 
 function inferImageMimeType(source: string) {
   if (source.startsWith("data:")) {
@@ -78,7 +79,7 @@ function createWorksheetDirectImageSource(
 
   const blobBuffer = new Uint8Array(bytes.byteLength);
   blobBuffer.set(bytes);
-  const objectUrl = URL.createObjectURL(new Blob([blobBuffer.buffer], { type: mimeType }));
+  const objectUrl = createWorkbookObjectUrl(new Blob([blobBuffer.buffer], { type: mimeType }));
   objectUrls.push(objectUrl);
   return objectUrl;
 }

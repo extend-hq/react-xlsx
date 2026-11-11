@@ -29,7 +29,7 @@ For the React entry, install `react` and `react-dom` as well. They are optional 
 ### Upgrading from 0.21.x
 
 - `getXlsxBytes()` now returns `Promise<Uint8Array | null>` and `exportXlsx()` returns `Promise<void>`. Await these calls before consuming the bytes or handling export completion/errors.
-- Workbook loading requires browser Web Workers. `useWorker={false}` keeps a local model after worker parsing; it no longer disables worker usage.
+- `useWorker` defaults to `true`, with automatic main-thread fallback when workers are unavailable or fail. Set `useWorker={false}` to disable workers for loading, charts, and export.
 - If you host the parser WASM yourself, deploy the `@extend-ai/react-xlsx/duke_sheets_wasm_bg.wasm` asset from the same package version as the viewer. The patched runtime includes the pivot APIs.
 - `renderTableHeaderMenu` now receives pivot headers as well as ordinary table headers. Check `menu.pivot` or `menu.kind`, or provide `renderPivotTableHeaderMenu` separately.
 
@@ -1036,7 +1036,7 @@ Notes:
 - `maxFileSizeBytes` defaults to `25 MB`.
 - `readOnlyAboveBytes` can disable mutation actions for larger files.
 - `deferLoadingAboveBytes` waits for `controller.continueDeferredLoad()` before parsing files above the threshold.
-- `useWorker` defaults to `true`. Parsing requires browser worker support; `false` keeps a local editable/queryable model after worker parsing.
+- `useWorker` defaults to `true`. Workers handle parsing, charts, and export when available; worker failures fall back to the main thread. Set `false` to disable workers entirely.
 
 ## Viewer Props
 
@@ -1271,4 +1271,4 @@ The package exports the main types you are likely to use for custom integrations
 
 See the repository license for usage terms.
 
-Workbook ZIP/XML decoding and the bundled chart parser run in a Web Worker. The viewer requires worker support; it reports worker startup failures instead of falling back to parsing on the main thread. `useWorker: false` hydrates a local model for synchronous cell access after worker parsing. A custom `experimentalOfficeCharts` renderer remains a host callback and controls its own execution. The patched parser is maintained in [patches/duke-sheets](../../patches/duke-sheets/README.md); `pnpm build:duke-sheets` rebuilds the checked-in WASM without a fork.
+Workbook ZIP/XML decoding, the bundled chart parser, and XLSX export use a Web Worker by default. If workers are unsupported, blocked, or fail to load, the viewer automatically uses the same runtime on the main thread. Set `useWorker: false` to opt out of workers entirely. The fallback preserves workbook features, but large operations can block the UI while they run. A custom `experimentalOfficeCharts` renderer remains a host callback and controls its own execution. The patched parser is maintained in [patches/duke-sheets](../../patches/duke-sheets/README.md); `pnpm build:duke-sheets` rebuilds the checked-in WASM without a fork.

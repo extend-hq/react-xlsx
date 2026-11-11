@@ -10,7 +10,7 @@ function sharedCorePlugin(): NonNullable<Options["esbuildPlugins"]>[number] {
     setup(build) {
       build.onResolve({ filter: /^@extend-ai\/react-xlsx\/(?:internal|vanilla)$/ }, (args) => ({ path: args.path, external: true }));
       build.onResolve({ filter: /^\.\/(wasm|errors)$/ }, (args) => {
-        if (/\/(controller\.tsx|worker-client\.ts)$/.test(args.importer)) {
+        if (/\/(controller\.tsx|worker-client\.ts|workbook-runtime\.ts)$/.test(args.importer)) {
           return { path: "@extend-ai/react-xlsx/internal", external: true };
         }
         return undefined;

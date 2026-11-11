@@ -1,4 +1,5 @@
 import { decodeWorkbookArchive, parseWorkbookXml, serializeWorkbookXml } from "./workbook-xml";
+import { createWorkbookObjectUrl, revokeWorkbookObjectUrl } from "./workbook-object-urls";
 import type {
   DrawingAnchor as DukeDrawingAnchor,
   DrawingColor as DukeDrawingColor,
@@ -2658,7 +2659,7 @@ function createImageAnchorNodes(document: XMLDocument) {
 
 function createImageSource(bytes: Uint8Array, mimeType: string, objectUrls: string[]) {
   if (typeof URL !== "undefined" && typeof Blob !== "undefined") {
-    const objectUrl = URL.createObjectURL(new Blob([cloneBytes(bytes)], { type: mimeType }));
+    const objectUrl = createWorkbookObjectUrl(new Blob([cloneBytes(bytes)], { type: mimeType }));
     objectUrls.push(objectUrl);
     return objectUrl;
   }
@@ -3258,7 +3259,7 @@ export function revokeWorkbookImageAssets(assets: WorkbookImageAssets | null) {
 
   for (const objectUrl of assets.objectUrls) {
     if (objectUrl.startsWith("blob:")) {
-      URL.revokeObjectURL(objectUrl);
+      revokeWorkbookObjectUrl(objectUrl);
     }
   }
 }

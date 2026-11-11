@@ -38,7 +38,7 @@ The React and vanilla entries export the pivot model, operation, editor, and ren
 
 ## Integration notes
 
-- Upgrading from 0.21.x: exports are asynchronous, workbook parsing requires Web Workers, and self-hosted WASM must match the viewer package. See [migration notes](packages/react-xlsx/README.md#upgrading-from-021x).
+- Upgrading from 0.21.x: exports are asynchronous, workers default to enabled with automatic main-thread fallback, and self-hosted WASM must match the viewer package. See [migration notes](packages/react-xlsx/README.md#upgrading-from-021x).
 - WASM loads lazily. For custom hosting, call `setWasmSource` before parsing. Next.js Turbopack uses a public/CDN URL instead of `.wasm?url`; Vite development needs dependency exclusions. See [WASM and bundler setup](packages/react-xlsx/README.md#webassembly-asset).
 - `.xlsx` is the primary format; `.xls` and `.xlsm` support is limited by DukeSheets and format-specific XML handling. The default file limit is 25 MB; configure `maxFileSizeBytes` for larger inputs.
 - `setCellStyle`, `setSelectedCellStyle` and `setRangeStyle` persist formatting through undo/export. `getCellStyle` changes display only; the canvas renderer supports a subset of CSS. See [cell styling](packages/react-xlsx/README.md#persisted-cell-styling).
