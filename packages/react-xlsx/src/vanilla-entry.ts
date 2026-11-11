@@ -19,6 +19,9 @@ export type {
   XlsxVanillaStyle
 } from "./vanilla";
 export type { XlsxWasmSource } from "./wasm";
+export type * from "./pivot-types";
+export type * from "./pivot-editor";
+export type { XlsxPivotTableHeaderMenuRenderProps } from "./pivot-header-controls";
 export type {
   XlsxThemePalette,
   XlsxResolvedCellStyle,

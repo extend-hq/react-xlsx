@@ -399,6 +399,14 @@ These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 - `useXlsxViewerCharts()` for chart, chart element, formula, and chartsheet state
 - `useXlsxViewerThumbnails(options)` for painting worksheet thumbnails into your own canvases
 
+## Pivot Tables
+
+Worksheet-backed pivot tables are available through `useXlsxViewerPivots()` and the viewer controller. Create and edit reports with `upsertPivotTable()`, read their metadata from `pivotTables`, and refresh source data with `refreshPivotTable()` or `refreshAllPivotTables()`. Pivot changes, detail worksheets, and linked PivotCharts participate in undo/redo and XLSX export. Report layout and filter changes use the saved cache until an explicit refresh.
+
+The playground exposes a **PivotTable** ribbon, field panel, source/destination selection, grouping, filters, calculations, layout settings, drill-through, and chart creation. The sample pivot workbook is available from that ribbon. Direct cell edits inside pivot results are blocked; source data and cell formatting remain editable.
+
+This targets worksheet-backed XLSX pivots. Unsupported imported features are preserved without editing and reported in metadata. Visual member/date filters are pivot filters, not standalone Excel slicer/timeline objects. See [pivot table APIs and compatibility](../../docs/pivot-tables.md) for the current scope.
+
 ## Merging Cells
 
 The controller and `useXlsxViewerEditing()` expose `mergeSelection(mode?)` and `unmergeSelection()`. The merge modes are:

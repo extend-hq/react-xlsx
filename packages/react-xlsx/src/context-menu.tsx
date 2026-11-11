@@ -9,6 +9,7 @@ import type {
 } from "./types";
 import { isDarkViewerPalette, type ViewerPalette } from "./viewer-palette";
 import { expandHighlightedRange } from "./range-highlight";
+import { findIntersectingPivot } from "./pivots";
 
 type MenuErrorKey = "clipboardCopyUnavailable" | "clipboardPasteUnavailable" | "nothingToPaste" | "actionFailed";
 
@@ -76,19 +77,26 @@ export function XlsxContextMenu({
     context.cell.col >= start.col && context.cell.col <= end.col);
   const range = expandHighlightedRange(context.selection, controller.activeSheet?.mergedRanges ?? []);
   const multiple = range.start.row !== range.end.row || range.start.col !== range.end.col;
+  const touchesPivot = Boolean(findIntersectingPivot(controller.pivotTables, controller.activeSheet?.name, range));
+  const pivot = controller.getPivotTableAtCell(context.cell);
   const actions: XlsxContextMenuAction[] = [
-    ...(!controller.readOnly ? [{ id: "cut" as const, label: messages.cut }] : []),
+    ...(pivot ? [{ id: "togglePivotFieldList" as const, label: controller.pivotFieldListVisible ? messages.hidePivotFieldList : messages.showPivotFieldList, checked: controller.pivotFieldListVisible }] : []),
+    ...(pivot && !controller.readOnly ? [
+      { id: "refreshPivotTable" as const, label: messages.refreshPivotTable, disabled: pivot.unsupportedFeatures.length > 0 },
+      { id: "showPivotDetails" as const, label: messages.showPivotDetails, disabled: pivot.unsupportedFeatures.length > 0 }
+    ] : []),
+    ...(!controller.readOnly ? [{ id: "cut" as const, label: messages.cut, disabled: touchesPivot }] : []),
     { id: "copy", label: messages.copy, shortcut: `${modifier}C` },
     ...(!controller.readOnly ? [
-      { id: "paste" as const, label: messages.paste, shortcut: `${modifier}V` },
-      { id: "editCell" as const, label: messages.editCell, shortcut: "F2", separatorBefore: true },
-      { id: "clearContents" as const, label: messages.clearContents, destructive: true },
+      { id: "paste" as const, label: messages.paste, shortcut: `${modifier}V`, disabled: touchesPivot },
+      { id: "editCell" as const, label: messages.editCell, shortcut: "F2", separatorBefore: true, disabled: touchesPivot },
+      { id: "clearContents" as const, label: messages.clearContents, destructive: true, disabled: touchesPivot },
       { id: "undo" as const, label: messages.undo, shortcut: `${modifier}Z`, separatorBefore: true, disabled: !controller.canUndo },
       { id: "redo" as const, label: messages.redo, shortcut: `${modifier}⇧Z`, disabled: !controller.canRedo },
-      { id: "mergeAndCenter" as const, label: messages.mergeAndCenter, separatorBefore: true, disabled: !multiple },
-      { id: "mergeAcross" as const, label: messages.mergeAcross, disabled: range.start.col === range.end.col },
-      { id: "mergeCells" as const, label: messages.mergeCells, disabled: !multiple },
-      { id: "unmergeCells" as const, label: messages.unmergeCells },
+      { id: "mergeAndCenter" as const, label: messages.mergeAndCenter, separatorBefore: true, disabled: !multiple || touchesPivot },
+      { id: "mergeAcross" as const, label: messages.mergeAcross, disabled: range.start.col === range.end.col || touchesPivot },
+      { id: "mergeCells" as const, label: messages.mergeCells, disabled: !multiple || touchesPivot },
+      { id: "unmergeCells" as const, label: messages.unmergeCells, disabled: touchesPivot },
       ...(table ? [
         { id: "sortAscending" as const, label: messages.sortAscending, separatorBefore: true },
         { id: "sortDescending" as const, label: messages.sortDescending }
@@ -112,7 +120,7 @@ export function XlsxContextMenu({
     update();
     const observer = new ResizeObserver(update);
     observer.observe(root);
-    (root.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])') ?? root).focus();
+    (root.querySelector<HTMLElement>(':is([role="menuitem"],[role="menuitemcheckbox"]):not(:disabled):not([aria-disabled="true"])') ?? root).focus();
     return () => observer.disconnect();
   }, [position]);
 
@@ -125,6 +133,8 @@ export function XlsxContextMenu({
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("focusin", outside);
     document.addEventListener("scroll", outside, true);
+    document.addEventListener("wheel", outside, { capture: true, passive: true });
+    document.addEventListener("gesturestart", outside, true);
     window.addEventListener("resize", dismiss);
     window.addEventListener("blur", dismiss);
     return () => {
@@ -133,6 +143,8 @@ export function XlsxContextMenu({
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("focusin", outside);
       document.removeEventListener("scroll", outside, true);
+      document.removeEventListener("wheel", outside, true);
+      document.removeEventListener("gesturestart", outside, true);
       window.removeEventListener("resize", dismiss);
       window.removeEventListener("blur", dismiss);
     };
@@ -154,6 +166,15 @@ export function XlsxContextMenu({
     setErrorKey(null);
     try {
       switch (id) {
+        case "togglePivotFieldList":
+          controller.setPivotFieldListVisible(!controller.pivotFieldListVisible);
+          break;
+        case "refreshPivotTable":
+          if (pivot) controller.refreshPivotTable(pivot.id);
+          break;
+        case "showPivotDetails":
+          if (pivot) controller.showPivotDetails(pivot.id, context.cell.row, context.cell.col);
+          break;
         case "copy":
         case "cut": {
           const copied = await controller.copySelectionToClipboard();
@@ -224,11 +245,12 @@ export function XlsxContextMenu({
         data-destructive={action.destructive || undefined}
         disabled={busy || action.disabled}
         onClick={() => { void runAction(action.id); }}
-        role="menuitem"
+        role={action.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+        aria-checked={action.checked}
         tabIndex={-1}
         type="button"
       >
-        <span>{action.label}</span>
+        <span>{action.checked !== undefined ? <span aria-hidden="true" style={{ display: "inline-block", width: 18 }}>{action.checked ? "✓" : ""}</span> : null}{action.label}</span>
         {action.shortcut && <span className="react-xlsx-context-menu-shortcut">{action.shortcut}</span>}
       </button>
     </React.Fragment>
@@ -262,7 +284,7 @@ export function XlsxContextMenu({
           closeMenu();
           return;
         }
-        const items = Array.from(rootRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])') ?? []);
+        const items = Array.from(rootRef.current?.querySelectorAll<HTMLElement>(':is([role="menuitem"],[role="menuitemcheckbox"]):not(:disabled):not([aria-disabled="true"])') ?? []);
         const current = items.indexOf(document.activeElement as HTMLElement);
         let next: number | undefined;
         if (event.key === "ArrowDown") next = (current + 1) % items.length;

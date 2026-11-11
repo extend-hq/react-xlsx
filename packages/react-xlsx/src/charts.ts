@@ -1870,6 +1870,7 @@ function applyChartStyleFromXml(
   resolveReference: ChartReferenceResolver,
   workbook?: Workbook
 ) {
+  if (chart.raw?.pivotSource && chart.raw?.pivotModified) return;
   const chartXml = readArchiveText(archive, chartPath);
   if (!chartXml) {
     return;

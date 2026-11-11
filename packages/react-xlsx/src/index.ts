@@ -11,8 +11,14 @@ export {
   useXlsxViewerThumbnails,
   useXlsxViewerZoom,
   useXlsxViewerTables,
+  useXlsxViewerPivots,
+  useXlsxPivotTableEditor,
   XlsxViewerProvider
 } from "./XlsxViewer";
+export type * from "./pivot-types";
+export type * from "./pivot-editor";
+export type { XlsxPivotTableHeaderMenuRenderProps } from "./pivot-header-controls";
+export { DefaultXlsxPivotTableFieldList, type DefaultXlsxPivotTableFieldListProps } from "./pivot-field-list";
 export type {
   UseXlsxViewerControllerOptions,
   XlsxActiveCellOverlayRenderProps,

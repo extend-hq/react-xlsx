@@ -2,10 +2,12 @@ import type { ChartWorkerResult, RenderChartAsync } from "./chart-renderer-types
 import type { WorkbookImageAssets, WorkbookImageSheetOrigin } from "./images";
 import type { WorkbookChartOrigin } from "./charts";
 import type { takeWorkbookXmlRecords } from "./workbook-xml";
+import type { XlsxPivotTable } from "./pivot-types";
 
 const columnFontMeasurements = new Map<string, number>();
 
 export type XlsxWorkerLoadResult = {
+  pivotTables: XlsxPivotTable[];
   columnFontMeasurements: Array<[string, number]>;
   chartsByWorkbookSheetIndex: XlsxChart[][];
   chartsheets: XlsxChartsheet[];

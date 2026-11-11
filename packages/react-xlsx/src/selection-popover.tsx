@@ -1,5 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
+import { VIEWPORT_CHANGE_EVENT } from "./overlay-geometry";
 import type { XlsxImageRect, XlsxSelectionPopoverContext, XlsxSelectionPopoverRenderProps } from "./types";
 
 export function SelectionPopover({ context, suspended, viewportRef, getRects, render, onApply, focusGrid }: {
@@ -49,6 +50,7 @@ export function SelectionPopover({ context, suspended, viewportRef, getRects, re
     const observer = new ResizeObserver(update);
     observer.observe(viewport);
     owner.addEventListener("scroll", update, true);
+    viewport.addEventListener(VIEWPORT_CHANGE_EVENT, update);
     viewport.addEventListener("transitionend", update);
     owner.addEventListener("pointerdown", outside, true);
     win.addEventListener("resize", update);
@@ -56,6 +58,7 @@ export function SelectionPopover({ context, suspended, viewportRef, getRects, re
       controller.abort();
       observer.disconnect();
       owner.removeEventListener("scroll", update, true);
+      viewport.removeEventListener(VIEWPORT_CHANGE_EVENT, update);
       viewport.removeEventListener("transitionend", update);
       owner.removeEventListener("pointerdown", outside, true);
       win.removeEventListener("resize", update);

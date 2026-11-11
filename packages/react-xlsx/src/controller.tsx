@@ -1,4 +1,6 @@
 import { createMergedRangeLookup } from "./merged-range-lookup";
+import { findIntersectingPivot, pivotWorkbook, readPivotTables } from "./pivots";
+import type { XlsxPivotChartInput, XlsxPivotSource, XlsxPivotTable, XlsxPivotTableInput, XlsxPivotToggle } from "./pivot-types";
 import { restoreWorkbookXmlRecords } from "./workbook-xml";
 import { localizeCellNumber } from "./number-locale";
 import { resolveMessages } from "./messages";
@@ -11,7 +13,7 @@ import type { DrawingAnchor as DukeDrawingAnchor, DrawingColor as DukeDrawingCol
 import { applyChartSeriesFormula, buildChartSeriesFormula, refreshChartRenderSource, loadWorkbookChartAssets, updateWorkbookChartAnchor, updateWorkbookChartDefinition, type WorkbookChartAssets } from "./charts";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { pxToOfficeColumnWidth, pxToSheetColumnWidth, rectToImageAnchor, refreshWorkbookFormControls, resolveContentSheetAxisPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetHiddenCols, resolveWorksheetHiddenRows, resolveWorksheetMergeMetadata, resolveSheetColumnWidthPixels, resolveRenderedSheetAxisPixels, resolveSheetRowHeightPixels, resizeImageRect, revokeWorkbookImageAssets, updateWorkbookImageAnchor, xlsxAnchorToDukeDrawingAnchor, type WorkbookImageAssets, type WorkbookImageSheetOrigin } from "./images";
-import { tryRecalculate } from "./safe-calculate";
+import { safeCalculate, tryRecalculate } from "./safe-calculate";
 import { parseXlsxRange } from "./range-reference";
 import { expandHighlightedRange } from "./range-highlight";
 import { getSheetsWasmModule } from "./wasm";
@@ -778,9 +780,9 @@ function xlsxFormControlInputToDukeDrawing(input: XlsxFormControlInput): DukeFor
     formControl: {
       kind: xlsxFormControlKindToDukeKind(input.kind),
       macroName: input.macroName,
-      rawClientData: input.rawClientData,
+      rawClientData: input.rawClientData ?? [],
       rawObj: input.kind.kind === "editbox" || input.kind.kind === "unknown" ? input.kind.rawObj : undefined,
-      rawProperties: input.kind.kind === "editbox" || input.kind.kind === "unknown" ? input.kind.rawProperties : undefined
+      rawProperties: input.kind.kind === "editbox" || input.kind.kind === "unknown" ? input.kind.rawProperties ?? [] : []
     },
     hidden: input.hidden,
     kind: "formControl",
@@ -808,9 +810,42 @@ function reconcileCheckedOptionButtons(worksheet: ReturnType<Workbook["getSheet"
   }
 }
 
+function formControlLinkTouchesPivot(
+  workbook: Workbook,
+  pivots: readonly XlsxPivotTable[],
+  sourceSheetIndex: number,
+  kind: DukeFormControlKind | ReturnType<typeof xlsxFormControlKindToDukeKind>
+) {
+  if (!pivots.length || !("cellLink" in kind) || !kind.cellLink) return false;
+  const names = workbook.namedRanges as Array<{ name: string; sheetIndex?: number | null; refersTo: string }>;
+  const sheetNames = workbook.sheetNames;
+  const resolve = (reference: string, sheetIndex: number, depth: number): boolean => {
+    if (depth === 0) return false;
+    let address = reference.trim().replace(/^=\s*/, "");
+    const separator = address.lastIndexOf("!");
+    if (separator >= 0) {
+      const rawSheet = address.slice(0, separator).trim();
+      const sheetName = rawSheet.startsWith("'") && rawSheet.endsWith("'")
+        ? rawSheet.slice(1, -1).replace(/''/g, "'") : rawSheet;
+      sheetIndex = sheetNames.findIndex(name => name.toLowerCase() === sheetName.toLowerCase());
+      if (sheetIndex < 0) return false;
+      address = address.slice(separator + 1);
+    }
+    const parsed = parseXlsxRange(address);
+    if (parsed?.kind === "cells" && !parsed.sheetName
+      && parsed.range.start.row === parsed.range.end.row && parsed.range.start.col === parsed.range.end.col) {
+      return Boolean(findIntersectingPivot(pivots, sheetNames[sheetIndex], parsed.range));
+    }
+    const matching = names.filter(name => name.name.toLowerCase() === address.toLowerCase());
+    const named = matching.find(name => name.sheetIndex === sheetIndex) ?? matching.find(name => name.sheetIndex == null);
+    return named ? resolve(named.refersTo, sheetIndex, depth - 1) : false;
+  };
+  return resolve(kind.cellLink, sourceSheetIndex, 4);
+}
+
 function formControlInteractionChanged(
   current: DukeFormControlKind,
-  next: DukeFormControlKind
+  next: DukeFormControlKind | ReturnType<typeof xlsxFormControlKindToDukeKind>
 ) {
   if (current.kind !== next.kind) {
     return true;
@@ -827,8 +862,8 @@ function formControlInteractionChanged(
     case "listBox":
       return next.kind === "listBox" && (
         current.selection !== next.selection
-        || current.selected.length !== next.selected.length
-        || current.selected.some((value, index) => value !== next.selected[index])
+        || current.selected.length !== (next.selected?.length ?? 0)
+        || current.selected.some((value, index) => value !== next.selected?.[index])
       );
     case "scrollbar":
     case "spinner":
@@ -1281,6 +1316,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [tabs, setTabs] = React.useState<XlsxWorkbookTab[]>([]);
   const [isChartsLoading, setIsChartsLoading] = React.useState(false);
   const [workerTablesByWorkbookSheetIndex, setWorkerTablesByWorkbookSheetIndex] = React.useState<XlsxTable[][]>([]);
+  const [pivotTables, setPivotTables] = React.useState<XlsxPivotTable[]>([]);
+  const [pivotFieldListVisible, setPivotFieldListVisibleState] = React.useState(false);
+  const pivotFieldListRequestedRef = React.useRef(true);
+  const setPivotFieldListVisible = React.useCallback((visible: boolean) => {
+    pivotFieldListRequestedRef.current = visible;
+    setPivotFieldListVisibleState(visible);
+  }, []);
   const [formControlsByWorkbookSheetIndex, setFormControlsByWorkbookSheetIndex] = React.useState<XlsxFormControl[][]>([]);
   const [imagesByWorkbookSheetIndex, setImagesByWorkbookSheetIndex] = React.useState<XlsxImage[][]>([]);
   const [shapesByWorkbookSheetIndex, setShapesByWorkbookSheetIndex] = React.useState<XlsxShape[][]>([]);
@@ -1428,6 +1470,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setChartAssets({ chartsByWorkbookSheetIndex: snapshot.chartsByWorkbookSheetIndex, chartsheets: snapshot.chartsheets, tabs: snapshot.tabs, chartOriginsById: snapshot.chartOriginsById });
     setFormControlsByWorkbookSheetIndex(snapshot.formControlsByWorkbookSheetIndex);
     setWorkerTablesByWorkbookSheetIndex(snapshot.tablesByWorkbookSheetIndex);
+    setPivotTables(snapshot.pivotTables);
     setShouldAutoCalculate(editable && snapshot.shouldAutoCalculate);
     setIsWorkerBacked(!nextWorkbook);
     setSortState(null);
@@ -1435,6 +1478,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [getWorkerClient, requestedReadOnly, setChartAssets, setImageAssets, shouldForceReadOnlyForBuffer, showHiddenSheets, skipXmlParsing, useWorker]);
 
   const refreshWorkbookState = React.useCallback((targetWorkbook: Workbook) => {
+    setPivotTables(readPivotTables(targetWorkbook));
     const currentFormControls = imageAssetsRef.current?.formControlsByWorkbookSheetIndex ?? [];
     const nextFormControls = refreshWorkbookFormControls(
       targetWorkbook,
@@ -1483,6 +1527,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       disposeWorkerClient();
       setForcedReadOnly(false);
       setWorkbook(null);
+      setPivotTables([]);
       setSheets([]);
       clearChartAssets();
       setWorkerTablesByWorkbookSheetIndex([]);
@@ -1557,6 +1602,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           deferredBufferRef.current = buffer;
           setDeferredLoadFileSize(buffer.byteLength);
           setWorkbook(null);
+          setPivotTables([]);
           setSheets([]);
           clearChartAssets();
           setWorkerTablesByWorkbookSheetIndex([]);
@@ -1571,6 +1617,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         }
 
         setWorkbook(null);
+        setPivotTables([]);
         setSheets([]);
         clearChartAssets();
         setWorkerTablesByWorkbookSheetIndex([]);
@@ -1758,6 +1805,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     void loadPreparedWorkbook(buffer, isCurrent).catch((nextError: unknown) => {
       if (!isCurrent()) return;
       setWorkbook(null);
+      setPivotTables([]);
       setSheets([]);
       clearChartAssets();
       clearImageAssets();
@@ -2413,6 +2461,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     sheetOriginsRef.current = structuredClone(entry.origins);
     setWorkbook(nextWorkbook);
     setSheets(nextSheets);
+    setPivotTables(readPivotTables(nextWorkbook));
     const nextChartAssets = loadWorkbookChartAssets(nextWorkbook, nextImageAssets, buildVisibleSheetIndexMap(nextSheets), showHiddenSheets);
     setChartAssets(nextChartAssets);
     setActiveSheetIndexState(nextSheetIndex);
@@ -2500,9 +2549,166 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setHistoryRevision((current) => current + 1);
   }, [createHistoryEntry]);
 
+  const getPivotSourceFields = React.useCallback((source: XlsxPivotSource) => {
+    if (!workbook) throw new Error("Load an editable workbook to inspect a pivot source.");
+    return pivotWorkbook(workbook).getPivotSourceFields(source);
+  }, [workbook]);
+
+  const getPivotTableAtCell = React.useCallback((cell: XlsxCellAddress, sheetName = activeSheet?.name) => (
+    findIntersectingPivot(pivotTables, sheetName, { start: cell, end: cell })
+  ), [activeSheet?.name, pivotTables]);
+
+  React.useEffect(() => {
+    const insidePivot = activeCell && !selectedChartId && !selectedImageId && getPivotTableAtCell(activeCell);
+    setPivotFieldListVisibleState(Boolean(pivotFieldListRequestedRef.current && insidePivot));
+  }, [activeCell?.row, activeCell?.col, activeSheet?.name, getPivotTableAtCell, selectedChartId, selectedImageId]);
+
+  const intersectsPivot = React.useCallback((range: XlsxCellRange) => (
+    Boolean(findIntersectingPivot(pivotTables, activeSheet?.name, range))
+  ), [activeSheet?.name, pivotTables]);
+
+  const calculateForPivotMutation = React.useCallback((target: Workbook, preserveSavedValues = true) => {
+    const snapshot = preserveSavedValues ? target.exportSnapshot() : null;
+    const result = safeCalculate(target, snapshot ? { reparse: () => (target.constructor as typeof Workbook).fromSnapshot(snapshot) } : {});
+    if (!result.calculated) {
+      if (result.workbook !== target) result.workbook.free();
+      throw new Error("The workbook formulas could not be recalculated safely. The pivot table and existing values have been kept.");
+    }
+  }, []);
+
+  const commitPivotMutation = React.useCallback(<T,>(mutate: (target: Workbook) => T, recalculate = true): T => {
+    if (readOnly) throw new Error("Enable editing to change pivot tables.");
+    if (!workbook) throw new Error("Load a workbook before changing pivot tables.");
+    const before = createHistoryEntry();
+    const next = (workbook.constructor as typeof Workbook).fromSnapshot(before?.bytes ?? workbook.exportSnapshot());
+    let result: T;
+    try {
+      if (recalculate) calculateForPivotMutation(next);
+      result = mutate(next);
+      if (recalculate) calculateForPivotMutation(next, false);
+    } catch (error) {
+      next.free();
+      throw error;
+    }
+    if (before) {
+      pushHistoryEntry(undoStackRef.current, before);
+      redoStackRef.current = [];
+      setHistoryRevision(current => current + 1);
+    }
+    if (recalculate) {
+      for (const sheet of imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex ?? []) if (sheet) sheet.cachedFormulaValues = {};
+    }
+    setWorkbook(next);
+    refreshWorkbookState(next);
+    return result;
+  }, [calculateForPivotMutation, createHistoryEntry, readOnly, refreshWorkbookState, workbook]);
+
+  const upsertPivotTable = React.useCallback((input: XlsxPivotTableInput) => {
+    return commitPivotMutation(target => pivotWorkbook(target).upsertPivotTable(input));
+  }, [commitPivotMutation]);
+
+  const refreshPivotTable = React.useCallback((id: string) => (
+    commitPivotMutation(target => pivotWorkbook(target).refreshPivotTable(id), true)
+  ), [commitPivotMutation]);
+
+  const createPivotChart = React.useCallback((id: string, options: XlsxPivotChartInput = {}) => (
+    commitPivotMutation(target => pivotWorkbook(target).createPivotChart(id, { ...options, workbookName: `${fileStem(displayFileName)}.xlsx` }), false)
+  ), [commitPivotMutation, displayFileName]);
+
+  const togglePivotGroup = React.useCallback((id: string, toggle: XlsxPivotToggle) => {
+    const pivot = pivotTables.find(item => item.id === id);
+    if (!pivot) throw new Error("The pivot table no longer exists.");
+    return upsertPivotTable({
+      ...pivot,
+      [toggle.axis]: pivot[toggle.axis].map((field, depth) => field.field === toggle.field && (toggle.depth === undefined || toggle.depth === depth) ? {
+        ...field,
+        collapsed: field.collapsed.includes(toggle.key) ? field.collapsed.filter(key => key !== toggle.key) : [...field.collapsed, toggle.key]
+      } : field)
+    });
+  }, [pivotTables, upsertPivotTable]);
+
+  const removePivotTable = React.useCallback((id: string) => {
+    if (!pivotTables.some(pivot => pivot.id === id)) return false;
+    return commitPivotMutation(target => pivotWorkbook(target).removePivotTable(id));
+  }, [commitPivotMutation, pivotTables]);
+
+  const refreshAllPivotTables = React.useCallback(() => {
+    if (readOnly) throw new Error("Enable editing to refresh pivot tables.");
+    if (!workbook) throw new Error("Load a workbook before refreshing pivot tables.");
+    if (!pivotTables.length) return [];
+    const before = createHistoryEntry();
+    const next = (workbook.constructor as typeof Workbook).fromSnapshot(workbook.exportSnapshot());
+    try {
+      calculateForPivotMutation(next);
+      const engine = pivotWorkbook(next);
+      for (const pivot of engine.pivotTables) {
+        engine.refreshPivotTable(pivot.id);
+        calculateForPivotMutation(next, false);
+      }
+    } catch (error) {
+      next.free();
+      throw error;
+    }
+    if (before) {
+      pushHistoryEntry(undoStackRef.current, before);
+      redoStackRef.current = [];
+      setHistoryRevision(current => current + 1);
+    }
+    for (const sheet of imageAssetsRef.current?.sheetStatesByWorkbookSheetIndex ?? []) if (sheet) sheet.cachedFormulaValues = {};
+    setWorkbook(next);
+    refreshWorkbookState(next);
+    return pivotWorkbook(next).pivotTables;
+  }, [calculateForPivotMutation, createHistoryEntry, pivotTables.length, readOnly, refreshWorkbookState, workbook]);
+
+  const pivotDrillDown = React.useCallback((id: string, row: number, col: number) => {
+    if (!workbook) throw new Error("Load an editable workbook to inspect pivot details.");
+    return pivotWorkbook(workbook).pivotDrillDown(id, row, col);
+  }, [workbook]);
+
+  const showPivotDetails = React.useCallback((id: string, row: number, col: number) => {
+    if (readOnly) throw new Error("Enable editing to create a details worksheet.");
+    if (!workbook) throw new Error("Load a workbook before inspecting pivot details.");
+    const details = pivotWorkbook(workbook).pivotDrillDown(id, row, col);
+    if (!details.rows.length) throw new Error("This pivot cell has no source records to display.");
+    const before = createHistoryEntry();
+    const next = (workbook.constructor as typeof Workbook).fromSnapshot(workbook.exportSnapshot());
+    let name = "Details";
+    let suffix = 2;
+    while (next.sheetNames.some(sheet => sheet.toLowerCase() === name.toLowerCase())) name = `Details ${suffix++}`;
+    try {
+      const sheet = next.getSheet(next.addSheet(name));
+      for (let col = 0; col < details.fields.length; col++) {
+        sheet.setCell(cellAddressToA1({ row: 0, col }), details.fields[col]);
+        sheet.setCellStyleAt(0, col, { font: { bold: true } });
+      }
+      for (let row = 0; row < details.rows.length; row++) {
+        for (let col = 0; col < details.fields.length; col++) {
+          sheet.setCell(cellAddressToA1({ row: row + 1, col }), details.rows[row][col] ?? "");
+        }
+      }
+    } catch (error) {
+      next.free();
+      throw error;
+    }
+    if (before) {
+      pushHistoryEntry(undoStackRef.current, before);
+      redoStackRef.current = [];
+      setHistoryRevision(current => current + 1);
+    }
+    sheetOriginsRef.current = [...sheetOriginsRef.current, null];
+    setWorkbook(next);
+    refreshWorkbookState(next);
+    setActiveSheetIndexState(sheets.length);
+    setActiveTabIndexState(tabs.length);
+    return name;
+  }, [createHistoryEntry, readOnly, refreshWorkbookState, sheets.length, tabs.length, workbook]);
+
   const addFormControl = React.useCallback((input: XlsxFormControlInput, sheetIndex = activeSheetIndex) => {
     const target = getFormControlWorksheet(sheetIndex);
     if (readOnly || !workbook || !target) {
+      return null;
+    }
+    if (formControlLinkTouchesPivot(workbook, pivotTables, target.workbookSheetIndex, xlsxFormControlKindToDukeKind(input.kind))) {
       return null;
     }
 
@@ -2521,7 +2727,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     return controlIndex;
-  }, [activeSheetIndex, getFormControlWorksheet, maybeRecalculateWorkbook, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+  }, [activeSheetIndex, getFormControlWorksheet, maybeRecalculateWorkbook, pivotTables, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
   const updateFormControl = React.useCallback((
     controlIndex: number,
@@ -2534,7 +2740,6 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return false;
     }
 
-    recordHistoryBeforeMutation();
     const currentInput = formControlInputFromDukeControl(currentControl);
     if (currentInput.kind !== "formControl" || !currentControl.anchor) {
       return false;
@@ -2550,6 +2755,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     let nextKind = patch.kind
       ? xlsxFormControlKindToDukeKind(patch.kind)
       : dukeFormControlKindToInput(currentControl.formControl.kind);
+    if (formControlInteractionChanged(currentControl.formControl.kind, nextKind)
+      && formControlLinkTouchesPivot(workbook, pivotTables, target.workbookSheetIndex, nextKind)) {
+      return false;
+    }
     if (currentControl.formControl.kind.kind === "unknown" && nextKind.kind === "unknown") {
       nextKind = {
         ...nextKind,
@@ -2581,6 +2790,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       title: "title" in patch ? patch.title : currentControl.title
     };
 
+    recordHistoryBeforeMutation();
     target.worksheet.setDrawing(currentControl.drawingPath, nextInput);
     const updatedControl = target.worksheet.formControls[controlIndex];
     const updatedKind = updatedControl?.formControl.kind;
@@ -2602,7 +2812,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     return true;
-  }, [activeSheetIndex, getFormControlWorksheet, maybeRecalculateWorkbook, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+  }, [activeSheetIndex, getFormControlWorksheet, maybeRecalculateWorkbook, pivotTables, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
   const removeFormControl = React.useCallback((controlIndex: number, sheetIndex = activeSheetIndex) => {
     const target = getFormControlWorksheet(sheetIndex);
@@ -2677,6 +2887,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (!worksheet || !workbook || !activeSheet || !targetTable) {
       return;
     }
+
+    if (intersectsPivot({ start: targetTable.start, end: targetTable.end })) return;
 
     const dataStartRow = targetTable.start.row + Math.max(targetTable.headerRowCount, 1);
     const totalsRowOffset = targetTable.totalsRowCount;
@@ -2780,6 +2992,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSortState(nextSortState);
     recordRangeEditHistory(mutations, selection, activeCell, nextSortState);
   }, [
+    intersectsPivot,
     activeCell,
     activeSheet,
     getActiveWorksheet,
@@ -3025,7 +3238,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       readOnly,
       rect
     });
-    if (readOnly || !workbook || !activeSheet || !imageAssetsRef.current || !hydratedChartAssets) {
+    if (readOnly || !workbook || !activeSheet) {
       return;
     }
 
@@ -3035,7 +3248,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       activeWorkbookSheetIndex: activeSheet.workbookSheetIndex,
       editable: currentChart?.editable,
       found: Boolean(currentChart),
-      originCount: hydratedChartAssets.chartOriginsById.size,
+      originCount: hydratedChartAssets?.chartOriginsById.size ?? 0,
       workbookSheetIndex: currentChart?.workbookSheetIndex
     });
     if (!currentChart || currentChart.editable === false || currentChart.workbookSheetIndex !== activeSheet.workbookSheetIndex) {
@@ -3048,6 +3261,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       getColumnWidthPx: (col) => layout?.columnWidths[col] ?? getColumnWidthPx(worksheet, col),
       getRowHeightPx: (row) => layout?.rowHeights[row] ?? getRowHeightPx(worksheet, row)
     });
+
+    if (currentChart.raw?.pivotSource && currentChart.name) {
+      commitPivotMutation(target => pivotWorkbook(target).updatePivotChart(worksheet.name, currentChart.name!, {
+        anchor: xlsxAnchorToDukeDrawingAnchor(nextAnchor)
+      }), false);
+      return;
+    }
+    if (!imageAssetsRef.current || !hydratedChartAssets) return;
 
     recordHistoryBeforeMutation();
     const didUpdateAnchor = updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, nextAnchor);
@@ -3063,6 +3284,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setRevision((current) => current + 1);
   }, [
     activeSheet,
+    commitPivotMutation,
     getChartById,
     getColumnWidthPx,
     getRowHeightPx,
@@ -3270,6 +3492,20 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
+    if (currentChart.raw?.pivotSource) {
+      if (!workbook || !currentChart.name) return;
+      if (Object.keys(patch).some(key => !["title", "chartType", "anchor"].includes(key))) {
+        throw new Error("Change PivotChart data through the pivot table field settings.");
+      }
+      const sheetName = workbook.getSheet(currentChart.workbookSheetIndex).name;
+      commitPivotMutation(target => pivotWorkbook(target).updatePivotChart(sheetName, currentChart.name!, {
+        title: patch.title,
+        chartType: patch.chartType,
+        anchor: patch.anchor ? xlsxAnchorToDukeDrawingAnchor(patch.anchor) : undefined
+      }), false);
+      return;
+    }
+
     recordHistoryBeforeMutation();
     if (patch.anchor && imageAssetsRef.current && hydratedChartAssets) {
       updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, patch.anchor);
@@ -3286,7 +3522,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       })
     )));
     setRevision((current) => current + 1);
-  }, [ensureChartAssetsHydrated, getChartById, readOnly, recordHistoryBeforeMutation, sheets, workbook]);
+  }, [commitPivotMutation, ensureChartAssetsHydrated, getChartById, readOnly, recordHistoryBeforeMutation, sheets, workbook]);
 
   const setChartSeriesFormula = React.useCallback((chartId: string, seriesIndex: number, formula: string) => {
     if (readOnly) {
@@ -3294,7 +3530,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     const chart = getChartById(chartId);
-    if (!chart || chart.editable === false) {
+    if (!chart || chart.editable === false || chart.raw?.pivotSource) {
       return false;
     }
 
@@ -3366,6 +3602,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
+    if (intersectsPivot(targetRange)) return;
     const normalized = normalizeRange(targetRange);
     const mutations: RangeCellMutation[] = [];
     for (let row = normalized.start.row; row <= normalized.end.row; row += 1) {
@@ -3397,6 +3634,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     refreshWorkbookState(workbook);
     recordRangeEditHistory(mutations, normalized, activeCell ?? normalized.start);
   }, [
+    intersectsPivot,
     activeCell,
     captureCellMutationState,
     getActiveWorksheet,
@@ -3410,7 +3648,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const setCellValue = React.useCallback((cell: XlsxCellAddress, value: string) => {
     const worksheet = getActiveWorksheet();
-    if (readOnly || !worksheet || !workbook) {
+    if (readOnly || !worksheet || !workbook || getPivotTableAtCell(cell)) {
       return;
     }
 
@@ -3430,11 +3668,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     recordCellEditHistory(cell, before, after);
-  }, [captureCellMutationState, getActiveWorksheet, getCellDisplayValue, locale, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
+  }, [getPivotTableAtCell, captureCellMutationState, getActiveWorksheet, getCellDisplayValue, locale, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
   const setCellFormula = React.useCallback((cell: XlsxCellAddress, formula: string) => {
     const worksheet = getActiveWorksheet();
-    if (readOnly || !worksheet || !workbook) {
+    if (readOnly || !worksheet || !workbook || getPivotTableAtCell(cell)) {
       return;
     }
 
@@ -3457,7 +3695,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     recordCellEditHistory(cell, before, after);
-  }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
+  }, [getPivotTableAtCell, captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordCellEditHistory, refreshWorkbookState, workbook]);
 
   const setCellStyle = React.useCallback((cell: XlsxCellAddress, style: XlsxCellStyleInput) => {
     const worksheet = getActiveWorksheet();
@@ -3524,13 +3762,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return setChartSeriesFormula(selectedFormulaTarget.chartId, selectedFormulaTarget.seriesIndex, formula);
     }
 
-    if (!activeCell) {
+    if (readOnly || !activeCell || getPivotTableAtCell(activeCell)) {
       return false;
     }
 
     setCellFormula(activeCell, formula);
     return true;
-  }, [activeCell, selectedFormulaTarget, setCellFormula, setChartSeriesFormula]);
+  }, [readOnly, getPivotTableAtCell, activeCell, selectedFormulaTarget, setCellFormula, setChartSeriesFormula]);
 
   const setSelectedCellStyle = React.useCallback((style: XlsxCellStyleInput) => {
     if (!activeCell) {
@@ -3590,6 +3828,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
+    if (intersectsPivot(targetRange)) return;
     const sourceRange = normalizeRange(selection);
     const nextRange = normalizeRange(targetRange);
     const sourceHeight = sourceRange.end.row - sourceRange.start.row + 1;
@@ -3646,13 +3885,15 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setActiveCell(nextRange.end);
     selectionAnchorRef.current = nextRange.start;
     recordRangeEditHistory(mutations, nextRange, nextRange.end);
-  }, [captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+  }, [intersectsPivot, captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
 
   const mergeSelection = React.useCallback((mode: XlsxMergeMode = "cells") => {
     const worksheet = getActiveWorksheet();
     if (readOnly || !worksheet || !selection || !workbook) {
       return;
     }
+
+    if (intersectsPivot(selection)) return;
 
     const mergedRanges = resolveWorksheetMergeMetadata(worksheet).mergedRanges;
     const range = expandHighlightedRange(normalizeRange(selection), mergedRanges);
@@ -3684,7 +3925,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     selectionAnchorRef.current = range.start;
     setSelection(range);
     setActiveCell(range.start);
-  }, [getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
+  }, [intersectsPivot, getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
 
   const unmergeSelection = React.useCallback(() => {
     const worksheet = getActiveWorksheet();
@@ -3693,6 +3934,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     const range = normalizeRange(selection);
+    if (intersectsPivot(selection)) return;
+
     const mergedRanges = resolveWorksheetMergeMetadata(worksheet).mergedRanges
       .filter((merged) => rangesIntersect(range, merged));
     if (mergedRanges.length === 0) return;
@@ -3702,7 +3945,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       worksheet.unmergeCells(rangeToA1(merged));
     }
     refreshWorkbookState(workbook);
-  }, [getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
+  }, [intersectsPivot, getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
 
   const addSheet = React.useCallback((name?: string) => {
     if (readOnly || !workbook) {
@@ -3761,6 +4004,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     recordHistoryBeforeMutation();
     workbook.removeSheet(activeSheet.workbookSheetIndex);
+    setPivotTables(readPivotTables(workbook));
     sheetOriginsRef.current = sheetOriginsRef.current.filter((_, index) => index !== activeSheet.workbookSheetIndex);
     setFormControlsByWorkbookSheetIndex((current) => current.filter((_, index) => index !== activeSheet.workbookSheetIndex));
     setImagesByWorkbookSheetIndex((current) => current.filter((_, index) => index !== activeSheet.workbookSheetIndex));
@@ -3822,6 +4066,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return false;
     }
 
+    if (intersectsPivot({ start: targetCell, end: { row: targetCell.row + grid.length - 1, col: targetCell.col + Math.max(...grid.map(row => row.length)) - 1 } })) return false;
+
     const mutations: RangeCellMutation[] = [];
     for (let rowIndex = 0; rowIndex < grid.length; rowIndex += 1) {
       const row = grid[rowIndex] ?? [];
@@ -3880,7 +4126,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     selectionAnchorRef.current = targetCell;
     recordRangeEditHistory(mutations, nextRange, targetCell);
     return true;
-  }, [activeCell, captureCellMutationState, getActiveWorksheet, locale, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+  }, [intersectsPivot, activeCell, captureCellMutationState, getActiveWorksheet, locale, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
 
   const pasteStructuredClipboardData = React.useCallback((serializedPayload: string) => {
     const worksheet = getActiveWorksheet();
@@ -3899,6 +4145,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (!Array.isArray(payload.cells) || payload.cells.length === 0) {
       return false;
     }
+
+    if (payload.cells.some(cell => intersectsPivot({
+      start: { row: targetCell.row + cell.rowOffset, col: targetCell.col + cell.colOffset },
+      end: { row: targetCell.row + cell.rowOffset, col: targetCell.col + cell.colOffset }
+    })) || (Array.isArray(payload.merges) ? payload.merges : []).some(merge => intersectsPivot({
+      start: { row: targetCell.row + merge.rowOffset, col: targetCell.col + merge.colOffset },
+      end: { row: targetCell.row + merge.rowOffset + merge.rowSpan - 1, col: targetCell.col + merge.colOffset + merge.colSpan - 1 }
+    }))) return false;
 
     const hasMergeOperations = Array.isArray(payload.merges) && payload.merges.some((merge) => (merge.rowSpan ?? 1) > 1 || (merge.colSpan ?? 1) > 1);
     const mutations: RangeCellMutation[] = [];
@@ -3978,6 +4232,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
     return true;
   }, [
+    intersectsPivot,
     activeCell,
     captureCellMutationState,
     getActiveWorksheet,
@@ -4200,6 +4455,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       getSheetFormControls,
       getSheetImages,
       getSheetShapes,
+      pivotTables,
+      pivotFieldListVisible,
+      setPivotFieldListVisible,
+      getPivotSourceFields,
+      getPivotTableAtCell,
+      upsertPivotTable,
+      refreshPivotTable,
+      refreshAllPivotTables,
+      removePivotTable,
+      pivotDrillDown,
+      showPivotDetails,
+      createPivotChart,
+      togglePivotGroup,
       file,
       getClipboardData,
       getCellDisplayValue,
@@ -4328,6 +4596,19 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       getSheetFormControls,
       getSheetImages,
       getSheetShapes,
+      pivotTables,
+      pivotFieldListVisible,
+      setPivotFieldListVisible,
+      getPivotSourceFields,
+      getPivotTableAtCell,
+      upsertPivotTable,
+      refreshPivotTable,
+      refreshAllPivotTables,
+      removePivotTable,
+      pivotDrillDown,
+      showPivotDetails,
+      createPivotChart,
+      togglePivotGroup,
       getClipboardData,
       getCellDisplayValue,
       getCellFormula,

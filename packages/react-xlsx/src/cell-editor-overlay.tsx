@@ -1,10 +1,12 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
+import { VIEWPORT_CHANGE_EVENT, visibleOverlayRect } from "./overlay-geometry";
 import type { XlsxCellEditorOverlayRenderProps, XlsxCellEditorSession, XlsxImageRect } from "./types";
 
-export function CellEditorOverlay({ editorRef, overlayRef, session, render, onExit }: {
+export function CellEditorOverlay({ editorRef, overlayRef, clipElement, session, render, onExit }: {
   editorRef: React.RefObject<HTMLDivElement | null>;
   overlayRef: React.RefObject<HTMLDivElement | null>;
+  clipElement?: HTMLElement | null;
   session: XlsxCellEditorSession;
   render: (props: XlsxCellEditorOverlayRenderProps) => React.ReactNode;
   onExit: () => void;
@@ -20,11 +22,9 @@ export function CellEditorOverlay({ editorRef, overlayRef, session, render, onEx
     if (!editor || !owner || !win || !viewport) return;
     const update = () => {
       const bounds = editor.getBoundingClientRect();
-      const view = viewport.getBoundingClientRect();
-      const rect = { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
-      const visible = bounds.width > 0 && bounds.height > 0 && bounds.right > Math.max(view.left, 0)
-        && bounds.bottom > Math.max(view.top, 0) && bounds.left < Math.min(view.right, win.innerWidth)
-        && bounds.top < Math.min(view.bottom, win.innerHeight);
+      const clipped = visibleOverlayRect(editor, clipElement);
+      const rect = clipped ?? { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
+      const visible = clipped !== null;
       setGeometry(previous => previous && previous.editor === editor && previous.visible === visible && previous.rect.left === rect.left
         && previous.rect.top === rect.top && previous.rect.width === rect.width && previous.rect.height === rect.height
         ? previous : { owner, editor, rect, visible });
@@ -40,17 +40,19 @@ export function CellEditorOverlay({ editorRef, overlayRef, session, render, onEx
     observer.observe(editor);
     observer.observe(viewport);
     owner.addEventListener("scroll", update, true);
+    viewport.addEventListener(VIEWPORT_CHANGE_EVENT, update);
     owner.addEventListener("pointerdown", outside, true);
     owner.addEventListener("focusin", outside);
     win.addEventListener("resize", update);
     return () => {
       observer.disconnect();
       owner.removeEventListener("scroll", update, true);
+      viewport.removeEventListener(VIEWPORT_CHANGE_EVENT, update);
       owner.removeEventListener("pointerdown", outside, true);
       owner.removeEventListener("focusin", outside);
       win.removeEventListener("resize", update);
     };
-  }, [editorRef, overlayRef, session.signal]);
+  }, [editorRef, overlayRef, clipElement, session.signal]);
 
   const content = geometry ? render({ ...session, rect: geometry.rect, editorElement: geometry.editor }) : null;
   if (!geometry || content == null || content === false) return null;
