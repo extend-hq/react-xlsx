@@ -56,6 +56,8 @@ import {
 } from "@extend-ai/react-xlsx";
 import { FormulaEditorDemo } from "@/components/formula-editor-demo";
 import { FormulaContextMenu } from "@/components/formula-context-menu";
+import { WorksheetHeaderMenu } from "@/components/worksheet-header-menu";
+import { InsertPivotButton, PivotPlaygroundProvider, PivotPlaygroundLayout, PivotRefreshAllButton, PivotTableRibbon } from "@/components/pivot-tables";
 import type { DemoStylePreview } from "@/components/formula-demo-actions";
 import { HIGHLIGHT_DEMO_RANGES, HIGHLIGHT_DEMO_URL, RangeHighlightDemo } from "@/components/range-highlight-demo";
 import { RibbonButton, RibbonColorButton, RibbonDivider, RibbonGroup, RibbonMenuButton } from "@/components/ribbon";
@@ -74,8 +76,9 @@ import { cn } from "@/lib/utils";
 
 const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
 const PLAYGROUND_SAMPLE_URL = "/examples/crazy-chart-zoo-subtypes.xlsx";
+const PIVOT_SAMPLE_URL = "/examples/pivot-tables.xlsx";
 
-const RIBBON_TABS = ["Home", "Insert", "Formulas", "Data", "Review", "View", "Developer"] as const;
+const RIBBON_TABS = ["Home", "Insert", "PivotTable", "Formulas", "Data", "Review", "View", "Developer"] as const;
 type RibbonTab = (typeof RIBBON_TABS)[number];
 
 const FONT_FAMILIES = ["Aptos", "Calibri", "Arial", "Georgia", "Times New Roman", "Courier New"] as const;
@@ -506,6 +509,7 @@ function InsertRibbon({
 
   return (
     <>
+      <RibbonGroup><InsertPivotButton /></RibbonGroup>
       <RibbonGroup>
         <RibbonButton disabled={sheets.length === 0 || isReadOnly} label="New sheet" onClick={() => addSheet()} showLabel>
           <Plus />
@@ -601,6 +605,7 @@ function DataRibbon({ onClear }: { onClear: () => void }) {
         <RibbonButton disabled={!canExport} label="Refresh all" onClick={recalculate} showLabel>
           <RefreshCw />
         </RibbonButton>
+        <PivotRefreshAllButton />
         <RibbonButton disabled={sheets.length === 0} label="Close workbook" onClick={onClear} showLabel>
           <X />
         </RibbonButton>
@@ -741,12 +746,14 @@ function DeveloperRibbon() {
 
 function Ribbon({
   onClear,
+  onLoadPivotSample,
   onLoadHighlightSample,
   onLoadSample,
   onLoadUrl,
   onOpenFile,
 }: {
   onClear: () => void;
+  onLoadPivotSample: () => void;
   onLoadHighlightSample: (autoScroll: boolean) => void;
   onLoadSample: () => void;
   onLoadUrl: (url: string) => void;
@@ -786,6 +793,9 @@ function Ribbon({
         <TabsPanel className={panelClass} value="Insert">
           <InsertRibbon onLoadSample={onLoadSample} onLoadUrl={onLoadUrl} onOpenFile={onOpenFile} />
         </TabsPanel>
+        <TabsPanel className={panelClass} value="PivotTable">
+          <PivotTableRibbon onLoadSample={onLoadPivotSample} />
+        </TabsPanel>
         <TabsPanel className={panelClass} value="Formulas">
           <FormulasRibbon />
         </TabsPanel>
@@ -812,13 +822,15 @@ function Ribbon({
 
 function FormulaBar() {
   const { readOnly } = useSettings();
+  const { activeCell, getPivotTableAtCell } = useXlsxViewer();
   const { activeCellAddress, selectedRangeAddress } = useXlsxViewerSelection();
   const { readOnly: viewerReadOnly, selectedFormula, selectedFormulaTarget, setSelectedFormula } = useXlsxViewerEditing();
   const [draft, setDraft] = React.useState("");
   const [focused, setFocused] = React.useState(false);
   const initialRef = React.useRef("");
   const hasTarget = Boolean(activeCellAddress) || selectedFormulaTarget?.kind === "chartSeries";
-  const disabled = !hasTarget || readOnly || viewerReadOnly;
+  const isPivotCell = selectedFormulaTarget?.kind !== "chartSeries" && Boolean(activeCell && getPivotTableAtCell(activeCell));
+  const disabled = !hasTarget || readOnly || viewerReadOnly || isPivotCell;
   const nameBox =
     selectedFormulaTarget?.kind === "chartSeries"
       ? `Series ${selectedFormulaTarget.seriesIndex + 1}`
@@ -829,7 +841,7 @@ function FormulaBar() {
   }, [selectedFormula, activeCellAddress, focused, selectedFormulaTarget]);
 
   const commit = () => {
-    if (hasTarget && draft !== initialRef.current) setSelectedFormula(draft);
+    if (!disabled && hasTarget && draft !== initialRef.current) setSelectedFormula(draft);
     setFocused(false);
   };
   const cancel = () => {
@@ -878,6 +890,7 @@ function FormulaBar() {
         aria-label="Formula bar"
         className="h-full min-w-0 flex-1 bg-transparent px-2 font-mono text-[13px] outline-none disabled:cursor-not-allowed"
         disabled={disabled}
+        title={isPivotCell ? "Change PivotTable values through its field settings or source data." : undefined}
         onBlur={() => focused && commit()}
         onChange={(event) => setDraft(event.target.value)}
         onFocus={() => {
@@ -1111,7 +1124,7 @@ export function App() {
   const [source, setSource] = React.useState<ViewerSource>(SAMPLE_SOURCE);
   const [isDragActive, setIsDragActive] = React.useState(false);
   const [stylePreview, setStylePreview] = React.useState<DemoStylePreview | null>(null);
-  const initializedSampleRef = React.useRef<unknown>(null);
+  const initializedSourceRef = React.useRef<ViewerSource>(null);
   const pendingHighlightSampleRef = React.useRef<{ autoScroll: boolean } | null>(null);
   const dragDepthRef = React.useRef(0);
 
@@ -1146,12 +1159,21 @@ export function App() {
   );
 
   React.useEffect(() => {
-    if (controller.src !== PLAYGROUND_SAMPLE_URL || controller.isLoading || !controller.workbook || initializedSampleRef.current === controller.workbook) return;
-    const index = controller.sheets.findIndex(sheet => sheet.name === "Scatter Matrix");
-    if (index < 0) return;
-    initializedSampleRef.current = controller.workbook;
-    controller.setActiveSheetIndex(index);
-  }, [controller]);
+    if (!source || controller.isLoading) {
+      initializedSourceRef.current = null;
+      return;
+    }
+    if (!controller.activeTab || controller.error || initializedSourceRef.current === source) return;
+    if (controller.src === PLAYGROUND_SAMPLE_URL) {
+      const index = controller.sheets.findIndex(sheet => sheet.name === "Scatter Matrix");
+      if (index >= 0 && controller.activeTab.sheetIndex !== index) {
+        controller.setActiveSheetIndex(index);
+        return;
+      }
+    }
+    controller.setZoomScale(100);
+    initializedSourceRef.current = source;
+  }, [controller, source]);
 
   // Apply highlighted ranges after loading.
   React.useEffect(() => {
@@ -1167,27 +1189,11 @@ export function App() {
     }
   }, [controller.highlightRanges, controller.isLoading, controller.sheets, controller.src, source]);
 
-  // Every workbook opens at 100%, like Excel.
-  const sourceKey = source
-    ? source.type === "file"
-      ? `file:${source.fileName}:${source.file.byteLength}`
-      : `url:${source.fileName ?? ""}:${source.src}`
-    : null;
-  const zoomInitializedRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    if (!sourceKey) {
-      zoomInitializedRef.current = null;
-      return;
-    }
-    if (controller.tabs.length === 0 || zoomInitializedRef.current === sourceKey) return;
-    controller.setZoomScale(100);
-    zoomInitializedRef.current = sourceKey;
-  }, [controller, sourceKey]);
-
   const loadWorkbookFile = React.useCallback(async (file: File) => {
     setSource({ file: await file.arrayBuffer(), fileName: file.name, type: "file" });
   }, []);
   const loadSample = React.useCallback(() => setSource(SAMPLE_SOURCE), []);
+  const loadPivotSample = React.useCallback(() => setSource({ type: "url", src: PIVOT_SAMPLE_URL, fileName: "pivot-tables.xlsx" }), []);
   const loadUrl = React.useCallback((url: string) => {
     const trimmed = url.trim();
     if (trimmed) setSource({ src: trimmed, type: "url" });
@@ -1242,48 +1248,53 @@ export function App() {
         />
 
         <XlsxViewerProvider controller={controller} isDark={settings.documentDark}>
-          <TitleBar onOpenFile={openFilePicker} />
-          <Ribbon
-            onClear={() => setSource(null)}
-            onLoadHighlightSample={loadHighlightSample}
-            onLoadSample={loadSample}
-            onLoadUrl={loadUrl}
-            onOpenFile={openFilePicker}
-          />
-          <FormulaBar />
-          <main className="flex min-h-0 min-w-0 flex-1 bg-background">
-            <XlsxViewer
-              allowResizeInReadOnly={settings.allowResizeInReadOnly}
-              className="h-full min-h-0 min-w-0 flex-1"
-              contextMenuClassName="playground-context-menu"
-              emptyState={<EmptyWorkbook onLoadSample={loadSample} onOpenFile={openFilePicker} />}
-              experimentalCanvas={settings.experimentalCanvas}
-              fileTooLargeState={<div className="grid h-full place-items-center text-sm font-medium">File is too large</div>}
-              getCellStyle={getCellStyle}
-              height="100%"
-              highlightClassName={settings.customHighlightStyle ? "playground-range-highlight" : undefined}
-              isDark={settings.documentDark}
-              loadingState={
-                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                  <Spinner className="size-5" />
-                </div>
-              }
-              readOnly={settings.readOnly}
-              renderCellEditorOverlay={(session) => <FormulaEditorDemo isDark={settings.documentDark} session={session} />}
-              renderChartLoading={() => (
-                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                  <Spinner className="size-5" />
-                </div>
-              )}
-              contextMenuStyle={{ background: "transparent", border: 0, boxShadow: "none", minWidth: 0, padding: 0 }}
-              renderContextMenu={menu => <FormulaContextMenu menu={menu} controller={controller} onPreview={setStylePreview} />}
-              rounded={false}
-              selectionColor="#107C41"
-              showDefaultToolbar={false}
+          <PivotPlaygroundProvider>
+            <TitleBar onOpenFile={openFilePicker} />
+            <Ribbon
+              onClear={() => setSource(null)}
+              onLoadPivotSample={loadPivotSample}
+              onLoadHighlightSample={loadHighlightSample}
+              onLoadSample={loadSample}
+              onLoadUrl={loadUrl}
+              onOpenFile={openFilePicker}
             />
-          </main>
-          <SheetTabs />
-          <StatusBar />
+            <FormulaBar />
+            <PivotPlaygroundLayout>
+              <XlsxViewer
+                allowResizeInReadOnly={settings.allowResizeInReadOnly}
+                className="h-full min-h-0 min-w-0 flex-1"
+                contextMenuClassName="playground-context-menu"
+                emptyState={<EmptyWorkbook onLoadSample={loadSample} onOpenFile={openFilePicker} />}
+                experimentalCanvas={settings.experimentalCanvas}
+                fileTooLargeState={<div className="grid h-full place-items-center text-sm font-medium">File is too large</div>}
+                getCellStyle={getCellStyle}
+                height="100%"
+                highlightClassName={settings.customHighlightStyle ? "playground-range-highlight" : undefined}
+                isDark={settings.documentDark}
+                loadingState={
+                  <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                    <Spinner className="size-5" />
+                  </div>
+                }
+                readOnly={settings.readOnly}
+                renderCellEditorOverlay={(session) => <FormulaEditorDemo isDark={settings.documentDark} session={session} />}
+                renderChartLoading={() => (
+                  <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                    <Spinner className="size-5" />
+                  </div>
+                )}
+                contextMenuStyle={{ background: "transparent", border: 0, boxShadow: "none", minWidth: 0, padding: 0 }}
+                renderContextMenu={menu => <FormulaContextMenu menu={menu} controller={controller} onPreview={setStylePreview} />}
+                renderTableHeaderMenu={menu => <WorksheetHeaderMenu menu={menu} />}
+                rounded={false}
+                selectionColor="#107C41"
+                showDefaultToolbar={false}
+                showPivotTableControls={false}
+              />
+            </PivotPlaygroundLayout>
+            <SheetTabs />
+            <StatusBar />
+          </PivotPlaygroundProvider>
         </XlsxViewerProvider>
 
         {isDragActive ? (

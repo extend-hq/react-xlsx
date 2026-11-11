@@ -1,4 +1,6 @@
 import type { OfficeCharts } from "./office-chart-types";
+import type { XlsxPivotTableControlsRenderProps } from "./pivot-editor";
+import type { XlsxPivotTableHeaderMenuRenderProps } from "./pivot-header-controls";
 import type { Properties } from "csstype";
 import type {
   UseXlsxViewerControllerOptions,
@@ -120,6 +122,10 @@ export interface XlsxVanillaViewerOptions extends UseXlsxViewerControllerOptions
   cellEditorStyle?: XlsxVanillaStyle;
   renderCellEditorOverlay?: (props: XlsxCellEditorOverlayRenderProps) => XlsxVanillaContent;
   renderSelectionPopover?: (props: XlsxSelectionPopoverRenderProps) => XlsxVanillaContent;
+  showPivotTableControls?: boolean;
+  renderPivotTableControls?: (props: Omit<XlsxPivotTableControlsRenderProps, "defaultNode">) => XlsxVanillaContent;
+  renderPivotTableHeaderMenu?: (props: Omit<XlsxPivotTableHeaderMenuRenderProps, "defaultNode">) => XlsxVanillaContent;
+  pivotTableHighlightColor?: string;
   showImages?: boolean;
   showDefaultToolbar?: boolean;
   toolbar?: XlsxVanillaContent | ((controller: XlsxViewerController) => XlsxVanillaContent);

@@ -91,7 +91,8 @@ export function getSheetsWasmModule() {
   if (!wasmModulePromise) {
     wasmModulePromise = import("./duke-sheets/generated/duke_sheets_wasm.js").then(async (mod) => {
       const exports = await mod.default(configuredWasmSource !== undefined ? { module_or_path: configuredWasmSource } : undefined);
-      if (typeof exports.workbook_fromBytesForViewer !== "function" || typeof exports.workbook_fromSnapshot !== "function") {
+      if (typeof exports.workbook_fromBytesForViewer !== "function" || typeof exports.workbook_fromSnapshot !== "function"
+        || !("workbook_upsertPivotTable" in exports) || !("workbook_modifiedPivotCharts" in exports)) {
         throw new Error("The spreadsheet WASM asset is incompatible. Use duke_sheets_wasm_bg.wasm from the same react-xlsx package version.");
       }
       return mod;

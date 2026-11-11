@@ -39,6 +39,8 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
     renderActiveCellOverlay,
     renderCellEditorOverlay,
     renderSelectionPopover,
+    renderPivotTableControls,
+    renderPivotTableHeaderMenu,
     renderChartLoading,
     renderContextMenu,
     renderFormControl,
@@ -62,6 +64,12 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
       : undefined,
     renderSelectionPopover: renderSelectionPopover
       ? (props) => toReactContent(renderSelectionPopover(props))
+      : undefined,
+    renderPivotTableControls: renderPivotTableControls
+      ? ({ defaultNode: _defaultNode, ...props }) => toReactContent(renderPivotTableControls(props))
+      : undefined,
+    renderPivotTableHeaderMenu: renderPivotTableHeaderMenu
+      ? ({ defaultNode: _defaultNode, ...props }) => toReactContent(renderPivotTableHeaderMenu(props))
       : undefined,
     renderCellEditorOverlay: renderCellEditorOverlay
       ? (props) => toReactContent(renderCellEditorOverlay(props))

@@ -256,3 +256,16 @@
 .playground-context-menu .react-xlsx-context-menu-item {
   border-radius: calc(var(--radius) - 4px);
 }
+
+.playground-header-menu-trigger {
+  background-color: var(--popover);
+}
+
+.playground-header-menu-trigger:is(:hover, :active, [data-pressed], [data-popup-open]) {
+  background-color: color-mix(in srgb, var(--popover) 96%, var(--foreground));
+}
+
+[data-slot$="-positioner"][data-anchor-hidden] {
+  visibility: hidden;
+  pointer-events: none;
+}

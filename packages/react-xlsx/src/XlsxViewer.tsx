@@ -3,6 +3,8 @@ import { XlsxMessagesContext, useXlsxMessages } from "./messages-context";
 import { coerceUserEnteredValue, getCellEditingValue, getUserEnteredFormula, isTextCell } from "./cell-input";
 import { localizeCellNumber, localizeRows } from "./number-locale";
 import * as React from "react";
+import { createPortal } from "react-dom";
+import { VIEWPORT_CHANGE_EVENT, visibleOverlayRect } from "./overlay-geometry";
 import type { Workbook, Worksheet } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import {
   type VirtualItem,
@@ -23,6 +25,11 @@ import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
 import { XlsxContextMenu } from "./context-menu";
+import { PivotGroupControls } from "./pivot-controls";
+import { PivotHeaderControls } from "./pivot-header-controls";
+import { pivotFieldHighlightRanges } from "./pivots";
+import { usePivotTableEditor, type XlsxPivotTableEditor, type XlsxPivotTableEditorOptions } from "./pivot-editor";
+import { DefaultXlsxPivotTableFieldList } from "./pivot-field-list";
 import { MemoChartSvg } from "./lazy-chart";
 import { preloadChartRenderers } from "./chart-loader";
 import { resolvePicturePaintRect } from "./picture-paint";
@@ -4917,7 +4924,7 @@ function SegmentedControl({
   );
 }
 
-function DefaultToolbar({ controller, palette }: { controller: XlsxViewerController; palette: ViewerPalette }) {
+function DefaultToolbar({ controller, palette, pivotTableEditor }: { controller: XlsxViewerController; palette: ViewerPalette; pivotTableEditor?: XlsxPivotTableEditor }) {
   const {
     activeTabIndex,
     canDownload,
@@ -4966,6 +4973,18 @@ function DefaultToolbar({ controller, palette }: { controller: XlsxViewerControl
           </div>
         </div>
         <div style={{ alignItems: "center", display: "flex", gap: 8 }}>
+          {pivotTableEditor && (!controller.readOnly || controller.pivotTables.length > 0) ? <button
+            aria-label={messages.pivotTableFields}
+            aria-expanded={pivotTableEditor.open}
+            disabled={!controller.activeSheet}
+            onClick={() => {
+              if (!pivotTableEditor.draft && controller.pivotTables.length > 0) pivotTableEditor.select(controller.pivotTables[0].id);
+              else if (!pivotTableEditor.draft && !controller.readOnly) pivotTableEditor.create();
+              else pivotTableEditor.setOpen(!pivotTableEditor.open);
+            }}
+            style={{ background: palette.buttonSurface, border: `1px solid ${palette.strongBorder}`, borderRadius: 6, color: palette.buttonText, cursor: "pointer", padding: "6px 10px", fontSize: 12 }}
+            type="button"
+          >PivotTable</button> : null}
           <div
             style={{
               alignItems: "center",
@@ -5093,7 +5112,8 @@ function resolveToolbar(
   toolbar: XlsxViewerProps["toolbar"],
   showDefaultToolbar: boolean,
   controller: XlsxViewerController,
-  palette: ViewerPalette
+  palette: ViewerPalette,
+  pivotTableEditor?: XlsxPivotTableEditor
 ) {
   if (typeof toolbar === "function") {
     return toolbar(controller);
@@ -5107,7 +5127,7 @@ function resolveToolbar(
     return null;
   }
 
-  return <DefaultToolbar controller={controller} palette={palette} />;
+  return <DefaultToolbar controller={controller} palette={palette} pivotTableEditor={pivotTableEditor} />;
 }
 
 function renderError(errorState: XlsxViewerProps["errorState"], error: Error, palette: ViewerPalette, messages: XlsxViewerMessages) {
@@ -5460,6 +5480,7 @@ type CellRenderData = {
   shrinkToFit?: boolean;
   shrinkToFitFontSizePx?: number;
   isTableHeader?: boolean;
+  pivotControlInset?: number;
   rowSpan?: number;
   spillOffsetX?: number;
   spillSide?: "left" | "right";
@@ -7119,7 +7140,7 @@ function GridRow({
         if (usesWrappedText) {
           cellContentStyle.overflow = "clip";
         }
-        const trailingInset = adornment ? 20 : 0;
+        const trailingInset = (adornment ? 20 : 0) + (cellData.pivotControlInset ?? 0);
         if (cellData.conditionalDataBar) {
           cellContentStyle.position = "relative";
           cellContentStyle.zIndex = 1;
@@ -7436,6 +7457,8 @@ function XlsxGrid({
   renderImage,
   renderImageSelection,
   renderTableHeaderMenu,
+  renderPivotTableHeaderMenu,
+  pivotTableHighlightColor,
   renderActiveCellOverlay,
   renderCellEditorOverlay,
   renderSelectionPopover,
@@ -7450,7 +7473,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "experimentalOfficeCharts" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderActiveCellOverlay" | "renderCellEditorOverlay" | "renderSelectionPopover" | "cellEditorStyle" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "experimentalOfficeCharts" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderPivotTableHeaderMenu" | "pivotTableHighlightColor" | "renderActiveCellOverlay" | "renderCellEditorOverlay" | "renderSelectionPopover" | "cellEditorStyle" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -7484,6 +7507,7 @@ function XlsxGrid({
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
     getCellFormula,
+    getPivotTableAtCell,
     locale,
     messages,
     getFormControlItems,
@@ -7546,7 +7570,7 @@ function XlsxGrid({
   } | null>(null);
   React.useEffect(() => {
     setContextMenu(null);
-  }, [activeTabIndex, workbook, readOnly, enableContextMenu]);
+  }, [activeTabIndex, workbook, readOnly, enableContextMenu, zoomScale]);
   React.useEffect(() => {
     if (contextMenu && (!selection || !rangesEqual(normalizeRange(selection), contextMenu.context.selection))) {
       setContextMenu(null);
@@ -7595,6 +7619,16 @@ function XlsxGrid({
   }>());
   const selectionOverlayRef = React.useRef<HTMLDivElement>(null);
   const selectionPaneContentRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
+  const tableHeaderPaneContentRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
+  const cellOverlayContentRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
+  const [cellOverlayHosts, setCellOverlayHosts] = React.useState<Partial<Record<FrozenDrawingPane, HTMLDivElement>>>({});
+  const cellOverlayHostRefs = React.useMemo(() => Object.fromEntries(
+    (["scroll", "top", "left", "corner"] as const).map(pane => [pane, (element: HTMLDivElement | null) => {
+      if (element) cellOverlayContentRefs.current.set(pane, element);
+      else cellOverlayContentRefs.current.delete(pane);
+      setCellOverlayHosts(current => current[pane] === (element ?? undefined) ? current : { ...current, [pane]: element ?? undefined });
+    }])
+  ) as Record<FrozenDrawingPane, (element: HTMLDivElement | null) => void>, []);
   const selectionPaneOverlayRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
   const selectionPaneFillHandleRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
   const canvasSelectionLayerRef = React.useRef<HTMLDivElement>(null);
@@ -7873,6 +7907,16 @@ function XlsxGrid({
   const zoomFactor = React.useMemo(() => Math.max(0.1, zoomScale / 100), [zoomScale]);
   const previousZoomFactorRef = React.useRef(zoomFactor);
   const effectiveTables = tables;
+  const pivotControlInsets = React.useMemo(() => {
+    const insets = new Map<string, number>();
+    const add = (cell: XlsxCellAddress) => { const key = `${cell.row}:${cell.col}`; insets.set(key, (insets.get(key) ?? 0) + 18); };
+    for (const pivot of controller.pivotTables) {
+      if (pivot.target.sheet.toLowerCase() !== activeSheet?.name.toLowerCase()) continue;
+      for (const header of pivot.headers ?? []) add(header);
+      if (!readOnly && !pivot.unsupportedFeatures.length) for (const toggle of pivot.toggles ?? []) add(toggle);
+    }
+    return insets;
+  }, [activeSheet?.name, controller.pivotTables, readOnly]);
   const [displayRowLimit, setDisplayRowLimit] = React.useState(() =>
     resolveInitialDisplayExtent(
       activeSheet?.maxUsedRow ?? -1,
@@ -8012,7 +8056,7 @@ function XlsxGrid({
     ) => {
       const translateX = resolveLiveTranslation(baseTranslateX, anchorX, paneLeft);
       const translateY = resolveLiveTranslation(baseTranslateY, anchorY, paneTop);
-      for (const content of [element, selectionPaneContentRefs.current.get(pane) ?? null]) {
+      for (const content of [element, selectionPaneContentRefs.current.get(pane) ?? null, tableHeaderPaneContentRefs.current.get(pane) ?? null, cellOverlayContentRefs.current.get(pane) ?? null]) {
         applyElementTransform(
           content,
           liveZoomScale !== 1
@@ -8164,6 +8208,7 @@ function XlsxGrid({
       0,
       0
     );
+    if (scroller) scroller.dispatchEvent(new Event(VIEWPORT_CHANGE_EVENT, { bubbles: true }));
   }, [experimentalCanvas, zoomScale]);
   const updateLiveGestureZoomState = React.useCallback((
     nextState:
@@ -8850,14 +8895,6 @@ function XlsxGrid({
     () => expandMergeAwareWindow(domBaseRowIndices, domBaseColIndices, indexedMergedRegions),
     [domBaseColIndices, domBaseRowIndices, indexedMergedRegions]
   );
-  const rowVirtualItemByIndex = React.useMemo(
-    () => new Map(currentRowVirtualItems.map((virtualRow) => [virtualRow.index, virtualRow])),
-    [currentRowVirtualItems]
-  );
-  const colVirtualItemByIndex = React.useMemo(
-    () => new Map(currentColVirtualItems.map((virtualCol) => [virtualCol.index, virtualCol])),
-    [currentColVirtualItems]
-  );
   const maxRowDisplayLimit = React.useMemo(
     () => resolveOpenGridExtent(activeSheet?.maxUsedRow ?? -1, MIN_OPEN_GRID_ROWS, OPEN_GRID_ROW_PADDING),
     [activeSheet?.maxUsedRow]
@@ -9253,7 +9290,7 @@ function XlsxGrid({
 
   React.useEffect(() => {
     setOpenTableMenu(null);
-  }, [activeSheetIndex, workbook]);
+  }, [activeSheetIndex, workbook, zoomScale]);
 
   React.useEffect(() => {
     if (!pendingNavigation || pendingNavigation.sheetIndex !== activeSheetIndex) {
@@ -9519,11 +9556,25 @@ function XlsxGrid({
       }
     }
 
+    function handleViewportChange(event: Event) {
+      if (event.target instanceof Node && tableMenuRef.current?.contains(event.target)) return;
+      setOpenTableMenu(null);
+    }
+
     window.addEventListener("pointerdown", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("scroll", handleViewportChange, true);
+    window.addEventListener("resize", handleViewportChange);
+    const scroller = scrollRef.current;
+    scroller?.addEventListener("wheel", handleViewportChange, { passive: true });
+    scroller?.addEventListener("gesturestart", handleViewportChange);
     return () => {
       window.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("scroll", handleViewportChange, true);
+      window.removeEventListener("resize", handleViewportChange);
+      scroller?.removeEventListener("wheel", handleViewportChange);
+      scroller?.removeEventListener("gesturestart", handleViewportChange);
     };
   }, [openTableMenu]);
 
@@ -9931,7 +9982,7 @@ function XlsxGrid({
 
   const startEditing = React.useCallback(
     (cell: XlsxCellAddress, initialValue?: string, trigger: XlsxCellEditorContext["trigger"] = "keyboard") => {
-      if (readOnly) {
+      if (readOnly || getPivotTableAtCell(cell)) {
         return;
       }
 
@@ -9948,7 +9999,7 @@ function XlsxGrid({
       editingTriggerRef.current = trigger;
       setEditingValue(initialValue ?? value);
     },
-    [getActiveWorksheet, getCellFormula, getControllerCellDisplayValue, locale, readOnly, selectCell]
+    [getActiveWorksheet, getCellFormula, getControllerCellDisplayValue, getPivotTableAtCell, locale, readOnly, selectCell]
   );
 
   const saveEditingValue = React.useCallback((cell: XlsxCellAddress, value: string) => {
@@ -10218,6 +10269,7 @@ function XlsxGrid({
         displayRowLimit,
         getCellStyle,
         palette,
+        pivotControlInsets,
         revision,
         locale,
         selectedChartElement,
@@ -10233,6 +10285,7 @@ function XlsxGrid({
       displayRowLimit,
       getCellStyle,
       palette,
+      pivotControlInsets,
       revision,
       locale,
       selectedChartElement,
@@ -10438,6 +10491,7 @@ function XlsxGrid({
       isMergedSecondary: false,
       shrinkToFit: alignment?.shrinkToFit === true,
       isTableHeader: Boolean(table && row >= table.start.row && row < table.start.row + headerRowCount),
+      pivotControlInset: pivotControlInsets.get(cacheKey),
       rowSpan: merge?.rowSpan,
       sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
       style: scaleCssProperties(buildCellStyle(finalResolvedStyle, palette, activeSheet?.themePalette, {
@@ -10502,7 +10556,7 @@ function XlsxGrid({
     // spill fields below are attached to this same cached object.
     cellRenderCacheRef.current.set(cacheKey, nextData);
 
-    if (canCellTextOverflow(nextData)) {
+    if (!nextData.pivotControlInset && canCellTextOverflow(nextData)) {
       const startColIndex = colIndexByActual.get(col);
       if (startColIndex !== undefined) {
         const cellColSpan = Math.max(1, nextData.colSpan ?? 1);
@@ -10563,7 +10617,7 @@ function XlsxGrid({
           endColIndex += 1;
         }
         const horizontalPadding = getHorizontalPadding(nextData.style.padding);
-        const trailingInset = (nextData.conditionalIcon ? 18 * zoomFactor : 0) + (nextData.isTableHeader ? 16 * zoomFactor : 0);
+        const trailingInset = (nextData.conditionalIcon ? 18 * zoomFactor : 0) + (nextData.isTableHeader ? 16 * zoomFactor : 0) + (nextData.pivotControlInset ?? 0) * zoomFactor;
         const availableWidth = Math.max(
           displayEffectiveColWidths[startColIndex] ?? displayDefaultColWidth,
           sumPrefixRange(colPrefixSums, startColIndex, endColIndex)
@@ -10613,6 +10667,7 @@ function XlsxGrid({
     displayDefaultColWidth,
     displayEffectiveColWidths,
     effectiveTables,
+    pivotControlInsets,
     getCellStyle,
     palette,
     sparklinesByCell,
@@ -10710,19 +10765,19 @@ function XlsxGrid({
     selectionFillColor,
     selectionHeaderColor
   }), [palette, selectionColor, selectionFillColor, selectionHeaderColor]);
+  // Keep rendered dimensions in sync with the worksheet during zoom changes.
   const virtualCols = React.useMemo<RenderedAxisItem[]>(
     () =>
       domExpandedWindow.colIndices.map((index) => {
-        const virtualCol = colVirtualItemByIndex.get(index);
         return {
-          end: virtualCol?.end ?? (colPrefixSums[index + 1] ?? 0),
+          end: colPrefixSums[index + 1] ?? 0,
           index,
           key: visibleCols[index] ?? index,
-          size: virtualCol?.size ?? (displayEffectiveColWidths[index] ?? displayDefaultColWidth),
-          start: virtualCol?.start ?? (colPrefixSums[index] ?? 0)
+          size: displayEffectiveColWidths[index] ?? displayDefaultColWidth,
+          start: colPrefixSums[index] ?? 0
         };
       }),
-    [colPrefixSums, colVirtualItemByIndex, displayDefaultColWidth, displayEffectiveColWidths, domExpandedWindow.colIndices, visibleCols]
+    [colPrefixSums, displayDefaultColWidth, displayEffectiveColWidths, domExpandedWindow.colIndices, visibleCols]
   );
   const renderedCols = React.useMemo<RenderedColumn[]>(
     () => {
@@ -11490,7 +11545,7 @@ function XlsxGrid({
 
     const cellData = getCellData(cell.row, cell.col);
     const shouldShow = cellData.validation?.validationType === "list" && cellData.validation.showDropdown;
-    const rect = shouldShow ? resolveOverlayRect({ start: cell, end: cell }) : null;
+    const rect = shouldShow ? resolveCellDisplayRect(cell) : null;
     if (!rect) {
       overlay.style.opacity = "0";
       overlay.style.visibility = "hidden";
@@ -11501,7 +11556,7 @@ function XlsxGrid({
     overlay.style.top = `${rect.top + (rect.height / 2)}px`;
     overlay.style.opacity = "1";
     overlay.style.visibility = "visible";
-  }, [getCellData, resolveOverlayRect, zoomFactor]);
+  }, [getCellData, resolveCellDisplayRect, zoomFactor]);
 
   const commitSelectionRange = React.useCallback((range: XlsxCellRange) => {
     gridKeyboardActiveRef.current = true;
@@ -12261,6 +12316,7 @@ function XlsxGrid({
 
     if (renderTableHeaderMenu) {
       return renderTableHeaderMenu({
+        kind: "table",
         cell,
         column: tableColumn,
         direction,
@@ -12594,6 +12650,8 @@ function XlsxGrid({
     effectiveTables,
     focusGrid,
     renderTableHeaderMenu,
+  renderPivotTableHeaderMenu,
+  pivotTableHighlightColor,
     resolveCanvasColumnHeaderRect,
     resolveCanvasRowHeaderRect,
     resolveOverlayRect,
@@ -13786,7 +13844,7 @@ function XlsxGrid({
             const align = canvasCellStyle.textAlign;
             paneContext.textAlign = align;
             const leadingInset = cellData.conditionalIcon ? 18 * zoomFactor : 0;
-            const trailingInset = cellData.isTableHeader ? 16 * zoomFactor : 0;
+            const trailingInset = ((cellData.isTableHeader ? 16 : 0) + (cellData.pivotControlInset ?? 0)) * zoomFactor;
             const textLeft = contentLeft + leadingInset;
             const textWidth = Math.max(0, contentWidth - leadingInset - trailingInset);
             const textX = align === "right"
@@ -14198,6 +14256,8 @@ function XlsxGrid({
     getHeaderBlitBufferCanvas,
     palette,
     renderTableHeaderMenu,
+  renderPivotTableHeaderMenu,
+  pivotTableHighlightColor,
     resolveCellDisplayRect,
     resolveMergeAnchorCell,
     rowIndexByActual,
@@ -14498,18 +14558,15 @@ function XlsxGrid({
   }
 
   const virtualRows = domExpandedWindow.rowIndices.map((index) => {
-    const virtualRow = rowVirtualItemByIndex.get(index);
     return {
-      end: virtualRow?.end ?? (rowPrefixSums[index + 1] ?? 0),
+      end: rowPrefixSums[index + 1] ?? 0,
       index,
       key: visibleRows[index] ?? index,
-      size: virtualRow?.size ?? (displayEffectiveRowHeights[index] ?? displayDefaultRowHeight),
-      start: virtualRow?.start ?? (rowPrefixSums[index] ?? 0)
+      size: displayEffectiveRowHeights[index] ?? displayDefaultRowHeight,
+      start: rowPrefixSums[index] ?? 0
     };
   });
-  const totalHeight = shouldUseDomVirtualizer && shouldVirtualizeRows
-    ? rowVirtualizer.getTotalSize()
-    : (rowPrefixSums[rowPrefixSums.length - 1] ?? 0);
+  const totalHeight = rowPrefixSums[rowPrefixSums.length - 1] ?? 0;
   const totalWidth = totalContentWidth + displayRowHeaderWidth;
   const sheetContentHeight = displayHeaderHeight + totalHeight;
   const isLiveZooming = liveGestureZoom !== null && zoomScale === liveGestureZoom.baseZoomScale;
@@ -14705,6 +14762,13 @@ function XlsxGrid({
   const activeCellOverlay = activeCellOverlayCell && activeCellOverlayRect
     ? renderActiveCellOverlay?.({ cell: activeCellOverlayCell, rect: activeCellOverlayRect })
     : null;
+  const cellOverlayPaneFor = (cell: XlsxCellAddress): FrozenDrawingPane => stickyTopByRow.has(cell.row)
+      ? stickyLeftByCol.has(cell.col) ? "corner" : "top"
+      : stickyLeftByCol.has(cell.col) ? "left" : "scroll";
+  const renderCellOverlay = (cell: XlsxCellAddress, content: React.ReactNode) => {
+    const host = cellOverlayHosts[cellOverlayPaneFor(cell)];
+    return host ? createPortal(content, host) : null;
+  };
   function drawingIntersectsPane(rect: XlsxImageRect, pane: FrozenDrawingPane) {
     if (experimentalCanvas) {
       const frozenX = pane === "left" || pane === "corner";
@@ -16560,6 +16624,23 @@ function XlsxGrid({
       }}
     />
   ] : []);
+  const activePivotHighlight = controller.pivotFieldListVisible && activeCell
+    ? controller.getPivotTableAtCell(activeCell) : null;
+  const pivotHighlightNodes = (activePivotHighlight ? pivotFieldHighlightRanges(activePivotHighlight) : []).flatMap((range, index) => {
+    const rows = getHighlightAxisExtent(visibleRows, rowPrefixSums, range.start.row, range.end.row);
+    const cols = getHighlightAxisExtent(visibleCols, colPrefixSums, range.start.col, range.end.col);
+    if (!rows || !cols) return [];
+    return [<svg
+      key={index}
+      aria-hidden="true"
+      data-xlsx-pivot-highlight={index}
+      width={cols.end - cols.start}
+      height={rows.end - rows.start}
+      style={{ position: "absolute", left: displayRowHeaderWidth + cols.start, top: displayHeaderHeight + rows.start, pointerEvents: "none", overflow: "visible" }}
+    ><rect x={0} y={0} width={cols.end - cols.start} height={rows.end - rows.start}
+      fill="none" stroke={pivotTableHighlightColor ?? (paletteIsDark(palette) ? "#8195ff" : "#0000a0")}
+      strokeWidth={2} vectorEffect="non-scaling-stroke" shapeRendering="crispEdges" /></svg>];
+  });
   const chartSourceHighlightNodes = (experimentalCanvas ? activeSheetChartHighlights : []).flatMap((highlight, index) => {
     const range = expandHighlightedRange(highlight.range, activeSheet?.mergedRanges ?? mergedRegions);
     const rows = getHighlightAxisExtent(visibleRows, rowPrefixSums, range.start.row, range.end.row);
@@ -16680,28 +16761,59 @@ function XlsxGrid({
     <div style={{ ...canvasBodyViewportLayerStyle, zIndex: 27 }}>
       {overlayPanes.map(({ pane, style, left, top }) => (
         <div key={pane} style={style}>
-          {canvasTableHeaderAdornments.map(({ cell, rect, adornment }) => (
-            drawingIntersectsPane(rect, pane) ? (
-              <div
-                key={`${cell.row}:${cell.col}`}
-                style={{
-                  height: rect.height,
-                  left: rect.left + left,
-                  pointerEvents: "none",
-                  position: "absolute",
-                  top: rect.top + top,
-                  width: rect.width
-                }}
-              >
-                {adornment}
-              </div>
-            ) : null
-          ))}
+          <div
+            ref={(element) => {
+              if (element) {
+                tableHeaderPaneContentRefs.current.set(pane, element);
+              } else {
+                tableHeaderPaneContentRefs.current.delete(pane);
+              }
+            }}
+            style={{
+              height: sheetContentHeight,
+              left: 0,
+              position: "absolute",
+              top: 0,
+              transform: `translate(${left}px, ${top}px)`,
+              transformOrigin: "0 0",
+              width: totalWidth
+            }}
+          >
+            {canvasTableHeaderAdornments.map(({ cell, rect, adornment }) => (
+              drawingIntersectsPane(rect, pane) ? (
+                <div
+                  key={`${cell.row}:${cell.col}`}
+                  style={{
+                    height: rect.height,
+                    left: rect.left,
+                    pointerEvents: "none",
+                    position: "absolute",
+                    top: rect.top,
+                    width: rect.width
+                  }}
+                >
+                  {adornment}
+                </div>
+              ) : null
+            ))}
+          </div>
         </div>
       ))}
     </div>
   ) : null;
-  const selectionOverlayPanes = experimentalCanvas ? (
+  const cellOverlayPanes = (
+    <div style={{ ...canvasBodyViewportLayerStyle, zIndex: 42 }}>
+      {overlayPanes.map(({ pane, style, left, top }) => (
+        <div key={pane} style={style} data-xlsx-cell-overlay-pane={pane}>
+          <div ref={cellOverlayHostRefs[pane]} style={{
+            height: sheetContentHeight, left: 0, position: "absolute", top: 0,
+            transform: `translate(${left}px, ${top}px)`, transformOrigin: "0 0", width: totalWidth
+          }} />
+        </div>
+      ))}
+    </div>
+  );
+  const selectionOverlayPanes = experimentalCanvas || pivotHighlightNodes.length > 0 ? (
     <div style={{ ...canvasBodyViewportLayerStyle, zIndex: 40 }}>
       {overlayPanes.map(({ pane, style, left, top }) => (
         <div key={pane} style={style}>
@@ -16723,7 +16835,8 @@ function XlsxGrid({
               width: totalWidth
             }}
           >
-            {renderSelectionOverlay(pane)}
+            {pivotHighlightNodes}
+            {experimentalCanvas ? renderSelectionOverlay(pane) : null}
           </div>
         </div>
       ))}
@@ -16794,6 +16907,7 @@ function XlsxGrid({
             {drawingOverlayPanes}
             {selectionOverlayPanes}
             {tableHeaderOverlayPanes}
+            {cellOverlayPanes}
             {experimentalCanvas ? (
               <>
                 <div style={canvasBodyViewportLayerStyle}>
@@ -16874,7 +16988,7 @@ function XlsxGrid({
                     typeof editingCellStyle.color === "string"
                       ? editingCellStyle.color
                       : resolveReadableTextColor(null, editingBackground, palette);
-                  return (
+                  return renderCellOverlay(editingCell, (
                   <div
                     style={{
                       left: editingOverlayRect.left,
@@ -16945,9 +17059,9 @@ function XlsxGrid({
                       }}
                     />
                   </div>
-                  );
+                  ));
                 })() : null}
-                {activeCellAdornment && activeCellAdornmentRect ? (
+                {activeCellAdornment && activeCellAdornmentRect && activeCell ? renderCellOverlay(activeCell, (
                   <div
                     style={{
                       height: activeCellAdornmentRect.height,
@@ -16963,7 +17077,7 @@ function XlsxGrid({
                       {activeCellAdornment}
                     </div>
                   </div>
-                ) : null}
+                )) : null}
               </>
             ) : (
               <table
@@ -17056,65 +17170,64 @@ function XlsxGrid({
                   </tr>
                 </thead>
                 <tbody>
-                  {virtualRows.map((virtualRow, index) => {
+                  {virtualRows.flatMap((virtualRow, index) => {
                     const actualRow = visibleRows[virtualRow.index];
                     if (actualRow === undefined) {
-                      return null;
+                      return [];
                     }
 
                     const previousEnd = index === 0 ? 0 : (virtualRows[index - 1]?.end ?? 0);
                     const gapHeight = Math.max(0, virtualRow.start - previousEnd);
 
-                    return (
-                      <React.Fragment key={`row-fragment-${virtualRow.key}`}>
-                        {gapHeight > 0 ? (
-                          <tr aria-hidden="true" style={{ height: gapHeight }}>
-                            <td colSpan={rowColSpan} />
-                          </tr>
-                        ) : null}
-                        <MemoGridRow
-                          actualRow={actualRow}
-                          editingCell={editingCell}
-                          editingValue={editingValue}
-                          editorRef={editorElementRef}
-                          editorInputRef={editingInputRef}
-                          cellEditorStyle={cellEditorStyle}
-                          onFocusEditorOverlay={renderCellEditorOverlay ? focusEditorOverlay : undefined}
-                          formulaReferences={formulaReferences}
-                          editorBoxShadow={`inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`}
-                          frozenRowHeaderZIndex={frozenRowHeaderOverlayZIndex}
-                          getCellData={getCellData}
-                          key={virtualRow.key}
-                          leadingSpacerWidth={leadingColumnSpacerWidth}
-                          onCellClick={handleCellClick}
-                          onCellDoubleClick={handleCellDoubleClick}
-                          onCellPointerDown={handleCellPointerDown}
-                          onEditingBlur={handleEditingBlur}
-                          onEditingCancel={cellEditorSession?.cancel ?? cancelEditing}
-                          onEditingCommit={cellEditorSession?.commit ?? commitEditing}
-                          onEditingNavigate={handleEditingNavigate}
-                          onEditingValueChange={cellEditorSession?.setValue ?? setEditingValue}
-                          headerLabelLiveScale={headerLabelLiveScale}
-                          onRowHeaderRef={setRowHeaderRef}
-                          onRowPointerDown={handleRowPointerDown}
-                          onRowResizePointerDown={handleRowResizePointerDown}
-                          palette={palette}
-                          readOnly={readOnly}
-                          renderCellAdornment={renderCellAdornment}
-                          rowHeight={virtualRow.size}
-                          rowHeaderZIndex={rowHeaderOverlayZIndex}
-                          rowHeaderWidth={displayRowHeaderWidth}
-                          stickyLeftByCol={stickyLeftByCol}
-                          stickyTop={stickyTopByRow.get(actualRow)}
-                          trailingSpacerWidth={trailingColumnSpacerWidth}
-                          visibleCols={renderedCols}
-                          zoomFactor={zoomFactor}
-                        />
-                      </React.Fragment>
-                    );
+                    return [
+                      gapHeight > 0 ? (
+                        <tr key={`spacer-${virtualRow.key}`} aria-hidden="true" style={{ height: gapHeight }}>
+                          <td colSpan={rowColSpan} />
+                        </tr>
+                      ) : null,
+                      <MemoGridRow
+                        actualRow={actualRow}
+                        editingCell={editingCell}
+                        editingValue={editingValue}
+                        editorRef={editorElementRef}
+                        editorInputRef={editingInputRef}
+                        cellEditorStyle={cellEditorStyle}
+                        onFocusEditorOverlay={renderCellEditorOverlay ? focusEditorOverlay : undefined}
+                        formulaReferences={formulaReferences}
+                        editorBoxShadow={`inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`}
+                        frozenRowHeaderZIndex={frozenRowHeaderOverlayZIndex}
+                        getCellData={getCellData}
+                        key={`row-${virtualRow.key}`}
+                        leadingSpacerWidth={leadingColumnSpacerWidth}
+                        onCellClick={handleCellClick}
+                        onCellDoubleClick={handleCellDoubleClick}
+                        onCellPointerDown={handleCellPointerDown}
+                        onEditingBlur={handleEditingBlur}
+                        onEditingCancel={cellEditorSession?.cancel ?? cancelEditing}
+                        onEditingCommit={cellEditorSession?.commit ?? commitEditing}
+                        onEditingNavigate={handleEditingNavigate}
+                        onEditingValueChange={cellEditorSession?.setValue ?? setEditingValue}
+                        headerLabelLiveScale={headerLabelLiveScale}
+                        onRowHeaderRef={setRowHeaderRef}
+                        onRowPointerDown={handleRowPointerDown}
+                        onRowResizePointerDown={handleRowResizePointerDown}
+                        palette={palette}
+                        readOnly={readOnly}
+                        renderCellAdornment={renderCellAdornment}
+                        rowHeight={virtualRow.size}
+                        rowHeaderZIndex={rowHeaderOverlayZIndex}
+                        rowHeaderWidth={displayRowHeaderWidth}
+                        stickyLeftByCol={stickyLeftByCol}
+                        stickyTop={stickyTopByRow.get(actualRow)}
+                        trailingSpacerWidth={trailingColumnSpacerWidth}
+                        visibleCols={renderedCols}
+                        zoomFactor={zoomFactor}
+                      />
+                    ];
                   })}
                   {virtualRows.length > 0 && totalHeight - (virtualRows[virtualRows.length - 1]?.end ?? totalHeight) > 0 ? (
                     <tr
+                      key="trailing-spacer"
                       style={{
                         height: totalHeight - (virtualRows[virtualRows.length - 1]?.end ?? totalHeight)
                       }}
@@ -17141,7 +17254,62 @@ function XlsxGrid({
               }}
             >
               {!experimentalCanvas ? renderSelectionOverlay() : null}
-              {activeCellOverlay != null && activeCellOverlayRect ? (
+              <PivotHeaderControls
+                pivots={controller.pivotTables}
+                sheetName={activeSheet?.name}
+                rectForCell={resolveCellDisplayRect}
+                viewport={drawingViewport}
+                stickyTop={stickyTopByRow}
+                stickyLeft={stickyLeftByCol}
+                frozenRight={frozenPaneRight}
+                frozenBottom={frozenPaneBottom}
+                zoom={zoomFactor}
+                readOnly={readOnly}
+                onChange={controller.upsertPivotTable}
+                colors={palette}
+                renderMenu={renderPivotTableHeaderMenu ?? (renderTableHeaderMenu ? menu => renderTableHeaderMenu({
+                  kind: "pivot",
+                  pivot: menu,
+                  defaultNode: menu.defaultNode,
+                  cell: { row: menu.header.row, col: menu.header.col },
+                  column: { id: menu.field.field + 1, index: menu.field.depth, name: menu.field.name },
+                  direction: menu.sort === "ascending" || menu.sort === "descending" ? menu.sort : null,
+                  sortAscending: () => menu.sortBy("ascending"),
+                  sortDescending: () => menu.sortBy("descending"),
+                  table: {
+                    name: menu.pivot.name, displayName: menu.pivot.name, reference: menu.pivot.outputRange ?? menu.pivot.target.cell,
+                    start: { row: menu.header.row, col: menu.header.col },
+                    end: { row: menu.header.row, col: menu.header.col + menu.header.fields.length - 1 },
+                    columns: menu.header.fields.map(field => ({ id: field.field + 1, index: field.depth, name: field.name })),
+                    headerRowCount: 1, totalsRowCount: 0, totalsRowShown: false
+                  },
+                  triggerIcon: menu.sort === "ascending" ? "▲" : menu.sort === "descending" ? "▼" : "▾",
+                  triggerProps: menu.triggerProps
+                }) : undefined)}
+                viewportElement={scrollRef.current}
+                renderControl={renderCellOverlay}
+                experimentalCanvas={experimentalCanvas}
+                isDark={paletteIsDark(palette)}
+                openLabel={messages.openMenuForColumn}
+              />
+              <PivotGroupControls
+                pivots={controller.pivotTables}
+                sheetName={activeSheet?.name}
+                rectForCell={resolveCellDisplayRect}
+                viewport={drawingViewport}
+                stickyTop={stickyTopByRow}
+                stickyLeft={stickyLeftByCol}
+                frozenRight={frozenPaneRight}
+                frozenBottom={frozenPaneBottom}
+                zoom={zoomFactor}
+                readOnly={readOnly}
+                onToggle={controller.togglePivotGroup}
+                renderControl={renderCellOverlay}
+                colors={palette}
+                expandLabel={messages.expandPivotGroup}
+                collapseLabel={messages.collapsePivotGroup}
+              />
+              {activeCellOverlay != null && activeCellOverlayRect && activeCellOverlayCell ? renderCellOverlay(activeCellOverlayCell, (
                 <div
                   data-xlsx-active-cell-overlay=""
                   style={{
@@ -17156,8 +17324,8 @@ function XlsxGrid({
                 >
                   {activeCellOverlay}
                 </div>
-              ) : null}
-              <div
+              )) : null}
+              {activeCell ? renderCellOverlay(activeCell, <div
                 ref={activeValidationOverlayRef}
                 aria-hidden="true"
                 style={{
@@ -17178,7 +17346,7 @@ function XlsxGrid({
                 }}
               >
                 ▾
-              </div>
+              </div>) : null}
             </div>
             {resizeGuide ? (
               <div
@@ -17255,13 +17423,19 @@ function XlsxGrid({
             const elements = experimentalCanvas ? [...selectionPaneOverlayRefs.current.values()] : [selectionOverlayRef.current];
             return elements.flatMap(element => {
               if (!element) return [];
-              const bounds = element.getBoundingClientRect();
-              const pane = experimentalCanvas ? element.parentElement?.parentElement?.getBoundingClientRect() : null;
-              const left = Math.max(bounds.left, pane?.left ?? -Infinity);
-              const top = Math.max(bounds.top, pane?.top ?? -Infinity);
-              const right = Math.min(bounds.right, pane?.right ?? Infinity);
-              const bottom = Math.min(bounds.bottom, pane?.bottom ?? Infinity);
-              return right > left && bottom > top ? [{ left, top, width: right - left, height: bottom - top }] : [];
+              if (experimentalCanvas) {
+                const rect = visibleOverlayRect(element);
+                return rect ? [rect] : [];
+              }
+              return overlayPanes.flatMap(({ pane }) => {
+                const frozenX = pane === "left" || pane === "corner";
+                const frozenY = pane === "top" || pane === "corner";
+                if (frozenX ? !stickyLeftByCol.has(normalizedSelection.start.col) : stickyLeftByCol.has(normalizedSelection.end.col)) return [];
+                if (frozenY ? !stickyTopByRow.has(normalizedSelection.start.row) : stickyTopByRow.has(normalizedSelection.end.row)) return [];
+                const clip = cellOverlayHosts[pane]?.parentElement;
+                const rect = clip ? visibleOverlayRect(element, clip) : null;
+                return rect ? [rect] : [];
+              });
             });
           }}
           render={renderSelectionPopover}
@@ -17274,6 +17448,7 @@ function XlsxGrid({
           key={`${activeSheetIndex}:${editingCell?.row}:${editingCell?.col}`}
           editorRef={editorElementRef}
           overlayRef={editorOverlayRef}
+          clipElement={editingCell ? cellOverlayHosts[cellOverlayPaneFor(editingCell)]?.parentElement : null}
           session={cellEditorSession}
           render={renderCellEditorOverlay}
           onExit={exitEditorScope}
@@ -17331,6 +17506,8 @@ function XlsxViewerInner({
   renderImageSelection,
   renderScroller,
   renderTableHeaderMenu,
+  renderPivotTableHeaderMenu,
+  pivotTableHighlightColor,
   renderActiveCellOverlay,
   renderCellEditorOverlay,
   renderSelectionPopover,
@@ -17341,6 +17518,9 @@ function XlsxViewerInner({
   selectionHeaderColor,
   showImages = true,
   showDefaultToolbar = true,
+  showPivotTableControls = false,
+  pivotTableEditor: suppliedPivotTableEditor,
+  renderPivotTableControls,
   toolbar
 }: XlsxViewerProps & {
   controller: XlsxViewerController;
@@ -17350,6 +17530,8 @@ function XlsxViewerInner({
     [sourceController.messages, messageOverrides]
   );
   const controller = React.useMemo(() => ({ ...sourceController, messages }), [sourceController, messages]);
+  const internalPivotTableEditor = usePivotTableEditor(controller, { enabled: !suppliedPivotTableEditor && showPivotTableControls });
+  const pivotTableEditor = suppliedPivotTableEditor ?? internalPivotTableEditor;
   const palette = useViewerPalette(isDark, headerBackgroundColor, headerTextColor);
   const { displayFileName, error } = controller;
   const appliedHighlightRef = React.useRef<{
@@ -17424,7 +17606,7 @@ function XlsxViewerInner({
               }}
             >
               <style>{RANGE_HIGHLIGHT_STYLES}</style>
-              {resolveToolbar(toolbar, showDefaultToolbar, controller, palette)}
+              {resolveToolbar(toolbar, showDefaultToolbar, controller, palette, showPivotTableControls ? pivotTableEditor : undefined)}
               <div style={{ display: "flex", flex: 1, minHeight: 0, minWidth: 0 }}>
                 <XlsxGrid
                   allowResizeInReadOnly={allowResizeInReadOnly}
@@ -17453,6 +17635,8 @@ function XlsxViewerInner({
                   renderImageSelection={renderImageSelection}
                   renderScroller={renderScroller}
                   renderTableHeaderMenu={renderTableHeaderMenu}
+                  renderPivotTableHeaderMenu={renderPivotTableHeaderMenu}
+                  pivotTableHighlightColor={pivotTableHighlightColor}
                   renderActiveCellOverlay={renderActiveCellOverlay}
                   renderCellEditorOverlay={renderCellEditorOverlay}
                   renderSelectionPopover={renderSelectionPopover}
@@ -17462,6 +17646,12 @@ function XlsxViewerInner({
                   selectionHeaderColor={selectionHeaderColor}
                   showImages={showImages}
                 />
+                {showPivotTableControls && pivotTableEditor.open ? (() => {
+                  const defaultNode = <DefaultXlsxPivotTableFieldList editor={pivotTableEditor} isDark={isDark} />;
+                  return renderPivotTableControls
+                    ? renderPivotTableControls({ editor: pivotTableEditor, controller, defaultNode, isDark })
+                    : defaultNode;
+                })() : null}
               </div>
             </div>
           )}
@@ -17721,6 +17911,17 @@ export function useXlsxViewerTables(): XlsxViewerTables {
     }),
     [sortState, sortTable, tables]
   );
+}
+
+export function useXlsxViewerPivots() {
+  const { pivotTables, pivotFieldListVisible, setPivotFieldListVisible, getPivotSourceFields, getPivotTableAtCell, upsertPivotTable, refreshPivotTable, refreshAllPivotTables, removePivotTable, pivotDrillDown, showPivotDetails, createPivotChart, togglePivotGroup } = useXlsxViewer();
+  return React.useMemo(() => ({
+    pivotTables, pivotFieldListVisible, setPivotFieldListVisible, getPivotSourceFields, getPivotTableAtCell, upsertPivotTable, refreshPivotTable, refreshAllPivotTables, removePivotTable, pivotDrillDown, showPivotDetails, createPivotChart, togglePivotGroup
+  }), [pivotTables, pivotFieldListVisible, setPivotFieldListVisible, getPivotSourceFields, getPivotTableAtCell, upsertPivotTable, refreshPivotTable, refreshAllPivotTables, removePivotTable, pivotDrillDown, showPivotDetails, createPivotChart, togglePivotGroup]);
+}
+
+export function useXlsxPivotTableEditor(options?: XlsxPivotTableEditorOptions) {
+  return usePivotTableEditor(useXlsxViewer(), options);
 }
 
 export function useXlsxViewerImages(): XlsxViewerImages {
@@ -18771,9 +18972,9 @@ export function XlsxViewer(props: XlsxViewerProps) {
   return <XlsxViewerWithInlineController {...props} />;
 }
 
-export function DefaultXlsxToolbar() {
+export function DefaultXlsxToolbar({ pivotTableEditor }: { pivotTableEditor?: XlsxPivotTableEditor } = {}) {
   const controller = useXlsxViewer();
   const { headerBackgroundColor, headerTextColor, isDark } = React.useContext(ViewerAppearanceContext);
   const palette = useViewerPalette(isDark, headerBackgroundColor, headerTextColor);
-  return <DefaultToolbar controller={controller} palette={palette} />;
+  return <DefaultToolbar controller={controller} palette={palette} pivotTableEditor={pivotTableEditor} />;
 }

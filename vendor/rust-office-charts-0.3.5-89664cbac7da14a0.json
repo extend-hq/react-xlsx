@@ -1,0 +1,12 @@
+{
+  "name": "@extend-ai/rust-office-charts",
+  "version": "0.3.5",
+  "archive": "rust-office-charts-0.3.5-89664cbac7da14a0.tgz",
+  "sha256": "89664cbac7da14a00bb09c834223fbfb5ded8d4147a74874ce0dc3a6f427959c",
+  "integrity": "sha512-WVIecyuUIEqBXPxYwHrSW0qwjVfqaRlrvYH4WyFn3LXy2PFEioijqexpQgzJMK2rKLnIKLcXYCdlHDrRyuXvNQ==",
+  "sourceRevision": "e46eb8ddf29ca8858c1874568ba2188a72be7211",
+  "sourceHasUncommittedChanges": false,
+  "sourceDigest": "a13e6526fabfde9a11b8a7a7e0e13fe69fc9aeec69635d9cfbba2511f5f44afd",
+  "coreWasmSha256": "5c47f76dd1f6b5cc4f108e47c99874d3528643d6e3d9b5929223bec794f778cb",
+  "fullWasmSha256": "c95b52c64dd00cbb80ba182a2788ae01bad5bb212d1e6b18bb3b25f5d3a8b1c6"
+}

@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Sparkles } from "lucide-react";
 import type { XlsxContextMenuRenderProps, XlsxViewerController } from "@extend-ai/react-xlsx";
-import { ContextMenu, ContextMenuItem, ContextMenuPopup, ContextMenuSeparator, ContextMenuShortcut, ContextMenuSub, ContextMenuSubTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuCheckboxItem, ContextMenuItem, ContextMenuPopup, ContextMenuSeparator, ContextMenuShortcut, ContextMenuSub, ContextMenuSubTrigger } from "@/components/ui/context-menu";
 import { FormulaSelectionDemo } from "./formula-selection-demo";
 import type { DemoStylePreview } from "./formula-demo-actions";
 
@@ -16,7 +16,7 @@ export function FormulaContextMenu({ menu, controller, onPreview }: {
     <div ref={setHost} className={menu.isDark ? "dark" : undefined} style={{ width: 0, height: 0 }} onKeyDown={event => event.stopPropagation()}>
       <ContextMenu open={host !== null} onOpenChange={open => { if (!open) menu.closeMenu(); }}>
         <ContextMenuPopup anchor={host} positionMethod="fixed" portalProps={{ container: host }} side="bottom" sideOffset={0} align="start" finalFocus={false} className="w-56">
-          {!menu.context.readOnly && (
+          {!menu.context.readOnly && !controller.getPivotTableAtCell(menu.context.cell, menu.context.sheetName) && (
             <>
               <ContextMenuSub open={assistantOpen} onOpenChange={setAssistantOpen}>
                 <ContextMenuSubTrigger className="[&_svg]:size-4"><Sparkles className="size-4" />Generate formula</ContextMenuSubTrigger>
@@ -44,10 +44,12 @@ export function FormulaContextMenu({ menu, controller, onPreview }: {
           {menu.actions.map(action => (
             <React.Fragment key={action.id}>
               {action.separatorBefore && <ContextMenuSeparator />}
-              <ContextMenuItem disabled={action.disabled || menu.busy} variant={action.destructive ? "destructive" : "default"} closeOnClick={false} onClick={() => void menu.runAction(action.id)}>
+              {typeof action.checked === "boolean" ? <ContextMenuCheckboxItem checked={action.checked} indicatorPlacement="end" disabled={action.disabled || menu.busy} closeOnClick={false} onCheckedChange={() => void menu.runAction(action.id)}>
+                {action.label}
+              </ContextMenuCheckboxItem> : <ContextMenuItem disabled={action.disabled || menu.busy} variant={action.destructive ? "destructive" : "default"} closeOnClick={false} onClick={() => void menu.runAction(action.id)}>
                 {action.label}
                 {action.shortcut && <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut>}
-              </ContextMenuItem>
+              </ContextMenuItem>}
             </React.Fragment>
           ))}
         </ContextMenuPopup>

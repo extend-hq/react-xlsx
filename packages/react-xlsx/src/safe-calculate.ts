@@ -45,10 +45,10 @@ function hasUnresolvedSheetReferences(workbook: Workbook): boolean {
   } catch {
     return false;
   }
-  const known = new Set(names);
+  const known = new Set(names.map(name => name.toLowerCase()));
   const referenced = collectReferencedSheetNames(workbook);
   for (const name of referenced) {
-    if (!known.has(name)) {
+    if (!known.has(name.toLowerCase())) {
       return true;
     }
   }
@@ -106,6 +106,7 @@ export type SafeCalculateResult = {
 
 export type SafeCalculateOptions = {
   reparse?: () => Workbook;
+  preserveSavedValues?: boolean;
 };
 
 // Pre-scans for formulas referencing missing sheets (which cause the Rust
@@ -120,7 +121,7 @@ export function safeCalculate(workbook: Workbook, options: SafeCalculateOptions 
   if (hasUnresolvedSheetReferences(workbook)) {
     return { workbook, calculated: false, skipReason: "unresolved-sheet-refs" };
   }
-  const withSavedValues = options.reparse ? collectFormulaCellsWithSavedValues(workbook) : [];
+  const withSavedValues = options.reparse && options.preserveSavedValues !== false ? collectFormulaCellsWithSavedValues(workbook) : [];
   try {
     workbook.calculate();
   } catch (err) {

@@ -189,6 +189,20 @@ export class Workbook {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * @param {string} id
+     * @param {any} options
+     * @returns {any}
+     */
+    createPivotChart(id, options) {
+        const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.workbook_createPivotChart(this.__wbg_ptr, ptr0, len0, options);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * @param {string} name
      * @param {string} refers_to
      */
@@ -316,6 +330,17 @@ export class Workbook {
         return v2;
     }
     /**
+     * @param {any} source
+     * @returns {any}
+     */
+    getPivotSourceFields(source) {
+        const ret = wasm.workbook_getPivotSourceFields(this.__wbg_ptr, source);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * @param {number} index
      * @returns {Worksheet}
      */
@@ -365,6 +390,16 @@ export class Workbook {
     /**
      * @returns {any}
      */
+    modifiedPivotCharts() {
+        const ret = wasm.workbook_modifiedPivotCharts(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @returns {any}
+     */
     get namedRanges() {
         const ret = wasm.workbook_namedRanges(this.__wbg_ptr);
         if (ret[2]) {
@@ -377,6 +412,57 @@ export class Workbook {
         this.__wbg_ptr = ret >>> 0;
         WorkbookFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * @param {string} id
+     * @param {number} row
+     * @param {number} col
+     * @returns {any}
+     */
+    pivotDrillDown(id, row, col) {
+        const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.workbook_pivotDrillDown(this.__wbg_ptr, ptr0, len0, row, col);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @returns {any}
+     */
+    get pivotTables() {
+        const ret = wasm.workbook_pivotTables(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @param {string} id
+     * @returns {any}
+     */
+    refreshPivotTable(id) {
+        const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.workbook_refreshPivotTable(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @param {string} id
+     * @returns {boolean}
+     */
+    removePivotTable(id) {
+        const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.workbook_removePivotTable(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
     }
     /**
      * @param {number} index
@@ -620,6 +706,32 @@ export class Workbook {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * @param {string} sheet
+     * @param {string} name
+     * @param {any} patch
+     */
+    updatePivotChart(sheet, name, patch) {
+        const ptr0 = passStringToWasm0(sheet, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.workbook_updatePivotChart(this.__wbg_ptr, ptr0, len0, ptr1, len1, patch);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} input
+     * @returns {any}
+     */
+    upsertPivotTable(input) {
+        const ret = wasm.workbook_upsertPivotTable(this.__wbg_ptr, input);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * @returns {any}

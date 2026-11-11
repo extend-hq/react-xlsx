@@ -149,11 +149,11 @@ importers:
         version: 19.2.4(react@19.2.4)
     devDependencies:
       '@extend-ai/office-fonts':
-        specifier: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz
-        version: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz
+        specifier: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz
+        version: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz
       '@extend-ai/rust-office-charts':
-        specifier: https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.3.3/extend-ai-rust-office-charts-0.3.3.tgz
-        version: https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.3.3/extend-ai-rust-office-charts-0.3.3.tgz
+        specifier: file:../../vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz
+        version: file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz
       '@tanstack/react-virtual':
         specifier: ^3.13.23
         version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -673,13 +673,13 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz':
-    resolution: {tarball: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz}
-    version: 0.1.0
+  '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz':
+    resolution: {tarball: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz}
+    version: 0.2.0
 
-  '@extend-ai/rust-office-charts@https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.3.3/extend-ai-rust-office-charts-0.3.3.tgz':
-    resolution: {tarball: https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.3.3/extend-ai-rust-office-charts-0.3.3.tgz}
-    version: 0.3.3
+  '@extend-ai/rust-office-charts@file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz':
+    resolution: {integrity: sha512-WVIecyuUIEqBXPxYwHrSW0qwjVfqaRlrvYH4WyFn3LXy2PFEioijqexpQgzJMK2rKLnIKLcXYCdlHDrRyuXvNQ==, tarball: file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz}
+    version: 0.3.5
 
   '@floating-ui/core@1.7.5':
     resolution: {integrity: sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ==}
@@ -4090,9 +4090,9 @@ snapshots:
   '@esbuild/win32-x64@0.27.5':
     optional: true
 
-  '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz': {}
+  '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz': {}
 
-  '@extend-ai/rust-office-charts@https://github.com/extend-hq/rust-office/releases/download/charts-browser-v0.3.3/extend-ai-rust-office-charts-0.3.3.tgz': {}
+  '@extend-ai/rust-office-charts@file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz': {}
 
   '@floating-ui/core@1.7.5':
     dependencies:

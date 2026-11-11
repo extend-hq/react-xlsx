@@ -1,6 +1,6 @@
 # Office picture bindings
 
-This adapter delegates XLSX picture appearance to the published `rust-office-art = 0.1.1` crate. It supplies the workbook's color resolver and exposes the shared SVG renderer and raster normalization to the browser. It does not implement a second picture renderer.
+This adapter delegates XLSX picture appearance to the published `rust-office-art = 0.1.8` crate. It supplies the workbook's color resolver and exposes the shared SVG renderer and raster normalization to the browser. It does not implement a second picture renderer.
 
 Run `pnpm build:office-art` after changing the adapter or its locked dependencies. Rust, the `wasm32-unknown-unknown` target, and `wasm-pack` are required only for rebuilding the bindings. The normal package build verifies the checked-in JavaScript, embedded compressed WASM, source digest, and third-party notices without requiring a Rust toolchain. `pnpm build:office-art --offline` uses cached dependencies.
 

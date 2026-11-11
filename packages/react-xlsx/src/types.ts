@@ -2,6 +2,11 @@ import type { OfficeCharts } from "./office-chart-types";
 import type * as React from "react";
 import type { XlsxViewerMessages } from "./messages";
 import type { Workbook, Worksheet } from "./duke-sheets/generated/duke_sheets_wasm.js";
+import type { XlsxViewerPivots } from "./pivot-types";
+import type { XlsxPivotTableEditor, XlsxPivotTableControlsRenderProps } from "./pivot-editor";
+import type { XlsxPivotTableHeaderMenuRenderProps } from "./pivot-header-controls";
+
+export type * from "./pivot-types";
 
 export type { XlsxViewerMessages } from "./messages";
 
@@ -1117,7 +1122,7 @@ export interface UseXlsxViewerControllerOptions {
   useWorker?: boolean;
 }
 
-export interface XlsxViewerController {
+export interface XlsxViewerController extends XlsxViewerPivots {
   activeCell: XlsxCellAddress | null;
   activeCellAddress: string | null;
   activeSheet: XlsxSheetData | null;
@@ -1345,6 +1350,7 @@ export type XlsxContextMenuActionId =
   | "cut" | "copy" | "paste" | "clearContents" | "editCell"
   | "undo" | "redo" | "mergeCells" | "mergeAndCenter" | "mergeAcross" | "unmergeCells"
   | "sortAscending" | "sortDescending"
+  | "refreshPivotTable" | "showPivotDetails" | "togglePivotFieldList"
   | "selectRow" | "selectColumn" | "selectAll";
 
 export interface XlsxContextMenuAction {
@@ -1354,6 +1360,7 @@ export interface XlsxContextMenuAction {
   disabled?: boolean;
   destructive?: boolean;
   separatorBefore?: boolean;
+  checked?: boolean;
 }
 
 export interface XlsxContextMenuContext {
@@ -1570,6 +1577,9 @@ export interface XlsxViewerThumbnails {
 }
 
 export interface XlsxTableHeaderMenuRenderProps {
+  kind?: "table" | "pivot";
+  pivot?: XlsxPivotTableHeaderMenuRenderProps;
+  defaultNode?: React.ReactNode;
   /** Address of the table header cell that owns this menu. */
   cell: XlsxCellAddress;
   /** Table column metadata for the active header. */
@@ -1891,6 +1901,12 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
    * Apply `triggerProps` to your actual trigger button so clicks do not leak into grid selection.
    */
   renderTableHeaderMenu?: (props: XlsxTableHeaderMenuRenderProps) => React.ReactNode;
+  renderPivotTableHeaderMenu?: (props: XlsxPivotTableHeaderMenuRenderProps) => React.ReactNode;
+  pivotTableHighlightColor?: string;
+  /** Enables the built-in pivot pane. Hidden by default. */
+  showPivotTableControls?: boolean;
+  pivotTableEditor?: XlsxPivotTableEditor;
+  renderPivotTableControls?: (props: XlsxPivotTableControlsRenderProps) => React.ReactNode;
   /**
    * Renders custom content positioned over the active cell. The returned node is placed in a
    * container that exactly covers the cell, so it can carry classes, data attributes, or refs

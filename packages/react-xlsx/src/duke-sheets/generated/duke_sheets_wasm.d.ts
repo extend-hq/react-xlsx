@@ -390,6 +390,8 @@ export interface ChartAxis {
 }
 
 export interface Chart {
+    pivotSource?: { name: string; formatId: number } | null;
+    pivotModified?: boolean;
     chartType: string;
     title?: string;
     series: ChartDataSeries[];
@@ -692,6 +694,7 @@ export class Workbook {
     [Symbol.dispose](): void;
     addSheet(name: string): number;
     calculate(options?: any | null): any;
+    createPivotChart(id: string, options: any): any;
     defineName(name: string, refers_to: string): void;
     exportSnapshot(): Uint8Array;
     fontFamilies(): string[];
@@ -710,10 +713,15 @@ export class Workbook {
     static fromCsvString(csv: string): Workbook;
     static fromSnapshot(data: Uint8Array): Workbook;
     getNamedRange(name: string): string | undefined;
+    getPivotSourceFields(source: any): any;
     getSheet(index: number): Worksheet;
     getSheetByName(name: string): Worksheet;
     static loadCsvString(csv: string): Workbook;
+    modifiedPivotCharts(): any;
     constructor();
+    pivotDrillDown(id: string, row: number, col: number): any;
+    refreshPivotTable(id: string): any;
+    removePivotTable(id: string): boolean;
     removeSheet(index: number): void;
     /**
      * Save the first sheet as a CSV string, with form-control state
@@ -759,11 +767,14 @@ export class Workbook {
      */
     syncFormControlsFromLinkedCells(): number;
     takeViewerArchive(): any;
+    updatePivotChart(sheet: string, name: string, patch: any): void;
+    upsertPivotTable(input: any): any;
     readonly activeSheet: number;
     readonly chartsheetCount: number;
     readonly chartsheets: any;
     readonly isEmpty: boolean;
     readonly namedRanges: any;
+    readonly pivotTables: any;
     readonly settings: any;
     readonly sheetCount: number;
     readonly sheetNames: string[];
@@ -881,25 +892,6 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly workbook_syncFormControls: (a: number) => number;
-    readonly workbook_syncFormControlsFromLinkedCells: (a: number) => number;
-    readonly worksheet_addDrawing: (a: number, b: any) => [number, number, number];
-    readonly worksheet_chartCount: (a: number) => [number, number, number];
-    readonly worksheet_chartExCount: (a: number) => [number, number, number];
-    readonly worksheet_charts: (a: number) => [number, number, number];
-    readonly worksheet_chartsEx: (a: number) => [number, number, number];
-    readonly worksheet_drawingImageData: (a: number, b: any) => [number, number, number, number];
-    readonly worksheet_drawingSvgData: (a: number, b: any) => [number, number, number, number];
-    readonly worksheet_drawings: (a: number) => [number, number, number];
-    readonly worksheet_formControlCount: (a: number) => [number, number, number];
-    readonly worksheet_formControls: (a: number) => [number, number, number];
-    readonly worksheet_imageCount: (a: number) => [number, number, number];
-    readonly worksheet_images: (a: number) => [number, number, number];
-    readonly worksheet_insertDrawing: (a: number, b: number, c: any) => [number, number];
-    readonly worksheet_moveDrawing: (a: number, b: number, c: number) => [number, number];
-    readonly worksheet_removeDrawing: (a: number, b: any) => [number, number];
-    readonly worksheet_setDrawing: (a: number, b: any, c: any) => [number, number];
-    readonly worksheet_setFormControlCheckState: (a: number, b: any, c: number, d: number) => [number, number, number];
     readonly decodeArchive: (a: number, b: number) => [number, number, number];
     readonly inspectArchive: (a: number, b: number) => [number, number, number];
     readonly parseXmlTree: (a: number, b: number) => [number, number, number, number];
@@ -918,8 +910,21 @@ export interface InitOutput {
     readonly workbook_themePalette: (a: number) => [number, number];
     readonly workbook_totalSheetCount: (a: number) => [number, number, number];
     readonly workbook_workbookProtection: (a: number) => [number, number, number];
+    readonly workbook_getPivotSourceFields: (a: number, b: any) => [number, number, number];
+    readonly workbook_pivotDrillDown: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly workbook_pivotTables: (a: number) => [number, number, number];
+    readonly workbook_refreshPivotTable: (a: number, b: number, c: number) => [number, number, number];
+    readonly workbook_removePivotTable: (a: number, b: number, c: number) => [number, number, number];
+    readonly workbook_upsertPivotTable: (a: number, b: any) => [number, number, number];
+    readonly workbook_syncFormControls: (a: number) => number;
+    readonly workbook_syncFormControlsFromLinkedCells: (a: number) => number;
+    readonly worksheet_addDrawing: (a: number, b: any) => [number, number, number];
     readonly worksheet_autoFilter: (a: number) => [number, number, number];
     readonly worksheet_cellCount: (a: number) => [number, number, number];
+    readonly worksheet_chartCount: (a: number) => [number, number, number];
+    readonly worksheet_chartExCount: (a: number) => [number, number, number];
+    readonly worksheet_charts: (a: number) => [number, number, number];
+    readonly worksheet_chartsEx: (a: number) => [number, number, number];
     readonly worksheet_colBreaks: (a: number) => [number, number, number];
     readonly worksheet_commentAuthors: (a: number) => [number, number, number, number];
     readonly worksheet_commentCount: (a: number) => [number, number, number];
@@ -931,6 +936,11 @@ export interface InitOutput {
     readonly worksheet_date1904: (a: number) => [number, number, number];
     readonly worksheet_defaultColumnWidth: (a: number) => [number, number, number];
     readonly worksheet_defaultRowHeight: (a: number) => [number, number, number];
+    readonly worksheet_drawingImageData: (a: number, b: any) => [number, number, number, number];
+    readonly worksheet_drawingSvgData: (a: number, b: any) => [number, number, number, number];
+    readonly worksheet_drawings: (a: number) => [number, number, number];
+    readonly worksheet_formControlCount: (a: number) => [number, number, number];
+    readonly worksheet_formControls: (a: number) => [number, number, number];
     readonly worksheet_formulaCells: (a: number) => [number, number, number];
     readonly worksheet_formulaCount: (a: number) => [number, number, number];
     readonly worksheet_freezePanes: (a: number) => [number, number, number];
@@ -955,6 +965,9 @@ export interface InitOutput {
     readonly worksheet_hasCommentAt: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_hyperlinkCount: (a: number) => [number, number, number];
     readonly worksheet_hyperlinks: (a: number) => [number, number, number];
+    readonly worksheet_imageCount: (a: number) => [number, number, number];
+    readonly worksheet_images: (a: number) => [number, number, number];
+    readonly worksheet_insertDrawing: (a: number, b: number, c: any) => [number, number];
     readonly worksheet_isColumnCollapsed: (a: number, b: number) => [number, number, number];
     readonly worksheet_isColumnHidden: (a: number, b: number) => [number, number, number];
     readonly worksheet_isEmpty: (a: number) => [number, number, number];
@@ -965,15 +978,19 @@ export interface InitOutput {
     readonly worksheet_isSpillSource: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_isSpillTarget: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_mergedRegions: (a: number) => [number, number, number];
+    readonly worksheet_moveDrawing: (a: number, b: number, c: number) => [number, number];
     readonly worksheet_pageSetup: (a: number) => [number, number, number];
     readonly worksheet_printArea: (a: number) => [number, number, number, number];
     readonly worksheet_protectedRanges: (a: number) => [number, number, number];
     readonly worksheet_protection: (a: number) => [number, number, number];
+    readonly worksheet_removeDrawing: (a: number, b: any) => [number, number];
     readonly worksheet_repeatCols: (a: number) => [number, number, number, number];
     readonly worksheet_repeatRows: (a: number) => [number, number, number, number];
     readonly worksheet_restoreValueSnapshotAt: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly worksheet_rowBreaks: (a: number) => [number, number, number];
     readonly worksheet_selections: (a: number) => [number, number, number];
+    readonly worksheet_setDrawing: (a: number, b: any, c: any) => [number, number];
+    readonly worksheet_setFormControlCheckState: (a: number, b: any, c: number, d: number) => [number, number, number];
     readonly worksheet_splitPanes: (a: number) => [number, number, number];
     readonly worksheet_tabColor: (a: number) => [number, number, number];
     readonly worksheet_tableCount: (a: number) => [number, number, number];
@@ -997,6 +1014,7 @@ export interface InitOutput {
     readonly init: () => void;
     readonly workbook_addSheet: (a: number, b: number, c: number) => [number, number, number];
     readonly workbook_calculate: (a: number, b: number) => [number, number, number];
+    readonly workbook_createPivotChart: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly workbook_defineName: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly workbook_exportSnapshot: (a: number) => [number, number, number, number];
     readonly workbook_fromBytes: (a: number, b: number) => [number, number, number];
@@ -1006,6 +1024,7 @@ export interface InitOutput {
     readonly workbook_getNamedRange: (a: number, b: number, c: number) => [number, number, number, number];
     readonly workbook_getSheet: (a: number, b: number) => [number, number, number];
     readonly workbook_getSheetByName: (a: number, b: number, c: number) => [number, number, number];
+    readonly workbook_modifiedPivotCharts: (a: number) => [number, number, number];
     readonly workbook_new: () => number;
     readonly workbook_removeSheet: (a: number, b: number) => [number, number];
     readonly workbook_saveCsvString: (a: number) => [number, number, number, number];
@@ -1016,6 +1035,7 @@ export interface InitOutput {
     readonly workbook_setWorkbookProtection: (a: number, b: any) => [number, number];
     readonly workbook_sheetCount: (a: number) => [number, number, number];
     readonly workbook_sheetNames: (a: number) => [number, number, number, number];
+    readonly workbook_updatePivotChart: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number];
     readonly worksheet_getCalculatedValue: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_getCalculatedValueAt: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_getCell: (a: number, b: number, c: number) => [number, number, number];

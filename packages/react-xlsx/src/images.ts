@@ -3799,11 +3799,160 @@ function appendSheetDrawingReference(
   worksheet.insertBefore(drawingNode, successor ?? null);
 }
 
+type ModifiedPivotChart = { sheet: string; name: string; sourceName?: string | null; formatId?: number | null };
+
+const PIVOT_CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart";
+
+function prepareNativePivotChartAssets(native: ArchiveEntries, assets: WorkbookImageAssets, origins: Array<WorkbookImageSheetOrigin | null>, modified?: ModifiedPivotChart[]): WorkbookImageAssets {
+  if (modified?.length === 0) return assets;
+  const hasPivotChart = (archive: ArchiveEntries) => Object.keys(archive).some(path => path.startsWith("xl/charts/") && path.endsWith(".xml") && /<(?:\w+:)?pivotSource(?:\s|>)/.test(strFromU8(archive[path])));
+  if (!hasPivotChart(native) && !hasPivotChart(assets.archive)) return assets;
+  const nativeTypes = ensureContentTypesDocument(native);
+  const sourceTypes = ensureContentTypesDocument(assets.archive);
+  if (!nativeTypes || !sourceTypes) return assets;
+  let prepared: WorkbookImageAssets | null = null;
+  let sequence = 0;
+  const copied = new Map<string, string>();
+  const writable = () => prepared ??= { ...assets, archive: { ...assets.archive }, dirtyArchivePaths: new Set(assets.dirtyArchivePaths) };
+  const copyPart = (path: string): string => {
+    const existing = copied.get(path);
+    if (existing) return existing;
+    const bytes = native[path];
+    if (!bytes) throw new Error("A PivotChart relationship target is missing.");
+    let target: string;
+    do { target = `${path.slice(0, path.lastIndexOf("/") + 1)}pivot-native-${++sequence}-${path.split("/").pop()}`; }
+    while (native[target] || assets.archive[target]);
+    copied.set(path, target);
+    const out = writable();
+    out.archive[target] = cloneBytes(bytes);
+    const override = getLocalElements(nativeTypes, "Override").find(node => node.getAttribute("PartName") === `/${path}`);
+    if (override) {
+      const copy = override.cloneNode(true) as Element;
+      copy.setAttribute("PartName", `/${target}`);
+      sourceTypes.documentElement.appendChild(copy);
+    } else mergeContentTypeForPath(sourceTypes, nativeTypes, target);
+    const relationships = readArchiveText(native, relsPathForDocument(path));
+    if (relationships) {
+      const document = parseXml(relationships);
+      if (!document) throw new Error("A PivotChart relationship document is invalid.");
+      for (const relationship of getLocalElements(document, "Relationship")) {
+        const child = relationship.getAttribute("Target");
+        if (child && relationship.getAttribute("TargetMode") !== "External") {
+          const copiedChild = copyPart(resolveArchiveTarget(path, child));
+          relationship.setAttribute("Target", relativeArchivePath(target, copiedChild));
+        }
+      }
+      out.archive[relsPathForDocument(target)] = strToU8(serializeXml(document));
+    }
+    return target;
+  };
+  const chartAnchors = (archive: ArchiveEntries, path: string) => {
+    const document = parseXml(readArchiveText(archive, path) ?? "");
+    if (!document) return [];
+    const relationships = parseRelationships(archive, relsPathForDocument(path), path);
+    return [...document.documentElement.children].flatMap(anchor => getLocalElements(anchor, "graphicFrame").flatMap(frame => {
+      const chart = getFirstDescendant(frame, "chart");
+      const relationship = chart && relationships.get(getRelationshipId(chart) ?? "");
+      if (!chart || !relationship) return [];
+      const chartXml = readArchiveText(archive, relationship.target);
+      const pivot = chartXml ? /<(?:\w+:)?pivotSource(?:\s|>)/.test(chartXml) : false;
+      return [{ anchor, name: getFirstDescendant(frame, "cNvPr")?.getAttribute("name") ?? "", chartPath: relationship.target, pivot, nested: frame.parentNode !== anchor }];
+    }));
+  };
+
+  parseWorkbookSheets(native).forEach((sheet, index) => {
+    const changes = modified?.filter(chart => chart.sheet.toLowerCase() === sheet.name.toLowerCase());
+    if (changes?.length === 0) return;
+    const origin = origins[index];
+    if (!origin?.attachments.length) return;
+    const original = origin.attachments.flatMap(attachment => chartAnchors(assets.archive, attachment.drawingPath).map(chart => ({ ...chart, drawingPath: attachment.drawingPath })));
+    for (const previous of original.filter(chart => chart.nested)) {
+      const change = changes?.find(change => change.name === previous.name);
+      if (!change || change.sourceName === undefined) continue;
+      const document = parseXml(readArchiveText(writable().archive, previous.chartPath) ?? "");
+      if (!document) throw new Error("A PivotChart source document is invalid.");
+      const oldSource = getFirstChild(document.documentElement, "pivotSource");
+      if (change.sourceName !== null) {
+        const source = document.createElementNS(PIVOT_CHART_NS, "c:pivotSource");
+        source.setAttribute("xmlns:c", PIVOT_CHART_NS);
+        const name = document.createElementNS(PIVOT_CHART_NS, "c:name");
+        name.textContent = change.sourceName;
+        source.appendChild(name);
+        const format = document.createElementNS(PIVOT_CHART_NS, "c:fmtId");
+        format.setAttribute("val", String(change.formatId ?? 0));
+        source.appendChild(format);
+        document.documentElement.insertBefore(source, oldSource ?? getFirstChild(document.documentElement, "chart") ?? null);
+      }
+      oldSource?.parentNode?.removeChild(oldSource);
+      writable().archive[previous.chartPath] = strToU8(serializeXml(document));
+      writable().dirtyArchivePaths.add(previous.chartPath);
+    }
+    const pivotNames = new Set(original.filter(chart => chart.pivot).map(chart => chart.name));
+    const generated = [...parseRelationships(native, relsPathForDocument(sheet.path), sheet.path).values()]
+      .filter(relationship => relationship.type === DRAWING_REL_TYPE)
+      .flatMap(relationship => chartAnchors(native, relationship.target))
+      .filter(chart => (chart.pivot || pivotNames.has(chart.name)) && (!changes || changes.some(change => !change.name || change.name === chart.name)));
+    for (const chart of generated) {
+      const previous = original.find(candidate => candidate.name === chart.name) ?? (sheet.path.startsWith("xl/chartsheets/") ? original.find(candidate => candidate.pivot) : undefined);
+      if (previous && (chart.nested || (!chart.pivot && previous.pivot))) {
+        const document = parseXml(readArchiveText(writable().archive, previous.chartPath) ?? "");
+        const generated = parseXml(readArchiveText(native, chart.chartPath) ?? "");
+        if (!document || !generated) throw new Error("A PivotChart source document is invalid.");
+        const oldSource = getFirstChild(document.documentElement, "pivotSource");
+        const source = getFirstChild(generated.documentElement, "pivotSource");
+        if (source) document.documentElement.insertBefore(source.cloneNode(true), oldSource ?? getFirstChild(document.documentElement, "chart") ?? null);
+        oldSource?.parentNode?.removeChild(oldSource);
+        writable().archive[previous.chartPath] = strToU8(serializeXml(document));
+        writable().dirtyArchivePaths.add(previous.chartPath);
+        continue;
+      }
+      const drawingPath = previous?.drawingPath ?? origin.attachments[0].drawingPath;
+      const out = writable();
+      const document = parseXml(readArchiveText(out.archive, drawingPath) ?? "");
+      const relationships = ensureRelationshipsDocument(out.archive, relsPathForDocument(drawingPath));
+      if (!document || !relationships) throw new Error("A PivotChart drawing document is invalid.");
+      const anchor = chart.anchor.cloneNode(true) as Element;
+      const chartNode = getFirstDescendant(anchor, "chart");
+      if (!chartNode) continue;
+      const copiedChart = copyPart(chart.chartPath);
+      const id = nextRelationshipId(relationships);
+      chartNode.setAttributeNS(REL_NS, "r:id", id);
+      const relationship = relationships.createElementNS(PKG_REL_NS, "Relationship");
+      relationship.setAttribute("Id", id);
+      relationship.setAttribute("Type", `${REL_NS}/chart`);
+      relationship.setAttribute("Target", relativeArchivePath(drawingPath, copiedChart));
+      relationships.documentElement.appendChild(relationship);
+      const oldAnchor = [...document.documentElement.children].find(node => getFirstDescendant(node, "cNvPr")?.getAttribute("name") === (previous?.name ?? chart.name));
+      if (oldAnchor) {
+        const oldChart = getFirstDescendant(oldAnchor, "chart");
+        const oldId = oldChart && getRelationshipId(oldChart);
+        const oldRelationship = getLocalElements(relationships, "Relationship").find(node => node.getAttribute("Id") === oldId);
+        oldRelationship?.parentNode?.removeChild(oldRelationship);
+        oldAnchor.parentNode?.insertBefore(anchor, oldAnchor);
+        oldAnchor.parentNode?.removeChild(oldAnchor);
+      } else {
+        const nextId = Math.max(0, ...getLocalElements(document, "cNvPr").map(node => Number(node.getAttribute("id")) || 0)) + 1;
+        getFirstDescendant(anchor, "cNvPr")?.setAttribute("id", String(nextId));
+        document.documentElement.appendChild(anchor);
+      }
+      out.archive[drawingPath] = strToU8(serializeXml(document));
+      out.archive[relsPathForDocument(drawingPath)] = strToU8(serializeXml(relationships));
+      out.dirtyArchivePaths.add(drawingPath);
+      out.dirtyArchivePaths.add(relsPathForDocument(drawingPath));
+    }
+  });
+  if (!prepared) return assets;
+  const result: WorkbookImageAssets = prepared;
+  result.archive["[Content_Types].xml"] = strToU8(serializeXml(sourceTypes));
+  return result;
+}
+
 export function mergeWorkbookImageAssets(
   savedBytes: Uint8Array,
   sourceAssets: WorkbookImageAssets | null,
   sheetOrigins: Array<WorkbookImageSheetOrigin | null>,
-  parsedArchive?: ArchiveEntries
+  parsedArchive?: ArchiveEntries,
+  modifiedPivotCharts?: ModifiedPivotChart[]
 ) {
   if (!sourceAssets) {
     return cloneBytes(savedBytes);
@@ -3811,8 +3960,9 @@ export function mergeWorkbookImageAssets(
 
   try {
     const archive = parsedArchive ?? decodeWorkbookArchive(savedBytes);
+    const exportAssets = prepareNativePivotChartAssets(archive, sourceAssets, sheetOrigins, modifiedPivotCharts);
     const workbookSheets = parseWorkbookSheets(archive);
-    const originalContentTypesDocument = parseXml(readArchiveText(sourceAssets.archive, "[Content_Types].xml") ?? "");
+    const originalContentTypesDocument = parseXml(readArchiveText(exportAssets.archive, "[Content_Types].xml") ?? "");
     const targetContentTypesDocument = ensureContentTypesDocument(archive);
     if (!targetContentTypesDocument) {
       return cloneBytes(savedBytes);
@@ -3821,7 +3971,7 @@ export function mergeWorkbookImageAssets(
     const copiedParts = new Set<string>();
     const copyDrawingPart = (path: string) => {
       const normalizedPath = normalizeArchivePath(path);
-      const bytes = sourceAssets.archive[normalizedPath];
+      const bytes = exportAssets.archive[normalizedPath];
       if (!bytes || copiedParts.has(normalizedPath)) {
         return;
       }
@@ -3830,13 +3980,13 @@ export function mergeWorkbookImageAssets(
       mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, normalizedPath);
 
       const relsPath = relsPathForDocument(normalizedPath);
-      const relsBytes = sourceAssets.archive[relsPath];
+      const relsBytes = exportAssets.archive[relsPath];
       if (!relsBytes) {
         return;
       }
       archive[relsPath] = cloneBytes(relsBytes);
       mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, relsPath);
-      for (const relationship of parseRelationships(sourceAssets.archive, relsPath, normalizedPath).values()) {
+      for (const relationship of parseRelationships(exportAssets.archive, relsPath, normalizedPath).values()) {
         if (relationship.targetMode !== "External" && !relationship.type.endsWith("/hyperlink")) {
           copyDrawingPart(relationship.target);
         }
@@ -3868,7 +4018,7 @@ export function mergeWorkbookImageAssets(
       removeDrawingReferences(sheetDocument, relDocument);
 
       origin.attachments.forEach((attachment) => {
-        const drawingBytes = sourceAssets.archive[attachment.drawingPath];
+        const drawingBytes = exportAssets.archive[attachment.drawingPath];
         if (!drawingBytes) {
           return;
         }
@@ -3889,8 +4039,8 @@ export function mergeWorkbookImageAssets(
       mergeContentTypeForPath(targetContentTypesDocument, originalContentTypesDocument, relsPath);
     });
 
-    for (const dirtyPath of sourceAssets.dirtyArchivePaths) {
-      const bytes = sourceAssets.archive[dirtyPath];
+    for (const dirtyPath of exportAssets.dirtyArchivePaths) {
+      const bytes = exportAssets.archive[dirtyPath];
       if (!bytes) {
         continue;
       }

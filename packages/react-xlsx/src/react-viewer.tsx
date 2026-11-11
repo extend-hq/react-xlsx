@@ -112,7 +112,7 @@ function renderOptions(
   const {
     emptyState, errorState, fileTooLargeState, loadingComponent, loadingState,
     renderActiveCellOverlay, renderCellEditorOverlay, renderSelectionPopover, renderChartLoading, renderContextMenu, renderFormControl,
-    renderImage, renderImageSelection, renderScroller, renderTableHeaderMenu, toolbar,
+    renderImage, renderImageSelection, renderScroller, renderTableHeaderMenu, renderPivotTableHeaderMenu, renderPivotTableControls, toolbar,
     ...other
   } = props;
 
@@ -165,7 +165,17 @@ function renderOptions(
       ? ({ children, ...value }) => slot("scroller", renderScroller({ ...value, children: runtime(children) }))
       : undefined,
     renderTableHeaderMenu: renderTableHeaderMenu
-      ? (value) => slot(`table:${value.table.name}:${value.cell.row}:${value.cell.col}`, renderTableHeaderMenu(value))
+      ? (value) => slot(`table:${value.table.name}:${value.cell.row}:${value.cell.col}`, renderTableHeaderMenu({
+          ...value,
+          defaultNode: value.defaultNode ? runtime(value.defaultNode) : undefined,
+          pivot: value.pivot ? { ...value.pivot, defaultNode: runtime(value.pivot.defaultNode) } : undefined
+        }))
+      : undefined,
+    renderPivotTableControls: renderPivotTableControls
+      ? ({ defaultNode, ...value }) => slot("pivot-table-controls", renderPivotTableControls({ ...value, defaultNode: runtime(defaultNode) }))
+      : undefined,
+    renderPivotTableHeaderMenu: renderPivotTableHeaderMenu
+      ? ({ defaultNode, ...value }) => slot(`pivot-header:${value.pivot.id}:${value.header.row}:${value.header.col}`, renderPivotTableHeaderMenu({ ...value, defaultNode: runtime(defaultNode) }))
       : undefined
   };
 }

@@ -7737,7 +7737,7 @@ limitations under the License.
 
 --------------------
 
-rust-office-art 0.1.4
+rust-office-art 0.1.8
 MIT AND Apache-2.0 AND OFL-1.1
 https://github.com/extend-hq/rust-office
 

@@ -12,6 +12,7 @@ import { getCellGeneralAlignment } from "./cell-alignment";
 import { getColumnFontMeasurements, getUnmeasuredWorkbookFont, restoreColumnFontMeasurements, collectWorkbookFormControls, mergeWorkbookImageAssets, type WorkbookImageAssets, type WorkbookImageSheetOrigin, resolveSheetColumnWidthPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetMergeMetadata } from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { safeCalculate } from "./safe-calculate";
+import { pivotWorkbook, readPivotTables } from "./pivots";
 import { getSheetsWasmModule, setWasmSource, type WorkerWasmSource } from "./wasm";
 import type { XlsxChart, XlsxChartsheet, XlsxCellAddress, XlsxCellRange, XlsxDataValidation, XlsxFormControl, XlsxFreezePanes, XlsxSheetData, XlsxSheetVisibility, XlsxTable, XlsxThemePalette, XlsxWorkbookTab } from "./types";
 
@@ -676,18 +677,46 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
   const archive = activeWorkbook.takeViewerArchive() as Record<string, Uint8Array>;
   let totalFormulas = 0;
   for (let index = 0; index < activeWorkbook.sheetCount; index += 1) totalFormulas += activeWorkbook.getSheet(index).formulaCount;
+  const refreshOnLoadPivots = readPivotTables(activeWorkbook).filter(pivot => pivot.refreshOnLoad && !pivot.unsupportedFeatures.length);
+  let sourceCalculated = totalFormulas === 0;
   let shouldAutoCalculate = totalFormulas === 0;
-  if (totalFormulas > 0 && totalFormulas <= FORMULA_COUNT_THRESHOLD) {
+  if (totalFormulas > 0 && (totalFormulas <= FORMULA_COUNT_THRESHOLD || refreshOnLoadPivots.length > 0)) {
     const snapshot = activeWorkbook.exportSnapshot();
     const result = safeCalculate(activeWorkbook, { reparse: () => wasmModule.Workbook.fromSnapshot(snapshot) });
     activeWorkbook = result.workbook;
-    shouldAutoCalculate = result.calculated;
+    sourceCalculated = result.calculated;
+    shouldAutoCalculate = result.calculated && totalFormulas <= FORMULA_COUNT_THRESHOLD;
+  }
+  const pivotRefreshErrors = new Map<string, string>();
+  let recalculatedPivotFormulas = false;
+  for (const pivot of refreshOnLoadPivots) {
+    if (!sourceCalculated) {
+      pivotRefreshErrors.set(pivot.id, "The workbook formulas could not be recalculated safely. The saved pivot table has been kept.");
+      continue;
+    }
+    try { pivotWorkbook(activeWorkbook).refreshPivotTable(pivot.id); }
+    catch (error) {
+      pivotRefreshErrors.set(pivot.id, error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    const snapshot = activeWorkbook.exportSnapshot();
+    const result = safeCalculate(activeWorkbook, { reparse: () => wasmModule.Workbook.fromSnapshot(snapshot), preserveSavedValues: false });
+    activeWorkbook = result.workbook;
+    sourceCalculated = result.calculated;
+    recalculatedPivotFormulas ||= result.calculated;
+    if (!result.calculated) {
+      shouldAutoCalculate = false;
+      pivotRefreshErrors.set(pivot.id, "The pivot table refreshed, but dependent formulas could not be recalculated.");
+    }
   }
   const nextWorkbook = activeWorkbook;
   const unmeasuredFont = effectiveSkipXmlParsing ? null : getUnmeasuredWorkbookFont(archive);
   if (unmeasuredFont) await loadSpreadsheetFonts([unmeasuredFont], globalThis as unknown as Document);
   workbookFontFamilies = fontFamilies;
   const imageAssets = await loadWorkbookImageAssets(bytes, nextWorkbook, effectiveSkipXmlParsing, archive);
+  if (recalculatedPivotFormulas) {
+    for (const sheet of imageAssets?.sheetStatesByWorkbookSheetIndex ?? []) if (sheet) sheet.cachedFormulaValues = {};
+  }
   const structureAssets = imageAssets;
   const themePalette = structureAssets?.themePalette ?? buildThemePaletteFromHex(nextWorkbook.themePalette);
   formControlsByWorkbookSheetIndex = collectWorkbookFormControls(nextWorkbook, themePalette).map(
@@ -707,6 +736,7 @@ async function loadWorkbook(buffer: ArrayBuffer, skipXmlParsing = false, showHid
   tabs = chartAssets.tabs;
   return {
     chartsByWorkbookSheetIndex, chartsheets, formControlsByWorkbookSheetIndex, sheets, tablesByWorkbookSheetIndex, tabs,
+    pivotTables: readPivotTables(nextWorkbook).map(pivot => ({ ...pivot, ...(pivotRefreshErrors.has(pivot.id) ? { refreshError: pivotRefreshErrors.get(pivot.id) } : {}) })),
     chartOriginsById: chartAssets.chartOriginsById,
     columnFontMeasurements: getColumnFontMeasurements(),
     fontFamilies, imageAssets, xmlRecords: takeWorkbookXmlRecords(includeSnapshot ? undefined : new Set(chartsByWorkbookSheetIndex.flat().flatMap(chart => chart.renderSource ? [chart.renderSource.xml] : []))), shouldAutoCalculate,
@@ -753,7 +783,7 @@ async function handleMessage(message: WorkerRequest) {
         const archive = wasmModule.decodeArchive(bytes) as Record<string, Uint8Array>;
         const styles = archive["xl/styles.xml"];
         if (styles) archive["xl/styles.xml"] = strToU8(strFromU8(styles).replace(/&amp;quot;/g, "&quot;").replace(/&amp;apos;/g, "&apos;"));
-        const result = mergeWorkbookImageAssets(bytes, message.payload.assets, message.payload.origins, archive);
+        const result = mergeWorkbookImageAssets(bytes, message.payload.assets, message.payload.origins, archive, pivotWorkbook(restored).modifiedPivotCharts());
         return result;
       } finally { restored.free(); takeWorkbookXmlRecords(); }
     }
