@@ -728,7 +728,7 @@ Customize the existing menu with `contextMenuClassName`, `contextMenuStyle`, and
 <XlsxViewer
   file={file}
   contextMenuClassName="spreadsheet-menu"
-  contextMenuStyle={{ borderRadius: 6 }}
+  contextMenuStyle={{ "--xlsx-menu-radius": "6px" }}
   renderContextMenu={({ context, actions, runAction, closeMenu, busy }) => (
     <>
       {actions.map((action) => (
@@ -755,7 +755,7 @@ Customize the existing menu with `contextMenuClassName`, `contextMenuStyle`, and
 
 The hook receives `context` (target kind, cell, selection, sheet index/name, and read-only state), `actions`, `runAction`, `closeMenu`, viewport `position`, `isDark`, `busy`, `error`, and `defaultNode`. Return `defaultNode` to keep built-in buttons while adding your own content. The viewer owns the portal, viewport-edge positioning, outside-click dismissal, and keyboard navigation for elements with `role="menuitem"`; return menu contents without another portal. `runAction` returns `Promise<boolean>` and rejects unavailable or disabled commands. Handle custom commands in your own callback and call `closeMenu` afterward.
 
-Default styling follows the document theme. Override `.react-xlsx-context-menu`, `.react-xlsx-context-menu-item`, `.react-xlsx-context-menu-separator`, and `.react-xlsx-context-menu-shortcut`, or set `--xlsx-context-menu-background`, `--xlsx-context-menu-color`, `--xlsx-context-menu-border`, `--xlsx-context-menu-hover`, `--xlsx-context-menu-muted`, and `--xlsx-context-menu-danger` through `contextMenuStyle`. The menu is portaled to the document body, so use its class rather than a viewer-descendant selector. Set `enableContextMenu={false}` to retain the browser's native context menu.
+Default styling follows the document theme. Override `.react-xlsx-context-menu`, `.react-xlsx-context-menu-item`, `.react-xlsx-context-menu-separator`, and `.react-xlsx-context-menu-shortcut`, set `--xlsx-menu-radius` and `--xlsx-menu-padding` to resize the menu while keeping item corners concentric (items use the radius minus the padding), or set `--xlsx-context-menu-background`, `--xlsx-context-menu-color`, `--xlsx-context-menu-border`, `--xlsx-context-menu-hover`, `--xlsx-context-menu-muted`, and `--xlsx-context-menu-danger` through `contextMenuStyle`. The menu is portaled to the document body, so use its class rather than a viewer-descendant selector. The table header sort menu uses the same classes, so `contextMenuClassName` and `contextMenuStyle` restyle it too. Set `enableContextMenu={false}` to retain the browser's native context menu.
 
 ## Custom Cell Editor Overlays
 

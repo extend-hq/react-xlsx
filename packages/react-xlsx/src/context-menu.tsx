@@ -22,22 +22,24 @@ class MenuActionError extends Error {
   }
 }
 
-const menuStyles = `
+export const menuStyles = `
 :where(.react-xlsx-context-menu) {
   background: var(--xlsx-context-menu-background);
   color: var(--xlsx-context-menu-color);
   border: 1px solid var(--xlsx-context-menu-border);
-  border-radius: 8px;
-  padding: 5px;
+  border-radius: var(--xlsx-menu-radius, 8px);
+  padding: var(--xlsx-menu-padding, 5px);
   min-width: min(220px, calc(100vw - 16px));
   font: 13px/1.4 system-ui, sans-serif;
   box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
 }
 :where(.react-xlsx-context-menu-item) {
   display: flex; align-items: center; justify-content: space-between; gap: 24px;
-  width: 100%; border: 0; border-radius: 4px; padding: 7px 10px;
+  width: 100%; border: 0; border-radius: max(0px, calc(var(--xlsx-menu-radius, 8px) - var(--xlsx-menu-padding, 5px)));
+  padding: 7px 10px;
   background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
+:where(.react-xlsx-context-menu-item[aria-pressed="true"]) { background: var(--xlsx-menu-active, var(--xlsx-context-menu-hover)); }
 :where(.react-xlsx-context-menu-item:focus-visible),
 :where(.react-xlsx-context-menu-item:hover:not(:disabled)) {
   background: var(--xlsx-context-menu-hover); outline: none;
@@ -47,6 +49,17 @@ const menuStyles = `
 :where(.react-xlsx-context-menu-shortcut) { font-size: 11px; color: var(--xlsx-context-menu-muted); }
 :where(.react-xlsx-context-menu-separator) { height: 1px; margin: 4px; background: var(--xlsx-context-menu-border); }
 `;
+
+export function resolveMenuPaletteStyle(palette: ViewerPalette): React.CSSProperties {
+  return {
+    "--xlsx-context-menu-background": palette.surface,
+    "--xlsx-context-menu-color": palette.text,
+    "--xlsx-context-menu-border": palette.border,
+    "--xlsx-context-menu-hover": palette.mutedSurface,
+    "--xlsx-context-menu-muted": palette.mutedText,
+    "--xlsx-context-menu-danger": palette.danger
+  } as React.CSSProperties;
+}
 
 export function XlsxContextMenu({
   context, position, controller, palette, closeMenu, editCell, selectExtent,
@@ -299,12 +312,7 @@ export function XlsxContextMenu({
       ref={rootRef}
       role="menu"
       style={{
-        "--xlsx-context-menu-background": palette.surface,
-        "--xlsx-context-menu-color": palette.text,
-        "--xlsx-context-menu-border": palette.border,
-        "--xlsx-context-menu-hover": palette.mutedSurface,
-        "--xlsx-context-menu-muted": palette.mutedText,
-        "--xlsx-context-menu-danger": palette.danger,
+        ...resolveMenuPaletteStyle(palette),
         ...contextMenuStyle,
         position: "fixed", left: location.x, top: location.y,
         maxHeight: "calc(100vh - 16px)", maxWidth: "calc(100vw - 16px)",
