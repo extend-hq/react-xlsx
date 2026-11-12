@@ -4,83 +4,161 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Explore the XLSX viewer with its plain JavaScript API." />
-    <meta name="theme-color" content="#f4f8f5" />
+    <meta name="theme-color" content="#f3f3f3" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      try { if (localStorage.getItem("theme") === "dark") document.documentElement.classList.add("dark"); } catch {}
+    </script>
     <link rel="stylesheet" href="/vanilla/style.css" />
-    <title>Vanilla JS · XLSX Playground</title>
+    <title>Vanilla XLSX Playground</title>
   </head>
   <body>
-    <div class="page-shell">
-      <header class="site-header">
-        <a class="brand" href="/" aria-label="Return to the React playground">
-          <img src="/favicon.svg" alt="" width="30" height="30" />
-          <span>XLSX <span class="brand-muted">Playground</span></span>
-        </a>
-        <a class="back-link" href="/">
-          <span aria-hidden="true">←</span> React playground
-        </a>
+    <div class="app" id="app">
+      <input id="file-input" type="file" accept=".xls,.xlsx,.xlsm,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden />
+
+      <!-- Title bar -->
+      <header class="titlebar">
+        <div class="titlebar-start">
+          <div class="app-icon"><i data-icon="file-spreadsheet"></i></div>
+          <span class="doc-name" id="file-name">Book1</span>
+          <span class="badge" id="read-only-badge" hidden>Read-only</span>
+          <span class="app-subtitle">Vanilla XLSX Playground</span>
+        </div>
+        <div class="titlebar-end">
+          <button class="btn btn-title" id="open-file" type="button"><i data-icon="folder-open"></i><span class="btn-text">Open</span></button>
+          <button class="btn btn-title" id="download" type="button" disabled><i data-icon="download"></i><span class="btn-text">Download</span></button>
+          <a class="btn btn-title" href="/"><i data-icon="code"></i><span class="btn-text">React</span></a>
+          <span class="divider" aria-hidden="true"></span>
+          <button class="btn btn-icon-only" id="theme-toggle" type="button" data-tooltip="Dark mode"></button>
+        </div>
       </header>
 
-      <main class="main-content">
-        <section class="page-intro" aria-labelledby="page-title">
-          <div>
-            <div class="eyebrow"><span class="eyebrow-dot"></span> JAVASCRIPT PLAYGROUND</div>
-            <h1 id="page-title">Spreadsheets for plain JavaScript.</h1>
-            <p>Open a workbook and explore the viewer’s imperative API.</p>
+      <!-- Ribbon -->
+      <div class="ribbon">
+        <div class="ribbon-row">
+          <div class="ribbon-tabs" role="tablist" aria-label="Ribbon">
+            <button class="ribbon-tab" role="tab" data-tab="Home" type="button">Home</button>
+            <button class="ribbon-tab" role="tab" data-tab="Review" type="button">Review</button>
+            <button class="ribbon-tab" role="tab" data-tab="View" type="button">View</button>
+            <button class="ribbon-tab" role="tab" data-tab="Developer" type="button">Developer</button>
           </div>
-          <div class="entry-label">
-            <span>IMPORT FROM</span>
-            <code>@extend-ai/react-xlsx/vanilla</code>
+          <div class="ribbon-end">
+            <label class="toggle"><input id="read-only" type="checkbox" /><span class="switch"></span>Read only</label>
           </div>
-        </section>
+        </div>
 
-        <section class="workspace" aria-label="Workbook viewer">
-          <div class="workspace-toolbar">
-            <div class="toolbar-primary">
-              <button class="button button-primary" id="open-file" type="button">
-                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 6.5a2 2 0 0 1 2-2h3l1.5 1.7H15a2 2 0 0 1 2 2v6.3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13V8.5m-2 2 2-2 2 2"/></svg>
-                Open workbook
-              </button>
-              <input id="file-input" type="file" accept=".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden />
-              <button class="button button-quiet" id="load-sample" type="button">Load sample</button>
-              <span class="toolbar-divider" aria-hidden="true"></span>
-              <form class="url-form" id="url-form">
-                <label class="sr-only" for="workbook-url">Workbook URL</label>
-                <input id="workbook-url" type="url" placeholder="Workbook URL" />
-                <button class="button button-quiet" type="submit">Open URL</button>
-              </form>
+        <div class="ribbon-panel">
+          <div role="tabpanel" data-panel="Home">
+            <div class="group" role="group">
+              <button class="btn" id="undo" type="button" aria-label="Undo" data-tooltip="Undo" data-shortcut="⌘Z" data-keep disabled><i data-icon="undo"></i></button>
+              <button class="btn" id="redo" type="button" aria-label="Redo" data-tooltip="Redo" data-shortcut="⌘⇧Z" data-keep disabled><i data-icon="redo"></i></button>
             </div>
-            <div class="toolbar-options">
-              <label class="check-option"><input id="read-only" type="checkbox" /><span>Read only</span></label>
-              <label class="check-option"><input id="dark-mode" type="checkbox" /><span>Dark</span></label>
+            <div class="group group-wide" role="group">
+              <span class="select" style="width: 144px"><select id="font-family" aria-label="Font" data-edit></select><i data-icon="chevrons-up-down"></i></span>
+              <span class="select" style="width: 64px"><select id="font-size" aria-label="Font size" data-edit></select><i data-icon="chevrons-up-down"></i></span>
+            </div>
+            <div class="group" role="group">
+              <button class="btn" type="button" data-style="bold" aria-label="Bold" data-tooltip="Bold" data-shortcut="⌘B" data-keep data-edit><i data-icon="bold"></i></button>
+              <button class="btn" type="button" data-style="italic" aria-label="Italic" data-tooltip="Italic" data-shortcut="⌘I" data-keep data-edit><i data-icon="italic"></i></button>
+              <button class="btn" type="button" data-style="underline" aria-label="Underline" data-tooltip="Underline" data-shortcut="⌘U" data-keep data-edit><i data-icon="underline"></i></button>
+              <button class="btn" type="button" data-style="strike" aria-label="Strikethrough" data-tooltip="Strikethrough" data-keep data-edit><i data-icon="strikethrough"></i></button>
+            </div>
+            <div class="group" role="group">
+              <button class="btn" type="button" data-style="align-left" aria-label="Align left" data-tooltip="Align left" data-keep data-edit><i data-icon="align-start"></i></button>
+              <button class="btn" type="button" data-style="align-center" aria-label="Center" data-tooltip="Center" data-keep data-edit><i data-icon="align-center"></i></button>
+              <button class="btn" type="button" data-style="align-right" aria-label="Align right" data-tooltip="Align right" data-keep data-edit><i data-icon="align-end"></i></button>
+              <button class="btn" type="button" data-style="wrap" aria-label="Wrap text" data-tooltip="Wrap text" data-keep data-edit><i data-icon="text-wrap"></i></button>
+              <button class="btn btn-label" id="merge" type="button" data-merge><i data-icon="table-cells-merge"></i>Merge<i data-icon="chevron-down" class="chevron"></i></button>
+            </div>
+            <div class="group" role="group">
+              <button class="btn btn-label" id="number-format" type="button" style="width: 112px; justify-content: space-between" data-edit>General<i data-icon="chevron-down" class="chevron"></i></button>
+              <button class="btn" type="button" data-style="currency" aria-label="Currency format" data-tooltip="Currency format" data-keep data-edit><i data-icon="dollar-sign"></i></button>
+              <button class="btn" type="button" data-style="percent" aria-label="Percent style" data-tooltip="Percent style" data-keep data-edit><i data-icon="percent"></i></button>
+              <button class="btn" type="button" data-style="comma" aria-label="Comma style" data-tooltip="Comma style" data-keep data-edit style="font-size: 11px; font-weight: 500">,000</button>
             </div>
           </div>
 
-          <div class="workbook-meta">
-            <div class="workbook-label">
-              <span class="workbook-icon" aria-hidden="true">▦</span>
-              <div><strong id="file-name">Workbook</strong><span id="sheet-name">Preparing viewer</span></div>
-            </div>
-            <div class="status" id="status" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-text">Starting</span></div>
-          </div>
-
-          <div class="viewer-stage"><div id="viewer"></div></div>
-
-          <div class="workspace-footer">
-            <form class="highlight-form" id="highlight-form">
-              <label for="range-input">Highlight</label>
-              <input id="range-input" placeholder="A1:D5" autocomplete="off" />
-              <button class="button button-quiet" id="highlight-button" type="submit" disabled>Apply</button>
-              <button class="button button-text" id="clear-highlights" type="button" disabled>Clear</button>
+          <div role="tabpanel" data-panel="Review" hidden>
+            <form class="group group-wide" id="highlight-form" role="group">
+              <label class="sr-only" for="range-input">Ranges to highlight</label>
+              <input class="text-input mono" id="range-input" style="width: 200px" placeholder="A1:D5, Sheet2!B2" autocomplete="off" />
+              <button class="btn btn-outline" id="highlight-button" type="submit" disabled><i data-icon="highlighter"></i>Highlight</button>
             </form>
-            <div class="footer-actions">
-              <span class="selection-label">Selection <strong id="selection">—</strong></span>
-              <button class="button button-quiet" id="export" type="button" disabled>Export XLSX</button>
+            <div class="group" role="group">
+              <button class="btn btn-label" id="clear-highlights" type="button" disabled><i data-icon="eraser"></i>Clear highlights</button>
             </div>
           </div>
-        </section>
-        <p class="page-note" id="message" role="status" aria-live="polite">Select a cell, or open a workbook to get started.</p>
-      </main>
+
+          <div role="tabpanel" data-panel="View" hidden>
+            <div class="group group-wide" role="group">
+              <label class="toggle"><input id="dark-sheet" type="checkbox" /><span class="switch"></span>Dark sheet</label>
+            </div>
+            <div class="group" role="group">
+              <button class="btn" id="zoom-out" type="button" aria-label="Zoom out" data-tooltip="Zoom out" data-zoom disabled><i data-icon="zoom-out"></i></button>
+              <button class="btn btn-label" id="zoom-reset" type="button" data-zoom disabled>100%</button>
+              <button class="btn" id="zoom-in" type="button" aria-label="Zoom in" data-tooltip="Zoom in" data-zoom disabled><i data-icon="zoom-in"></i></button>
+            </div>
+          </div>
+
+          <div role="tabpanel" data-panel="Developer" hidden>
+            <div class="group" role="group">
+              <button class="btn btn-label" id="load-sample" type="button"><i data-icon="sparkles"></i>Load sample</button>
+            </div>
+            <form class="group group-wide" id="url-form" role="group">
+              <label class="sr-only" for="workbook-url">Workbook URL</label>
+              <input class="text-input" id="workbook-url" type="url" placeholder="https://example.com/file.xlsx" />
+              <button class="btn btn-outline" type="submit"><i data-icon="link"></i>Open URL</button>
+            </form>
+            <div class="group" role="group">
+              <span class="ribbon-note">Import from <code>@extend-ai/react-xlsx/vanilla</code></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Formula bar -->
+      <div class="formula-bar">
+        <input class="name-box" id="name-box" aria-label="Name box" readonly />
+        <span class="divider" aria-hidden="true"></span>
+        <div class="formula-actions">
+          <button class="status-btn" id="formula-cancel" type="button" aria-label="Cancel" disabled><i data-icon="x"></i></button>
+          <button class="status-btn" id="formula-enter" type="button" aria-label="Enter" disabled><i data-icon="check"></i></button>
+          <span class="fx" aria-hidden="true">fx</span>
+        </div>
+        <span class="divider" aria-hidden="true"></span>
+        <input class="formula-input" id="formula-input" aria-label="Formula bar" disabled />
+      </div>
+
+      <!-- Workbook -->
+      <main class="workspace"><div id="viewer"></div></main>
+
+      <!-- Sheet tabs -->
+      <div class="sheet-tabs">
+        <div class="sheet-nav">
+          <button class="status-btn" id="sheet-prev" type="button" aria-label="Previous sheet" disabled><i data-icon="chevron-left"></i></button>
+          <button class="status-btn" id="sheet-next" type="button" aria-label="Next sheet" disabled><i data-icon="chevron-right"></i></button>
+          <button class="status-btn round" id="sheet-add" type="button" aria-label="New sheet" disabled><i data-icon="plus"></i></button>
+        </div>
+        <div class="sheet-list" id="sheet-list" role="tablist" aria-label="Sheets"></div>
+      </div>
+
+      <!-- Status bar -->
+      <footer class="statusbar">
+        <span class="status-item"><span class="spinner" id="status-spinner" hidden></span><span id="status-text">Loading…</span></span>
+        <span class="mono hide-sm" id="selection"></span>
+        <span class="spacer"></span>
+        <span class="status-item hide-sm"><span class="status-dot" id="runtime-dot"></span><span id="runtime-label">Idle</span></span>
+        <div class="zoom">
+          <button class="status-btn" id="status-zoom-out" type="button" aria-label="Zoom out" data-zoom disabled><i data-icon="minus"></i></button>
+          <input class="slider" id="zoom-slider" type="range" min="10" max="400" step="1" value="100" aria-label="Zoom" data-zoom disabled />
+          <button class="status-btn" id="status-zoom-in" type="button" aria-label="Zoom in" data-zoom disabled><i data-icon="plus"></i></button>
+          <button class="zoom-value" id="zoom-value" type="button" aria-label="Reset zoom" data-zoom disabled>100%</button>
+        </div>
+      </footer>
+
+      <div class="drop-overlay" id="drop-overlay" hidden>
+        <div class="drop-card"><i data-icon="upload"></i><span>Drop to open workbook</span></div>
+      </div>
     </div>
     <script type="module" src="/vanilla/main.js"></script>
   </body>
