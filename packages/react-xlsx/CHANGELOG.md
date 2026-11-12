@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.1
+
+- Match Excel's opaque data-bar gradients, cell inset, and default length limits in the grid and thumbnails while preserving explicit length settings.
+- Format imported ISO date cells using their number formats and workbook date system.
+- Keep table header menus within the visible grid and share their styling with context menus.
+
 ## 0.22.0
 
 - Add worksheet-backed pivot tables with editing, refresh, filtering, grouping, calculations, drill-through, PivotCharts, undo/redo, and XLSX import/export.
