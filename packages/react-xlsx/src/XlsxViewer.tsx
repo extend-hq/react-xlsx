@@ -1014,6 +1014,9 @@ function resolveCanvasGradientFill(
   return null;
 }
 
+const DATA_BAR_INSET = 2;
+const DATA_BAR_GRADIENT_TINT = 0.85;
+
 function resolveCanvasDataBarFill(
   context: CanvasRenderingContext2D,
   left: number,
@@ -1027,8 +1030,8 @@ function resolveCanvasDataBarFill(
   }
 
   const gradient = context.createLinearGradient(left, top, left + width, top);
-  gradient.addColorStop(0, lightenColor(dataBar.color, 0.28));
-  gradient.addColorStop(1, dataBar.color);
+  gradient.addColorStop(0, dataBar.color);
+  gradient.addColorStop(1, lightenColor(dataBar.color, DATA_BAR_GRADIENT_TINT));
   return gradient;
 }
 
@@ -6645,8 +6648,8 @@ function resolveConditionalDataBarForCell(
     return null;
   }
 
-  const minLength = Number.isFinite(matchingRule.minLength ?? Number.NaN) ? (matchingRule.minLength ?? 0) : 0;
-  const maxLength = Number.isFinite(matchingRule.maxLength ?? Number.NaN) ? (matchingRule.maxLength ?? 100) : 100;
+  const minLength = Number.isFinite(matchingRule.minLength ?? Number.NaN) ? (matchingRule.minLength ?? 10) : 10;
+  const maxLength = Number.isFinite(matchingRule.maxLength ?? Number.NaN) ? (matchingRule.maxLength ?? 90) : 90;
   const span = maxValue - minValue;
   const ratio = span === 0 ? (numericValue >= maxValue ? 1 : 0) : (numericValue - minValue) / span;
   const widthPercent = minLength + Math.max(0, Math.min(1, ratio)) * (maxLength - minLength);
@@ -7204,7 +7207,7 @@ function GridRow({
                 style={{
                   alignItems: "center",
                   display: "flex",
-                  inset: 0,
+                  inset: DATA_BAR_INSET * zoomFactor,
                   pointerEvents: "none",
                   position: "absolute",
                   zIndex: 0
@@ -7214,7 +7217,7 @@ function GridRow({
                   style={{
                     background: cellData.conditionalDataBar.gradient === false
                       ? cellData.conditionalDataBar.color
-                      : `linear-gradient(90deg, ${lightenColor(cellData.conditionalDataBar.color, 0.28)} 0%, ${cellData.conditionalDataBar.color} 100%)`,
+                      : `linear-gradient(90deg, ${cellData.conditionalDataBar.color} 0%, ${lightenColor(cellData.conditionalDataBar.color, DATA_BAR_GRADIENT_TINT)} 100%)`,
                     border: cellData.conditionalDataBar.border !== false && cellData.conditionalDataBar.borderColor
                       ? `1px solid ${cellData.conditionalDataBar.borderColor}`
                       : "none",
@@ -13548,10 +13551,11 @@ function XlsxGrid({
           paneContext.fillRect(localRect.left, localRect.top, localRect.width, localRect.height);
 
           if (cellData.conditionalDataBar) {
-            const barLeft = localRect.left;
-            const barTop = localRect.top;
-            const barWidth = Math.max(0, localRect.width * (cellData.conditionalDataBar.widthPercent / 100));
-            const barHeight = Math.max(0, localRect.height);
+            const barInset = DATA_BAR_INSET * zoomFactor;
+            const barLeft = localRect.left + barInset;
+            const barTop = localRect.top + barInset;
+            const barWidth = Math.max(0, (localRect.width - barInset * 2) * (cellData.conditionalDataBar.widthPercent / 100));
+            const barHeight = Math.max(0, localRect.height - barInset * 2);
             if (barWidth > 0 && barHeight > 0) {
               paneContext.fillStyle = resolveCanvasDataBarFill(
                 paneContext,
@@ -18659,10 +18663,10 @@ export function useXlsxViewerThumbnails(
             context.fillRect(rect.left, rect.top, rect.width, rect.height);
 
             if (cellData.conditionalDataBar) {
-              const barLeft = rect.left;
-              const barTop = rect.top;
-              const barWidth = Math.max(0, rect.width * (cellData.conditionalDataBar.widthPercent / 100));
-              const barHeight = Math.max(0, rect.height);
+              const barLeft = rect.left + DATA_BAR_INSET;
+              const barTop = rect.top + DATA_BAR_INSET;
+              const barWidth = Math.max(0, (rect.width - DATA_BAR_INSET * 2) * (cellData.conditionalDataBar.widthPercent / 100));
+              const barHeight = Math.max(0, rect.height - DATA_BAR_INSET * 2);
               if (barWidth > 0 && barHeight > 0) {
                 context.fillStyle = resolveCanvasDataBarFill(
                   context,
