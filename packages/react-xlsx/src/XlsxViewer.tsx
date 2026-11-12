@@ -1027,8 +1027,8 @@ function resolveCanvasDataBarFill(
   }
 
   const gradient = context.createLinearGradient(left, top, left + width, top);
-  gradient.addColorStop(0, lightenColor(dataBar.color, 0.28));
-  gradient.addColorStop(1, dataBar.color);
+  gradient.addColorStop(0, dataBar.color);
+  gradient.addColorStop(1, applyAlphaToColor(dataBar.color, 0));
   return gradient;
 }
 
@@ -1138,10 +1138,6 @@ function mixRgbColor(color: string, mixWith: string, ratio: number) {
     mixChannel(base.green, target.green),
     mixChannel(base.blue, target.blue)
   ].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function lightenColor(color: string, ratio: number) {
-  return mixRgbColor(color, "#ffffff", ratio);
 }
 
 function darkenColor(color: string, ratio: number) {
@@ -7217,7 +7213,7 @@ function GridRow({
                   style={{
                     background: cellData.conditionalDataBar.gradient === false
                       ? cellData.conditionalDataBar.color
-                      : `linear-gradient(90deg, ${lightenColor(cellData.conditionalDataBar.color, 0.28)} 0%, ${cellData.conditionalDataBar.color} 100%)`,
+                      : `linear-gradient(90deg, ${cellData.conditionalDataBar.color} 0%, ${applyAlphaToColor(cellData.conditionalDataBar.color, 0)} 100%)`,
                     border: cellData.conditionalDataBar.border !== false && cellData.conditionalDataBar.borderColor
                       ? `1px solid ${cellData.conditionalDataBar.borderColor}`
                       : "none",
