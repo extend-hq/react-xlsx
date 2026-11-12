@@ -11340,7 +11340,7 @@ function XlsxGrid({
     if (cell) {
       return {
         column,
-        left: cell.offsetLeft + cell.offsetWidth - 170,
+        right: cell.offsetLeft + cell.offsetWidth,
         table,
         top: cell.offsetTop + cell.offsetHeight - 2
       };
@@ -11353,11 +11353,32 @@ function XlsxGrid({
 
     return {
       column,
-      left: rect.left + rect.width - 170,
+      right: rect.left + rect.width,
       table,
       top: rect.top + rect.height - 2
     };
   }, [effectiveTables, openTableMenu, resolveCellDisplayRect]);
+
+  React.useLayoutEffect(() => {
+    const menu = tableMenuRef.current;
+    const scroller = scrollRef.current;
+    if (!openTableMenuState || !menu || !scroller || renderTableHeaderMenu) {
+      return;
+    }
+
+    const updatePosition = () => {
+      const margin = 4 * zoomFactor;
+      const minLeft = scroller.scrollLeft + displayRowHeaderWidth + margin;
+      const maxLeft = scroller.scrollLeft + scroller.clientWidth - margin - menu.offsetWidth;
+      menu.style.left = `${Math.max(minLeft, Math.min(openTableMenuState.right - menu.offsetWidth, maxLeft))}px`;
+    };
+
+    updatePosition();
+    const observer = new ResizeObserver(updatePosition);
+    observer.observe(menu);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [contextMenuClassName, contextMenuStyle, displayRowHeaderWidth, openTableMenuState, renderTableHeaderMenu, zoomFactor]);
 
   const applyHeaderSelection = React.useCallback((range: XlsxCellRange | null) => {
     if (experimentalCanvas) {
@@ -17340,7 +17361,7 @@ function XlsxGrid({
                   ...resolveMenuPaletteStyle(palette),
                   ...contextMenuStyle,
                   boxSizing: "border-box",
-                  left: Math.max(displayRowHeaderWidth + (4 * zoomFactor), openTableMenuState.left),
+                  left: openTableMenuState.right,
                   position: "absolute",
                   top: openTableMenuState.top,
                   zIndex: 50
