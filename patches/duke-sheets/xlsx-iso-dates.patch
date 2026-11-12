@@ -1,0 +1,83 @@
+diff --git a/crates/duke-sheets-xlsx/src/reader/mod.rs b/crates/duke-sheets-xlsx/src/reader/mod.rs
+index 55da38e..11d170d 100644
+--- a/crates/duke-sheets-xlsx/src/reader/mod.rs
++++ b/crates/duke-sheets-xlsx/src/reader/mod.rs
+@@ -5,6 +5,7 @@ use std::fs::File;
+ use std::io::{BufReader, Read, Seek};
+ use std::path::Path;
+ 
++use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
+ use quick_xml::events::Event;
+ use quick_xml::reader::Reader;
+ 
+@@ -55,6 +56,47 @@ use shared_strings::SharedStringEntry;
+ 
+ use workbook::{read_part_rels, read_workbook_rels, read_workbook_xml};
+ 
++/// Convert the extended ISO date/time forms used by `t="d"` cells to the
++/// worksheet's serial date system. Spreadsheet times have no local timezone;
++/// accept the trailing `Z` emitted by some producers without a timezone shift.
++fn parse_iso_date(value: &str, date_1904: bool) -> Option<f64> {
++    let value = value.strip_suffix('Z').unwrap_or(value);
++    let (date, time) = if let Some((date, time)) = value.split_once('T') {
++        (
++            Some(NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?),
++            NaiveTime::parse_from_str(time, "%H:%M:%S%.f").ok()?,
++        )
++    } else if value.contains(':') {
++        (None, NaiveTime::parse_from_str(value, "%H:%M:%S%.f").ok()?)
++    } else {
++        (
++            Some(NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?),
++            NaiveTime::from_hms_opt(0, 0, 0)?,
++        )
++    };
++    // Chrono can represent leap seconds; SpreadsheetML cannot.
++    if time.nanosecond() >= 1_000_000_000 {
++        return None;
++    }
++    let mut serial = 0.0;
++    if let Some(date) = date {
++        if !(1..=9999).contains(&date.year()) {
++            return None;
++        }
++        let epoch = if date_1904 {
++            NaiveDate::from_ymd_opt(1904, 1, 1)?
++        } else {
++            NaiveDate::from_ymd_opt(1899, 12, 31)?
++        };
++        serial = (date - epoch).num_days() as f64;
++        // Excel reserves serial 60 for the nonexistent 1900-02-29.
++        if !date_1904 && date >= NaiveDate::from_ymd_opt(1900, 3, 1)? {
++            serial += 1.0;
++        }
++    }
++    Some(serial + (time.num_seconds_from_midnight() as f64 + time.nanosecond() as f64 / 1e9) / 86400.0)
++}
++
+ /// Resolve a relative path from a drawing's .rels against the drawing's own path.
+ 
+ /// Decode Excel's `_xHHHH_` escape sequences in strings.
+@@ -3864,6 +3906,11 @@ impl XlsxReader {
+                     Some("str") | Some("inlineStr") => {
+                         Some(CellValue::String(v.to_string().into()))
+                     }
++                    Some("d") => Some(
++                        parse_iso_date(v, worksheet.date_1904())
++                            .map(CellValue::Number)
++                            .unwrap_or_else(|| CellValue::String(v.to_string().into())),
++                    ),
+                     None | Some("n") => v.parse::<f64>().ok().map(CellValue::Number),
+                     Some(_) => Some(CellValue::String(v.to_string().into())),
+                 },
+@@ -3922,6 +3969,10 @@ impl XlsxReader {
+ 
+                 Some("str") => CellValue::String(decode_excel_escapes(value).into()),
+ 
++                Some("d") => parse_iso_date(value, worksheet.date_1904())
++                    .map(CellValue::Number)
++                    .unwrap_or_else(|| CellValue::String(value.to_string().into())),
++
+                 None | Some("n") => match value.parse::<f64>() {
+                     Ok(n) => CellValue::Number(n),
+                     Err(_) => CellValue::String(value.to_string().into()),
