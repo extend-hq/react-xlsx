@@ -24,7 +24,7 @@ import { getCellGeneralAlignment, type CellGeneralAlignment } from "./cell-align
 import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
-import { XlsxContextMenu } from "./context-menu";
+import { menuStyles, resolveMenuPaletteStyle, XlsxContextMenu } from "./context-menu";
 import { PivotGroupControls } from "./pivot-controls";
 import { PivotHeaderControls } from "./pivot-header-controls";
 import { pivotFieldHighlightRanges } from "./pivots";
@@ -4752,51 +4752,14 @@ function DefaultTableHeaderMenu({
 }: XlsxTableHeaderMenuRenderProps) {
   const messages = useXlsxMessages();
   return (
-    <div
-      style={{
-        backgroundColor: "var(--xlsx-menu-surface)",
-        border: "1px solid var(--xlsx-menu-border)",
-        borderRadius: 10,
-        boxShadow: "0 10px 30px rgba(0, 0, 0, 0.16)",
-        display: "grid",
-        gap: 4,
-        minWidth: 160,
-        padding: 6
-      }}
-    >
-      <button
-        onClick={sortAscending}
-        style={{
-          background: direction === "ascending" ? "var(--xlsx-menu-active)" : "transparent",
-          border: "none",
-          borderRadius: 8,
-          color: "inherit",
-          cursor: "pointer",
-          fontSize: 12,
-          padding: "8px 10px",
-          textAlign: "left"
-        }}
-        type="button"
-      >
+    <>
+      <button aria-pressed={direction === "ascending"} className="react-xlsx-context-menu-item" onClick={sortAscending} type="button">
         {messages.sortAscending}
       </button>
-      <button
-        onClick={sortDescending}
-        style={{
-          background: direction === "descending" ? "var(--xlsx-menu-active)" : "transparent",
-          border: "none",
-          borderRadius: 8,
-          color: "inherit",
-          cursor: "pointer",
-          fontSize: 12,
-          padding: "8px 10px",
-          textAlign: "left"
-        }}
-        type="button"
-      >
+      <button aria-pressed={direction === "descending"} className="react-xlsx-context-menu-item" onClick={sortDescending} type="button">
         {messages.sortDescending}
       </button>
-    </div>
+    </>
   );
 }
 
@@ -17371,15 +17334,19 @@ function XlsxGrid({
             ) : null}
             {!renderTableHeaderMenu && openTableMenuState ? (
               <div
+                className={["react-xlsx-context-menu", contextMenuClassName].filter(Boolean).join(" ")}
                 ref={tableMenuRef}
                 style={{
-                  color: palette.text,
+                  ...resolveMenuPaletteStyle(palette),
+                  ...contextMenuStyle,
+                  boxSizing: "border-box",
                   left: Math.max(displayRowHeaderWidth + (4 * zoomFactor), openTableMenuState.left),
                   position: "absolute",
                   top: openTableMenuState.top,
                   zIndex: 50
                 }}
               >
+                <style>{menuStyles}</style>
                 <DefaultTableHeaderMenu
                   cell={{ col: openTableMenuState.column.index + openTableMenuState.table.start.col, row: openTableMenuState.table.start.row }}
                   column={openTableMenuState.column}
