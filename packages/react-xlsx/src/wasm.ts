@@ -1,3 +1,5 @@
+import { configureWorkbookArchiveDecoder, configureWorkbookXmlDecoder } from "./workbook-xml";
+
 let wasmModulePromise: Promise<typeof import("./duke-sheets/generated/duke_sheets_wasm.js")> | null = null;
 
 export type XlsxWasmSource =
@@ -95,6 +97,8 @@ export function getSheetsWasmModule() {
         || !("workbook_upsertPivotTable" in exports) || !("workbook_modifiedPivotCharts" in exports)) {
         throw new Error("The spreadsheet WASM asset is incompatible. Use duke_sheets_wasm_bg.wasm from the same react-xlsx package version.");
       }
+      configureWorkbookArchiveDecoder(mod.decodeArchive);
+      configureWorkbookXmlDecoder(mod.parseXmlTree);
       return mod;
     });
   }

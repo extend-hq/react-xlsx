@@ -1633,6 +1633,64 @@ function hydrateChartReferenceCaches(document: XMLDocument, sheetIndex: number, 
       cache.appendChild(point);
     });
   }
+  for (const reference of [...getLocalDescendants(document, "multiLvlStrRef"), ...getLocalDescendants(document, "numDim"), ...getLocalDescendants(document, "strDim")]) {
+    const formula = getFirstLocalChild(reference, "f")?.textContent;
+    if (!formula) continue;
+    const numeric = reference.localName === "numDim";
+    const multi = reference.localName === "multiLvlStrRef";
+    const source = { formula };
+    const live = workbook ? resolveReferenceSheet(workbook, sheetIndex, formula) : null;
+    const range = live?.range ?? resolve.layout(source, sheetIndex)?.range;
+    const values = workbook && live?.sheet && live.range
+      ? resolveReferenceValues(workbook, sheetIndex, source, numeric ? "value" : "category")
+      : resolve(source, sheetIndex, numeric ? "value" : "category");
+    const cache = multi ? getFirstLocalChild(reference, "multiLvlStrCache") : reference;
+    if (!cache || !range || !values) continue;
+    const levels = getLocalChildren(cache, "lvl");
+    const rows = range.end.row - range.start.row + 1;
+    const columns = range.end.col - range.start.col + 1;
+    if (!levels.length || values.length !== rows * columns) continue;
+    const byRow = levels.length === columns;
+    if (levels.length > 1 && !byRow && levels.length !== rows) continue;
+    const count = levels.length === 1 ? values.length : byRow ? rows : columns;
+    if (multi) ensureChild(cache, "ptCount").setAttribute("val", String(count));
+    levels.forEach((level, levelIndex) => {
+      const explicit = new Set(getLocalChildren(level, "pt").map(point => Number(point.getAttribute("idx"))));
+      removeLocalChildren(level, "pt");
+      if (!multi) level.setAttribute("ptCount", String(count));
+      const dimension = multi ? levels.length - 1 - levelIndex : levelIndex;
+      for (let index = 0; index < count; index++) {
+        const offset = levels.length === 1 ? index : byRow ? index * columns + dimension : dimension * columns + index;
+        const value = values[offset];
+        if (value == null) continue;
+        if (multi && levelIndex > 0 && index > 0 && !explicit.has(index)) {
+          const unchanged = Array.from({ length: dimension + 1 }, (_, parent) => {
+            const current = byRow ? index * columns + parent : parent * columns + index;
+            const previous = byRow ? (index - 1) * columns + parent : parent * columns + index - 1;
+            return values[current] === values[previous];
+          }).every(Boolean);
+          if (unchanged) continue;
+        }
+        const point = document.createElementNS(reference.namespaceURI, `${reference.prefix ?? (multi ? "c" : "cx")}:pt`);
+        point.setAttribute("idx", String(index));
+        if (multi) setLeafValue(point, "v", String(value));
+        else point.textContent = String(value);
+        level.appendChild(point);
+      }
+    });
+  }
+  for (const text of getLocalDescendants(document, "txData")) {
+    const formula = getFirstLocalChild(text, "f")?.textContent;
+    if (!formula) continue;
+    const live = workbook ? resolveReferenceSheet(workbook, sheetIndex, formula) : null;
+    const values = workbook && live?.sheet && live.range
+      ? resolveReferenceValues(workbook, sheetIndex, { formula }, "category")
+      : resolve({ formula }, sheetIndex, "category");
+    if (!values?.length) continue;
+    let value = getFirstLocalChild(text, "v");
+    if (!value) { value = document.createElementNS(text.namespaceURI, `${text.prefix ?? "cx"}:v`); text.appendChild(value); }
+    value.textContent = String(values[0] ?? "");
+  }
 }
 
 function chartPointExclusions(chart: XlsxChart, series: XlsxChartSeries, resolve: ChartReferenceResolver, workbook?: Workbook) {
@@ -2135,12 +2193,13 @@ function applyChartStyleFromXml(
     }
     const sourceSeries = chart.raw?.officeSourceSeries as XlsxChartSeries[] | undefined;
     if (chartDocument?.documentElement.namespaceURI === "http://schemas.microsoft.com/office/drawing/2014/chartex") {
+      hydrateChartReferenceCaches(chartDocument, chart.workbookSheetIndex, resolveReference, workbook);
       chart.renderSource = {
         kind: chart.chartExLayout ?? "",
         seriesTypes: getLocalDescendants(chartNode, "series").map(node => node.getAttribute("layoutId") ?? ""),
         sourceSeries,
         experimental: true,
-        xml: chartXml,
+        xml: serializeXml(chartDocument),
         images,
         drawings,
         themeXml,
@@ -4257,9 +4316,7 @@ function applyChartOrigins(
       if (!origin) {
         return;
       }
-      if (origin.anchor && isCollapsedChartAnchor(chart.anchor)) {
-        chart.anchor = origin.anchor;
-      } else if (origin.anchor && chart.anchor.kind === "two-cell" && chart.anchor.from.col === 0 && chart.anchor.from.row === 0) {
+      if (origin.anchor && !chart.raw?.pivotModified) {
         chart.anchor = origin.anchor;
       }
       chart.chartPath = origin.chartPath ?? undefined;

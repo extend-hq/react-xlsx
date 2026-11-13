@@ -157,8 +157,8 @@ export function SharedChartSvg(props: ChartSvgProps & {
   } | null>(null);
   const renderChartRef = React.useRef(chart);
   const previous = renderChartRef.current;
-  if (Object.keys(chart).some(key => key !== "anchor" && chart[key as keyof XlsxChart] !== previous[key as keyof XlsxChart])
-    || Object.keys(previous).some(key => key !== "anchor" && !(key in chart))) renderChartRef.current = chart;
+  if (Object.keys(chart).some(key => !(["anchor", "zIndex"].includes(key)) && chart[key as keyof XlsxChart] !== previous[key as keyof XlsxChart])
+    || Object.keys(previous).some(key => !(["anchor", "zIndex"].includes(key)) && !(key in chart))) renderChartRef.current = chart;
   const renderChart = renderChartRef.current;
   const isPending = rendered?.chart !== renderChart || rendered?.source !== source || rendered?.width !== width || rendered?.height !== height;
   const svg = rendered?.chart.id === chart.id ? rendered.svg : null;

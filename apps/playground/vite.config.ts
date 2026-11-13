@@ -3,6 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tsconfigPaths from "vite-tsconfig-paths";
+import { nativeClipboard } from "./scripts/native-clipboard";
 
 export default defineConfig({
   build: {
@@ -17,8 +18,9 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-  plugins: [react(), tsconfigPaths(), tailwindcss()],
+  plugins: [react(), tsconfigPaths(), tailwindcss(), nativeClipboard()],
   resolve: {
+    dedupe: ["react", "react-dom"],
     alias: [
       { find: /^@extend-ai\/react-xlsx\/vanilla$/, replacement: path.resolve(__dirname, "../../packages/react-xlsx/dist/vanilla.js") },
       { find: /^@extend-ai\/react-xlsx\/internal$/, replacement: path.resolve(__dirname, "../../packages/react-xlsx/dist/internal.js") },

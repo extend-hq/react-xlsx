@@ -718,9 +718,21 @@ Try the experimental editor with cell formatting, formulas, undo/redo, and expor
 
 ## Context Menus
 
-Right-click a worksheet cell, row header, column header, or the top-left corner to open the context menu. Right-clicking inside a selection preserves the range. Shift+F10 or the context-menu key opens it at the active cell; arrow keys navigate and Escape dismisses it.
+Right-click a chart, image, worksheet cell, row header, column header, or the top-left corner to open the context menu. Right-clicking inside a selection preserves the range. Shift+F10 or the context-menu key opens it at the active cell; arrow keys navigate and Escape dismisses it.
 
 Viewer mode (`readOnly`) offers Copy and selection actions. Editor mode also offers Cut, Paste, Edit cell, Clear contents, Undo/Redo, Merge/Unmerge, and sorting when the target belongs to a table. Actions use the existing controller and undo history. Row and column selections span the displayed grid, matching header selection. Worker-backed viewers copy tab-separated text; editable workbooks also preserve structured cell data when the browser supports custom clipboard formats. Clipboard commands require browser clipboard access; failed operations display an error and Cut only clears cells after copying succeeds.
+
+Chart and image menus start with Cut, Copy, Undo, and Redo, followed by a separator. Bring to Front and Send to Back contain the one-step layer commands. Charts also have a nested Change Chart Type menu, grouped by family; options that require a different series count are disabled. Drawing positions, sizes, layer order, and chart types participate in undo/redo and are preserved by `download()` and `exportXlsx()`.
+
+By default, copying a drawing writes a PNG and, in browsers supporting custom clipboard formats, a private editable viewer package. Pasting accepts editable Excel chart packages and PNG images and places their top-left corner at the active cell. Browser clipboard access requires a secure context and permission. The controller, `useXlsxViewerCharts()`, and `useXlsxViewerImages()` expose `copyDrawingToClipboard(kind, id, cut?)`, `pasteDrawingFromClipboard()`, `arrangeDrawing(kind, id, order)`, and `changeChartType(id, type)`.
+
+Editable copying **into desktop Excel** requires a native host integration: browser custom formats do not publish Excel's native clipboard type. Pass `drawingClipboardAdapter` to `useXlsxViewerController`, `XlsxViewerProvider`, or `XlsxViewer`. Its asynchronous `write(payload)` receives an `XlsxDrawingClipboardPayload` containing `kind`, `officeDrawing` (an Office GVML ZIP), `previewImage` (PNG), and `viewerDrawing` (private JSON). The native package includes the chart's current values, category labels, series names, and styles without references to cells in the destination workbook. These values remain editable chart data; source-workbook formula links are not transferred. The viewer package retains source references for copies within the same workbook.
+
+The adapter must publish the representations together and resolve only after the clipboard write succeeds. Throw on failure to show the error and leave a Cut source intact. Its optional `read()` returns a `Blob` containing an Office drawing ZIP or private viewer JSON, or `null` when the clipboard contains neither. It should inspect available formats, prefer the private viewer representation, and read only when the user pastes. Native reads allow editable paste even when the browser cannot expose the source application's custom formats. The controller reports this capability through `canReadNativeDrawingClipboard`; keyboard and context-menu paste use it automatically. Normal cell and image paste still use their browser representations.
+
+Choose the native backend using the desktop host's OS, rather than browser user-agent detection. Copy publishes several representations because the destination application is not known yet; paste selects from the available formats. On macOS, publish the Office ZIP as `com.microsoft.Art--GVML-ClipFormat` and the PNG as `public.png`. On Windows, register `Art::GVML ClipFormat` for the Office ZIP and `PNG` for the preview, with a standard bitmap fallback. To retain editable paste into Chromium, publish the private JSON under a native type and map `application/vnd.react-xlsx.drawing+json` to that type using `org.w3.web-custom-format.map` on macOS or `Web Custom Format Map` on Windows. The adapter owns the native transport; the library does not start a local service for consumers.
+
+The local playground selects its bridge automatically from Node's `process.platform`. On macOS it compiles a small Swift helper using Xcode Command Line Tools; on Windows it uses Windows PowerShell and a C# helper calling the Win32 clipboard APIs. Both accept only authenticated same-origin loopback requests. Other platforms retain the browser clipboard path. The bridge is disabled in production builds and previews; desktop applications must provide their own host adapter. Start the playground normally and use Copy/Paste from its context menu or keyboard shortcuts. The macOS path has been exercised with Excel; the Windows backend still requires validation with Excel on Windows.
 
 Customize the existing menu with `contextMenuClassName`, `contextMenuStyle`, and CSS variables, or replace its contents with `renderContextMenu`:
 
@@ -729,19 +741,9 @@ Customize the existing menu with `contextMenuClassName`, `contextMenuStyle`, and
   file={file}
   contextMenuClassName="spreadsheet-menu"
   contextMenuStyle={{ "--xlsx-menu-radius": "6px" }}
-  renderContextMenu={({ context, actions, runAction, closeMenu, busy }) => (
+  renderContextMenu={({ context, defaultNode, closeMenu }) => (
     <>
-      {actions.map((action) => (
-        <button
-          key={action.id}
-          type="button"
-          role="menuitem"
-          disabled={busy || action.disabled}
-          onClick={() => void runAction(action.id)}
-        >
-          {action.label}
-        </button>
-      ))}
+      {defaultNode}
       <button type="button" role="menuitem" onClick={() => {
         inspectSelection(context.selection);
         closeMenu();
@@ -753,9 +755,11 @@ Customize the existing menu with `contextMenuClassName`, `contextMenuStyle`, and
 />
 ```
 
-The hook receives `context` (target kind, cell, selection, sheet index/name, and read-only state), `actions`, `runAction`, `closeMenu`, viewport `position`, `isDark`, `busy`, `error`, and `defaultNode`. Return `defaultNode` to keep built-in buttons while adding your own content. The viewer owns the portal, viewport-edge positioning, outside-click dismissal, and keyboard navigation for elements with `role="menuitem"`; return menu contents without another portal. `runAction` returns `Promise<boolean>` and rejects unavailable or disabled commands. Handle custom commands in your own callback and call `closeMenu` afterward.
+The hook receives `context` (target kind, cell, selection, sheet index/name, read-only state, and the targeted `chart` or `image`), `actions`, `runAction`, `closeMenu`, viewport `position`, `isDark`, `busy`, `error`, and `defaultNode`. Return `defaultNode` to keep built-in buttons while adding your own content. The viewer owns the portal, viewport-edge positioning, outside-click dismissal, and keyboard navigation for elements with `role="menuitem"`; return menu contents without another portal. `runAction` returns `Promise<boolean>` and rejects unavailable or disabled commands. Handle custom commands in your own callback and call `closeMenu` afterward.
 
-Default styling follows the document theme. Override `.react-xlsx-context-menu`, `.react-xlsx-context-menu-item`, `.react-xlsx-context-menu-separator`, and `.react-xlsx-context-menu-shortcut`, set `--xlsx-menu-radius` and `--xlsx-menu-padding` to resize the menu while keeping item corners concentric (items use the radius minus the padding), or set `--xlsx-context-menu-background`, `--xlsx-context-menu-color`, `--xlsx-context-menu-border`, `--xlsx-context-menu-hover`, `--xlsx-context-menu-muted`, and `--xlsx-context-menu-danger` through `contextMenuStyle`. The menu is portaled to the document body, so use its class rather than a viewer-descendant selector. The table header sort menu uses the same classes, so `contextMenuClassName` and `contextMenuStyle` restyle it too. Set `enableContextMenu={false}` to retain the browser's native context menu.
+Actions can contain recursive `children`; custom renderers should render them as nested submenus, including `checked`, `disabled`, and `separatorBefore`. The playground uses Coss UI primitives for these menus.
+
+Default styling uses a compact, conventional context menu and follows the document theme. Submenus inherit the same style variables and custom class. Override `.react-xlsx-context-menu`, `.react-xlsx-context-menu-item`, `.react-xlsx-context-menu-separator`, and `.react-xlsx-context-menu-shortcut`, set `--xlsx-menu-radius` and `--xlsx-menu-padding` to resize the menu while keeping item corners concentric (items use the radius minus the padding), or set `--xlsx-context-menu-background`, `--xlsx-context-menu-color`, `--xlsx-context-menu-border`, `--xlsx-context-menu-hover`, `--xlsx-context-menu-muted`, and `--xlsx-context-menu-danger` through `contextMenuStyle`. The menu is portaled to the document body, so use its class rather than a viewer-descendant selector. The table header sort menu uses the same classes, so `contextMenuClassName` and `contextMenuStyle` restyle it too. Set `enableContextMenu={false}` to retain the browser's native context menu.
 
 ## Custom Cell Editor Overlays
 

@@ -1905,6 +1905,10 @@ function resolveFrozenDrawingPane(
   return "scroll";
 }
 
+function drawingLayer(zIndex: number) {
+  return Math.round(zIndex * 1024);
+}
+
 function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect, viewerScale = 1): React.CSSProperties {
   const borderWidth = shape.stroke?.none ? 0 : Math.max(0, shape.stroke?.widthPx ?? 0) * viewerScale;
   const strokeColor = shape.stroke?.color ?? "transparent";
@@ -1946,7 +1950,7 @@ function buildShapeContainerStyle(shape: XlsxShape, rect: XlsxImageRect, viewerS
     transform: transformParts.join(" ") || undefined,
     transformOrigin: "center center",
     width: rect.width,
-    zIndex: shape.zIndex
+    zIndex: drawingLayer(shape.zIndex)
   };
 }
 
@@ -7535,10 +7539,15 @@ function XlsxGrid({
     setContextMenu(null);
   }, [activeTabIndex, workbook, readOnly, enableContextMenu, zoomScale]);
   React.useEffect(() => {
-    if (contextMenu && (!selection || !rangesEqual(normalizeRange(selection), contextMenu.context.selection))) {
+    if (contextMenu && (contextMenu.context.chart
+      ? contextMenu.context.chart.id !== selectedChartId
+      : contextMenu.context.image ? contextMenu.context.image.id !== selectedImageId
+      : !selection || !rangesEqual(normalizeRange(selection), contextMenu.context.selection))) {
       setContextMenu(null);
     }
-  }, [contextMenu, selection]);
+  }, [contextMenu, selection, selectedChartId, selectedImageId]);
+  const openDrawingContextMenuRef = React.useRef(openDrawingContextMenu);
+  openDrawingContextMenuRef.current = openDrawingContextMenu;
   const canResizeHeaders = !readOnly || allowResizeInReadOnly;
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const scrolledHighlightRef = React.useRef<XlsxViewerController["highlightedRanges"][number] | null>(null);
@@ -7775,6 +7784,7 @@ function XlsxGrid({
     formControlRects: Array<{ control: XlsxFormControl; rect: XlsxImageRect }>;
     imageRects: Array<{ image: XlsxImage; rect: XlsxImageRect }>;
     isChartsLoading: boolean;
+    enableContextMenu: boolean;
     onFormControlAction: XlsxViewerProps["onFormControlAction"];
     onFormControlChange: XlsxViewerProps["onFormControlChange"];
     palette: ViewerPalette;
@@ -12084,7 +12094,7 @@ function XlsxGrid({
     selectRange(nextRange);
   }
 
-  function openContextMenu(cell: XlsxCellAddress, kind: XlsxContextMenuContext["kind"], position: { x: number; y: number }) {
+  function openContextMenu(cell: XlsxCellAddress, kind: "cell" | "row" | "column" | "sheet", position: { x: number; y: number }) {
     if (!enableContextMenu || !activeSheet) return;
     if (kind === "cell") cell = resolveMergeAnchorCell(cell);
     if (editingCellRef.current) commitEditingRef.current();
@@ -12105,6 +12115,20 @@ function XlsxGrid({
       context: { kind, cell, selection: range, sheetIndex: activeSheetIndex, sheetName: activeSheet.name, readOnly },
       position
     });
+  }
+
+  function openDrawingContextMenu(kind: "image" | "chart", drawing: XlsxImage | XlsxChart, position: { x: number; y: number }) {
+    if (!enableContextMenu || !activeSheet) return;
+    if (editingCellRef.current) commitEditingRef.current();
+    if (kind === "chart") selectChart(drawing.id);
+    else selectImage(drawing.id);
+    setOpenTableMenu(null);
+    const cell = activeCell ?? { row: 0, col: 0 };
+    setContextMenu({ position, context: {
+      kind, cell, selection: normalizedSelection ?? { start: cell, end: cell },
+      sheetIndex: activeSheetIndex, sheetName: activeSheet.name, readOnly,
+      ...(kind === "chart" ? { chart: drawing as XlsxChart } : { image: drawing as XlsxImage })
+    } });
   }
 
   const handleCellDoubleClick = React.useCallback((cell: XlsxCellAddress) => {
@@ -13136,13 +13160,13 @@ function XlsxGrid({
             kind: "shape" as const,
             rect,
             shape,
-            zIndex: shape.zIndex
+            zIndex: drawingLayer(shape.zIndex)
           })),
           ...bakedImageRects.map(({ image, rect }) => ({
             image,
             kind: "image" as const,
             rect,
-            zIndex: image.zIndex
+            zIndex: drawingLayer(image.zIndex)
           }))
         ].sort((left, right) => left.zIndex - right.zIndex)
       : [];
@@ -14577,10 +14601,10 @@ function XlsxGrid({
   const gutterSeparatorShadow = `inset -1px 0 0 ${palette.border}, inset 0 -1px 0 ${palette.border}`;
   const maxDrawingOverlayZIndex = Math.max(
     0,
-    ...shapes.map((shape) => shape.zIndex + 20),
-    ...formControls.map((control) => control.zIndex + 20),
-    ...images.map((image) => image.zIndex + 22),
-    ...charts.map((chart) => chart.zIndex + 22)
+    ...shapes.map((shape) => drawingLayer(shape.zIndex) + 20),
+    ...formControls.map((control) => drawingLayer(control.zIndex) + 20),
+    ...images.map((image) => drawingLayer(image.zIndex) + 22),
+    ...charts.map((chart) => drawingLayer(chart.zIndex) + 22)
   );
   const rowHeaderOverlayZIndex = Math.max(35, maxDrawingOverlayZIndex + 1);
   const canvasHeaderOverlayZIndex = Math.max(50, rowHeaderOverlayZIndex + 1);
@@ -14846,7 +14870,7 @@ function XlsxGrid({
           left: style.left,
           pointerEvents: shape.hyperlink ? "auto" : "none",
           top: style.top,
-          zIndex: isFrozenDrawing ? shape.zIndex + 20 : style.zIndex
+          zIndex: isFrozenDrawing ? drawingLayer(shape.zIndex) + 20 : style.zIndex
         }}
         title={shape.description}
       >
@@ -14966,7 +14990,7 @@ function XlsxGrid({
       position: "absolute",
       top: rect.top,
       width: rect.width,
-      zIndex: isFrozenDrawing ? control.zIndex + 20 : control.zIndex
+      zIndex: isFrozenDrawing ? drawingLayer(control.zIndex) + 20 : drawingLayer(control.zIndex)
     };
 
     const stopControlPointerEvent = (event: React.SyntheticEvent) => {
@@ -15378,7 +15402,7 @@ function XlsxGrid({
       position: "absolute",
       top: rect.top,
       width: rect.width,
-      zIndex: isFrozenDrawing ? image.zIndex + 20 : image.zIndex
+      zIndex: isFrozenDrawing ? drawingLayer(image.zIndex) + 20 : drawingLayer(image.zIndex)
     };
     const defaultNode = (
       <img
@@ -15408,7 +15432,7 @@ function XlsxGrid({
           contain: "layout",
           overflow: "visible",
           pointerEvents: "none",
-          zIndex: isFrozenDrawing ? image.zIndex + 22 : image.zIndex + 2
+          zIndex: isFrozenDrawing ? drawingLayer(image.zIndex) + 22 : drawingLayer(image.zIndex) + 2
         }}
       >
         {renderImageSelection
@@ -15479,6 +15503,13 @@ function XlsxGrid({
           ? <div style={style}>{renderImage({ defaultNode, image, rect, style })}</div>
           : <div style={style}>{defaultNode}</div>}
         <div
+          data-xlsx-image-id={image.id}
+          onContextMenu={event => {
+            event.stopPropagation();
+            if (!enableContextMenu) return;
+            event.preventDefault();
+            openDrawingContextMenuRef.current("image", image, { x: event.clientX, y: event.clientY });
+          }}
           onClick={() => handleImageClick(image)}
           onPointerDown={(event) => startImageMove(event, image, rect)}
           style={{
@@ -15486,7 +15517,7 @@ function XlsxGrid({
             background: "transparent",
             cursor: canEditImage && selectedImageId === image.id ? "move" : image.hyperlink ? "pointer" : "cell",
             pointerEvents: "auto",
-            zIndex: isFrozenDrawing ? image.zIndex + 21 : image.zIndex + 1
+            zIndex: isFrozenDrawing ? drawingLayer(image.zIndex) + 21 : drawingLayer(image.zIndex) + 1
           }}
         />
         {selectionNode}
@@ -15519,7 +15550,7 @@ function XlsxGrid({
       position: "absolute",
       top: rect.top,
       width: rect.width,
-      zIndex: isFrozenDrawing ? chart.zIndex + 20 : chart.zIndex
+      zIndex: isFrozenDrawing ? drawingLayer(chart.zIndex) + 20 : drawingLayer(chart.zIndex)
     };
     const selectionNode = selectedChartId === chart.id ? (
       <div
@@ -15529,7 +15560,7 @@ function XlsxGrid({
           contain: "layout",
           overflow: "visible",
           pointerEvents: "none",
-          zIndex: isFrozenDrawing ? chart.zIndex + 22 : chart.zIndex + 2
+          zIndex: isFrozenDrawing ? drawingLayer(chart.zIndex) + 22 : drawingLayer(chart.zIndex) + 2
         }}
       >
         <div
@@ -15563,6 +15594,13 @@ function XlsxGrid({
       return (
         <React.Fragment key={`${pane}-${chart.id}`}>
           <div
+            data-xlsx-chart-id={chart.id}
+            onContextMenu={event => {
+              event.stopPropagation();
+              if (!enableContextMenu) return;
+              event.preventDefault();
+              openDrawingContextMenuRef.current("chart", chart, { x: event.clientX, y: event.clientY });
+            }}
             onClick={() => handleChartClick(chart)}
             onPointerDown={(event) => startChartMove(event, chart, rect)}
             style={{
@@ -15683,6 +15721,7 @@ function XlsxGrid({
     && previousPaneDrawingNodes.formControlItemsById === formControlItemsById
     && previousPaneDrawingNodes.shapeRects === domShapeRects
     && previousPaneDrawingNodes.imageRects === domImageRects
+    && previousPaneDrawingNodes.enableContextMenu === enableContextMenu
     && previousPaneDrawingNodes.selectedChartId === selectedChartId
     && previousPaneDrawingNodes.selectedImageId === selectedImageId
     && previousPaneDrawingNodes.readOnly === readOnly
@@ -15745,6 +15784,7 @@ function XlsxGrid({
     paneDrawingNodesCacheRef.current = {
       chartRects,
       drawingViewportSignature: drawingViewportCacheSignature,
+      enableContextMenu,
       formControlItemsById,
       formControlRects: domFormControlRects,
       imageRects: domImageRects,
@@ -16297,10 +16337,13 @@ function XlsxGrid({
       if (cell && rect) {
         event.preventDefault();
         const overlay = resolveOverlayRect({ start: cell, end: cell });
-        openContextMenu(cell, "cell", {
+        const position = {
           x: rect.left + (overlay?.left ?? displayRowHeaderWidth) - (scrollRef.current?.scrollLeft ?? 0),
           y: rect.top + (overlay ? overlay.top + overlay.height : displayHeaderHeight) - (scrollRef.current?.scrollTop ?? 0)
-        });
+        };
+        if (selectedChart) openDrawingContextMenu("chart", selectedChart, position);
+        else if (selectedImage) openDrawingContextMenu("image", selectedImage, position);
+        else openContextMenu(cell, "cell", position);
       }
       return;
     }
@@ -16494,6 +16537,21 @@ function XlsxGrid({
     onContextMenu: (event) => {
       if (!enableContextMenu || isInteractiveFocusTarget(event.target, event.currentTarget)) return;
       const rect = event.currentTarget.getBoundingClientRect();
+      const viewportX = event.clientX - rect.left;
+      const viewportY = event.clientY - rect.top;
+      if (viewportX >= displayRowHeaderWidth && viewportY >= displayHeaderHeight) {
+        const x = viewportX + (viewportX < frozenPaneRight ? 0 : event.currentTarget.scrollLeft);
+        const y = viewportY + (viewportY < frozenPaneBottom ? 0 : event.currentTarget.scrollTop);
+        const hit = [...bakedImageRects].sort((a, b) => b.image.zIndex - a.image.zIndex).find(({ image, rect }) => {
+          const paint = resolvePicturePaintRect(image, rect);
+          return x >= paint.left && x <= paint.left + paint.width && y >= paint.top && y <= paint.top + paint.height;
+        });
+        if (hit) {
+          event.preventDefault();
+          openDrawingContextMenu("image", hit.image, { x: event.clientX, y: event.clientY });
+          return;
+        }
+      }
       const isRowHeader = event.clientX - rect.left < displayRowHeaderWidth;
       const isColumnHeader = event.clientY - rect.top < displayHeaderHeight;
       const kind = isRowHeader && isColumnHeader ? "sheet" : isRowHeader ? "row" : isColumnHeader ? "column" : "cell";
@@ -16503,7 +16561,17 @@ function XlsxGrid({
       event.preventDefault();
       openContextMenu(cell, kind, { x: event.clientX, y: event.clientY });
     },
+    onCut: (event) => {
+      if (editingCell || readOnly || (!selectedChartId && !selectedImageId)) return;
+      event.preventDefault();
+      void controller.copyDrawingToClipboard(selectedChartId ? "chart" : "image", (selectedChartId ?? selectedImageId)!, true);
+    },
     onCopy: (event) => {
+      if (!editingCell && (selectedChartId || selectedImageId)) {
+        event.preventDefault();
+        void controller.copyDrawingToClipboard(selectedChartId ? "chart" : "image", (selectedChartId ?? selectedImageId)!);
+        return;
+      }
       if (editingCell) {
         return;
       }
@@ -16553,12 +16621,22 @@ function XlsxGrid({
       }
 
       const clipboard = event.clipboardData;
+      if (controller.canReadNativeDrawingClipboard) {
+        event.preventDefault();
+        void pasteFromClipboard({ text: clipboard?.getData("text/plain"), structured: clipboard?.getData(INTERNAL_CLIPBOARD_MIME) });
+        return;
+      }
       if (!clipboard) {
         event.preventDefault();
         void pasteFromClipboard();
         return;
       }
 
+      if (!clipboard.getData("text/plain") && !clipboard.getData("text/html") && Array.from(clipboard.items).some(item => item.type.startsWith("image/"))) {
+        event.preventDefault();
+        void controller.pasteDrawingFromClipboard();
+        return;
+      }
       const structuredPayload = clipboard.getData(INTERNAL_CLIPBOARD_MIME);
       const textPayload = clipboard.getData("text/plain");
       if (!structuredPayload && !textPayload) {
@@ -16571,6 +16649,10 @@ function XlsxGrid({
         return;
       }
 
+      if (textPayload.startsWith("react-xlsx-drawing:")) {
+        void controller.pasteDrawingFromClipboard(textPayload);
+        return;
+      }
       pasteText(textPayload);
     },
     tabIndex: 0,
@@ -17915,6 +17997,10 @@ export function useXlsxPivotTableEditor(options?: XlsxPivotTableEditorOptions) {
 
 export function useXlsxViewerImages(): XlsxViewerImages {
   const {
+    arrangeDrawing,
+    changeChartType,
+    copyDrawingToClipboard,
+    pasteDrawingFromClipboard,
     charts,
     clearSelectedChart,
     clearSelectedChartElement,
@@ -17948,6 +18034,10 @@ export function useXlsxViewerImages(): XlsxViewerImages {
 
   return React.useMemo(
     () => ({
+      arrangeDrawing,
+      changeChartType,
+      copyDrawingToClipboard,
+      pasteDrawingFromClipboard,
       charts,
       clearSelectedChart,
       clearSelectedChartElement,
@@ -17979,6 +18069,10 @@ export function useXlsxViewerImages(): XlsxViewerImages {
       updateChart
     }),
     [
+      arrangeDrawing,
+      changeChartType,
+      copyDrawingToClipboard,
+      pasteDrawingFromClipboard,
       charts,
       clearSelectedChart,
       clearSelectedChartElement,
@@ -18016,6 +18110,10 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
   const {
     activeTab,
     activeTabIndex,
+    arrangeDrawing,
+    changeChartType,
+    copyDrawingToClipboard,
+    pasteDrawingFromClipboard,
     charts,
     chartsheets,
     clearSelectedChart,
@@ -18045,6 +18143,10 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
     () => ({
       activeTab,
       activeTabIndex,
+      arrangeDrawing,
+      changeChartType,
+      copyDrawingToClipboard,
+      pasteDrawingFromClipboard,
       charts,
       chartsheets,
       clearSelectedChart,
@@ -18072,6 +18174,10 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
     [
       activeTab,
       activeTabIndex,
+      arrangeDrawing,
+      changeChartType,
+      copyDrawingToClipboard,
+      pasteDrawingFromClipboard,
       charts,
       chartsheets,
       clearSelectedChart,
@@ -18448,19 +18554,19 @@ export function useXlsxViewerThumbnails(
           kind: "shape" as const,
           rect,
           shape,
-          zIndex: shape.zIndex
+          zIndex: drawingLayer(shape.zIndex)
         })),
         ...thumbnailFormControlRects.map(({ control, rect }) => ({
           control,
           kind: "formControl" as const,
           rect,
-          zIndex: control.zIndex
+          zIndex: drawingLayer(control.zIndex)
         })),
         ...thumbnailImageRects.map(({ image, rect }) => ({
           image,
           kind: "image" as const,
           rect,
-          zIndex: image.zIndex
+          zIndex: drawingLayer(image.zIndex)
         }))
       ].sort((left, right) => left.zIndex - right.zIndex);
 

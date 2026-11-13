@@ -1,12 +1,18 @@
 import { createMergedRangeLookup } from "./merged-range-lookup";
 import { findIntersectingPivot, pivotWorkbook, readPivotTables } from "./pivots";
 import type { XlsxPivotChartInput, XlsxPivotSource, XlsxPivotTable, XlsxPivotTableInput, XlsxPivotToggle } from "./pivot-types";
-import { restoreWorkbookXmlRecords } from "./workbook-xml";
+import { configureWorkbookArchiveDecoder, configureWorkbookXmlDecoder, restoreWorkbookXmlRecords } from "./workbook-xml";
+import { captureDrawingClipboard, decodeExcelDrawingClipboard, drawingPng, encodeExcelDrawingClipboard, EXCEL_DRAWING_CLIPBOARD_TYPE, INTERNAL_DRAWING_CLIPBOARD_TYPE, findDrawingAnchor, imageDrawingClipboard, pasteDrawingClipboard, removeDrawingAnchor, type DrawingClipboard } from "./drawing-clipboard";
+import { prepareDrawingOrder } from "./drawing-order";
+import { chartTypeOptions, chartTypeUnavailable } from "./chart-types";
+import { changeWorkbookChartType } from "./chart-type-edit";
+import { loadWorkbookImageAssets } from "./workbook-assets";
 import { localizeCellNumber } from "./number-locale";
 import { resolveMessages } from "./messages";
 import { applyInputNumberFormat, coerceUserEnteredValue, getUserEnteredFormula, isTextCell, normalizeFormulaReferences, parseClipboardText, quoteClipboardField } from "./cell-input";
 import { loadSpreadsheetFonts } from "./spreadsheet-fonts";
 import * as React from "react";
+import { strToU8 } from "fflate";
 import { XlsxFileSizeLimitExceededError } from "./errors";
 export { XlsxFileSizeLimitExceededError } from "./errors";
 import type { DrawingAnchor as DukeDrawingAnchor, DrawingColor as DukeDrawingColor, DrawingInput as DukeDrawingInput, DrawingRunFont as DukeDrawingRunFont, DrawingText as DukeDrawingText, FormControlDrawing as DukeFormControlDrawing, FormControlKind as DukeFormControlKind, FormControlKindInput as DukeFormControlKindInput, Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
@@ -1294,6 +1300,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const {
     allowResizeInReadOnly = false,
     deferLoadingAboveBytes = DEFAULT_DEFER_LOADING_ABOVE_BYTES,
+    drawingClipboardAdapter,
     file,
     fileName,
     locale = "en-US",
@@ -1361,6 +1368,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
   const readOnly = requestedReadOnly || forcedReadOnly;
+  const drawingClipboardRef = React.useRef<{ data: DrawingClipboard; generation: number } | null>(null);
+  const drawingMutationEpoch = React.useRef(0);
+  const drawingMutationState = React.useRef({ workbook, revision, readOnly, activeCell, activeSheetIndex });
+  drawingMutationState.current = { workbook, revision, readOnly, activeCell, activeSheetIndex };
   const canResizeReadOnly = requestedReadOnly && allowResizeInReadOnly && !forcedReadOnly;
   const shouldForceReadOnlyForBuffer = React.useCallback((bufferByteLength: number) => (
     !requestedReadOnly && readOnlyAboveBytes > 0 && bufferByteLength > readOnlyAboveBytes
@@ -1412,6 +1423,26 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, []);
 
   const setChartAssets = React.useCallback((assets: WorkbookChartAssets | null) => {
+    const previous = chartAssetsRef.current;
+    if (assets && previous && assets !== previous) {
+      const byPath = new Map(previous.chartsByWorkbookSheetIndex.flat().filter(chart => chart.chartPath).map(chart => [chart.chartPath!, chart]));
+      const used = new Set([...byPath.values()].map(chart => chart.id));
+      const origins = new Map<string, import("./charts").WorkbookChartOrigin>();
+      assets.chartsByWorkbookSheetIndex = assets.chartsByWorkbookSheetIndex.map(charts => charts.map(chart => {
+        const prior = chart.chartPath ? byPath.get(chart.chartPath) : undefined;
+        const oldId = chart.id;
+        const id = prior?.id ?? (used.has(oldId) ? `chart-${crypto.randomUUID()}` : oldId);
+        used.add(id);
+        const origin = assets.chartOriginsById.get(oldId);
+        if (origin) origins.set(id, origin);
+        if (oldId === id) return chart;
+        const series = chart.series.map((entry, index) => ({ ...entry, id: `${id}-series-${index}` }));
+        let ordinal = 0;
+        return { ...chart, id, series, typeGroups: chart.typeGroups?.map(group => ({ ...group, series: group.series.map(() => series[ordinal++]) })) };
+      }));
+      assets.chartOriginsById = origins;
+      for (const sheet of assets.chartsheets) sheet.chartIds = assets.chartsByWorkbookSheetIndex[sheet.workbookSheetIndex ?? -1]?.map(chart => chart.id) ?? sheet.chartIds;
+    }
     chartAssetsRef.current = assets;
     setChartsByWorkbookSheetIndex(assets?.chartsByWorkbookSheetIndex ?? []);
     setChartsheets(assets?.chartsheets ?? []);
@@ -3006,17 +3037,6 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     workbook
   ]);
 
-  const download = React.useCallback(() => {
-    if (file) {
-      downloadArrayBuffer(file, displayFileName);
-      return;
-    }
-
-    if (src) {
-      downloadUrl(src, displayFileName);
-    }
-  }, [displayFileName, file, src]);
-
   const getXlsxBytes = React.useCallback(async (): Promise<Uint8Array | null> => {
     if (!workbook) {
       return null;
@@ -3033,6 +3053,16 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     downloadBytes(bytes, `${fileStem(displayFileName)}.xlsx`, XLSX_MIME_TYPE);
   }, [displayFileName, getXlsxBytes]);
+
+  const download = React.useCallback(async () => {
+    if (workbook) {
+      await exportXlsx();
+    } else if (file) {
+      downloadArrayBuffer(file, displayFileName);
+    } else if (src) {
+      downloadUrl(src, displayFileName);
+    }
+  }, [displayFileName, exportXlsx, file, src, workbook]);
 
   const exportCsv = React.useCallback(() => {
     if (!workbook) {
@@ -3229,28 +3259,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const setChartRect = React.useCallback((id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => {
     const hydratedChartAssets = ensureChartAssetsHydrated(workbook, sheets);
-    console.info("[react-xlsx debug] setChartRect", {
-      hasActiveSheet: Boolean(activeSheet),
-      hasHydratedChartAssets: Boolean(hydratedChartAssets),
-      hasImageAssets: Boolean(imageAssetsRef.current),
-      hasWorkbook: Boolean(workbook),
-      id,
-      readOnly,
-      rect
-    });
     if (readOnly || !workbook || !activeSheet) {
       return;
     }
 
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
     const currentChart = getChartById(id);
-    console.info("[react-xlsx debug] currentChart", {
-      activeWorkbookSheetIndex: activeSheet.workbookSheetIndex,
-      editable: currentChart?.editable,
-      found: Boolean(currentChart),
-      originCount: hydratedChartAssets?.chartOriginsById.size ?? 0,
-      workbookSheetIndex: currentChart?.workbookSheetIndex
-    });
     if (!currentChart || currentChart.editable === false || currentChart.workbookSheetIndex !== activeSheet.workbookSheetIndex) {
       return;
     }
@@ -3271,8 +3285,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     if (!imageAssetsRef.current || !hydratedChartAssets) return;
 
     recordHistoryBeforeMutation();
-    const didUpdateAnchor = updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, nextAnchor);
-    console.info("[react-xlsx debug] updateWorkbookChartAnchor", { didUpdateAnchor, nextAnchor });
+    if (!updateWorkbookChartAnchor(imageAssetsRef.current, hydratedChartAssets, id, nextAnchor)) return;
 
     hydratedChartAssets.chartsByWorkbookSheetIndex = hydratedChartAssets.chartsByWorkbookSheetIndex.map((sheetCharts) => (
       sheetCharts.map((chart) => chart.id === id ? { ...chart, anchor: nextAnchor } : chart)
@@ -3484,6 +3497,217 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     const nextRect = resizeImageRect({ height, left, top, width }, handle, deltaX, deltaY);
     setImageRect(id, nextRect);
   }, [getActiveWorksheet, getColumnWidthPx, getImageById, getRowHeightPx, setImageRect]);
+
+  const commitDrawingArchiveMutation = React.useCallback(async (
+    mutate: (assets: WorkbookImageAssets, charts: WorkbookChartAssets) => boolean,
+    target: { kind: "image" | "chart"; name?: string; path?: string }
+  ) => {
+    if (readOnly || !workbook || !imageAssetsRef.current) return false;
+    const currentCharts = ensureChartAssetsHydrated(workbook, sheets);
+    if (!currentCharts) return false;
+    const state = drawingMutationState.current;
+    const epoch = ++drawingMutationEpoch.current;
+    const generation = loadGenerationRef.current;
+    const before = createHistoryEntry();
+    if (!before) return false;
+    const assets = structuredClone(imageAssetsRef.current);
+    if (!mutate(assets, structuredClone(currentCharts))) return false;
+    const bytes = await getWorkerClient().exportWorkbook(before.bytes, assets, assets.sheetOrigins);
+    const wasm = await getSheetsWasmModule();
+    configureWorkbookArchiveDecoder(wasm.decodeArchive);
+    configureWorkbookXmlDecoder(wasm.parseXmlTree);
+    const next = wasm.Workbook.fromBytes(bytes);
+    let nextAssets: WorkbookImageAssets | null = null;
+    let published = false;
+    try {
+      nextAssets = await loadWorkbookImageAssets(bytes, next);
+      const latest = drawingMutationState.current;
+      if (epoch !== drawingMutationEpoch.current || generation !== loadGenerationRef.current || latest.workbook !== state.workbook || latest.revision !== state.revision || latest.readOnly) {
+        revokeWorkbookImageAssets(nextAssets);
+        next.free();
+        return false;
+      }
+      pushHistoryEntry(undoStackRef.current, before);
+      redoStackRef.current = [];
+      setHistoryRevision(current => current + 1);
+      drawingMutationEpoch.current++;
+      published = true;
+      setImageAssets(nextAssets);
+      setWorkbook(next);
+      refreshWorkbookState(next);
+      if (target.kind === "chart") {
+        const chart = chartAssetsRef.current?.chartsByWorkbookSheetIndex.flat().find(chart => target.path ? chart.chartPath === target.path : chart.name === target.name);
+        setSelectedChartId(chart?.id ?? null);
+        setSelectedChartElement(chart ? { kind: "chart", chartId: chart.id } : null);
+      } else {
+        const image = nextAssets?.imagesByWorkbookSheetIndex.flat().find(image => image.name === target.name);
+        setSelectedImageId(image?.id ?? null);
+      }
+      return true;
+    } catch (cause) {
+      if (!published) { revokeWorkbookImageAssets(nextAssets); next.free(); }
+      throw cause;
+    }
+  }, [createHistoryEntry, ensureChartAssetsHydrated, getWorkerClient, readOnly, refreshWorkbookState, setImageAssets, sheets, workbook]);
+
+  const copyDrawingToClipboard = React.useCallback<XlsxViewerController["copyDrawingToClipboard"]>(async (kind, id, cut = false) => {
+    const assets = imageAssetsRef.current;
+    const charts = ensureChartAssetsHydrated(workbook, sheets);
+    const drawing = kind === "chart" ? getChartById(id) : getImageById(id);
+    if (!assets || !charts || !drawing || (cut && (readOnly || drawing.editable === false)) || (!drawingClipboardAdapter && !navigator.clipboard)) return false;
+    const generation = loadGenerationRef.current;
+    if (!workbook) await getSheetsWasmModule();
+    if (generation !== loadGenerationRef.current) return false;
+    const data = captureDrawingClipboard(assets, charts, kind, id);
+    if (!data) return false;
+    const clipboardChart = kind === "chart" ? refreshChartRenderSource(drawing as XlsxChart, assets, workbook) : null;
+    if (clipboardChart?.chartPath && clipboardChart.renderSource) data.archive[clipboardChart.chartPath] = strToU8(clipboardChart.renderSource.xml);
+    const state = drawingMutationState.current;
+    const sheet = sheets.find(sheet => sheet.workbookSheetIndex === drawing.workbookSheetIndex);
+    const markerPosition = (marker: { row: number; col: number; rowOffsetEmu: number; colOffsetEmu: number }) => {
+      let x = marker.colOffsetEmu / 9525; let y = marker.rowOffsetEmu / 9525;
+      for (let col = 0; col < marker.col; col++) x += sheet?.colWidthOverridesPx?.[col] ?? sheet?.colWidths[col] ?? sheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
+      for (let row = 0; row < marker.row; row++) y += sheet?.rowHeightOverridesPx?.[row] ?? sheet?.rowHeights[row] ?? sheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT;
+      return { x, y };
+    };
+    const anchor = drawing.anchor;
+    const rect = workbook ? resolveAnchoredObjectRect(anchor, workbook.getSheet(drawing.workbookSheetIndex))
+      : anchor.kind !== "two-cell" ? { width: anchor.sizeEmu.cx / 9525, height: anchor.sizeEmu.cy / 9525 }
+      : { width: Math.max(1, markerPosition(anchor.to).x - markerPosition(anchor.from).x), height: Math.max(1, markerPosition(anchor.to).y - markerPosition(anchor.from).y) };
+    data.sizeEmu = { cx: Math.round(rect.width * 9525), cy: Math.round(rect.height * 9525) };
+    if (!drawingClipboardAdapter && (typeof ClipboardItem !== "function" || !navigator.clipboard.write)) return false;
+    const viewerDrawing = new Blob([encodeExcelDrawingClipboard(data)], { type: INTERNAL_DRAWING_CLIPBOARD_TYPE.slice(4) });
+    const officeDrawing = drawingClipboardAdapter ? new Blob([encodeExcelDrawingClipboard(data, "binary")], { type: "application/octet-stream" }) : null;
+    const png = kind === "image" ? drawingPng((drawing as XlsxImage).src) : (async () => {
+      const chart = clipboardChart!;
+      if (!chart.renderSource) throw new Error("The chart cannot be copied as an image.");
+      const result = await renderChartAsync(chart, chart.renderSource, rect.width, rect.height);
+      if (!result?.svg) throw new Error("The chart cannot be copied as an image.");
+      return drawingPng(new Blob([result.svg], { type: "image/svg+xml" }));
+    })();
+    if (drawingClipboardAdapter) {
+      await drawingClipboardAdapter.write({ kind, officeDrawing: officeDrawing!, previewImage: await png, viewerDrawing });
+    } else {
+      const clipboardItems: Record<string, Blob | Promise<Blob>> = { "image/png": png };
+      if (ClipboardItem.supports?.(INTERNAL_DRAWING_CLIPBOARD_TYPE)) clipboardItems[INTERNAL_DRAWING_CLIPBOARD_TYPE] = viewerDrawing;
+      await navigator.clipboard.write([new ClipboardItem(clipboardItems)]);
+    }
+    drawingClipboardRef.current = { data, generation };
+    if (!cut) return true;
+    const latest = drawingMutationState.current;
+    if (generation !== loadGenerationRef.current || latest.workbook !== state.workbook || latest.revision !== state.revision || latest.readOnly) return false;
+    return commitDrawingArchiveMutation((assets, charts) => removeDrawingAnchor(assets, charts, kind, id), { kind });
+  }, [commitDrawingArchiveMutation, drawingClipboardAdapter, ensureChartAssetsHydrated, getChartById, getImageById, readOnly, renderChartAsync, resolveAnchoredObjectRect, sheets, workbook]);
+
+  const pasteDrawingFromClipboard = React.useCallback(async (text?: string, nativeOnly = false): Promise<boolean> => {
+    if (readOnly || !activeSheet || !workbook) return false;
+    const state = drawingMutationState.current;
+    const generation = loadGenerationRef.current;
+    let data: DrawingClipboard | null = null;
+    if (text?.startsWith("react-xlsx-drawing:")) {
+      const clipboard = drawingClipboardRef.current;
+      if (clipboard?.generation === loadGenerationRef.current && text === clipboard.data.token) data = clipboard.data;
+    } else if (text) {
+      data = decodeExcelDrawingClipboard(text);
+    } else if (drawingClipboardAdapter?.read) {
+      const native = await drawingClipboardAdapter.read();
+      if (native) data = decodeExcelDrawingClipboard(new Uint8Array(await native.arrayBuffer()));
+    }
+    if (!text && !data && !nativeOnly && navigator.clipboard?.read) {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = [INTERNAL_DRAWING_CLIPBOARD_TYPE, EXCEL_DRAWING_CLIPBOARD_TYPE].find(type => item.types.includes(type));
+        if (type) data = decodeExcelDrawingClipboard(new Uint8Array(await (await item.getType(type)).arrayBuffer()));
+        if (data) break;
+      }
+      if (!data) for (const item of items) {
+        if (item.types.includes("image/png") && !item.types.includes("text/plain") && !item.types.includes("text/html")) {
+          data = await imageDrawingClipboard(await item.getType("image/png"));
+          break;
+        }
+      }
+    }
+    const latest = drawingMutationState.current;
+    if (!data || generation !== loadGenerationRef.current || latest.workbook !== state.workbook || latest.revision !== state.revision || latest.readOnly
+      || latest.activeSheetIndex !== state.activeSheetIndex || latest.activeCell?.row !== state.activeCell?.row || latest.activeCell?.col !== state.activeCell?.col) return false;
+    const name = `${data.kind === "chart" ? "Chart" : "Picture"} ${crypto.randomUUID().slice(0, 8)}`;
+    const cell = activeCell ?? { row: 0, col: 0 };
+    const placement: XlsxImage["anchor"] = { kind: "one-cell", from: { ...cell, colOffsetEmu: 0, rowOffsetEmu: 0 }, sizeEmu: data.sizeEmu ?? { cx: 4572000, cy: 2743200 } };
+    return commitDrawingArchiveMutation(assets => {
+      pasteDrawingClipboard(assets, data!, activeSheet.workbookSheetIndex, name, placement);
+      return true;
+    }, { kind: data.kind, name });
+  }, [activeCell, activeSheet, commitDrawingArchiveMutation, drawingClipboardAdapter, readOnly, workbook]);
+
+  const arrangeDrawing = React.useCallback<XlsxViewerController["arrangeDrawing"]>(async (kind, id, order) => {
+    const assets = imageAssetsRef.current;
+    const charts = ensureChartAssetsHydrated(workbook, sheets);
+    const drawing = kind === "image" ? getImageById(id) : getChartById(id);
+    if (readOnly || !workbook || !assets || !charts || !drawing || drawing.editable === false) return false;
+    const plan = prepareDrawingOrder(assets, charts, kind, id, order);
+    if (!plan) return false;
+    const mapIndex = (index: number) => index === plan.from ? plan.to
+      : plan.from < plan.to && index > plan.from && index <= plan.to ? index - 1
+      : plan.from > plan.to && index >= plan.to && index < plan.from ? index + 1 : index;
+    const chartIndices = new Map(Array.from(charts.chartOriginsById, ([chartId, origin]) => {
+      const found = findDrawingAnchor(assets, charts, "chart", chartId);
+      return [chartId, found && origin.workbookSheetIndex === plan.sheetIndex ? mapIndex(found.anchors.indexOf(found.anchor)) : null];
+    }));
+    recordHistoryBeforeMutation();
+    workbook.getSheet(plan.sheetIndex).moveDrawing(plan.from, plan.to);
+    plan.commit();
+    const orderedCharts = [...chartIndices].filter((entry): entry is [string, number] => entry[1] !== null).sort((a, b) => a[1] - b[1]);
+    orderedCharts.forEach(([chartId], index) => { charts.chartOriginsById.get(chartId)!.anchorIndex = index; });
+    charts.chartsByWorkbookSheetIndex = charts.chartsByWorkbookSheetIndex.map((items, sheetIndex) => sheetIndex !== plan.sheetIndex ? items : items.map(chart => ({ ...chart, zIndex: (chartIndices.get(chart.id) ?? chart.zIndex - 1) + 1 })));
+    for (const origin of assets.imageOriginsById.values()) if (origin.workbookSheetIndex === plan.sheetIndex) origin.anchorIndex = mapIndex(origin.anchorIndex);
+    const updateOrder = <T extends { zIndex: number }>(items: T[][]) => items.map((sheet, index) => index !== plan.sheetIndex ? sheet : sheet.map(item => ({ ...item, zIndex: mapIndex(Math.floor(item.zIndex) - 1) + 1 + item.zIndex % 1 })));
+    assets.imagesByWorkbookSheetIndex = updateOrder(assets.imagesByWorkbookSheetIndex);
+    assets.shapesByWorkbookSheetIndex = updateOrder(assets.shapesByWorkbookSheetIndex);
+    assets.formControlsByWorkbookSheetIndex = updateOrder(assets.formControlsByWorkbookSheetIndex);
+    setImagesByWorkbookSheetIndex(assets.imagesByWorkbookSheetIndex);
+    setShapesByWorkbookSheetIndex(assets.shapesByWorkbookSheetIndex);
+    setFormControlsByWorkbookSheetIndex(assets.formControlsByWorkbookSheetIndex);
+    setChartsByWorkbookSheetIndex(charts.chartsByWorkbookSheetIndex);
+    setRevision(current => current + 1);
+    return true;
+  }, [ensureChartAssetsHydrated, getChartById, getImageById, readOnly, recordHistoryBeforeMutation, sheets, workbook]);
+
+  const changeChartType = React.useCallback<XlsxViewerController["changeChartType"]>(async (id, type) => {
+    const chart = getChartById(id);
+    const option = chartTypeOptions.find(option => option.id === type);
+    if (readOnly || !chart || !option || chartTypeUnavailable(chart, option)) return false;
+    if (chart.raw?.pivotSource) {
+      if (!workbook || !chart.name) return false;
+      commitPivotMutation(target => pivotWorkbook(target).updatePivotChart(workbook.getSheet(chart.workbookSheetIndex).name, chart.name!, { chartType: option.chartType }), false);
+      return true;
+    }
+    const assets = imageAssetsRef.current;
+    const charts = ensureChartAssetsHydrated(workbook, sheets);
+    if (readOnly || !workbook || !assets || !charts) return false;
+    const origin = charts.chartOriginsById.get(id);
+    const found = findDrawingAnchor(assets, charts, "chart", id);
+    if (!origin || !found) return false;
+    const index = found.anchors.indexOf(found.anchor);
+    const native = workbook.getSheet(chart.workbookSheetIndex).drawings[index];
+    if (!native || !native.anchor || (native.kind !== "chart" && native.kind !== "chartEx")) return false;
+    const nextAssets = { ...assets, archive: { ...assets.archive }, dirtyArchivePaths: new Set(assets.dirtyArchivePaths) };
+    changeWorkbookChartType(nextAssets, origin, chart, option);
+    recordHistoryBeforeMutation();
+    const base = { anchor: native.anchor, name: native.name, hidden: native.hidden, locked: native.locked, printable: native.printable };
+    const input: DukeDrawingInput = option.layout
+      ? { ...base, kind: "chartEx", chartEx: { layout: option.layout, title: { text: chart.title } } }
+      : { ...base, kind: "chart", chart: { ...(native.kind === "chart" ? native.chart : {}), chartType: option.chartType } };
+    workbook.getSheet(chart.workbookSheetIndex).setDrawing([index], input);
+    assets.archive = nextAssets.archive;
+    assets.dirtyArchivePaths = nextAssets.dirtyArchivePaths;
+    origin.chartKind = option.layout ? "modern" : "classic";
+    const nextChart = refreshChartRenderSource({ ...chart, chartType: option.chartType, chartExLayout: option.layout, is3d: option.is3d, typeGroups: undefined }, assets, workbook);
+    charts.chartsByWorkbookSheetIndex = charts.chartsByWorkbookSheetIndex.map(items => items.map(item => item.id === id ? nextChart : item));
+    setChartsByWorkbookSheetIndex(charts.chartsByWorkbookSheetIndex);
+    setSelectedChartElement({ kind: "chart", chartId: id });
+    setRevision(current => current + 1);
+    return true;
+  }, [commitPivotMutation, ensureChartAssetsHydrated, getChartById, readOnly, recordHistoryBeforeMutation, sheets, workbook]);
 
   const updateChart = React.useCallback((id: string, patch: Partial<XlsxChart>) => {
     const currentChart = getChartById(id);
@@ -4314,31 +4538,43 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     return true;
   }, [activeSheet, getClipboardData, getRowsBatchAsync, isWorkerBacked, selection]);
 
-  const pasteFromClipboard = React.useCallback(async () => {
-    if (readOnly || typeof navigator === "undefined" || !navigator.clipboard) {
-      return false;
-    }
-
+  const pasteFromClipboard = React.useCallback<XlsxViewerController["pasteFromClipboard"]>(async (fallback) => {
+    if (readOnly) return false;
+    const state = drawingMutationState.current;
+    const generation = loadGenerationRef.current;
+    const isCurrent = () => {
+      const latest = drawingMutationState.current;
+      return generation === loadGenerationRef.current && latest.workbook === state.workbook && latest.revision === state.revision && !latest.readOnly
+        && latest.activeSheetIndex === state.activeSheetIndex && latest.activeCell?.row === state.activeCell?.row && latest.activeCell?.col === state.activeCell?.col;
+    };
+    if (await pasteDrawingFromClipboard(undefined, Boolean(fallback?.text || fallback?.structured))) return true;
+    if (!isCurrent()) return false;
+    if (fallback?.structured) return pasteStructuredClipboardData(fallback.structured);
+    if (fallback?.text) return pasteText(fallback.text);
+    if (typeof navigator === "undefined" || !navigator.clipboard) return false;
     if (navigator.clipboard.read) {
       const items = await navigator.clipboard.read();
       for (const item of items) {
         const type = [`web ${INTERNAL_CLIPBOARD_MIME}`, INTERNAL_CLIPBOARD_MIME].find((type) => item.types.includes(type));
         if (type) {
           const blob = await item.getType(type);
-          return pasteStructuredClipboardData(await blob.text());
+          const data = await blob.text();
+          return isCurrent() && pasteStructuredClipboardData(data);
         }
       }
 
       for (const item of items) {
         if (item.types.includes("text/plain")) {
           const blob = await item.getType("text/plain");
-          return pasteText(await blob.text());
+          const text = await blob.text();
+          return isCurrent() && pasteText(text);
         }
       }
     }
 
-    return pasteText(await navigator.clipboard.readText());
-  }, [pasteStructuredClipboardData, pasteText, readOnly]);
+    const text = await navigator.clipboard.readText();
+    return isCurrent() && pasteText(text);
+  }, [pasteDrawingFromClipboard, pasteStructuredClipboardData, pasteText, readOnly]);
 
   const undo = React.useCallback(() => {
     if (readOnly || !workbook || undoStackRef.current.length === 0) {
@@ -4415,6 +4651,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       addFormControl,
       addSheet,
       canRedo,
+      canReadNativeDrawingClipboard: Boolean(drawingClipboardAdapter?.read),
       canDownload: Boolean(file ?? src),
       canExport: Boolean(workbook),
       canLoadDeferred,
@@ -4440,6 +4677,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       locale,
       messages,
       download,
+      arrangeDrawing,
+      copyDrawingToClipboard,
+      pasteDrawingFromClipboard,
+      changeChartType,
       exportCsv,
       exportXlsx,
       getXlsxBytes,
@@ -4559,6 +4800,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       addSheet,
       canLoadDeferred,
       canRedo,
+      drawingClipboardAdapter,
       canUndo,
       canZoomIn,
       canZoomOut,
@@ -4580,6 +4822,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       locale,
       messages,
       download,
+      arrangeDrawing,
+      copyDrawingToClipboard,
+      pasteDrawingFromClipboard,
+      changeChartType,
       error,
       exportCsv,
       exportXlsx,

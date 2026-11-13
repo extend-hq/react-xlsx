@@ -3234,8 +3234,10 @@ function parseDrawingObjects(
       sheetState,
       drawingPath
     );
-    parsed.images.forEach((image) => images.push(image));
-    parsed.shapes.forEach((shape) => shapes.push(shape));
+    const ordered = [...parsed.images, ...parsed.shapes].sort((a, b) => a.zIndex - b.zIndex);
+    const layer = (item: XlsxImage | XlsxShape) => zIndexBase + anchorIndex + ordered.indexOf(item) / (ordered.length + 1);
+    parsed.images.forEach((image) => images.push({ ...image, zIndex: layer(image) }));
+    parsed.shapes.forEach((shape) => shapes.push({ ...shape, zIndex: layer(shape) }));
     parsed.mediaPaths.forEach((path) => mediaPaths.add(path));
   });
 
@@ -3704,12 +3706,16 @@ function mergeContentTypeForPath(
   const existingOverride = getLocalElements(targetDocument, "Override").find(
     (node) => node.getAttribute("PartName") === normalizedPartName
   );
-  if (!existingOverride && originalDocument) {
+  if (originalDocument) {
     const sourceOverride = getLocalElements(originalDocument, "Override").find(
       (node) => node.getAttribute("PartName") === normalizedPartName
     );
     if (sourceOverride) {
-      targetRoot.appendChild(sourceOverride.cloneNode(true));
+      if (existingOverride) {
+        existingOverride.setAttribute("ContentType", sourceOverride.getAttribute("ContentType")!);
+      } else {
+        targetRoot.appendChild(sourceOverride.cloneNode(true));
+      }
       return;
     }
   }

@@ -1,3 +1,4 @@
+import { EXCEL_DRAWING_CLIPBOARD_TYPE, INTERNAL_DRAWING_CLIPBOARD_TYPE } from "./drawing-clipboard";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import type {
@@ -10,6 +11,8 @@ import type {
 import { isDarkViewerPalette, type ViewerPalette } from "./viewer-palette";
 import { expandHighlightedRange } from "./range-highlight";
 import { findIntersectingPivot } from "./pivots";
+import { chartTypeOptions, chartTypeUnavailable, matchesChartType } from "./chart-types";
+import { ContextMenuItems, handleMenuNavigation } from "./context-menu-items";
 
 type MenuErrorKey = "clipboardCopyUnavailable" | "clipboardPasteUnavailable" | "nothingToPaste" | "actionFailed";
 
@@ -27,15 +30,15 @@ export const menuStyles = `
   background: var(--xlsx-context-menu-background);
   color: var(--xlsx-context-menu-color);
   border: 1px solid var(--xlsx-context-menu-border);
-  border-radius: var(--xlsx-menu-radius, 8px);
-  padding: var(--xlsx-menu-padding, 5px);
+  border-radius: var(--xlsx-menu-radius, 3px);
+  padding: var(--xlsx-menu-padding, 4px);
   min-width: min(220px, calc(100vw - 16px));
   font: 13px/1.4 system-ui, sans-serif;
   box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
 }
 :where(.react-xlsx-context-menu-item) {
   display: flex; align-items: center; justify-content: space-between; gap: 24px;
-  width: 100%; border: 0; border-radius: max(0px, calc(var(--xlsx-menu-radius, 8px) - var(--xlsx-menu-padding, 5px)));
+  width: 100%; border: 0; border-radius: max(0px, calc(var(--xlsx-menu-radius, 3px) - var(--xlsx-menu-padding, 4px)));
   padding: 7px 10px;
   background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
@@ -82,7 +85,8 @@ export function XlsxContextMenu({
   const runningRef = React.useRef(false);
   const [busy, setBusy] = React.useState(false);
   const [errorKey, setErrorKey] = React.useState<MenuErrorKey | null>(null);
-  const error = errorKey ? messages[errorKey] : null;
+  const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+  const error = errorMessage ?? (errorKey ? messages[errorKey] : null);
   const [location, setLocation] = React.useState(position);
   const modifier = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
   const table = controller.tables.find(({ start, end }) =>
@@ -92,20 +96,22 @@ export function XlsxContextMenu({
   const multiple = range.start.row !== range.end.row || range.start.col !== range.end.col;
   const touchesPivot = Boolean(findIntersectingPivot(controller.pivotTables, controller.activeSheet?.name, range));
   const pivot = controller.getPivotTableAtCell(context.cell);
-  const actions: XlsxContextMenuAction[] = [
+  const cellActions: XlsxContextMenuAction[] = [
+    ...(!controller.readOnly ? [{ id: "cut" as const, label: messages.cut, shortcut: `${modifier}X`, disabled: touchesPivot }] : []),
+    { id: "copy", label: messages.copy, shortcut: `${modifier}C` },
+    ...(!controller.readOnly ? [
+      { id: "undo" as const, label: messages.undo, shortcut: `${modifier}Z`, disabled: !controller.canUndo },
+      { id: "redo" as const, label: messages.redo, shortcut: `${modifier}⇧Z`, disabled: !controller.canRedo },
+      { id: "paste" as const, label: messages.paste, shortcut: `${modifier}V`, separatorBefore: true, disabled: touchesPivot }
+    ] : []),
     ...(pivot ? [{ id: "togglePivotFieldList" as const, label: controller.pivotFieldListVisible ? messages.hidePivotFieldList : messages.showPivotFieldList, checked: controller.pivotFieldListVisible }] : []),
     ...(pivot && !controller.readOnly ? [
       { id: "refreshPivotTable" as const, label: messages.refreshPivotTable, disabled: pivot.unsupportedFeatures.length > 0 },
       { id: "showPivotDetails" as const, label: messages.showPivotDetails, disabled: pivot.unsupportedFeatures.length > 0 }
     ] : []),
-    ...(!controller.readOnly ? [{ id: "cut" as const, label: messages.cut, disabled: touchesPivot }] : []),
-    { id: "copy", label: messages.copy, shortcut: `${modifier}C` },
     ...(!controller.readOnly ? [
-      { id: "paste" as const, label: messages.paste, shortcut: `${modifier}V`, disabled: touchesPivot },
       { id: "editCell" as const, label: messages.editCell, shortcut: "F2", separatorBefore: true, disabled: touchesPivot },
       { id: "clearContents" as const, label: messages.clearContents, destructive: true, disabled: touchesPivot },
-      { id: "undo" as const, label: messages.undo, shortcut: `${modifier}Z`, separatorBefore: true, disabled: !controller.canUndo },
-      { id: "redo" as const, label: messages.redo, shortcut: `${modifier}⇧Z`, disabled: !controller.canRedo },
       { id: "mergeAndCenter" as const, label: messages.mergeAndCenter, separatorBefore: true, disabled: !multiple || touchesPivot },
       { id: "mergeAcross" as const, label: messages.mergeAcross, disabled: range.start.col === range.end.col || touchesPivot },
       { id: "mergeCells" as const, label: messages.mergeCells, disabled: !multiple || touchesPivot },
@@ -119,6 +125,46 @@ export function XlsxContextMenu({
     { id: "selectColumn", label: messages.selectColumn },
     { id: "selectAll", label: messages.selectAll, shortcut: `${modifier}A` }
   ];
+
+  const drawing = context.chart ?? context.image;
+  const drawingDisabled = controller.readOnly || drawing?.editable === false;
+  const drawings = [...controller.charts, ...controller.images, ...controller.shapes, ...controller.formControls];
+  const minOrder = Math.min(...drawings.map(item => item.zIndex));
+  const maxOrder = Math.max(...drawings.map(item => item.zIndex));
+  const actions: XlsxContextMenuAction[] = drawing ? [
+    { id: "cut", label: messages.cut, shortcut: `${modifier}X`, disabled: drawingDisabled },
+    { id: "copy", label: messages.copy, shortcut: `${modifier}C` },
+    { id: "undo", label: messages.undo, shortcut: `${modifier}Z`, disabled: controller.readOnly || !controller.canUndo },
+    { id: "redo", label: messages.redo, shortcut: `${modifier}⇧Z`, disabled: controller.readOnly || !controller.canRedo },
+    ...(context.chart ? [{ id: "changeChartType" as const, label: "Change Chart Type", separatorBefore: true, disabled: drawingDisabled,
+      children: [...new Set(chartTypeOptions.map(option => option.family))].map(family => ({
+        id: `chartFamily:${family}` as const, label: family,
+        children: chartTypeOptions.filter(option => option.family === family).map(option => ({
+          id: `chartType:${option.id}` as const, label: option.label,
+          checked: matchesChartType(context.chart!, option), disabled: chartTypeUnavailable(context.chart!, option)
+        }))
+      }))
+    }] : []),
+    { id: "bringToFront", label: "Bring to Front", separatorBefore: !context.chart, disabled: drawingDisabled || drawing.zIndex >= maxOrder,
+      children: [
+        { id: "bringToFront", label: "Bring to Front", disabled: drawingDisabled || drawing.zIndex >= maxOrder },
+        { id: "bringForward", label: "Bring Forward", disabled: drawingDisabled || drawing.zIndex >= maxOrder }
+      ] },
+    { id: "sendToBack", label: "Send to Back", disabled: drawingDisabled || drawing.zIndex <= minOrder,
+      children: [
+        { id: "sendToBack", label: "Send to Back", disabled: drawingDisabled || drawing.zIndex <= minOrder },
+        { id: "sendBackward", label: "Send Backward", disabled: drawingDisabled || drawing.zIndex <= minOrder }
+      ] },
+
+  ] : cellActions;
+  const findAction = (items: XlsxContextMenuAction[], id: XlsxContextMenuActionId): XlsxContextMenuAction | undefined => {
+    for (const item of items) {
+      if (item.disabled) continue;
+      if (item.children) { const found = findAction(item.children, id); if (found) return found; }
+      else if (item.id === id) return item;
+    }
+    return undefined;
+  };
 
   React.useLayoutEffect(() => {
     const root = rootRef.current;
@@ -164,7 +210,7 @@ export function XlsxContextMenu({
   }, [abortController, closeMenu]);
 
   const runAction = async (id: XlsxContextMenuActionId): Promise<boolean> => {
-    const action = actions.find((item) => item.id === id);
+    const action = findAction(actions, id);
     if (!aliveRef.current || runningRef.current || !action || action.disabled) return false;
     const snapshot = controller;
     const isCurrent = () => aliveRef.current &&
@@ -172,13 +218,24 @@ export function XlsxContextMenu({
       controllerRef.current.workbook === snapshot.workbook &&
       controllerRef.current.revision === snapshot.revision &&
       controllerRef.current.readOnly === snapshot.readOnly &&
-      controllerRef.current.selection === snapshot.selection;
+      controllerRef.current.selection === snapshot.selection &&
+      controllerRef.current.selectedChartId === snapshot.selectedChartId &&
+      controllerRef.current.selectedImageId === snapshot.selectedImageId;
     if (!isCurrent()) return false;
     runningRef.current = true;
     setBusy(true);
     setErrorKey(null);
+    setErrorMessage(null);
     try {
+      if (id.startsWith("chartType:") && context.chart) {
+        if (!await controller.changeChartType(context.chart.id, id.slice("chartType:".length))) throw new MenuActionError("actionFailed");
+        closeMenu();
+        return true;
+      }
       switch (id) {
+        case "bringToFront": case "bringForward": case "sendBackward": case "sendToBack":
+          if (!drawing || !await controller.arrangeDrawing(context.chart ? "chart" : "image", drawing.id, id)) throw new MenuActionError("actionFailed");
+          break;
         case "togglePivotFieldList":
           controller.setPivotFieldListVisible(!controller.pivotFieldListVisible);
           break;
@@ -190,6 +247,10 @@ export function XlsxContextMenu({
           break;
         case "copy":
         case "cut": {
+          if (drawing) {
+            if (!await controller.copyDrawingToClipboard(context.chart ? "chart" : "image", drawing.id, id === "cut")) throw new MenuActionError("clipboardCopyUnavailable");
+            break;
+          }
           const copied = await controller.copySelectionToClipboard();
           if (!copied) throw new MenuActionError("clipboardCopyUnavailable");
           if (!isCurrent()) return false;
@@ -197,13 +258,21 @@ export function XlsxContextMenu({
           break;
         }
         case "paste": {
+          if (controller.canReadNativeDrawingClipboard) {
+            if (!await controller.pasteFromClipboard()) throw new MenuActionError("nothingToPaste");
+            break;
+          }
           const clipboard = navigator.clipboard;
           if (!clipboard) throw new MenuActionError("clipboardPasteUnavailable");
+          let imageOnly = false;
+          let hasDrawing = false;
           let structured: string | undefined;
           let text: string | undefined;
           if (clipboard.read) {
             const items = await clipboard.read();
+            imageOnly = items.some(item => item.types.includes("image/png") && !item.types.includes("text/plain") && !item.types.includes("text/html"));
             for (const item of items) {
+              if ([INTERNAL_DRAWING_CLIPBOARD_TYPE, EXCEL_DRAWING_CLIPBOARD_TYPE].some(type => item.types.includes(type))) { hasDrawing = true; break; }
               const type = ["web application/x-react-xlsx-range+json", "application/x-react-xlsx-range+json"]
                 .find((type) => item.types.includes(type));
               if (type) {
@@ -216,6 +285,10 @@ export function XlsxContextMenu({
             text = await clipboard.readText();
           }
           if (!isCurrent()) return false;
+          if (imageOnly || hasDrawing || text?.startsWith("react-xlsx-drawing:")) {
+            if (!await controller.pasteDrawingFromClipboard(hasDrawing ? undefined : text)) throw new MenuActionError("nothingToPaste");
+            break;
+          }
           const pasted = structured !== undefined
             ? controller.pasteStructuredClipboardData(structured)
             : text !== undefined && controller.pasteText(text);
@@ -241,7 +314,10 @@ export function XlsxContextMenu({
       closeMenu();
       return true;
     } catch (cause) {
-      if (aliveRef.current) setErrorKey(cause instanceof MenuActionError ? cause.key : "actionFailed");
+      if (aliveRef.current) {
+        setErrorKey(cause instanceof MenuActionError ? cause.key : "actionFailed");
+        if (!(cause instanceof MenuActionError) && cause instanceof Error) setErrorMessage(cause.message);
+      }
       return false;
     } finally {
       runningRef.current = false;
@@ -249,30 +325,13 @@ export function XlsxContextMenu({
     }
   };
 
-  const defaultNode = actions.map((action) => (
-    <React.Fragment key={action.id}>
-      {action.separatorBefore && <div className="react-xlsx-context-menu-separator" role="separator" />}
-      <button
-        className="react-xlsx-context-menu-item"
-        data-action={action.id}
-        data-destructive={action.destructive || undefined}
-        disabled={busy || action.disabled}
-        onClick={() => { void runAction(action.id); }}
-        role={action.checked === undefined ? "menuitem" : "menuitemcheckbox"}
-        aria-checked={action.checked}
-        tabIndex={-1}
-        type="button"
-      >
-        <span>{action.checked !== undefined ? <span aria-hidden="true" style={{ display: "inline-block", width: 18 }}>{action.checked ? "✓" : ""}</span> : null}{action.label}</span>
-        {action.shortcut && <span className="react-xlsx-context-menu-shortcut">{action.shortcut}</span>}
-      </button>
-    </React.Fragment>
-  ));
+  const defaultNode = <ContextMenuItems actions={actions} busy={busy} runAction={runAction} contextMenuClassName={contextMenuClassName} contextMenuStyle={contextMenuStyle} />;
   const close = () => { abortController.abort(); closeMenu(); };
   const commit = (apply: (target: XlsxContextMenuContext) => void) => {
     if (!aliveRef.current || abortController.signal.aborted || controllerRef.current.readOnly
       || controllerRef.current.workbook !== controller.workbook || controllerRef.current.activeSheetIndex !== context.sheetIndex
-      || controllerRef.current.selection !== controller.selection || controllerRef.current.revision !== controller.revision) return false;
+      || controllerRef.current.selection !== controller.selection || controllerRef.current.revision !== controller.revision
+      || controllerRef.current.selectedChartId !== controller.selectedChartId || controllerRef.current.selectedImageId !== controller.selectedImageId) return false;
     apply(context);
     close();
     return true;
@@ -287,6 +346,7 @@ export function XlsxContextMenu({
       aria-label={messages.contextMenu}
       aria-busy={busy}
       className={["react-xlsx-context-menu", contextMenuClassName].filter(Boolean).join(" ")}
+      data-context-kind={context.kind}
       data-dark={isDarkViewerPalette(palette) ? "true" : "false"}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => event.stopPropagation()}
@@ -297,17 +357,7 @@ export function XlsxContextMenu({
           closeMenu();
           return;
         }
-        const items = Array.from(rootRef.current?.querySelectorAll<HTMLElement>(':is([role="menuitem"],[role="menuitemcheckbox"]):not(:disabled):not([aria-disabled="true"])') ?? []);
-        const current = items.indexOf(document.activeElement as HTMLElement);
-        let next: number | undefined;
-        if (event.key === "ArrowDown") next = (current + 1) % items.length;
-        if (event.key === "ArrowUp") next = (current - 1 + items.length) % items.length;
-        if (event.key === "Home") next = 0;
-        if (event.key === "End") next = items.length - 1;
-        if (next !== undefined) {
-          event.preventDefault();
-          items[next]?.focus();
-        }
+        handleMenuNavigation(event);
       }}
       ref={rootRef}
       role="menu"
@@ -316,7 +366,7 @@ export function XlsxContextMenu({
         ...contextMenuStyle,
         position: "fixed", left: location.x, top: location.y,
         maxHeight: "calc(100vh - 16px)", maxWidth: "calc(100vw - 16px)",
-        overflow: "auto", zIndex: 10000, boxSizing: "border-box"
+        overflow: renderContextMenu ? "visible" : "auto", zIndex: 10000, boxSizing: "border-box"
       } as React.CSSProperties}
       tabIndex={-1}
     >

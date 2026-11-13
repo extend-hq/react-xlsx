@@ -1032,7 +1032,26 @@ export interface XlsxScrollerRenderProps {
   };
 }
 
+export interface XlsxDrawingClipboardPayload {
+  kind: "chart" | "image";
+  /** Self-contained Office drawing ZIP for the native GVML clipboard format. */
+  officeDrawing: Blob;
+  /** PNG representation for applications that do not support Office drawings. */
+  previewImage: Blob;
+  /** Private JSON representation for editable paste back into the viewer. */
+  viewerDrawing: Blob;
+}
+
+export interface XlsxDrawingClipboardAdapter {
+  /** Writes all representations atomically. Reject on failure; Cut only removes the object after success. */
+  write: (payload: XlsxDrawingClipboardPayload) => Promise<void>;
+  /** Reads a native Office drawing ZIP or private viewer JSON. Return null for other clipboard content. */
+  read?: () => Promise<Blob | null>;
+}
+
 export interface UseXlsxViewerControllerOptions {
+  /** Optional host integration for transferring editable drawings through the native system clipboard. */
+  drawingClipboardAdapter?: XlsxDrawingClipboardAdapter;
   /** BCP 47 locale for number formatting and built-in UI text. Defaults to en-US. */
   locale?: string;
   /** Partial overrides for localized UI text, including accessibility labels. */
@@ -1154,7 +1173,7 @@ export interface XlsxViewerController extends XlsxViewerPivots {
   locale: string;
   /** Resolved UI text after applying locale defaults and message overrides. */
   messages: XlsxViewerMessages;
-  download: () => void;
+  download: () => Promise<void>;
   charts: XlsxChart[];
   chartsheets: XlsxChartsheet[];
   exportCsv: () => void;
@@ -1220,7 +1239,9 @@ export interface XlsxViewerController extends XlsxViewerPivots {
   resizeColumn: (col: number, widthPx: number) => void;
   resizeRow: (row: number, heightPx: number) => void;
   redo: () => void;
-  pasteFromClipboard: () => Promise<boolean>;
+  /** Whether the configured host adapter supports native drawing reads. */
+  canReadNativeDrawingClipboard: boolean;
+  pasteFromClipboard: (fallback?: { text?: string; structured?: string }) => Promise<boolean>;
   pasteStructuredClipboardData: (payload: string) => boolean;
   pasteText: (text: string) => boolean;
   selectedRangeAddress: string | null;
@@ -1307,6 +1328,10 @@ export interface XlsxViewerController extends XlsxViewerPivots {
   selectImage: (id: string | null) => void;
   setChartRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
   setImageRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
+  arrangeDrawing: (kind: "image" | "chart", id: string, order: XlsxDrawingOrder) => Promise<boolean>;
+  copyDrawingToClipboard: (kind: "image" | "chart", id: string, cut?: boolean) => Promise<boolean>;
+  pasteDrawingFromClipboard: (text?: string) => Promise<boolean>;
+  changeChartType: (id: string, type: string) => Promise<boolean>;
   getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<unknown[] | null>;
   tables: XlsxTable[];
   tabs: XlsxWorkbookTab[];
@@ -1347,6 +1372,9 @@ export interface XlsxViewerZoom {
 }
 
 export type XlsxContextMenuActionId =
+  | "bringToFront" | "bringForward" | "sendBackward" | "sendToBack"
+  | "arrange" | "changeChartType"
+  | `chartType:${string}` | `chartFamily:${string}`
   | "cut" | "copy" | "paste" | "clearContents" | "editCell"
   | "undo" | "redo" | "mergeCells" | "mergeAndCenter" | "mergeAcross" | "unmergeCells"
   | "sortAscending" | "sortDescending"
@@ -1361,10 +1389,15 @@ export interface XlsxContextMenuAction {
   destructive?: boolean;
   separatorBefore?: boolean;
   checked?: boolean;
+  children?: XlsxContextMenuAction[];
 }
 
+export type XlsxDrawingOrder = "bringToFront" | "bringForward" | "sendBackward" | "sendToBack";
+
 export interface XlsxContextMenuContext {
-  kind: "cell" | "row" | "column" | "sheet";
+  kind: "cell" | "row" | "column" | "sheet" | "image" | "chart";
+  image?: XlsxImage;
+  chart?: XlsxChart;
   cell: XlsxCellAddress;
   selection: XlsxCellRange;
   sheetIndex: number;
@@ -1406,7 +1439,7 @@ export interface XlsxViewerEditing {
   getFormControlItems: (controlIndex: number, sheetIndex?: number) => string[];
   getSheetFormControls: (sheetIndex?: number) => XlsxFormControl[];
   mergeSelection: (mode?: XlsxMergeMode) => void;
-  pasteFromClipboard: () => Promise<boolean>;
+  pasteFromClipboard: XlsxViewerController["pasteFromClipboard"];
   pasteStructuredClipboardData: (payload: string) => boolean;
   pasteText: (text: string) => boolean;
   removeActiveSheet: () => void;
@@ -1472,6 +1505,10 @@ export interface XlsxViewerTables {
 }
 
 export interface XlsxViewerImages {
+  arrangeDrawing: XlsxViewerController["arrangeDrawing"];
+  changeChartType: XlsxViewerController["changeChartType"];
+  copyDrawingToClipboard: XlsxViewerController["copyDrawingToClipboard"];
+  pasteDrawingFromClipboard: XlsxViewerController["pasteDrawingFromClipboard"];
   charts: XlsxChart[];
   clearSelectedChart: () => void;
   clearSelectedChartElement: () => void;
@@ -1516,6 +1553,10 @@ export interface XlsxViewerImages {
 export interface XlsxViewerCharts {
   activeTab: XlsxWorkbookTab | null;
   activeTabIndex: number;
+  arrangeDrawing: XlsxViewerController["arrangeDrawing"];
+  changeChartType: XlsxViewerController["changeChartType"];
+  copyDrawingToClipboard: XlsxViewerController["copyDrawingToClipboard"];
+  pasteDrawingFromClipboard: XlsxViewerController["pasteDrawingFromClipboard"];
   charts: XlsxChart[];
   chartsheets: XlsxChartsheet[];
   clearSelectedChart: () => void;
@@ -1831,7 +1872,7 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;
   /** Replaces menu contents. Use runAction for built-in commands and closeMenu after custom commands. */
   renderContextMenu?: (props: XlsxContextMenuRenderProps) => React.ReactNode;
-  /** Enables worksheet right-click and keyboard context menus. Defaults to true. */
+  /** Enables cell and drawing right-click and keyboard context menus. Defaults to true. */
   enableContextMenu?: boolean;
   /** Class applied to the portaled menu container. */
   contextMenuClassName?: string;
