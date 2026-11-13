@@ -3,7 +3,6 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tsconfigPaths from "vite-tsconfig-paths";
-import { nativeClipboard } from "./scripts/native-clipboard";
 
 export default defineConfig({
   build: {
@@ -18,7 +17,7 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-  plugins: [react(), tsconfigPaths(), tailwindcss(), nativeClipboard()],
+  plugins: [react(), tsconfigPaths(), tailwindcss()],
   resolve: {
     dedupe: ["react", "react-dom"],
     alias: [

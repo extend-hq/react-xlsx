@@ -1,4 +1,3 @@
-import { EXCEL_DRAWING_CLIPBOARD_TYPE, INTERNAL_DRAWING_CLIPBOARD_TYPE } from "./drawing-clipboard";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import type {
@@ -132,8 +131,6 @@ export function XlsxContextMenu({
   const minOrder = Math.min(...drawings.map(item => item.zIndex));
   const maxOrder = Math.max(...drawings.map(item => item.zIndex));
   const actions: XlsxContextMenuAction[] = drawing ? [
-    { id: "cut", label: messages.cut, shortcut: `${modifier}X`, disabled: drawingDisabled },
-    { id: "copy", label: messages.copy, shortcut: `${modifier}C` },
     { id: "undo", label: messages.undo, shortcut: `${modifier}Z`, disabled: controller.readOnly || !controller.canUndo },
     { id: "redo", label: messages.redo, shortcut: `${modifier}⇧Z`, disabled: controller.readOnly || !controller.canRedo },
     ...(context.chart ? [{ id: "changeChartType" as const, label: "Change Chart Type", separatorBefore: true, disabled: drawingDisabled,
@@ -247,10 +244,6 @@ export function XlsxContextMenu({
           break;
         case "copy":
         case "cut": {
-          if (drawing) {
-            if (!await controller.copyDrawingToClipboard(context.chart ? "chart" : "image", drawing.id, id === "cut")) throw new MenuActionError("clipboardCopyUnavailable");
-            break;
-          }
           const copied = await controller.copySelectionToClipboard();
           if (!copied) throw new MenuActionError("clipboardCopyUnavailable");
           if (!isCurrent()) return false;
@@ -258,41 +251,7 @@ export function XlsxContextMenu({
           break;
         }
         case "paste": {
-          if (controller.canReadNativeDrawingClipboard) {
-            if (!await controller.pasteFromClipboard()) throw new MenuActionError("nothingToPaste");
-            break;
-          }
-          const clipboard = navigator.clipboard;
-          if (!clipboard) throw new MenuActionError("clipboardPasteUnavailable");
-          let imageOnly = false;
-          let hasDrawing = false;
-          let structured: string | undefined;
-          let text: string | undefined;
-          if (clipboard.read) {
-            const items = await clipboard.read();
-            imageOnly = items.some(item => item.types.includes("image/png") && !item.types.includes("text/plain") && !item.types.includes("text/html"));
-            for (const item of items) {
-              if ([INTERNAL_DRAWING_CLIPBOARD_TYPE, EXCEL_DRAWING_CLIPBOARD_TYPE].some(type => item.types.includes(type))) { hasDrawing = true; break; }
-              const type = ["web application/x-react-xlsx-range+json", "application/x-react-xlsx-range+json"]
-                .find((type) => item.types.includes(type));
-              if (type) {
-                structured = await (await item.getType(type)).text();
-                break;
-              }
-              if (text === undefined && item.types.includes("text/plain")) text = await (await item.getType("text/plain")).text();
-            }
-          } else {
-            text = await clipboard.readText();
-          }
-          if (!isCurrent()) return false;
-          if (imageOnly || hasDrawing || text?.startsWith("react-xlsx-drawing:")) {
-            if (!await controller.pasteDrawingFromClipboard(hasDrawing ? undefined : text)) throw new MenuActionError("nothingToPaste");
-            break;
-          }
-          const pasted = structured !== undefined
-            ? controller.pasteStructuredClipboardData(structured)
-            : text !== undefined && controller.pasteText(text);
-          if (!pasted) throw new MenuActionError("nothingToPaste");
+          if (!await controller.pasteFromClipboard()) throw new MenuActionError("nothingToPaste");
           break;
         }
         case "clearContents": controller.clearSelectedCells(); break;

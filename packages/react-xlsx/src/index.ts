@@ -35,8 +35,6 @@ export type {
   XlsxChartReference,
   XlsxChartsheet,
   XlsxChartSeries,
-  XlsxDrawingClipboardPayload,
-  XlsxDrawingClipboardAdapter,
   XlsxCellAddress,
   XlsxCellAlignmentInput,
   XlsxCellBorderEdgeInput,

@@ -722,17 +722,9 @@ Right-click a chart, image, worksheet cell, row header, column header, or the to
 
 Viewer mode (`readOnly`) offers Copy and selection actions. Editor mode also offers Cut, Paste, Edit cell, Clear contents, Undo/Redo, Merge/Unmerge, and sorting when the target belongs to a table. Actions use the existing controller and undo history. Row and column selections span the displayed grid, matching header selection. Worker-backed viewers copy tab-separated text; editable workbooks also preserve structured cell data when the browser supports custom clipboard formats. Clipboard commands require browser clipboard access; failed operations display an error and Cut only clears cells after copying succeeds.
 
-Chart and image menus start with Cut, Copy, Undo, and Redo, followed by a separator. Bring to Front and Send to Back contain the one-step layer commands. Charts also have a nested Change Chart Type menu, grouped by family; options that require a different series count are disabled. Drawing positions, sizes, layer order, and chart types participate in undo/redo and are preserved by `download()` and `exportXlsx()`.
+Chart and image menus start with Undo and Redo, followed by a separator. Drawing Cut and Copy are not offered; copying worksheet cells remains supported. Bring to Front and Send to Back contain the one-step layer commands. Charts also have a nested Change Chart Type menu, grouped by family; options that require a different series count are disabled. Drawing positions, sizes, layer order, and chart types participate in undo/redo and are preserved by `download()` and `exportXlsx()`.
 
-By default, copying a drawing writes a PNG and, in browsers supporting custom clipboard formats, a private editable viewer package. Pasting accepts editable Excel chart packages and PNG images and places their top-left corner at the active cell. Browser clipboard access requires a secure context and permission. The controller, `useXlsxViewerCharts()`, and `useXlsxViewerImages()` expose `copyDrawingToClipboard(kind, id, cut?)`, `pasteDrawingFromClipboard()`, `arrangeDrawing(kind, id, order)`, and `changeChartType(id, type)`.
-
-Editable copying **into desktop Excel** requires a native host integration: browser custom formats do not publish Excel's native clipboard type. Pass `drawingClipboardAdapter` to `useXlsxViewerController`, `XlsxViewerProvider`, or `XlsxViewer`. Its asynchronous `write(payload)` receives an `XlsxDrawingClipboardPayload` containing `kind`, `officeDrawing` (an Office GVML ZIP), `previewImage` (PNG), and `viewerDrawing` (private JSON). The native package includes the chart's current values, category labels, series names, and styles without references to cells in the destination workbook. These values remain editable chart data; source-workbook formula links are not transferred. The viewer package retains source references for copies within the same workbook.
-
-The adapter must publish the representations together and resolve only after the clipboard write succeeds. Throw on failure to show the error and leave a Cut source intact. Its optional `read()` returns a `Blob` containing an Office drawing ZIP or private viewer JSON, or `null` when the clipboard contains neither. It should inspect available formats, prefer the private viewer representation, and read only when the user pastes. Native reads allow editable paste even when the browser cannot expose the source application's custom formats. The controller reports this capability through `canReadNativeDrawingClipboard`; keyboard and context-menu paste use it automatically. Normal cell and image paste still use their browser representations.
-
-Choose the native backend using the desktop host's OS, rather than browser user-agent detection. Copy publishes several representations because the destination application is not known yet; paste selects from the available formats. On macOS, publish the Office ZIP as `com.microsoft.Art--GVML-ClipFormat` and the PNG as `public.png`. On Windows, register `Art::GVML ClipFormat` for the Office ZIP and `PNG` for the preview, with a standard bitmap fallback. To retain editable paste into Chromium, publish the private JSON under a native type and map `application/vnd.react-xlsx.drawing+json` to that type using `org.w3.web-custom-format.map` on macOS or `Web Custom Format Map` on Windows. The adapter owns the native transport; the library does not start a local service for consumers.
-
-The local playground selects its bridge automatically from Node's `process.platform`. On macOS it compiles a small Swift helper using Xcode Command Line Tools; on Windows it uses Windows PowerShell and a C# helper calling the Win32 clipboard APIs. Both accept only authenticated same-origin loopback requests. Other platforms retain the browser clipboard path. The bridge is disabled in production builds and previews; desktop applications must provide their own host adapter. Start the playground normally and use Copy/Paste from its context menu or keyboard shortcuts. The macOS path has been exercised with Excel; the Windows backend still requires validation with Excel on Windows.
+Pasting drawings from Excel uses browser clipboard APIs and places their top-left corner at the active cell. See [Pasting from Excel](#pasting-from-excel) for supported representations and browser requirements. The controller, `useXlsxViewerCharts()`, and `useXlsxViewerImages()` expose `pasteDrawingFromClipboard()`, `arrangeDrawing(kind, id, order)`, and `changeChartType(id, type)`.
 
 Customize the existing menu with `contextMenuClassName`, `contextMenuStyle`, and CSS variables, or replace its contents with `renderContextMenu`:
 
@@ -760,6 +752,35 @@ The hook receives `context` (target kind, cell, selection, sheet index/name, rea
 Actions can contain recursive `children`; custom renderers should render them as nested submenus, including `checked`, `disabled`, and `separatorBefore`. The playground uses Coss UI primitives for these menus.
 
 Default styling uses a compact, conventional context menu and follows the document theme. Submenus inherit the same style variables and custom class. Override `.react-xlsx-context-menu`, `.react-xlsx-context-menu-item`, `.react-xlsx-context-menu-separator`, and `.react-xlsx-context-menu-shortcut`, set `--xlsx-menu-radius` and `--xlsx-menu-padding` to resize the menu while keeping item corners concentric (items use the radius minus the padding), or set `--xlsx-context-menu-background`, `--xlsx-context-menu-color`, `--xlsx-context-menu-border`, `--xlsx-context-menu-hover`, `--xlsx-context-menu-muted`, and `--xlsx-context-menu-danger` through `contextMenuStyle`. The menu is portaled to the document body, so use its class rather than a viewer-descendant selector. The table header sort menu uses the same classes, so `contextMenuClassName` and `contextMenuStyle` restyle it too. Set `enableContextMenu={false}` to retain the browser's native context menu.
+
+## Pasting from Excel
+
+Excel-to-viewer paste runs entirely in the browser. No native helper, local clipboard server, host adapter, or operating-system detection is required. Enable editing, select the destination cell, copy an object in desktop Excel, and press **Cmd+V** on macOS or **Ctrl+V** on Windows in the worksheet. The cell context menu also offers Paste.
+
+```tsx
+import { XlsxViewer } from "@extend-ai/react-xlsx";
+
+export function WorkbookEditor({ buffer }: { buffer: ArrayBuffer }) {
+  return <XlsxViewer file={buffer} readOnly={false} height={600} />;
+}
+```
+
+The result depends on what Excel and the browser expose on the clipboard:
+
+| Clipboard content | Paste result |
+| --- | --- |
+| Excel drawing package containing a supported chart | Editable chart with its cached series data and formatting preserved in XLSX export |
+| Excel drawing package containing a picture, shape, or supported shape group | Drawing inserted at the selected cell |
+| Image representation, including artwork without a supported editable package | Picture; the appearance is retained, but chart data and individual shape editing are unavailable |
+| Worksheet cells | Cell values and formulas, using the existing cell paste behavior |
+
+Current desktop Chrome or Edge is recommended for editable drawing paste because they expose [web custom clipboard formats](https://developer.chrome.com/blog/web-custom-formats-for-the-async-clipboard-api). Excel must publish its drawing package in a browser-readable format. Other browsers, older Excel versions, and unsupported Office objects may expose only an image. Clipboard access requires HTTPS or localhost and may prompt for permission. Keyboard paste can use image data supplied by the paste event even when asynchronous clipboard reading is denied. An image fallback does not preserve editable chart data.
+
+`controller.pasteFromClipboard()` handles charts, artwork, and cells. `controller.pasteDrawingFromClipboard()` handles drawings only; it also accepts an Office clipboard JSON string, a drawing ZIP `Blob`, or an image `Blob` supplied by your application. These methods return whether anything was pasted. Pasting participates in Undo/Redo and `exportXlsx()`. Chart values come from the clipboard package’s caches; the viewer does not refresh links to external workbooks.
+
+Drawing Cut/Copy out of the viewer is intentionally unavailable. Installing this browser library does not enable editable chart copying into desktop Excel. Cell copying and XLSX download remain available. There are no native clipboard scripts or services to deploy.
+
+The browser-only path is verified with Excel for Mac. End-to-end validation with Excel for Windows is still required; the implementation uses the same browser representations on both platforms. Clipboard APIs cannot provide an editable object when Excel or the browser does not expose it.
 
 ## Custom Cell Editor Overlays
 

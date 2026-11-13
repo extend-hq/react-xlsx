@@ -7489,8 +7489,6 @@ function XlsxGrid({
     minZoomScale,
     copySelectionToClipboard,
     pasteFromClipboard,
-    pasteStructuredClipboardData,
-    pasteText,
     readOnly,
     redo,
     revision,
@@ -16562,17 +16560,12 @@ function XlsxGrid({
       openContextMenu(cell, kind, { x: event.clientX, y: event.clientY });
     },
     onCut: (event) => {
-      if (editingCell || readOnly || (!selectedChartId && !selectedImageId)) return;
-      event.preventDefault();
-      void controller.copyDrawingToClipboard(selectedChartId ? "chart" : "image", (selectedChartId ?? selectedImageId)!, true);
+      if (!editingCell && (selectedChartId || selectedImageId)) event.preventDefault();
     },
     onCopy: (event) => {
-      if (!editingCell && (selectedChartId || selectedImageId)) {
+      if (editingCell) return;
+      if (selectedChartId || selectedImageId) {
         event.preventDefault();
-        void controller.copyDrawingToClipboard(selectedChartId ? "chart" : "image", (selectedChartId ?? selectedImageId)!);
-        return;
-      }
-      if (editingCell) {
         return;
       }
 
@@ -16620,40 +16613,8 @@ function XlsxGrid({
         return;
       }
 
-      const clipboard = event.clipboardData;
-      if (controller.canReadNativeDrawingClipboard) {
-        event.preventDefault();
-        void pasteFromClipboard({ text: clipboard?.getData("text/plain"), structured: clipboard?.getData(INTERNAL_CLIPBOARD_MIME) });
-        return;
-      }
-      if (!clipboard) {
-        event.preventDefault();
-        void pasteFromClipboard();
-        return;
-      }
-
-      if (!clipboard.getData("text/plain") && !clipboard.getData("text/html") && Array.from(clipboard.items).some(item => item.type.startsWith("image/"))) {
-        event.preventDefault();
-        void controller.pasteDrawingFromClipboard();
-        return;
-      }
-      const structuredPayload = clipboard.getData(INTERNAL_CLIPBOARD_MIME);
-      const textPayload = clipboard.getData("text/plain");
-      if (!structuredPayload && !textPayload) {
-        return;
-      }
-
       event.preventDefault();
-      if (structuredPayload) {
-        pasteStructuredClipboardData(structuredPayload);
-        return;
-      }
-
-      if (textPayload.startsWith("react-xlsx-drawing:")) {
-        void controller.pasteDrawingFromClipboard(textPayload);
-        return;
-      }
-      pasteText(textPayload);
+      void pasteFromClipboard(event.clipboardData).catch(() => {});
     },
     tabIndex: 0,
     style: {
@@ -17999,7 +17960,6 @@ export function useXlsxViewerImages(): XlsxViewerImages {
   const {
     arrangeDrawing,
     changeChartType,
-    copyDrawingToClipboard,
     pasteDrawingFromClipboard,
     charts,
     clearSelectedChart,
@@ -18036,7 +17996,6 @@ export function useXlsxViewerImages(): XlsxViewerImages {
     () => ({
       arrangeDrawing,
       changeChartType,
-      copyDrawingToClipboard,
       pasteDrawingFromClipboard,
       charts,
       clearSelectedChart,
@@ -18071,7 +18030,6 @@ export function useXlsxViewerImages(): XlsxViewerImages {
     [
       arrangeDrawing,
       changeChartType,
-      copyDrawingToClipboard,
       pasteDrawingFromClipboard,
       charts,
       clearSelectedChart,
@@ -18112,7 +18070,6 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
     activeTabIndex,
     arrangeDrawing,
     changeChartType,
-    copyDrawingToClipboard,
     pasteDrawingFromClipboard,
     charts,
     chartsheets,
@@ -18145,7 +18102,6 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       activeTabIndex,
       arrangeDrawing,
       changeChartType,
-      copyDrawingToClipboard,
       pasteDrawingFromClipboard,
       charts,
       chartsheets,
@@ -18176,7 +18132,6 @@ export function useXlsxViewerCharts(): XlsxViewerCharts {
       activeTabIndex,
       arrangeDrawing,
       changeChartType,
-      copyDrawingToClipboard,
       pasteDrawingFromClipboard,
       charts,
       chartsheets,

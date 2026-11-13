@@ -1032,26 +1032,7 @@ export interface XlsxScrollerRenderProps {
   };
 }
 
-export interface XlsxDrawingClipboardPayload {
-  kind: "chart" | "image";
-  /** Self-contained Office drawing ZIP for the native GVML clipboard format. */
-  officeDrawing: Blob;
-  /** PNG representation for applications that do not support Office drawings. */
-  previewImage: Blob;
-  /** Private JSON representation for editable paste back into the viewer. */
-  viewerDrawing: Blob;
-}
-
-export interface XlsxDrawingClipboardAdapter {
-  /** Writes all representations atomically. Reject on failure; Cut only removes the object after success. */
-  write: (payload: XlsxDrawingClipboardPayload) => Promise<void>;
-  /** Reads a native Office drawing ZIP or private viewer JSON. Return null for other clipboard content. */
-  read?: () => Promise<Blob | null>;
-}
-
 export interface UseXlsxViewerControllerOptions {
-  /** Optional host integration for transferring editable drawings through the native system clipboard. */
-  drawingClipboardAdapter?: XlsxDrawingClipboardAdapter;
   /** BCP 47 locale for number formatting and built-in UI text. Defaults to en-US. */
   locale?: string;
   /** Partial overrides for localized UI text, including accessibility labels. */
@@ -1239,9 +1220,8 @@ export interface XlsxViewerController extends XlsxViewerPivots {
   resizeColumn: (col: number, widthPx: number) => void;
   resizeRow: (row: number, heightPx: number) => void;
   redo: () => void;
-  /** Whether the configured host adapter supports native drawing reads. */
-  canReadNativeDrawingClipboard: boolean;
-  pasteFromClipboard: (fallback?: { text?: string; structured?: string }) => Promise<boolean>;
+  /** Reads browser clipboard representations. Pass paste-event data to retain image and text fallbacks. */
+  pasteFromClipboard: (clipboardData?: DataTransfer) => Promise<boolean>;
   pasteStructuredClipboardData: (payload: string) => boolean;
   pasteText: (text: string) => boolean;
   selectedRangeAddress: string | null;
@@ -1329,8 +1309,8 @@ export interface XlsxViewerController extends XlsxViewerPivots {
   setChartRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
   setImageRect: (id: string, rect: XlsxImageRect, layout?: XlsxDrawingLayout) => void;
   arrangeDrawing: (kind: "image" | "chart", id: string, order: XlsxDrawingOrder) => Promise<boolean>;
-  copyDrawingToClipboard: (kind: "image" | "chart", id: string, cut?: boolean) => Promise<boolean>;
-  pasteDrawingFromClipboard: (text?: string) => Promise<boolean>;
+  /** Pastes a browser-readable Office drawing or image at the active cell. */
+  pasteDrawingFromClipboard: (data?: string | Blob) => Promise<boolean>;
   changeChartType: (id: string, type: string) => Promise<boolean>;
   getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<unknown[] | null>;
   tables: XlsxTable[];
@@ -1507,7 +1487,6 @@ export interface XlsxViewerTables {
 export interface XlsxViewerImages {
   arrangeDrawing: XlsxViewerController["arrangeDrawing"];
   changeChartType: XlsxViewerController["changeChartType"];
-  copyDrawingToClipboard: XlsxViewerController["copyDrawingToClipboard"];
   pasteDrawingFromClipboard: XlsxViewerController["pasteDrawingFromClipboard"];
   charts: XlsxChart[];
   clearSelectedChart: () => void;
@@ -1555,7 +1534,6 @@ export interface XlsxViewerCharts {
   activeTabIndex: number;
   arrangeDrawing: XlsxViewerController["arrangeDrawing"];
   changeChartType: XlsxViewerController["changeChartType"];
-  copyDrawingToClipboard: XlsxViewerController["copyDrawingToClipboard"];
   pasteDrawingFromClipboard: XlsxViewerController["pasteDrawingFromClipboard"];
   charts: XlsxChart[];
   chartsheets: XlsxChartsheet[];

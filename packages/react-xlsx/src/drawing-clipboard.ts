@@ -1,4 +1,4 @@
-import { strFromU8, strToU8, zipSync, unzipSync } from "fflate";
+import { strFromU8, strToU8, unzipSync } from "fflate";
 import { parseWorkbookXml, serializeWorkbookXml } from "./workbook-xml";
 import type { WorkbookImageAssets } from "./images";
 import type { WorkbookChartAssets } from "./charts";
@@ -7,19 +7,9 @@ import type { XlsxImageAnchor } from "./types";
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PKG = "http://schemas.openxmlformats.org/package/2006/relationships";
 const XDR = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
-const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
-const LC = "http://schemas.openxmlformats.org/drawingml/2006/lockedCanvas";
 const CT = "http://schemas.openxmlformats.org/package/2006/content-types";
-const C = "http://schemas.openxmlformats.org/drawingml/2006/chart";
-const CX = "http://schemas.microsoft.com/office/drawing/2014/chartex";
 const relPath = (path: string) => path.replace(/([^/]+)$/, "_rels/$1.rels");
 const resolve = (path: string, target: string) => new URL(target, `https://xlsx.invalid/${path}`).pathname.slice(1);
-const relativeTarget = (owner: string, target: string) => {
-  const from = owner.split("/").slice(0, -1);
-  const to = target.split("/");
-  while (from.length && from[0] === to[0]) { from.shift(); to.shift(); }
-  return [...from.map(() => ".."), ...to].join("/");
-};
 const elements = (node: Element): Element[] => [node, ...Array.from(node.children).flatMap(elements)];
 
 export function findDrawingAnchor(assets: WorkbookImageAssets, charts: WorkbookChartAssets, kind: "image" | "chart", id: string) {
@@ -34,57 +24,12 @@ export function findDrawingAnchor(assets: WorkbookImageAssets, charts: WorkbookC
 }
 
 export type DrawingClipboard = {
-  token: string;
-  kind: "image" | "chart";
+  kind: "image" | "chart" | "shape";
   anchor: string;
   drawingPath: string;
   archive: Record<string, Uint8Array>;
   sizeEmu?: { cx: number; cy: number };
 };
-
-export function captureDrawingClipboard(assets: WorkbookImageAssets, charts: WorkbookChartAssets, kind: "image" | "chart", id: string): DrawingClipboard | null {
-  const found = findDrawingAnchor(assets, charts, kind, id);
-  if (!found) return null;
-  const archive: Record<string, Uint8Array> = {};
-  const collect = (path: string) => {
-    if (archive[path] || !assets.archive[path]) return;
-    archive[path] = assets.archive[path].slice();
-    const relationships = assets.archive[relPath(path)];
-    if (!relationships) return;
-    archive[relPath(path)] = relationships.slice();
-    for (const rel of Array.from(parseWorkbookXml(strFromU8(relationships)).documentElement.children)) {
-      if (rel.getAttribute("TargetMode") !== "External") collect(resolve(path, rel.getAttribute("Target")!));
-    }
-  };
-  const relationships = assets.archive[relPath(found.origin.drawingPath)];
-  if (!relationships) return null;
-  const used = new Set(elements(found.anchor).flatMap(node => Array.from(node.attributes).filter(attr => attr.namespaceURI === R).map(attr => attr.value)));
-  const rels = parseWorkbookXml(strFromU8(relationships));
-  for (const rel of Array.from(rels.documentElement.children)) {
-    if (!used.has(rel.getAttribute("Id")!)) rels.documentElement.removeChild(rel);
-    else if (rel.getAttribute("TargetMode") !== "External") collect(resolve(found.origin.drawingPath, rel.getAttribute("Target")!));
-  }
-  archive[relPath(found.origin.drawingPath)] = strToU8(serializeWorkbookXml(rels));
-  const themePath = "xl/theme/theme1.xml";
-  if (assets.archive[themePath]) {
-    archive[themePath] = assets.archive[themePath].slice();
-    const themeRel = rels.createElementNS(PKG, "Relationship");
-    themeRel.setAttribute("Id", "rIdClipboardTheme"); themeRel.setAttribute("Type", `${R}/theme`); themeRel.setAttribute("Target", `/${themePath}`);
-    rels.documentElement.appendChild(themeRel);
-    archive[relPath(found.origin.drawingPath)] = strToU8(serializeWorkbookXml(rels));
-  }
-  archive["[Content_Types].xml"] = assets.archive["[Content_Types].xml"].slice();
-  return { token: `react-xlsx-drawing:${crypto.randomUUID()}`, kind, anchor: serializeWorkbookXml(found.anchor), drawingPath: found.origin.drawingPath, archive };
-}
-
-export function removeDrawingAnchor(assets: WorkbookImageAssets, charts: WorkbookChartAssets, kind: "image" | "chart", id: string) {
-  const found = findDrawingAnchor(assets, charts, kind, id);
-  if (!found) return false;
-  found.anchor.parentNode!.removeChild(found.anchor);
-  assets.archive[found.origin.drawingPath] = strToU8(serializeWorkbookXml(found.document));
-  assets.dirtyArchivePaths.add(found.origin.drawingPath);
-  return true;
-}
 
 export function pasteDrawingClipboard(assets: WorkbookImageAssets, clipboard: DrawingClipboard, sheetIndex: number, name: string, placement?: XlsxImageAnchor) {
   const suffix = crypto.randomUUID().replaceAll("-", "");
@@ -151,140 +96,30 @@ export function pasteDrawingClipboard(assets: WorkbookImageAssets, clipboard: Dr
   }
 }
 
-export const EXCEL_DRAWING_CLIPBOARD_TYPE = "web data/shadow-workbook";
-export const INTERNAL_DRAWING_CLIPBOARD_TYPE = "web application/vnd.react-xlsx.drawing+json";
+const DRAWING_CLIPBOARD_TYPES = ["web data/shadow-workbook", "data/shadow-workbook"];
+const RANGE_CLIPBOARD_TYPE = "application/x-react-xlsx-range+json";
 
-function convertDrawingNamespace(source: Element, namespace: string, prefix: string): Element {
+function convertDrawingNamespace(source: Element): Element {
   const document = source.ownerDocument;
-  const node = document.createElementNS(namespace, `${prefix}:${source.localName}`);
+  const node = document.createElementNS(XDR, `xdr:${source.localName}`);
   for (const attr of Array.from(source.attributes)) {
-    if (attr.name.startsWith("xmlns")) continue;
-    if (namespace === A && ["macro", "fPublished"].includes(attr.name)) continue;
-    node.setAttributeNS(attr.namespaceURI, attr.name, attr.value);
+    if (!attr.name.startsWith("xmlns")) node.setAttributeNS(attr.namespaceURI, attr.name, attr.value);
   }
   for (const child of Array.from(source.children)) {
-    const structural = ["nvGraphicFramePr", "nvPicPr", "nvSpPr", "cNvPr", "cNvGraphicFramePr", "cNvPicPr", "cNvSpPr", "spPr", "blipFill", "txBody"].includes(child.localName)
+    if (child.localName === "txSp") {
+      const body = Array.from(child.children).find(node => node.localName === "txBody");
+      if (body) node.appendChild(convertDrawingNamespace(body));
+      continue;
+    }
+    const structural = ["sp", "pic", "graphicFrame", "grpSp", "cxnSp", "nvGraphicFramePr", "nvPicPr", "nvSpPr", "nvGrpSpPr", "nvCxnSpPr", "cNvPr", "cNvGraphicFramePr", "cNvPicPr", "cNvSpPr", "cNvGrpSpPr", "cNvCxnSpPr", "spPr", "grpSpPr", "blipFill", "txBody", "style"].includes(child.localName)
       || (child.localName === "xfrm" && source.localName === "graphicFrame");
-    node.appendChild(structural ? convertDrawingNamespace(child, namespace, prefix) : child.cloneNode(true));
+    node.appendChild(structural ? convertDrawingNamespace(child) : child.cloneNode(true));
   }
   if (node.localName === "graphicFrame") {
     const transform = Array.from(node.children).find(child => child.localName === "xfrm");
-    if (transform) {
-      if (namespace === XDR) node.insertBefore(transform, node.children[1] ?? null);
-      else node.appendChild(transform);
-    }
+    if (transform) node.insertBefore(transform, node.children[1] ?? null);
   }
   return node;
-}
-
-function detachChartData(archive: Record<string, Uint8Array>) {
-  for (const [path, bytes] of Object.entries(archive)) {
-    if (!/\/charts\/[^/]+\.xml$/.test(path)) continue;
-    const document = parseWorkbookXml(strFromU8(bytes));
-    if (![C, CX].includes(document.documentElement.namespaceURI ?? "")) continue;
-    for (const reference of elements(document.documentElement)) {
-      if (reference.namespaceURI === C && ["numRef", "strRef"].includes(reference.localName)) {
-        const numeric = reference.localName === "numRef";
-        const cache = Array.from(reference.children).find(node => node.localName === (numeric ? "numCache" : "strCache"));
-        if (!cache) throw new Error("The chart's source data is unavailable for native copying.");
-        let literal: Element;
-        if (reference.parentElement?.localName === "tx") {
-          const text = elements(cache).find(node => node.localName === "v")?.textContent ?? "";
-          if (reference.parentElement.parentElement?.localName === "ser") {
-            literal = document.createElementNS(C, "c:v"); literal.textContent = text;
-          } else {
-            literal = document.createElementNS(C, "c:rich");
-            for (const name of ["bodyPr", "lstStyle"]) literal.appendChild(document.createElementNS(A, `a:${name}`));
-            const paragraph = document.createElementNS(A, "a:p");
-            const run = document.createElementNS(A, "a:r");
-            const value = document.createElementNS(A, "a:t"); value.textContent = text;
-            run.appendChild(value); paragraph.appendChild(run); literal.appendChild(paragraph);
-          }
-        } else {
-          literal = document.createElementNS(C, numeric ? "c:numLit" : "c:strLit");
-          for (const node of Array.from(cache.childNodes)) literal.appendChild(node.cloneNode(true));
-        }
-        reference.parentNode!.insertBefore(literal, reference);
-        reference.parentNode!.removeChild(reference);
-      } else if (reference.namespaceURI === C && reference.localName === "multiLvlStrRef") {
-        const cache = Array.from(reference.children).find(node => node.localName === "multiLvlStrCache");
-        const formula = Array.from(reference.children).find(node => node.localName === "f");
-        if (!cache) throw new Error("The chart's category data is unavailable for native copying.");
-        if (formula) reference.removeChild(formula);
-      } else if (reference.namespaceURI === CX && ["numDim", "strDim"].includes(reference.localName)) {
-        if (!Array.from(reference.children).some(node => node.localName === "lvl")) throw new Error("The chart's source data is unavailable for native copying.");
-        for (const node of Array.from(reference.children)) if (["f", "nf"].includes(node.localName)) reference.removeChild(node);
-      } else if (reference.namespaceURI === CX && reference.localName === "txData") {
-        for (const node of Array.from(reference.children)) if (node.localName === "f") reference.removeChild(node);
-      }
-    }
-    for (const node of elements(document.documentElement)) {
-      if ([C, CX].includes(node.namespaceURI ?? "") && node.localName === "externalData") node.parentNode!.removeChild(node);
-    }
-    archive[path] = strToU8(serializeWorkbookXml(document));
-  }
-}
-
-export function encodeExcelDrawingClipboard(clipboard: DrawingClipboard, format: "binary" | "json" = "json") {
-  const archive = { ...clipboard.archive };
-  if (format === "binary") detachChartData(archive);
-  const anchor = parseWorkbookXml(clipboard.anchor).documentElement;
-  const object = elements(anchor).find(node => ["graphicFrame", "pic"].includes(node.localName));
-  if (object) {
-    const size = clipboard.sizeEmu ?? { cx: 4572000, cy: 2743200 };
-    const graphic = convertDrawingNamespace(object, A, "a");
-    const transform = elements(graphic).find(node => node.localName === "xfrm");
-    const offset = transform && Array.from(transform.children).find(node => node.localName === "off");
-    const extent = transform && Array.from(transform.children).find(node => node.localName === "ext");
-    offset?.setAttribute("x", "0"); offset?.setAttribute("y", "0");
-    extent?.setAttribute("cx", String(size.cx)); extent?.setAttribute("cy", String(size.cy));
-    archive[clipboard.drawingPath] = strToU8(`<a:graphic xmlns:a="${A}"><a:graphicData uri="${LC}"><lc:lockedCanvas xmlns:lc="${LC}"><a:nvGrpSpPr><a:cNvPr id="0" name=""/><a:cNvGrpSpPr/></a:nvGrpSpPr><a:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${size.cx}" cy="${size.cy}"/><a:chOff x="0" y="0"/><a:chExt cx="${size.cx}" cy="${size.cy}"/></a:xfrm></a:grpSpPr>${serializeWorkbookXml(graphic)}</lc:lockedCanvas></a:graphicData></a:graphic>`);
-  } else {
-    archive[clipboard.drawingPath] = strToU8(`<a:graphic xmlns:a="${A}"><a:graphicData uri="${XDR}"><xdr:wsDr xmlns:xdr="${XDR}">${clipboard.anchor}</xdr:wsDr></a:graphicData></a:graphic>`);
-  }
-  for (const [path, bytes] of Object.entries(archive)) if (/\/theme\/.*\.xml$/.test(path)) {
-    const theme = parseWorkbookXml(strFromU8(bytes));
-    if (theme.documentElement.localName === "theme") {
-      const root = theme.createElementNS(A, "a:clipboardTheme");
-      for (const node of Array.from(theme.documentElement.children)) if (["themeElements", "clrMap"].includes(node.localName)) root.appendChild(node.cloneNode(true));
-      if (!Array.from(root.children).some(node => node.localName === "clrMap")) {
-        const map = theme.createElementNS(A, "a:clrMap");
-        for (const [key, value] of Object.entries({ bg1: "lt1", tx1: "dk1", bg2: "lt2", tx2: "dk2", accent1: "accent1", accent2: "accent2", accent3: "accent3", accent4: "accent4", accent5: "accent5", accent6: "accent6", hlink: "hlink", folHlink: "folHlink" })) map.setAttribute(key, value);
-        root.appendChild(map);
-      }
-      archive[path] = strToU8(serializeWorkbookXml(root));
-    }
-  }
-  archive["_rels/.rels"] = strToU8(`<Relationships xmlns="${PKG}"><Relationship Id="rId1" Type="${R}/drawing" Target="${clipboard.drawingPath}"/></Relationships>`);
-  const types = parseWorkbookXml(strFromU8(archive["[Content_Types].xml"]));
-  for (const node of Array.from(types.documentElement.children)) if (node.localName === "Override" && !archive[node.getAttribute("PartName")!.slice(1)]) types.documentElement.removeChild(node);
-  archive["[Content_Types].xml"] = strToU8(serializeWorkbookXml(types));
-  const paths = new Map(Object.keys(archive).map(path => [path, path.startsWith("xl/") ? `clipboard/${path.slice(3)}` : path]));
-  const normalized: Record<string, Uint8Array> = {};
-  for (const [path, bytes] of Object.entries(archive)) {
-    const target = paths.get(path)!;
-    if (path.endsWith(".rels")) {
-      const document = parseWorkbookXml(strFromU8(bytes));
-      const owner = path === "_rels/.rels" ? "" : path.replace(/\/\_rels\/([^/]+)\.rels$/, "/$1");
-      for (const node of Array.from(document.documentElement.children)) if (node.getAttribute("TargetMode") !== "External") {
-        const part = resolve(owner, node.getAttribute("Target")!);
-        node.setAttribute("Target", relativeTarget(paths.get(owner) ?? owner, paths.get(part) ?? part));
-      }
-      normalized[target] = strToU8(serializeWorkbookXml(document));
-    } else if (path === "[Content_Types].xml") {
-      const document = parseWorkbookXml(strFromU8(bytes));
-      for (const node of Array.from(document.documentElement.children)) {
-        const name = node.getAttribute("PartName")?.slice(1);
-        if (name && paths.has(name)) node.setAttribute("PartName", `/${paths.get(name)!}`);
-      }
-      normalized[target] = strToU8(serializeWorkbookXml(document));
-    } else normalized[target] = bytes;
-  }
-  const bytes = zipSync(normalized);
-  if (format === "binary") return new Uint8Array(bytes).buffer;
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  return JSON.stringify({ shadowWorkbookBase64: btoa(binary), floatingObjectId: `{${crypto.randomUUID().toUpperCase()}}`, floatingObjectType: clipboard.kind === "chart" ? 0 : 1 });
 }
 
 export function decodeExcelDrawingClipboard(input: string | Uint8Array): DrawingClipboard | null {
@@ -294,7 +129,8 @@ export function decodeExcelDrawingClipboard(input: string | Uint8Array): Drawing
   if (typeof input !== "string" && input[0] === 0x50 && input[1] === 0x4b) bytes = input;
   else {
     try {
-      const parsed: unknown = JSON.parse(typeof input === "string" ? input : strFromU8(input));
+      const json = (typeof input === "string" ? input : strFromU8(input)).replace(/^\uFEFF/, "").replace(/\0+$/, "");
+      const parsed: unknown = JSON.parse(json);
       if (!parsed || typeof parsed !== "object" || !("shadowWorkbookBase64" in parsed) || typeof parsed.shadowWorkbookBase64 !== "string") return null;
       value = parsed as Record<string, unknown>;
       bytes = Uint8Array.from(atob(parsed.shadowWorkbookBase64), character => character.charCodeAt(0));
@@ -311,20 +147,25 @@ export function decodeExcelDrawingClipboard(input: string | Uint8Array): Drawing
   const drawingRel = Array.from(rootRels.documentElement.children).find(node => node.getAttribute("Type") === `${R}/drawing` && node.getAttribute("TargetMode") !== "External");
   if (!drawingRel) return null;
   const drawingPath = resolve("", drawingRel.getAttribute("Target")!);
-  if (!archive[drawingPath] || !archive[relPath(drawingPath)]) return null;
+  if (!archive[drawingPath]) return null;
+  archive[relPath(drawingPath)] ??= strToU8(`<Relationships xmlns="${PKG}"/>`);
   const drawing = parseWorkbookXml(strFromU8(archive[drawingPath]));
   let anchor = elements(drawing.documentElement).find(node => /^(twoCell|oneCell|absolute)Anchor$/.test(node.localName));
   if (!anchor) {
     const canvas = elements(drawing.documentElement).find(node => node.localName === "lockedCanvas");
-    const objects = canvas && Array.from(canvas.children).filter(node => ["graphicFrame", "pic"].includes(node.localName));
+    const objects = canvas && Array.from(canvas.children).filter(node => ["graphicFrame", "pic", "sp", "cxnSp", "grpSp"].includes(node.localName));
     if (objects?.length !== 1) return null;
     const object = objects[0];
     const extent = elements(object).find(node => node.localName === "ext" && node.parentElement?.localName === "xfrm");
     anchor = parseWorkbookXml(`<xdr:oneCellAnchor xmlns:xdr="${XDR}"><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="${Number(extent?.getAttribute("cx")) || 4572000}" cy="${Number(extent?.getAttribute("cy")) || 2743200}"/><xdr:clientData/></xdr:oneCellAnchor>`).documentElement;
-    anchor.insertBefore(anchor.ownerDocument.importNode(convertDrawingNamespace(object, XDR, "xdr"), true), Array.from(anchor.children).at(-1)!);
+    anchor.insertBefore(anchor.ownerDocument.importNode(convertDrawingNamespace(object), true), Array.from(anchor.children).at(-1)!);
   }
-  if (!anchor || elements(anchor).some(node => node.localName === "grpSp")) return null;
-  const kind = elements(anchor).some(node => node.localName === "chart") ? "chart" : elements(anchor).some(node => node.localName === "pic") ? "image" : null;
+  const nodes = elements(anchor);
+  const grouped = nodes.some(node => node.localName === "grpSp");
+  if (grouped && nodes.some(node => node.localName === "graphicFrame")) return null;
+  const kind = nodes.some(node => node.localName === "chart") ? "chart"
+    : nodes.some(node => ["sp", "cxnSp", "grpSp"].includes(node.localName)) ? "shape"
+    : nodes.some(node => node.localName === "pic") ? "image" : null;
   if (!kind) return null;
   const marker = (name: string) => {
     const node = Array.from(anchor.children).find(child => child.localName === name);
@@ -335,34 +176,81 @@ export function decodeExcelDrawingClipboard(input: string | Uint8Array): Drawing
   const from = marker("from"); const to = marker("to");
   const supplied = "drawingSizeEmu" in value ? value.drawingSizeEmu as { cx?: number; cy?: number } : undefined;
   const sizeEmu = { cx: Math.max(9525, Math.min(100000000, Number(supplied?.cx) || Number(extent?.getAttribute("cx")) || to.x - from.x || 4572000)), cy: Math.max(9525, Math.min(100000000, Number(supplied?.cy) || Number(extent?.getAttribute("cy")) || to.y - from.y || 2743200)) };
-  return { token: `react-xlsx-drawing:${crypto.randomUUID()}`, kind, anchor: serializeWorkbookXml(anchor), drawingPath, archive, sizeEmu };
-}
-
-export async function drawingPng(source: string | Blob): Promise<Blob> {
-  const url = typeof source === "string" ? source : URL.createObjectURL(source);
-  try {
-    const image = new Image();
-    image.src = url;
-    await image.decode();
-    const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Image copying is unavailable.");
-    context.drawImage(image, 0, 0);
-    return await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Image copying failed.")), "image/png"));
-  } finally { if (typeof source !== "string") URL.revokeObjectURL(url); }
+  return { kind, anchor: serializeWorkbookXml(anchor), drawingPath, archive, sizeEmu };
 }
 
 export async function imageDrawingClipboard(blob: Blob): Promise<DrawingClipboard> {
+  if (blob.size > 32 * 1024 * 1024) throw new Error("The copied image is too large.");
   const bitmap = await createImageBitmap(blob);
+  let png = blob;
   const sizeEmu = { cx: bitmap.width * 9525, cy: bitmap.height * 9525 };
-  bitmap.close();
+  try {
+    if (bitmap.width * bitmap.height > 16_000_000) throw new Error("The copied image is too large.");
+    if (blob.type !== "image/png") {
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width; canvas.height = bitmap.height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Image pasting is unavailable.");
+      context.drawImage(bitmap, 0, 0);
+      png = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error("Image pasting failed.")), "image/png"));
+    }
+  } finally { bitmap.close(); }
   const drawingPath = "xl/drawings/clipboard.xml";
   const archive = {
     "[Content_Types].xml": strToU8(`<Types xmlns="${CT}"><Default Extension="png" ContentType="image/png"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>`),
     [relPath(drawingPath)]: strToU8(`<Relationships xmlns="${PKG}"><Relationship Id="rId1" Type="${R}/image" Target="../media/clipboard.png"/></Relationships>`),
-    "xl/media/clipboard.png": new Uint8Array(await blob.arrayBuffer())
+    "xl/media/clipboard.png": new Uint8Array(await png.arrayBuffer())
   };
   const anchor = `<xdr:oneCellAnchor xmlns:xdr="${XDR}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${R}"><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="${sizeEmu.cx}" cy="${sizeEmu.cy}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="1" name="Picture"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${sizeEmu.cx}" cy="${sizeEmu.cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`;
-  return { token: `react-xlsx-drawing:${crypto.randomUUID()}`, kind: "image", drawingPath, anchor, archive, sizeEmu };
+  return { kind: "image", drawingPath, anchor, archive, sizeEmu };
+}
+
+export async function readBrowserClipboard(transfer?: DataTransfer): Promise<{
+  drawing: DrawingClipboard | null;
+  structured?: string;
+  text?: string;
+}> {
+  let text = transfer?.getData("text/plain") || undefined;
+  let structured = transfer?.getData(RANGE_CLIPBOARD_TYPE) || undefined;
+  let html = transfer?.getData("text/html") ?? "";
+  const payloads: Array<string | Blob> = DRAWING_CLIPBOARD_TYPES.map(type => transfer?.getData(type)).filter((value): value is string => Boolean(value));
+  const images = Array.from(transfer?.items ?? []).filter(item => item.kind === "file" && item.type.startsWith("image/"))
+    .map(item => item.getAsFile()).filter((file): file is File => file !== null);
+  const previews: Blob[] = [...images];
+  if (transfer && !payloads.length && (structured || (text && (!images.length || /<table[\s>]/i.test(html))))) {
+    return { drawing: null, structured, text };
+  }
+
+  if (typeof navigator !== "undefined" && navigator.clipboard?.read) {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        for (const type of item.types) {
+          if (DRAWING_CLIPBOARD_TYPES.includes(type)) payloads.push(await item.getType(type));
+          else if (type === `web ${RANGE_CLIPBOARD_TYPE}` || type === RANGE_CLIPBOARD_TYPE) structured ??= await (await item.getType(type)).text();
+          else if (type === "text/plain") text ??= await (await item.getType(type)).text();
+          else if (type === "text/html" && !html) html = await (await item.getType(type)).text();
+          else if (type.startsWith("image/")) previews.push(await item.getType(type));
+        }
+      }
+    } catch (error) {
+      if (!transfer) throw error;
+    }
+  } else if (!transfer && typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+    text = await navigator.clipboard.readText();
+  }
+
+  for (const payload of payloads) {
+    try {
+      const drawing = decodeExcelDrawingClipboard(typeof payload === "string" ? payload : new Uint8Array(await payload.arrayBuffer()));
+      if (drawing) return { drawing };
+    } catch {}
+  }
+  if (payloads.length || (!text && !structured && !/<table[\s>]/i.test(html))) {
+    for (const preview of previews) {
+      try { return { drawing: await imageDrawingClipboard(preview) }; }
+      catch {}
+    }
+  }
+  return { drawing: null, structured, text };
 }

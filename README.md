@@ -43,6 +43,7 @@ The React and vanilla entries export the pivot model, operation, editor, and ren
 - `.xlsx` is the primary format; `.xls` and `.xlsm` support is limited by DukeSheets and format-specific XML handling. The default file limit is 25 MB; configure `maxFileSizeBytes` for larger inputs.
 - `setCellStyle`, `setSelectedCellStyle` and `setRangeStyle` persist formatting through undo/export. `getCellStyle` changes display only; the canvas renderer supports a subset of CSS. See [cell styling](packages/react-xlsx/README.md#persisted-cell-styling).
 - Charts load on demand. Unsupported charts show explicit placeholders; map boundaries, native lighting and label placement have remaining gaps. [Chart loading](packages/react-xlsx/README.md#automatic-chart-loading) and [picture bindings](rust/office-art-wasm/README.md) document the rendering boundaries.
+- Paste charts and artwork from Excel through browser clipboard APIs with editing enabled; editable chart data requires a browser-readable Excel drawing package. Drawing Cut/Copy out is unavailable. See [Excel paste support and browser requirements](packages/react-xlsx/README.md#pasting-from-excel).
 
 ## Development
 

@@ -73,7 +73,6 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { nativeDrawingClipboardAdapter } from "@/lib/native-clipboard";
 
 const AUTO_READ_ONLY_THRESHOLD_BYTES = 5 * 1024 * 1024;
 const PLAYGROUND_SAMPLE_URL = "/examples/crazy-chart-zoo-subtypes.xlsx";
@@ -1144,7 +1143,6 @@ export function App() {
   );
 
   const sharedOptions = {
-    drawingClipboardAdapter: nativeDrawingClipboardAdapter,
     allowResizeInReadOnly: settings.allowResizeInReadOnly,
     locale: settings.locale,
     readOnly: settings.readOnly,
