@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0
+
+- Add customizable chart and image context menus with nested chart-type choices and drawing layer commands.
+- Preserve chart-type, position, size, and layer edits through undo/redo and XLSX export without rerendering unrelated charts.
+- Paste browser-readable Excel charts, pictures, and artwork at the active cell, preserving chart caches and shape text; use an image fallback when editable drawing data is unavailable.
+- Refresh hierarchical category labels and modern chart data from worksheet values, and deduplicate React in the playground to avoid invalid hook calls.
+- Document browser-only clipboard support and its limits. Drawing Cut/Copy is unavailable; no native clipboard helpers or servers are required. Excel for Mac is verified; Windows Excel validation remains outstanding.
+
 ## 0.22.1
 
 - Match Excel's opaque data-bar gradients, cell inset, and default length limits in the grid and thumbnails while preserving explicit length settings.
