@@ -15405,7 +15405,7 @@ function XlsxGrid({
     const defaultNode = (
       <img
         alt={image.description ?? image.name ?? ""}
-        data-xlsx-picture-renderer={image.pictureRenderStatus ? "rust-office-art" : undefined}
+        data-xlsx-picture-renderer={image.pictureRenderStatus ? "duke-office-art" : undefined}
         data-xlsx-picture-status={image.pictureRenderStatus}
         draggable={false}
         src={image.src}

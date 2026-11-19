@@ -1,4 +1,4 @@
-use rust_office_art::{PictureContext, ResolvedColor};
+use duke_office_art::{PictureContext, ResolvedColor};
 use wasm_bindgen::prelude::*;
 
 struct Context(js_sys::Function);
@@ -32,12 +32,12 @@ pub fn render_picture(
     height: f64,
     colors: js_sys::Function,
 ) -> Result<Option<String>, JsError> {
-    rust_office_art::render_picture(xml, source, width, height, &Context(colors))
+    duke_office_art::render_picture(xml, source, width, height, &Context(colors))
         .map(|picture| serde_json::to_string(&picture).map_err(JsError::from))
         .transpose()
 }
 
 #[wasm_bindgen(js_name = normalizeRaster)]
 pub fn normalize_raster(source: &str) -> Option<String> {
-    rust_office_art::normalize_raster(source)
+    duke_office_art::normalize_raster(source)
 }

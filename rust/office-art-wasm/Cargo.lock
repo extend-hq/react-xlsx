@@ -87,6 +87,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "duke-odf"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d33ff3c471ec7060af818515246eee83fd4c007853b3a9ad0106d30f7eed3b6"
+dependencies = [
+ "base64",
+ "encoding_rs",
+ "memchr",
+ "miniz_oxide 0.8.9",
+ "quick-xml",
+ "zlib-rs",
+]
+
+[[package]]
+name = "duke-office-art"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "716210e2f4f8cbdd2776532f69f9efce4ea9b28fe241614bd2d2d90d3b9c95ca"
+dependencies = [
+ "base64",
+ "duke-odf",
+ "image",
+ "kurbo",
+ "libm",
+ "memchr",
+ "quick-xml",
+ "roxmltree",
+ "rustybuzz",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,8 +403,8 @@ dependencies = [
 name = "react-xlsx-office-art-wasm"
 version = "0.1.0"
 dependencies = [
+ "duke-office-art",
  "js-sys",
- "rust-office-art",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -373,24 +415,6 @@ name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
-
-[[package]]
-name = "rust-office-art"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5326ba85e56257618204fbc2dee7d12cd7bca420ac500ce71136e33b63acb7cb"
-dependencies = [
- "base64",
- "image",
- "kurbo",
- "libm",
- "memchr",
- "quick-xml",
- "roxmltree",
- "rustybuzz",
- "serde",
- "serde_bytes",
-]
 
 [[package]]
 name = "rustversion"

@@ -152,8 +152,8 @@ importers:
         specifier: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz
         version: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz
       '@extend-ai/duke-office-charts':
-        specifier: file:../../vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz
-        version: file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz
+        specifier: https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.11/extend-ai-duke-office-charts-0.3.11.tgz
+        version: https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.11/extend-ai-duke-office-charts-0.3.11.tgz
       '@tanstack/react-virtual':
         specifier: ^3.13.23
         version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -677,9 +677,9 @@ packages:
     resolution: {tarball: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz}
     version: 0.2.0
 
-  '@extend-ai/duke-office-charts@file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz':
-    resolution: {integrity: sha512-P/ZfE1aUc7KlTv0PgZF2pk7CnlNUMjKlQ/J21q2CyPlFU2ph1chOjMJiiAi0byx5HI9LVO4UWaeZTuMOdwWpOQ==, tarball: file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz}
-    version: 0.3.5
+  '@extend-ai/duke-office-charts@https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.11/extend-ai-duke-office-charts-0.3.11.tgz':
+    resolution: {integrity: sha512-P/ZfE1aUc7KlTv0PgZF2pk7CnlNUMjKlQ/J21q2CyPlFU2ph1chOjMJiiAi0byx5HI9LVO4UWaeZTuMOdwWpOQ==, tarball: https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.11/extend-ai-duke-office-charts-0.3.11.tgz}
+    version: 0.3.11
 
   '@floating-ui/core@1.7.5':
     resolution: {integrity: sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ==}
@@ -4092,7 +4092,7 @@ snapshots:
 
   '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz': {}
 
-  '@extend-ai/duke-office-charts@file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz': {}
+  '@extend-ai/duke-office-charts@https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.11/extend-ai-duke-office-charts-0.3.11.tgz': {}
 
   '@floating-ui/core@1.7.5':
     dependencies:

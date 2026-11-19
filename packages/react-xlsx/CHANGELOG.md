@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.1
+
+- Update artwork rendering to Duke Office Art 0.2.2 and use the smaller Duke Office Charts 0.3.11 browser bundles.
+
 ## 0.23.0
 
 - Add customizable chart and image context menus with nested chart-type choices and drawing layer commands.
