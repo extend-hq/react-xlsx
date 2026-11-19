@@ -1,4 +1,4 @@
-import type { OfficeCharts } from "@extend-ai/rust-office-charts";
+import type { OfficeCharts } from "@extend-ai/duke-office-charts";
 import type { XlsxChart } from "./types";
 
 type ModuleSnapshot<T> = { module: T | null; error: unknown };

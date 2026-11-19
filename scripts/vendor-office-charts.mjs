@@ -9,7 +9,7 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.argv[2]) throw new Error("Pass the path to the renderer source checkout after building its browser package.");
 const source = resolve(process.argv[2]);
 const sourcePackage = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
-if (sourcePackage.name !== "@extend-ai/rust-office-charts") throw new Error("Unexpected renderer package.");
+if (sourcePackage.name !== "@extend-ai/duke-office-charts") throw new Error("Unexpected renderer package.");
 const run = (command, args, cwd = source, inherit = false) => {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: inherit ? "inherit" : "pipe" });
   if (result.error) throw result.error;
@@ -25,7 +25,7 @@ try {
   const archive = join(temporary, packed.filename);
   const bytes = readFileSync(archive);
   const digest = hash(bytes);
-  const filename = `rust-office-charts-${sourcePackage.version}-${digest.slice(0, 16)}.tgz`;
+  const filename = `duke-office-charts-${sourcePackage.version}-${digest.slice(0, 16)}.tgz`;
   const vendor = join(repository, "vendor");
   mkdirSync(vendor, { recursive: true });
   copyFileSync(archive, join(vendor, filename));

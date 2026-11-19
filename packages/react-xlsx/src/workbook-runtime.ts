@@ -693,7 +693,7 @@ export function createWorkbookRuntime() {
       case "renderChart": {
         const [chart, source, width, height] = message.payload;
         const [{ loadOfficeCharts }, { renderChartInWorker }] = await Promise.all([
-          source.experimental ? import("@extend-ai/rust-office-charts/full") : import("@extend-ai/rust-office-charts"),
+          source.experimental ? import("@extend-ai/duke-office-charts/full") : import("@extend-ai/duke-office-charts"),
           import("./chart-worker-render")
         ]);
         await loadSpreadsheetFonts(workbookFontFamilies, typeof document === "undefined" ? globalThis as unknown as Document : document);

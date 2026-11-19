@@ -20,9 +20,9 @@ for (const name of ["preact"]) {
   copyFileSync(join(directory, "LICENSE"), new URL(`${name}-LICENSE.txt`, distDir));
 }
 
-const chartsDirectory = dirname(require.resolve("@extend-ai/rust-office-charts/package.json"));
+const chartsDirectory = dirname(require.resolve("@extend-ai/duke-office-charts/package.json"));
 for (const name of ["LICENSE", "MAP-DATA-LICENSE", "FONT-DATA-LICENSE", "THIRD-PARTY-NOTICES.txt"]) {
-  copyFileSync(join(chartsDirectory, name), new URL(`rust-office-charts-${name}${name.endsWith(".txt") ? "" : ".txt"}`, distDir));
+  copyFileSync(join(chartsDirectory, name), new URL(`duke-office-charts-${name}${name.endsWith(".txt") ? "" : ".txt"}`, distDir));
 }
-copyFileSync(require.resolve("@extend-ai/rust-office-charts/office_charts_bg.wasm"), new URL("office_charts_bg.wasm", distDir));
-copyFileSync(require.resolve("@extend-ai/rust-office-charts/full/office_charts_bg.wasm"), new URL("office_charts_full_bg.wasm", distDir));
+copyFileSync(require.resolve("@extend-ai/duke-office-charts/office_charts_bg.wasm"), new URL("office_charts_bg.wasm", distDir));
+copyFileSync(require.resolve("@extend-ai/duke-office-charts/full/office_charts_bg.wasm"), new URL("office_charts_full_bg.wasm", distDir));

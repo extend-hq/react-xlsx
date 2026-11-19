@@ -151,9 +151,9 @@ importers:
       '@extend-ai/office-fonts':
         specifier: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz
         version: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz
-      '@extend-ai/rust-office-charts':
-        specifier: file:../../vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz
-        version: file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz
+      '@extend-ai/duke-office-charts':
+        specifier: file:../../vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz
+        version: file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz
       '@tanstack/react-virtual':
         specifier: ^3.13.23
         version: 3.13.23(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -677,8 +677,8 @@ packages:
     resolution: {tarball: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz}
     version: 0.2.0
 
-  '@extend-ai/rust-office-charts@file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz':
-    resolution: {integrity: sha512-WVIecyuUIEqBXPxYwHrSW0qwjVfqaRlrvYH4WyFn3LXy2PFEioijqexpQgzJMK2rKLnIKLcXYCdlHDrRyuXvNQ==, tarball: file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz}
+  '@extend-ai/duke-office-charts@file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz':
+    resolution: {integrity: sha512-P/ZfE1aUc7KlTv0PgZF2pk7CnlNUMjKlQ/J21q2CyPlFU2ph1chOjMJiiAi0byx5HI9LVO4UWaeZTuMOdwWpOQ==, tarball: file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz}
     version: 0.3.5
 
   '@floating-ui/core@1.7.5':
@@ -4092,7 +4092,7 @@ snapshots:
 
   '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz': {}
 
-  '@extend-ai/rust-office-charts@file:vendor/rust-office-charts-0.3.5-89664cbac7da14a0.tgz': {}
+  '@extend-ai/duke-office-charts@file:vendor/duke-office-charts-0.3.11-a24ca42188fa2004.tgz': {}
 
   '@floating-ui/core@1.7.5':
     dependencies:

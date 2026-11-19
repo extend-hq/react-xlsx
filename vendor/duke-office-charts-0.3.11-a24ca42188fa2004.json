@@ -1,0 +1,12 @@
+{
+  "name": "@extend-ai/duke-office-charts",
+  "version": "0.3.11",
+  "archive": "duke-office-charts-0.3.11-a24ca42188fa2004.tgz",
+  "sha256": "a24ca42188fa2004dd6cab1ef52d3ff03262a2a0f552d3f99b0c1ef8f1d8d61c",
+  "integrity": "sha512-P/ZfE1aUc7KlTv0PgZF2pk7CnlNUMjKlQ/J21q2CyPlFU2ph1chOjMJiiAi0byx5HI9LVO4UWaeZTuMOdwWpOQ==",
+  "sourceRevision": "6044521d9bba9b19e7d1ab41029adcd0c508cba1",
+  "sourceHasUncommittedChanges": false,
+  "sourceDigest": "5e5ee000f4c8644441b2f83ee785a5623e08eb2b1fc667b5416a60f942349955",
+  "coreWasmSha256": "cf8e2bbbcd47e652235ecc2f09342c141e7efdbf5320929e74e1173fbe2e9cde",
+  "fullWasmSha256": "524cc4b009414deead745f68704e0c893cb2f2e21076fcb982760afd4adb965b"
+}

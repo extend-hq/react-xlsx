@@ -1,5 +1,5 @@
 import { useXlsxMessages } from "./messages-context";
-import type { OfficeCharts } from "@extend-ai/rust-office-charts";
+import type { OfficeCharts } from "@extend-ai/duke-office-charts";
 import * as React from "react";
 import { officeChartRenderer, suppliedOfficeChartRenderer, officeExtendedChartRenderer } from "./chart-loader";
 import { useChartModule } from "./use-chart-module";
