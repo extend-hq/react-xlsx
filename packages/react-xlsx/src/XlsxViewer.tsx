@@ -8394,6 +8394,13 @@ function XlsxGrid({
     }
   }, [clearGlobalCursor]);
   React.useEffect(() => clearResizeDrag, [clearResizeDrag]);
+  React.useLayoutEffect(() => {
+    if (resizeStateRef.current) {
+      clearResizeDrag();
+      setInteractionMode("idle");
+      setResizeGuide(null);
+    }
+  }, [activeSheet, clearResizeDrag, setInteractionMode]);
 
   function suppressResizeTextSelection() {
     const { style } = document.body;
