@@ -10,6 +10,8 @@ declare global {
 export interface JsRowCell {
     col: number;
     value: string;
+    numericValue?: number;
+    generalAlignment?: "left" | "center" | "right";
     richText?: Array<{ text: string; font?: FontStyleInput | null }>;
     style?: any;
     mergeSpan?: JsMergeSpan;
@@ -633,6 +635,8 @@ export interface FormControlInteractionResult {
 }
 
 export interface Worksheet {
+    getAutofitCells(axis: "column" | "row", index: number): JsRow[];
+    getAutoHeightCells(rowCount: number, colCount: number): JsRow[];
     iterateRows(opts?: JsRowsOptions): RowIterator;
     setCellStyle(address: string, style: StyleInput): void;
     setCellStyleAt(row: number, col: number, style: StyleInput): void;
@@ -892,12 +896,6 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly decodeArchive: (a: number, b: number) => [number, number, number];
-    readonly inspectArchive: (a: number, b: number) => [number, number, number];
-    readonly parseXmlTree: (a: number, b: number) => [number, number, number, number];
-    readonly workbook_fontFamilies: (a: number) => [number, number];
-    readonly workbook_fromBytesForViewer: (a: number, b: number) => [number, number, number];
-    readonly workbook_takeViewerArchive: (a: number) => [number, number, number];
     readonly workbook_activeSheet: (a: number) => [number, number, number];
     readonly workbook_chartsheetCount: (a: number) => [number, number, number];
     readonly workbook_chartsheets: (a: number) => [number, number, number];
@@ -935,6 +933,8 @@ export interface InitOutput {
     readonly worksheet_formulaCells: (a: number) => [number, number, number];
     readonly worksheet_formulaCount: (a: number) => [number, number, number];
     readonly worksheet_freezePanes: (a: number) => [number, number, number];
+    readonly worksheet_getAutoHeightCells: (a: number, b: number, c: number) => [number, number, number];
+    readonly worksheet_getAutofitCells: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly worksheet_getCellStyle: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_getCellStyleAt: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_getColumnOutlineLevel: (a: number, b: number) => [number, number, number];
@@ -981,6 +981,12 @@ export interface InitOutput {
     readonly worksheet_tables: (a: number) => [number, number, number];
     readonly worksheet_visibility: (a: number) => [number, number, number, number];
     readonly worksheet_zoomScale: (a: number) => [number, number, number];
+    readonly decodeArchive: (a: number, b: number) => [number, number, number];
+    readonly inspectArchive: (a: number, b: number) => [number, number, number];
+    readonly parseXmlTree: (a: number, b: number) => [number, number, number, number];
+    readonly workbook_fontFamilies: (a: number) => [number, number];
+    readonly workbook_fromBytesForViewer: (a: number, b: number) => [number, number, number];
+    readonly workbook_takeViewerArchive: (a: number) => [number, number, number];
     readonly workbook_syncFormControls: (a: number) => number;
     readonly workbook_syncFormControlsFromLinkedCells: (a: number) => number;
     readonly worksheet_addDrawing: (a: number, b: any) => [number, number, number];

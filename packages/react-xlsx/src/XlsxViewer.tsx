@@ -2,6 +2,7 @@ import { formatMessage, mergeMessages, type XlsxViewerMessages } from "./message
 import { XlsxMessagesContext, useXlsxMessages } from "./messages-context";
 import { coerceUserEnteredValue, getCellEditingValue, getUserEnteredFormula, isTextCell } from "./cell-input";
 import { localizeCellNumber, localizeRows } from "./number-locale";
+import { readWorksheetAutofitCells, readWorksheetAutoHeightCells, type AutofitAxis } from "./worksheet-autofit";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { VIEWPORT_CHANGE_EVENT, visibleOverlayRect } from "./overlay-geometry";
@@ -97,6 +98,8 @@ const RANGE_HIGHLIGHT_STYLES = `
 
 const DEFAULT_ROW_HEIGHT = 24;
 const DEFAULT_COL_WIDTH = 80;
+const MAX_COLUMN_WIDTH_CHARACTERS = 255;
+const MAX_AUTOFIT_ROW_HEIGHT_PX = 409 * (4 / 3);
 const HEADER_HEIGHT = 24;
 const ROW_HEADER_WIDTH = 40;
 const INTERNAL_CLIPBOARD_MIME = "application/x-react-xlsx-range+json";
@@ -5509,30 +5512,139 @@ function measureCellTextWidth(cell: CellRenderData) {
   return cell.richText ? cell.richText.reduce((sum, run) => sum + measureTextWidth(run.text, run.style), 0) : measureTextWidth(cell.value, cell.style);
 }
 
-function drawRichCellText(context: CanvasRenderingContext2D, cell: CellRenderData, rect: { left: number; top: number; width: number; height: number }) {
-  if (!cell.richText) return;
-  context.save();
-  const naturalWidth = measureCellTextWidth(cell);
-  const scale = cell.shrinkToFitFontSizePx !== undefined
-    ? cell.shrinkToFitFontSizePx / resolveCanvasFontSizePx(cell.style, 14)
-    : cell.shrinkToFit && naturalWidth > rect.width ? Math.max(0.4, rect.width / naturalWidth) : 1;
-  const wrap = !cell.textRotationDeg && (cell.style.whiteSpace === "pre-wrap" || cell.value.includes("\n"));
+const DOM_AUTOFIT_TEXT_PROPERTIES = {
+  fontKerning: "font-kerning",
+  fontStretch: "font-stretch",
+  fontVariant: "font-variant",
+  letterSpacing: "letter-spacing",
+  overflowWrap: "overflow-wrap",
+  tabSize: "tab-size",
+  textTransform: "text-transform",
+  whiteSpace: "white-space",
+  wordBreak: "word-break",
+  wordSpacing: "word-spacing"
+} as const;
+
+const domAutofitTextProperties = Object.keys(DOM_AUTOFIT_TEXT_PROPERTIES) as Array<keyof typeof DOM_AUTOFIT_TEXT_PROPERTIES>;
+
+function applyAutofitTextStyle(element: HTMLElement, style: React.CSSProperties) {
+  element.style.font = resolveCanvasFont(style);
+  if (style.lineHeight !== undefined) element.style.lineHeight = String(style.lineHeight);
+  for (const key of domAutofitTextProperties) {
+    const value = style[key];
+    if (value === undefined) continue;
+    const cssValue = typeof value === "number" && (key === "letterSpacing" || key === "wordSpacing")
+      ? `${value}px`
+      : String(value);
+    element.style.setProperty(DOM_AUTOFIT_TEXT_PROPERTIES[key], cssValue);
+  }
+}
+
+function measureDomAutofitCell(
+  value: string,
+  richText: CellRenderData["richText"],
+  style: React.CSSProperties,
+  rotation: number | null,
+  locale: string,
+  wrapWidth?: number
+) {
+  const probe = document.createElement("span");
+  applyAutofitTextStyle(probe, style);
+  Object.assign(probe.style, {
+    display: "block",
+    position: "fixed",
+    visibility: "hidden",
+    pointerEvents: "none",
+    inset: "0 auto auto 0",
+    width: wrapWidth === undefined ? "max-content" : `${wrapWidth}px`,
+    whiteSpace: rotation
+      ? "nowrap"
+      : /[\r\n]/.test(value) && style.whiteSpace === "nowrap"
+        ? "pre-wrap"
+        : style.whiteSpace ?? "nowrap"
+  });
+  probe.lang = locale;
+  probe.setAttribute("aria-hidden", "true");
+  if (richText) {
+    for (const run of richText) {
+      const span = document.createElement("span");
+      applyAutofitTextStyle(span, run.style);
+      span.style.whiteSpace = "inherit";
+      span.textContent = run.text;
+      probe.append(span);
+    }
+  } else {
+    probe.textContent = value;
+  }
+
+  document.body.append(probe);
+  try {
+    const { width, height } = probe.getBoundingClientRect();
+    return rotation ? resolveRotatedTextBounds(width, height, rotation) : { width, height };
+  } finally {
+    probe.remove();
+  }
+}
+
+function measureAutofitCell(
+  value: string,
+  richText: CellRenderData["richText"],
+  style: React.CSSProperties,
+  rotation: number | null,
+  zoom: number,
+  wrapWidth?: number
+) {
+  textMeasureCanvas ??= document.createElement("canvas");
+  const context = textMeasureCanvas.getContext("2d", { alpha: false });
+  if (!context) return { width: 0, height: 0 };
+
+  let width: number;
+  let height: number;
+  if (richText) {
+    const lines = layoutRichCellLines(context, richText, 1, wrapWidth, !rotation);
+    width = Math.max(...lines.map(line => line.reduce((sum, part) => sum + part.width, 0)));
+    height = measureRichLineHeights(lines, style, 1).reduce((sum, lineHeight) => sum + lineHeight, 0);
+  } else {
+    context.font = resolveCanvasFont(style, 12 * zoom);
+    const lines = rotation ? [value]
+      : wrapWidth === undefined ? value.split(/\r\n?|\n/)
+      : wrapCanvasText(context, value, wrapWidth);
+    width = lines.reduce((max, line) => Math.max(max, measureCanvasTextWidth(context, line)), 0);
+    height = lines.length * resolveCanvasLineHeight(style, 12 * zoom);
+  }
+
+  return rotation ? resolveRotatedTextBounds(width, height, rotation) : { width, height };
+}
+
+function layoutRichCellLines(
+  context: CanvasRenderingContext2D,
+  runs: NonNullable<CellRenderData["richText"]>,
+  scale: number,
+  wrapWidth: number | undefined,
+  splitLines: boolean
+) {
   type Fragment = { text: string; style: React.CSSProperties; width: number; height: number };
   const lines: Fragment[][] = [[]];
   let width = 0;
-  for (const run of cell.richText) {
+  for (const run of runs) {
     const style = { ...run.style, fontSize: resolveCanvasFontSizePx(run.style, 14) * scale };
     context.font = resolveCanvasFontWithPxSize(style, Number(style.fontSize));
     const height = resolveCanvasLineHeight(style, Number(style.fontSize));
-    const parts = wrap ? run.text.split(/(\r?\n|[^\S\r\n]+|[^\s]+)/).filter(Boolean) : [run.text];
+    const parts = wrapWidth !== undefined
+      ? run.text.split(/(\r\n?|\n|[^\S\r\n]+|[^\s]+)/).filter(Boolean)
+      : splitLines ? run.text.split(/(\r\n?|\n)/) : [run.text];
     for (const part of parts) {
-      if (part === "\n" || part === "\r\n") { lines.push([]); width = 0; continue; }
+      if ((splitLines || wrapWidth !== undefined) && /^(?:\r\n?|\n)$/.test(part)) {
+        lines.push([]);
+        width = 0;
+        continue;
+      }
       const partWidth = context.measureText(part).width;
-      if (wrap && width > 0 && width + partWidth > rect.width) { lines.push([]); width = 0; }
-      if (wrap && partWidth > rect.width) {
+      if (wrapWidth !== undefined && width > 0 && width + partWidth > wrapWidth) { lines.push([]); width = 0; }
+      if (wrapWidth !== undefined && partWidth > wrapWidth) {
         for (const character of part) {
           const characterWidth = context.measureText(character).width;
-          if (width > 0 && width + characterWidth > rect.width) { lines.push([]); width = 0; }
+          if (width > 0 && width + characterWidth > wrapWidth) { lines.push([]); width = 0; }
           lines[lines.length - 1]!.push({ text: character, style, width: characterWidth, height });
           width += characterWidth;
         }
@@ -5542,7 +5654,28 @@ function drawRichCellText(context: CanvasRenderingContext2D, cell: CellRenderDat
       }
     }
   }
-  const heights = lines.map(line => Math.max(resolveCanvasLineHeight(cell.style, 14) * scale, ...line.map(part => part.height)));
+  return lines;
+}
+
+function measureRichLineHeights(
+  lines: ReturnType<typeof layoutRichCellLines>,
+  style: React.CSSProperties,
+  scale: number
+) {
+  const baseHeight = resolveCanvasLineHeight(style, 14) * scale;
+  return lines.map(line => line.reduce((height, part) => Math.max(height, part.height), baseHeight));
+}
+
+function drawRichCellText(context: CanvasRenderingContext2D, cell: CellRenderData, rect: { left: number; top: number; width: number; height: number }) {
+  if (!cell.richText) return;
+  context.save();
+  const naturalWidth = measureCellTextWidth(cell);
+  const scale = cell.shrinkToFitFontSizePx !== undefined
+    ? cell.shrinkToFitFontSizePx / resolveCanvasFontSizePx(cell.style, 14)
+    : cell.shrinkToFit && naturalWidth > rect.width ? Math.max(0.4, rect.width / naturalWidth) : 1;
+  const wrap = !cell.textRotationDeg && (cell.style.whiteSpace === "pre-wrap" || cell.value.includes("\n"));
+  const lines = layoutRichCellLines(context, cell.richText, scale, wrap ? rect.width : undefined, false);
+  const heights = measureRichLineHeights(lines, cell.style, scale);
   const totalHeight = heights.reduce((sum, height) => sum + height, 0);
   let y = rect.top + (cell.style.verticalAlign === "top" ? 0 : cell.style.verticalAlign === "middle" ? (rect.height - totalHeight) / 2 : rect.height - totalHeight);
   if (cell.textRotationDeg) {
@@ -6902,6 +7035,7 @@ type GridRowProps = {
   onEditingValueChange: (value: string) => void;
   onRowHeaderRef: (actualRow: number, element: HTMLTableCellElement | null) => void;
   onRowPointerDown: (event: React.PointerEvent<HTMLTableCellElement>, actualRow: number) => void;
+  onRowResizeDoubleClick: (actualRow: number) => void;
   onRowResizePointerDown: (event: React.PointerEvent<HTMLDivElement>, actualRow: number, rowHeight: number) => void;
   palette: ViewerPalette;
   readOnly: boolean;
@@ -6940,6 +7074,7 @@ function GridRow({
   onEditingValueChange,
   onRowHeaderRef,
   onRowPointerDown,
+  onRowResizeDoubleClick,
   onRowResizePointerDown,
   palette,
   readOnly,
@@ -6991,20 +7126,23 @@ function GridRow({
           >
             {actualRow + 1}
           </span>
-          <div
-            onPointerDown={(event) => onRowResizePointerDown(event, actualRow, rowHeight)}
-            style={{
-              backgroundColor: "transparent",
-              bottom: -8 * zoomFactor,
-              cursor: "row-resize",
-              height: 16 * zoomFactor,
-              left: 0,
-              position: "absolute",
-              width: "100%",
-              zIndex: 5
-            }}
-          />
         </div>
+        <div
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            onRowResizeDoubleClick(actualRow);
+          }}
+          onPointerDown={(event) => onRowResizePointerDown(event, actualRow, rowHeight)}
+          style={{
+            bottom: 0,
+            cursor: "row-resize",
+            height: CANVAS_RESIZE_HIT_SLOP_PX,
+            left: 0,
+            position: "absolute",
+            width: "100%",
+            zIndex: 5
+          }}
+        />
       </td>
       {leadingSpacerWidth > 0 ? (
         <td
@@ -7098,13 +7236,15 @@ function GridRow({
           width: "100%",
           wordBreak: "inherit"
         };
-        const usesWrappedText = cellData.style.whiteSpace === "pre-wrap" || cellData.value.includes("\n");
+        const hasLineBreak = /[\r\n]/.test(cellData.value);
+        const usesWrappedText = cellData.style.whiteSpace === "pre-wrap" || hasLineBreak;
         const wrappedTextStyle = usesWrappedText
           ? {
               display: "block",
               flex: "0 0 auto",
               maxWidth: "100%",
-              minWidth: 0
+              minWidth: 0,
+              whiteSpace: hasLineBreak && cellData.style.whiteSpace === "nowrap" ? "pre-wrap" : undefined
             } satisfies React.CSSProperties
           : null;
         if (usesWrappedText) {
@@ -7380,6 +7520,7 @@ const MemoGridRow = React.memo(GridRow, (prev, next) => {
     prev.onEditingValueChange !== next.onEditingValueChange ||
     prev.onRowHeaderRef !== next.onRowHeaderRef ||
     prev.onRowPointerDown !== next.onRowPointerDown ||
+    prev.onRowResizeDoubleClick !== next.onRowResizeDoubleClick ||
     prev.onRowResizePointerDown !== next.onRowResizePointerDown ||
     prev.renderCellAdornment !== next.renderCellAdornment
     || prev.cellEditorStyle !== next.cellEditorStyle
@@ -7470,6 +7611,7 @@ function XlsxGrid({
     formControls,
     getActiveWorksheet,
     getChartById,
+    getAutofitCellsAsync,
     getRowsBatchAsync,
     getClipboardData,
     getCellDisplayValue: getControllerCellDisplayValue,
@@ -7546,7 +7688,7 @@ function XlsxGrid({
   }, [contextMenu, selection, selectedChartId, selectedImageId]);
   const openDrawingContextMenuRef = React.useRef(openDrawingContextMenu);
   openDrawingContextMenuRef.current = openDrawingContextMenu;
-  const canResizeHeaders = !readOnly || allowResizeInReadOnly;
+  const canResizeHeaders = controller.canResize !== false && (!readOnly || allowResizeInReadOnly);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const scrolledHighlightRef = React.useRef<XlsxViewerController["highlightedRanges"][number] | null>(null);
   const wrapperRef = React.useRef<HTMLDivElement>(null);
@@ -7663,6 +7805,7 @@ function XlsxGrid({
     | null
   >(null);
   const resizeFrameRef = React.useRef<number | null>(null);
+  const autofitRequestRef = React.useRef(0);
   const pendingResizePreviewRef = React.useRef<
     | {
         actualIndex: number;
@@ -8524,6 +8667,12 @@ function XlsxGrid({
       locale
     ]
   );
+  const autoHeightCells = React.useMemo(
+    () => worksheet && !activeSheet?.officeLayout
+      ? readWorksheetAutoHeightCells(worksheet, displayRowLimit, displayColLimit, locale)
+      : [],
+    [activeSheet?.officeLayout, displayColLimit, displayRowLimit, locale, revision, worksheet]
+  );
   const actualRowHeights = React.useMemo(
     () => {
       const office = activeSheet?.officeLayout;
@@ -8547,11 +8696,23 @@ function XlsxGrid({
       );
 
       if (worksheet) {
-        for (let row = 0; row < displayRowLimit; row += 1) {
-          if (worksheet.isRowHidden(row)) {
-            continue;
+        const estimatedHeights = new Map<number, number>();
+        for (const { index: row, cells } of autoHeightCells) {
+          let estimatedHeight = 0;
+          for (const cell of cells) {
+            const cellStyle = buildCellStyle(asRecord(cell.style), palette, activeSheet?.themePalette, { showGridLines });
+            const spanEnd = Math.min(displayColLimit, cell.col + (cell.mergeSpan?.colSpan ?? 1));
+            let cellWidth = 0;
+            for (let col = cell.col; col < spanEnd; col += 1) {
+              cellWidth += actualColWidths[col] ?? (activeSheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH);
+            }
+            estimatedHeight = Math.max(estimatedHeight, measureWrappedTextHeight(cell.value, cellStyle, cellWidth));
           }
+          estimatedHeights.set(row, estimatedHeight);
+        }
 
+        for (let row = 0; row < displayRowLimit; row += 1) {
+          if (worksheet.isRowHidden(row)) continue;
           const height = worksheet.getRowHeight(row);
           if (height !== undefined && height !== null) {
             heights[row] = Math.max(
@@ -8561,54 +8722,16 @@ function XlsxGrid({
             continue;
           }
 
-          const maxMeasuredCol = Math.min(displayColLimit - 1, activeSheet?.maxUsedCol ?? -1);
-          let estimatedAutoHeight = 0;
-          if (maxMeasuredCol >= 0) {
-            for (let col = 0; col <= maxMeasuredCol; col += 1) {
-              if (worksheet.isColumnHidden(col) || worksheet.isMergedSecondary(row, col)) {
-                continue;
-              }
-
-              const cellValue = localizeCellNumber(worksheet, row, col, worksheet.getFormattedValueAt(row, col), locale);
-              if (!cellValue) {
-                continue;
-              }
-
-              const rawStyle = (worksheet.getCellStyleAt(row, col) as Record<string, unknown> | null | undefined) ?? null;
-              const cellStyle = buildCellStyle(rawStyle, palette, activeSheet?.themePalette, {
-                showGridLines: activeSheet?.showGridLines
-              });
-              if (cellStyle.whiteSpace !== "pre-wrap" && !cellValue.includes("\n") && !cellValue.includes("\r")) {
-                continue;
-              }
-
-              const merge = worksheet.getMergeSpan(row, col) as { colSpan?: number } | null | undefined;
-              const colSpan = Math.max(1, merge?.colSpan ?? 1);
-              let cellWidth = 0;
-              for (let spanCol = col; spanCol < Math.min(displayColLimit, col + colSpan); spanCol += 1) {
-                cellWidth += actualColWidths[spanCol] ?? (activeSheet?.defaultColWidthPx ?? DEFAULT_COL_WIDTH);
-              }
-              estimatedAutoHeight = Math.max(
-                estimatedAutoHeight,
-                measureWrappedTextHeight(cellValue, cellStyle, cellWidth)
+          const estimatedAutoHeight = estimatedHeights.get(row) ?? 0;
+          heights[row] = estimatedAutoHeight > 0
+            ? Math.max(resolveRenderedSheetAxisPixels(Math.ceil(estimatedAutoHeight), showGridLines), fallbackHeight)
+            : Math.max(
+                resolveRenderedSheetAxisPixels(
+                  activeSheet?.rowHeightOverridesPx[row] ?? activeSheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
+                  showGridLines
+                ),
+                DEFAULT_ROW_HEIGHT / 1.5
               );
-            }
-          }
-          if (estimatedAutoHeight > 0) {
-            heights[row] = Math.max(
-              resolveRenderedSheetAxisPixels(Math.ceil(estimatedAutoHeight), showGridLines),
-              fallbackHeight
-            );
-            continue;
-          }
-
-          heights[row] = Math.max(
-            resolveRenderedSheetAxisPixels(
-              activeSheet?.rowHeightOverridesPx[row] ?? activeSheet?.defaultRowHeightPx ?? DEFAULT_ROW_HEIGHT,
-              showGridLines
-            ),
-            DEFAULT_ROW_HEIGHT / 1.5
-          );
         }
 
         return heights;
@@ -8648,19 +8771,18 @@ function XlsxGrid({
       activeSheet?.officeLayout,
       activeSheet?.defaultRowHeightPx,
       activeSheet?.maxUsedRow,
-      activeSheet?.maxUsedCol,
       activeSheet?.rowHeightOverridesPx,
       activeSheet?.rowHeights,
       activeSheet?.showGridLines,
       activeSheet?.themePalette,
       activeSheet?.visibleRows,
       actualColWidths,
+      autoHeightCells,
       displayRowLimit,
       displayColLimit,
       palette,
       worksheet,
-      revision,
-      locale
+      revision
     ]
   );
   const displayActualColWidths = React.useMemo(
@@ -12484,6 +12606,152 @@ function XlsxGrid({
       stickyTopByRow
     ]
   );
+  React.useLayoutEffect(() => () => {
+    autofitRequestRef.current += 1;
+  }, [activeSheet, canResizeHeaders, experimentalCanvas, getAutofitCellsAsync, getCellStyle, locale, palette, revision, worksheet, zoomFactor]);
+
+  const autofit = React.useCallback(async (axis: AutofitAxis, index: number) => {
+    if (!canResizeHeaders || !activeSheet || (!getAutofitCellsAsync && !worksheet)) {
+      return;
+    }
+
+    const request = ++autofitRequestRef.current;
+    const rows = getAutofitCellsAsync
+      ? await getAutofitCellsAsync(activeSheet.workbookSheetIndex, axis, index)
+      : worksheet && readWorksheetAutofitCells(worksheet, axis, index, locale);
+    if (!rows || request !== autofitRequestRef.current) return;
+
+    const isRow = axis === "row";
+    const precomputedColumnWidths = new Map<number, number>();
+    if (isRow && !activeSheet.officeLayout) {
+      for (let offset = 0; offset < activeSheet.visibleCols.length; offset += 1) {
+        precomputedColumnWidths.set(activeSheet.visibleCols[offset], activeSheet.colWidths[offset]);
+      }
+    }
+    const getColumnWidth = (col: number) => {
+      const measured = actualColWidths[col];
+      if (measured !== undefined) return measured;
+      const override = activeSheet.colWidthOverridesPx[col];
+      const office = activeSheet.officeLayout;
+      if (office) {
+        const original = office.columns[col];
+        return override !== undefined && override !== original?.sourcePx
+          ? override
+          : original?.sizePx ?? office.defaultColumnPx;
+      }
+      const width = override ?? precomputedColumnWidths.get(col) ?? activeSheet.defaultColWidthPx ?? DEFAULT_COL_WIDTH;
+      return Math.max(resolveRenderedSheetAxisPixels(width, activeSheet.showGridLines), DEFAULT_COL_WIDTH / 2);
+    };
+    const batch = buildWorksheetBatchWindow(rows, activeSheet, activeSheet.minUsedRow, activeSheet.maxUsedRow);
+    const maxSize = isRow
+      ? MAX_AUTOFIT_ROW_HEIGHT_PX
+      : activeSheet.officeLayout
+        ? resolveOfficeColumnWidthPixels(MAX_COLUMN_WIDTH_CHARACTERS, activeSheet.officeLayout.columnDigitWidthPt)
+        : resolveSheetColumnWidthPixels(MAX_COLUMN_WIDTH_CHARACTERS, activeSheet.columnWidthCharacterWidthPx);
+    const visualRules = worksheet
+      ? activeSheet.conditionalFormatRules.filter(rule => rule.kind !== "styled")
+      : [];
+    let largest = 0;
+    let frameStart = performance.now();
+
+    for (const [key, cell] of batch.cells) {
+      if (!cell.value || cell.isMergedSecondary || sparklinesByCell.has(key)) continue;
+      const [row, col] = key.split(":").map(Number);
+      const colSpan = cell.mergeSpan?.colSpan ?? 1;
+      const rowSpan = cell.mergeSpan?.rowSpan ?? 1;
+      if (isRow ? rowSpan > 1 || hiddenColSet.has(col) : colSpan > 1 || hiddenRowSet.has(row)) continue;
+
+      const address = { row, col };
+      const inheritedStyle = resolveInheritedCellStyle(activeSheet, row, col);
+      const cellStyle = mergeResolvedCellStyle(inheritedStyle, cell.style, { replaceXfSubtrees: true });
+      if (cellStyle?.cellControl) continue;
+      const table = getTableAtCell(effectiveTables, row, col);
+      const tableStyle = resolveTableCellStyle(table, row, col, activeSheet);
+      const baseStyle = tableStyle
+        ? mergeResolvedCellStyle(
+            mergeResolvedCellStyle(cellStyle, tableStyle),
+            resolveCellTableOverrides(cellStyle, activeSheet, row, col)
+          )
+        : cellStyle;
+      const readNumericValue = () => getBatchedCellNumericValue(cell);
+      const conditionalStyle = resolveConditionalCellStyleForCell(
+        row, col, activeSheet, readNumericValue, () => cell.value, null, batch.cells
+      );
+      const resolvedStyle = mergeResolvedCellStyle(baseStyle, conditionalStyle);
+      const alignment = resolvedStyle?.alignment as Record<string, unknown> | undefined;
+      const rotation = resolveSpreadsheetTextRotation(alignment?.rotation ?? alignment?.textRotation);
+      const isTableHeader = Boolean(table && row < table.start.row + Math.max(table.headerRowCount, 1));
+      const matchingVisualRules = visualRules.length === 0 || readNumericValue() === null
+        ? []
+        : visualRules.filter(rule => rule.ranges.some(range => isCellInRange(address, range)));
+      const baseCssStyle = scaleCssProperties(buildCellStyle(resolvedStyle, palette, activeSheet.themePalette, {
+        generalAlignment: cell.generalAlignment,
+        showGridLines: activeSheet.showGridLines
+      }), zoomFactor);
+      const overrides = getCellStyle?.({
+        cell: address,
+        hasChartHighlight: Boolean(resolveCellChartHighlight(address, activeSheetChartHighlights)),
+        hasConditionalFormat: matchingVisualRules.length > 0,
+        hasHyperlink: Boolean(cell.hyperlink),
+        hasValidation: Boolean(resolveCellDataValidation(row, col, activeSheet)),
+        isMerged: Boolean(cell.mergeSpan),
+        isTableHeader,
+        resolvedStyle: { ...baseCssStyle },
+        sheetName: activeSheet.name,
+        value: cell.value,
+        workbookSheetIndex: activeSheet.workbookSheetIndex
+      });
+      const style = { ...baseCssStyle, ...overrides };
+      const richText = resolveRichCellRuns(cell.richText, cell.value, baseCssStyle, activeSheet.themePalette, zoomFactor)
+        ?.map(run => ({ ...run, style: { ...run.style, ...overrides } }));
+      const padding = resolveCanvasPadding(style.padding);
+      const leadingInset = matchingVisualRules.some(rule => rule.kind === "iconSet") ? 18 : 0;
+      const trailingInset = (isTableHeader ? (experimentalCanvas ? 16 : 24) : 0) + (pivotControlInsets.get(key) ?? 0);
+      const horizontal = parseCanvasLength(style.paddingLeft, padding.left)
+        + parseCanvasLength(style.paddingRight, padding.right) + (leadingInset + trailingInset) * zoomFactor;
+      const vertical = parseCanvasLength(style.paddingTop, padding.top) + parseCanvasLength(style.paddingBottom, padding.bottom);
+      const useDomMeasurement = !experimentalCanvas && overrides
+        && domAutofitTextProperties.some(property => overrides[property] !== undefined);
+      const wraps = style.whiteSpace === "pre-wrap" || /[\r\n]/.test(cell.value)
+        || (useDomMeasurement && (style.whiteSpace === "normal" || style.whiteSpace === "pre-line" || style.whiteSpace === "break-spaces"));
+      let wrapWidth: number | undefined;
+      if (isRow && !rotation && wraps) {
+        let cellWidth = 0;
+        for (let spanCol = col; spanCol < col + colSpan; spanCol += 1) {
+          if (hiddenColSet.has(spanCol)) continue;
+          cellWidth += getColumnWidth(spanCol);
+        }
+        wrapWidth = Math.max(1, cellWidth * zoomFactor - horizontal);
+      }
+
+      const bounds = useDomMeasurement
+        ? measureDomAutofitCell(cell.value, richText, style, rotation, locale, wrapWidth)
+        : measureAutofitCell(cell.value, richText, style, rotation, zoomFactor, wrapWidth);
+      largest = Math.max(largest, (isRow ? bounds.height + vertical : bounds.width + horizontal) / zoomFactor);
+      if (largest >= maxSize) break;
+
+      if (performance.now() - frameStart > 12) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (request !== autofitRequestRef.current) return;
+        frameStart = performance.now();
+      }
+    }
+
+    if (largest > 0) {
+      const contentSize = Math.ceil(largest) + 1;
+      const renderedSize = activeSheet.officeLayout
+        ? contentSize
+        : resolveRenderedSheetAxisPixels(contentSize, activeSheet.showGridLines);
+      const size = Math.min(renderedSize, maxSize);
+      if (isRow) controller.resizeRow(index, size);
+      else controller.resizeColumn(index, size);
+    }
+  }, [
+    activeSheet, activeSheetChartHighlights, actualColWidths, canResizeHeaders, controller, effectiveTables,
+    experimentalCanvas, getAutofitCellsAsync, getCellStyle, hiddenColSet, hiddenRowSet, locale, palette,
+    pivotControlInsets, sparklinesByCell, worksheet, zoomFactor
+  ]);
+
   const resolveCanvasColumnResizeTarget = React.useCallback((clientX: number) => {
     if (!canResizeHeaders) {
       return null;
@@ -12503,6 +12771,13 @@ function XlsxGrid({
 
     return null;
   }, [canResizeHeaders, canvasColumnHeaderCells]);
+  const handleCanvasColumnHeaderDoubleClick = React.useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+    const target = resolveCanvasColumnResizeTarget(event.clientX);
+    if (target) {
+      event.stopPropagation();
+      void autofit("column", target.actualCol).catch(() => {});
+    }
+  }, [autofit, resolveCanvasColumnResizeTarget]);
   const resolveCanvasColumnHeaderTarget = React.useCallback((clientX: number) => {
     const scrollerRect = scrollRef.current?.getBoundingClientRect();
     if (!scrollerRect) {
@@ -12538,6 +12813,16 @@ function XlsxGrid({
 
     return null;
   }, [canResizeHeaders, canvasRowHeaderCells]);
+  const handleCanvasRowHeaderDoubleClick = React.useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+    const target = resolveCanvasRowResizeTarget(event.clientY);
+    if (target) {
+      event.stopPropagation();
+      void autofit("row", target.actualRow).catch(() => {});
+    }
+  }, [autofit, resolveCanvasRowResizeTarget]);
+  const handleRowResizeDoubleClick = React.useCallback((row: number) => {
+    void autofit("row", row).catch(() => {});
+  }, [autofit]);
   const resolveCanvasRowHeaderTarget = React.useCallback((clientY: number) => {
     const scrollerRect = scrollRef.current?.getBoundingClientRect();
     if (!scrollerRect) {
@@ -14632,9 +14917,9 @@ function XlsxGrid({
     backgroundColor: "transparent",
     cursor: "col-resize",
     position: "absolute",
-    right: -8,
+    right: 0,
     top: 0,
-    width: 16,
+    width: CANVAS_RESIZE_HIT_SLOP_PX,
     height: "100%",
     zIndex: 5
   }, zoomFactor);
@@ -15812,6 +16097,7 @@ function XlsxGrid({
       return;
     }
 
+    autofitRequestRef.current += 1;
     resizeStateRef.current = {
       actualIndex: actualCol,
       initialPx: widthPx,
@@ -15833,6 +16119,7 @@ function XlsxGrid({
       return;
     }
 
+    autofitRequestRef.current += 1;
     resizeStateRef.current = {
       actualIndex: actualRow,
       initialPx: heightPx,
@@ -16971,6 +17258,7 @@ function XlsxGrid({
                 <div style={canvasHeaderViewportLayerStyle}>
                   <canvas
                     ref={topFrozenHeaderCanvasRef}
+                    onDoubleClick={handleCanvasColumnHeaderDoubleClick}
                     onPointerLeave={handleCanvasHeaderPointerLeave}
                     onPointerMove={handleCanvasColumnHeaderPointerMove}
                     onPointerDown={handleCanvasColumnHeaderPointerDown}
@@ -16978,6 +17266,7 @@ function XlsxGrid({
                   />
                   <canvas
                     ref={topScrollHeaderCanvasRef}
+                    onDoubleClick={handleCanvasColumnHeaderDoubleClick}
                     onPointerLeave={handleCanvasHeaderPointerLeave}
                     onPointerMove={handleCanvasColumnHeaderPointerMove}
                     onPointerDown={handleCanvasColumnHeaderPointerDown}
@@ -16985,6 +17274,7 @@ function XlsxGrid({
                   />
                   <canvas
                     ref={leftFrozenHeaderCanvasRef}
+                    onDoubleClick={handleCanvasRowHeaderDoubleClick}
                     onPointerLeave={handleCanvasHeaderPointerLeave}
                     onPointerMove={handleCanvasRowHeaderPointerMove}
                     onPointerDown={handleCanvasRowHeaderPointerDown}
@@ -16992,6 +17282,7 @@ function XlsxGrid({
                   />
                   <canvas
                     ref={leftScrollHeaderCanvasRef}
+                    onDoubleClick={handleCanvasRowHeaderDoubleClick}
                     onPointerLeave={handleCanvasHeaderPointerLeave}
                     onPointerMove={handleCanvasRowHeaderPointerMove}
                     onPointerDown={handleCanvasRowHeaderPointerDown}
@@ -17172,24 +17463,27 @@ function XlsxGrid({
                           >
                             {columnLabel(column.actualCol)}
                           </span>
-                          <div
-                            onPointerDown={(event) => {
-                              if (!canResizeHeaders) {
-                                return;
-                              }
-
-                              event.preventDefault();
-                              event.stopPropagation();
-                              startColumnResize(
-                                event.pointerId,
-                                column.actualCol,
-                                column.size,
-                                event.clientX
-                              );
-                            }}
-                            style={columnResizeHandleStyle}
-                          />
                         </div>
+                        <div
+                          onDoubleClick={(event) => {
+                            event.stopPropagation();
+                            void autofit("column", column.actualCol).catch(() => {});
+                          }}
+                          onPointerDown={(event) => {
+                            if (!canResizeHeaders) {
+                              return;
+                            }
+                            event.preventDefault();
+                            event.stopPropagation();
+                            startColumnResize(
+                              event.pointerId,
+                              column.actualCol,
+                              column.size,
+                              event.clientX
+                            );
+                          }}
+                          style={columnResizeHandleStyle}
+                        />
                       </th>
                     ))}
                     {trailingColumnSpacerWidth > 0 ? (
@@ -17238,6 +17532,7 @@ function XlsxGrid({
                         headerLabelLiveScale={headerLabelLiveScale}
                         onRowHeaderRef={setRowHeaderRef}
                         onRowPointerDown={handleRowPointerDown}
+                        onRowResizeDoubleClick={handleRowResizeDoubleClick}
                         onRowResizePointerDown={handleRowResizePointerDown}
                         palette={palette}
                         readOnly={readOnly}

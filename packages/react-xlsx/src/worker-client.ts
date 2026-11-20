@@ -3,6 +3,7 @@ import type { WorkbookImageAssets, WorkbookImageSheetOrigin } from "./images";
 import type { WorkbookChartOrigin } from "./charts";
 import type { takeWorkbookXmlRecords } from "./workbook-xml";
 import type { XlsxPivotTable } from "./pivot-types";
+import type { AutofitAxis } from "./worksheet-autofit";
 import { restoreWorkerImageBlobs } from "./workbook-object-urls";
 
 const columnFontMeasurements = new Map<string, number>();
@@ -31,6 +32,7 @@ import { getConfiguredWorkerWasmSource, type WorkerWasmSource } from "./wasm";
 export type WorkerMessage =
   | { id: number; type: "renderChart"; payload: Parameters<RenderChartAsync> }
   | { id: number; type: "export"; payload: { snapshot: Uint8Array; assets: WorkbookImageAssets | null; origins: Array<WorkbookImageSheetOrigin | null> } }
+  | { id: number; type: "getAutofitCells"; payload: { workbookSheetIndex: number; axis: AutofitAxis; index: number; locale: string } }
 
   | {
       id: number;
@@ -229,6 +231,14 @@ export class XlsxWorkerClient {
       id: 0,
       payload: { rowCount, startRow, workbookSheetIndex, locale },
       type: "getRowsBatch"
+    });
+  }
+
+  getAutofitCells(workbookSheetIndex: number, axis: AutofitAxis, index: number, locale: string) {
+    return this.requestWithFallback<unknown[]>({
+      id: 0,
+      payload: { workbookSheetIndex, axis, index, locale },
+      type: "getAutofitCells"
     });
   }
 

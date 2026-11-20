@@ -14,6 +14,7 @@ import type { WorkbookStructureAssets } from "./images";
 import { safeCalculate } from "./safe-calculate";
 import { pivotWorkbook, readPivotTables } from "./pivots";
 import { getSheetsWasmModule } from "./wasm";
+import { readWorksheetAutofitCells } from "./worksheet-autofit";
 import type { XlsxChart, XlsxChartsheet, XlsxCellAddress, XlsxCellRange, XlsxDataValidation, XlsxFormControl, XlsxFreezePanes, XlsxSheetData, XlsxSheetVisibility, XlsxTable, XlsxThemePalette, XlsxWorkbookTab } from "./types";
 
 const DEFAULT_ROW_HEIGHT = 24;
@@ -734,6 +735,16 @@ export function createWorkbookRuntime() {
           displayValue: localizeCellNumber(worksheet, message.payload.row, message.payload.col, getCellDisplayValue(worksheet, message.payload.row, message.payload.col, targetSheet), message.payload.locale),
           formula: worksheet.getFormulaAt(message.payload.row, message.payload.col) ?? ""
         };
+      }
+      case "getAutofitCells": {
+        if (!workbook) return [];
+        const { workbookSheetIndex, axis, index, locale } = message.payload;
+        const worksheet = workbook.getSheet(workbookSheetIndex);
+        try {
+          return readWorksheetAutofitCells(worksheet, axis, index, locale);
+        } finally {
+          worksheet.free();
+        }
       }
       case "getRowsBatch": {
         if (!workbook) {

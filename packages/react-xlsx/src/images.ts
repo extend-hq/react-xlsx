@@ -4083,8 +4083,12 @@ export function pixelsToEmu(value: number) {
   return value * EMU_PER_PIXEL;
 }
 
-export function pxToSheetColumnWidth(widthPx: number) {
-  return (Math.max(widthPx, MIN_COL_WIDTH_PX) - 5) / 7;
+export function pxToSheetColumnWidth(widthPx: number, columnCharacterWidthPx = DEFAULT_COLUMN_CHARACTER_WIDTH_PX) {
+  const digitWidth = Math.max(1, columnCharacterWidthPx);
+  const pixels = Math.max(widthPx, MIN_COL_WIDTH_PX);
+  return pixels < digitWidth
+    ? pixels / (digitWidth + 5)
+    : (pixels + 0.5) / digitWidth - Math.floor(128 / digitWidth) / 256;
 }
 
 export function resolveOfficeColumnWidthPixels(width: number, digitWidthPt = 6) {

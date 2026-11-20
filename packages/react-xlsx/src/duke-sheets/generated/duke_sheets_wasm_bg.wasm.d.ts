@@ -1,12 +1,6 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
-export const decodeArchive: (a: number, b: number) => [number, number, number];
-export const inspectArchive: (a: number, b: number) => [number, number, number];
-export const parseXmlTree: (a: number, b: number) => [number, number, number, number];
-export const workbook_fontFamilies: (a: number) => [number, number];
-export const workbook_fromBytesForViewer: (a: number, b: number) => [number, number, number];
-export const workbook_takeViewerArchive: (a: number) => [number, number, number];
 export const workbook_activeSheet: (a: number) => [number, number, number];
 export const workbook_chartsheetCount: (a: number) => [number, number, number];
 export const workbook_chartsheets: (a: number) => [number, number, number];
@@ -44,6 +38,8 @@ export const worksheet_defaultRowHeight: (a: number) => [number, number, number]
 export const worksheet_formulaCells: (a: number) => [number, number, number];
 export const worksheet_formulaCount: (a: number) => [number, number, number];
 export const worksheet_freezePanes: (a: number) => [number, number, number];
+export const worksheet_getAutoHeightCells: (a: number, b: number, c: number) => [number, number, number];
+export const worksheet_getAutofitCells: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const worksheet_getCellStyle: (a: number, b: number, c: number) => [number, number, number];
 export const worksheet_getCellStyleAt: (a: number, b: number, c: number) => [number, number, number];
 export const worksheet_getColumnOutlineLevel: (a: number, b: number) => [number, number, number];
@@ -90,6 +86,12 @@ export const worksheet_tableCount: (a: number) => [number, number, number];
 export const worksheet_tables: (a: number) => [number, number, number];
 export const worksheet_visibility: (a: number) => [number, number, number, number];
 export const worksheet_zoomScale: (a: number) => [number, number, number];
+export const decodeArchive: (a: number, b: number) => [number, number, number];
+export const inspectArchive: (a: number, b: number) => [number, number, number];
+export const parseXmlTree: (a: number, b: number) => [number, number, number, number];
+export const workbook_fontFamilies: (a: number) => [number, number];
+export const workbook_fromBytesForViewer: (a: number, b: number) => [number, number, number];
+export const workbook_takeViewerArchive: (a: number) => [number, number, number];
 export const workbook_syncFormControls: (a: number) => number;
 export const workbook_syncFormControlsFromLinkedCells: (a: number) => number;
 export const worksheet_addDrawing: (a: number, b: any) => [number, number, number];
