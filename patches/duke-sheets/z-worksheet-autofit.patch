@@ -93,7 +93,7 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
      #[wasm_bindgen(getter, js_name = defaultRowHeight)]
      pub fn default_row_height(&self) -> Result<f64, JsError> {
          let wb = self.workbook.borrow();
-@@ -920,3 +963,82 @@
+@@ -920,3 +963,84 @@
      }
 
  }
@@ -127,7 +127,10 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
 +        } else {
 +            view.formatted()
 +        };
-+        if value.is_empty() {
++        let effective = raw.effective_value();
++        // Keep numeric operands available for conditional styles even when their
++        // number format hides the value. Empty text does not affect measurement.
++        if value.is_empty() && (wrapped_only || !matches!(effective, CellValue::Number(_))) {
 +            continue;
 +        }
 +        if wrapped_only
@@ -142,7 +145,6 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
 +        if merge.is_some_and(|range| range.start != address) {
 +            continue;
 +        }
-+        let effective = raw.effective_value();
 +        rows.entry(row).or_default().push(WasmRowCell {
 +            col: u32::from(col),
 +            value,

@@ -84,7 +84,7 @@ test("projects only cells that can affect automatic row height", () => {
   }
 });
 
-test("preserves general alignment and leaves intentionally blank numbers out of sizing", () => {
+test("preserves general alignment and numeric operands with intentionally blank display text", () => {
   const workbook = new Workbook();
   const sheet = workbook.getSheet(0);
   try {
@@ -95,7 +95,10 @@ test("preserves general alignment and leaves intentionally blank numbers out of 
     sheet.setCell("D1", "42");
 
     const rows = readWorksheetAutofitCells(sheet, "row", 0, "en-US");
+    assert.equal(rows[0].cells[0].value, "");
+    assert.equal(rows[0].cells[0].numericValue, 1543);
     assert.deepEqual(rows[0].cells.map(({ col, generalAlignment }) => [col, generalAlignment]), [
+      [0, "right"],
       [1, "right"],
       [2, "center"],
       [3, "left"]
