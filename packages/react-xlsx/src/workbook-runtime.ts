@@ -8,7 +8,6 @@ import type { Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import { strFromU8, strToU8 } from "fflate";
 import { hydrateWorkbookChartStyles, loadWorkbookChartAssets } from "./charts";
 import { buildThemePaletteFromHex } from "./colors";
-import { getCellGeneralAlignment } from "./cell-alignment";
 import { getColumnFontMeasurements, getUnmeasuredWorkbookFont, restoreColumnFontMeasurements, collectWorkbookFormControls, mergeWorkbookImageAssets, revokeWorkbookImageAssets, type WorkbookImageAssets, resolveSheetColumnWidthPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetMergeMetadata } from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { safeCalculate } from "./safe-calculate";
@@ -764,15 +763,8 @@ export function createWorkbookRuntime() {
           includeMergeInfo: true,
           includeStyles: true,
           useFormattedValues: true
-        }) as Array<{ index: number; cells: Array<{ col: number; isMergedSecondary?: boolean; generalAlignment?: string }> }> | null;
-        for (const row of rows ?? []) {
-          for (const cell of row.cells) {
-            if (!cell.isMergedSecondary) {
-              cell.generalAlignment = getCellGeneralAlignment(worksheet, row.index, cell.col);
-            }
-          }
-        }
-        localizeRows(worksheet, rows, message.payload.locale);
+        });
+        localizeRows(rows, message.payload.locale);
         return rows;
       }
       default:

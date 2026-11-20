@@ -10272,7 +10272,7 @@ function XlsxGrid({
         includeStyles: true,
         useFormattedValues: true
       });
-      localizeRows(worksheet, rows, locale);
+      localizeRows(rows, locale);
       return buildWorksheetBatchWindow(rows as unknown[] | null, activeSheet ?? null, viewportRequest.startRow, viewportRequest.endRow);
     } catch {
       return null;
@@ -10588,7 +10588,9 @@ function XlsxGrid({
       rowSpan: merge?.rowSpan,
       sparkline: sparkline && sparklineValues ? { config: sparkline, values: sparklineValues } : null,
       style: scaleCssProperties(buildCellStyle(finalResolvedStyle, palette, activeSheet?.themePalette, {
-        generalAlignment: worksheet ? getCellGeneralAlignment(worksheet, row, col) : batchedCell?.generalAlignment,
+        generalAlignment: batchCoversRow || !worksheet
+          ? batchedCell?.generalAlignment
+          : getCellGeneralAlignment(worksheet, row, col),
         showGridLines: activeSheet?.showGridLines
       }), zoomFactor),
       usesGeneralAlignment: !alignment?.horizontal || alignment.horizontal === "general",
@@ -12707,9 +12709,16 @@ function XlsxGrid({
       const padding = resolveCanvasPadding(style.padding);
       const leadingInset = matchingVisualRules.some(rule => rule.kind === "iconSet") ? 18 : 0;
       const trailingInset = (isTableHeader ? (experimentalCanvas ? 16 : 24) : 0) + (pivotControlInsets.get(key) ?? 0);
-      const horizontal = parseCanvasLength(style.paddingLeft, padding.left)
+      let horizontal = parseCanvasLength(style.paddingLeft, padding.left)
         + parseCanvasLength(style.paddingRight, padding.right) + (leadingInset + trailingInset) * zoomFactor;
-      const vertical = parseCanvasLength(style.paddingTop, padding.top) + parseCanvasLength(style.paddingBottom, padding.bottom);
+      let vertical = parseCanvasLength(style.paddingTop, padding.top) + parseCanvasLength(style.paddingBottom, padding.bottom);
+      if (!experimentalCanvas) {
+        const border = resolveCanvasPadding(style.borderWidth ?? parseCanvasLength(style.border, 0));
+        horizontal += parseCanvasLength(style.borderLeftWidth ?? style.borderLeft, border.left)
+          + parseCanvasLength(style.borderRightWidth ?? style.borderRight, border.right);
+        vertical += parseCanvasLength(style.borderTopWidth ?? style.borderTop, border.top)
+          + parseCanvasLength(style.borderBottomWidth ?? style.borderBottom, border.bottom);
+      }
       const useDomMeasurement = !experimentalCanvas && overrides
         && domAutofitTextProperties.some(property => overrides[property] !== undefined);
       const wraps = style.whiteSpace === "pre-wrap" || /[\r\n]/.test(cell.value)

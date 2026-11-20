@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { initSync, Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
+import { initSync, Workbook, type JsRow, type JsRowsOptions } from "./duke-sheets/generated/duke_sheets_wasm.js";
+import { localizeRows } from "./number-locale.ts";
 import { readWorksheetAutofitCells, readWorksheetAutoHeightCells } from "./worksheet-autofit.ts";
 
 initSync({
@@ -48,7 +49,7 @@ test("projects the selected row and localizes numbers from the batch", () => {
   }
 });
 
-test("includes calculated values in spill targets", () => {
+test("includes calculated spill values in autofit and viewport batches", () => {
   const workbook = new Workbook();
   const sheet = workbook.getSheet(0);
   try {
@@ -57,6 +58,8 @@ test("includes calculated values in spill targets", () => {
     const rows = readWorksheetAutofitCells(sheet, "column", 1, "en-US");
     assert.equal(rows[0].cells[0].value, "1234567891");
     assert.equal(rows[0].cells[0].numericValue, 1234567891);
+    const viewport = getFormattedViewportRows(sheet);
+    assert.equal(viewport[0].cells.find(cell => cell.col === 1)?.value, "1234567891");
   } finally {
     sheet.free();
     workbook.free();
@@ -97,6 +100,9 @@ test("preserves general alignment and numeric operands with intentionally blank 
     const rows = readWorksheetAutofitCells(sheet, "row", 0, "en-US");
     assert.equal(rows[0].cells[0].value, "");
     assert.equal(rows[0].cells[0].numericValue, 1543);
+    const viewport = getFormattedViewportRows(sheet);
+    assert.equal(viewport[0].cells[0].value, "");
+    assert.equal(viewport[0].cells[0].numericValue, 1543);
     assert.deepEqual(rows[0].cells.map(({ col, generalAlignment }) => [col, generalAlignment]), [
       [0, "right"],
       [1, "right"],
@@ -108,3 +114,28 @@ test("preserves general alignment and numeric operands with intentionally blank 
     workbook.free();
   }
 });
+
+test("localizes viewport cell values from the native batch", () => {
+  const workbook = new Workbook();
+  const sheet = workbook.getSheet(0);
+  try {
+    sheet.setCell("A1", 1234.5);
+    sheet.setCell("B1", "1234.5");
+    const rows = getFormattedViewportRows(sheet);
+    localizeRows(rows, "de-DE");
+    assert.deepEqual(rows[0].cells.map(({ value, generalAlignment }) => [value, generalAlignment]), [
+      ["1234,5", "right"],
+      ["1234.5", "left"]
+    ]);
+  } finally {
+    sheet.free();
+    workbook.free();
+  }
+});
+
+function getFormattedViewportRows(sheet: ReturnType<Workbook["getSheet"]>) {
+  const worksheet = sheet as typeof sheet & {
+    getRowsBatch: (startRow: number, maxRows: number, options: JsRowsOptions) => JsRow[];
+  };
+  return worksheet.getRowsBatch(0, 1, { includeStyles: true, useFormattedValues: true });
+}

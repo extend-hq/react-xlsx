@@ -36,19 +36,52 @@ diff --git a/bindings/wasm/src/types.rs b/bindings/wasm/src/types.rs
 diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_read.rs
 --- a/bindings/wasm/src/worksheet_read.rs
 +++ b/bindings/wasm/src/worksheet_read.rs
-@@ -367,6 +367,8 @@
+@@ -1,5 +1,6 @@
+ use std::collections::BTreeSet;
+
++use duke_sheets_core::{CellValue, CellView, Worksheet as CoreWorksheet};
+ use wasm_bindgen::prelude::*;
+
+ use crate::{
+@@ -291,8 +292,10 @@
+                 current_row = Some(row);
+             }
+
++            let view = ws.cell_view_at(row, col);
++            let raw = ws.get_value_at_ref(row, col);
+             let value = if use_formatted {
+-                ws.formatted_value_at(row, col)
++                formatted_display_value(&view, raw)
+             } else if use_calculated {
+                 ws.get_calculated_value_at(row, col)
+                     .map(|v| v.to_string())
+@@ -302,7 +305,6 @@
+             };
+
+             if skip_blank || skip_empty {
+-                let raw = ws.get_value_at(row, col);
+                 if skip_blank && raw.is_blank() {
+                     continue;
+                 }
+@@ -367,8 +369,10 @@
              current_cells.push(WasmRowCell {
                  col: col as u32,
                  value,
-+                numeric_value: None,
-+                general_alignment: None,
-                 rich_text: match ws.get_value_at(row, col) {
-                     duke_sheets_core::CellValue::RichText(runs) => Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect()),
+-                rich_text: match ws.get_value_at(row, col) {
+-                    duke_sheets_core::CellValue::RichText(runs) => Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect()),
++                numeric_value: numeric_display_value(raw),
++                general_alignment: Some(general_alignment(raw)),
++                rich_text: match raw {
++                    CellValue::RichText(runs) => Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect()),
                      _ => None,
-@@ -393,6 +395,47 @@
-         to_js_value(&rows).map_err(JsValue::from)
-     }
+                 },
+                 style,
+@@ -391,6 +395,47 @@
+         }
 
+         to_js_value(&rows).map_err(JsValue::from)
++    }
++
 +    #[wasm_bindgen(skip_typescript, js_name = getAutofitCells)]
 +    pub fn get_autofit_cells(&self, axis: &str, index: u32) -> Result<JsValue, JsError> {
 +        let wb = self.workbook.borrow();
@@ -88,24 +121,42 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
 +            .filter(|range| range.start.row < row_count && u32::from(range.start.col) < col_count)
 +            .collect::<Vec<_>>();
 +        to_js_value(&collect_sizing_rows(ws, fits_auto_height_range, true, merges))
-+    }
-+
+     }
+
      #[wasm_bindgen(getter, js_name = defaultRowHeight)]
-     pub fn default_row_height(&self) -> Result<f64, JsError> {
-         let wb = self.workbook.borrow();
-@@ -920,3 +963,84 @@
+@@ -920,3 +965,88 @@
      }
 
  }
 +
++fn formatted_display_value(view: &CellView<'_>, raw: &CellValue) -> String {
++    if view.value().is_spill_target() && !raw.is_empty() {
++        return raw.to_string();
++    }
++    view.formatted()
++}
++
++fn numeric_display_value(raw: &CellValue) -> Option<f64> {
++    match raw.effective_value() {
++        CellValue::Number(value) => Some(*value),
++        _ => None,
++    }
++}
++
++fn general_alignment(raw: &CellValue) -> &'static str {
++    match raw.effective_value() {
++        CellValue::Number(_) => "right",
++        CellValue::Boolean(_) | CellValue::Error(_) => "center",
++        _ => "left",
++    }
++}
++
 +fn collect_sizing_rows(
-+    ws: &duke_sheets_core::Worksheet,
++    ws: &CoreWorksheet,
 +    matches: impl Fn(u32, u16) -> bool,
 +    wrapped_only: bool,
 +    merges: Vec<&duke_sheets_core::CellRange>,
 +) -> Vec<WasmRow> {
-+    use duke_sheets_core::CellValue;
-+
 +    let coords: BTreeSet<_> = ws
 +        .iter_cells()
 +        .map(|(row, col, _)| (row, col))
@@ -116,21 +167,12 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
 +
 +    for (row, col) in coords {
 +        let view = ws.cell_view_at(row, col);
-+        let stored = view.value();
-+        let raw = if stored.is_spill_target() {
-+            ws.get_calculated_value_at(row, col).unwrap_or(stored)
-+        } else {
-+            stored
-+        };
-+        let value = if stored.is_spill_target() && !raw.is_empty() {
-+            raw.to_string()
-+        } else {
-+            view.formatted()
-+        };
-+        let effective = raw.effective_value();
++        let raw = ws.get_value_at_ref(row, col);
++        let value = formatted_display_value(&view, raw);
++        let numeric_value = numeric_display_value(raw);
 +        // Keep numeric operands available for conditional styles even when their
 +        // number format hides the value. Empty text does not affect measurement.
-+        if value.is_empty() && (wrapped_only || !matches!(effective, CellValue::Number(_))) {
++        if value.is_empty() && (wrapped_only || numeric_value.is_none()) {
 +            continue;
 +        }
 +        if wrapped_only
@@ -148,16 +190,9 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
 +        rows.entry(row).or_default().push(WasmRowCell {
 +            col: u32::from(col),
 +            value,
-+            numeric_value: match effective {
-+                CellValue::Number(value) => Some(*value),
-+                _ => None,
-+            },
-+            general_alignment: (!wrapped_only).then_some(match effective {
-+                CellValue::Number(_) => "right",
-+                CellValue::Boolean(_) | CellValue::Error(_) => "center",
-+                _ => "left",
-+            }),
-+            rich_text: match effective {
++            numeric_value,
++            general_alignment: (!wrapped_only).then(|| general_alignment(raw)),
++            rich_text: match raw.effective_value() {
 +                CellValue::RichText(runs) if !wrapped_only => {
 +                    Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect())
 +                }
