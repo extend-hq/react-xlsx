@@ -8394,8 +8394,11 @@ function XlsxGrid({
     }
   }, [clearGlobalCursor]);
   React.useEffect(() => clearResizeDrag, [clearResizeDrag]);
+  const previousResizeSheetRef = React.useRef(activeSheet);
   React.useLayoutEffect(() => {
-    if (resizeStateRef.current) {
+    const sheetChanged = previousResizeSheetRef.current !== activeSheet;
+    previousResizeSheetRef.current = activeSheet;
+    if (sheetChanged && resizeStateRef.current) {
       clearResizeDrag();
       setInteractionMode("idle");
       setResizeGuide(null);
