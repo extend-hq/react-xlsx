@@ -1,0 +1,215 @@
+diff --git a/bindings/wasm/src/lib.rs b/bindings/wasm/src/lib.rs
+--- a/bindings/wasm/src/lib.rs
++++ b/bindings/wasm/src/lib.rs
+@@ -72,6 +72,8 @@
+ export interface JsRowCell {
+   col: number;
+   value: string;
++  numericValue?: number;
++  generalAlignment?: "left" | "center" | "right";
+   richText?: Array<{ text: string; font?: FontStyleInput | null }>;
+   style?: any;
+   mergeSpan?: JsMergeSpan;
+@@ -695,6 +697,8 @@
+ }
+
+ export interface Worksheet {
++    getAutofitCells(axis: "column" | "row", index: number): JsRow[];
++    getAutoHeightCells(rowCount: number, colCount: number): JsRow[];
+   iterateRows(opts?: JsRowsOptions): RowIterator;
+   setCellStyle(address: string, style: StyleInput): void;
+   setCellStyleAt(row: number, col: number, style: StyleInput): void;
+diff --git a/bindings/wasm/src/types.rs b/bindings/wasm/src/types.rs
+--- a/bindings/wasm/src/types.rs
++++ b/bindings/wasm/src/types.rs
+@@ -17,6 +17,10 @@
+ pub struct WasmRowCell {
+     pub col: u32,
+     pub value: String,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub numeric_value: Option<f64>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub general_alignment: Option<&'static str>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub rich_text: Option<Vec<WasmRichTextRun>>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_read.rs
+--- a/bindings/wasm/src/worksheet_read.rs
++++ b/bindings/wasm/src/worksheet_read.rs
+@@ -1,5 +1,6 @@
+ use std::collections::BTreeSet;
+
++use duke_sheets_core::{CellValue, CellView, Worksheet as CoreWorksheet};
+ use wasm_bindgen::prelude::*;
+
+ use crate::{
+@@ -291,8 +292,10 @@
+                 current_row = Some(row);
+             }
+
++            let view = ws.cell_view_at(row, col);
++            let raw = ws.get_value_at_ref(row, col);
+             let value = if use_formatted {
+-                ws.formatted_value_at(row, col)
++                formatted_display_value(&view, raw)
+             } else if use_calculated {
+                 ws.get_calculated_value_at(row, col)
+                     .map(|v| v.to_string())
+@@ -302,7 +305,6 @@
+             };
+
+             if skip_blank || skip_empty {
+-                let raw = ws.get_value_at(row, col);
+                 if skip_blank && raw.is_blank() {
+                     continue;
+                 }
+@@ -367,8 +369,10 @@
+             current_cells.push(WasmRowCell {
+                 col: col as u32,
+                 value,
+-                rich_text: match ws.get_value_at(row, col) {
+-                    duke_sheets_core::CellValue::RichText(runs) => Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect()),
++                numeric_value: numeric_display_value(raw),
++                general_alignment: Some(general_alignment(raw)),
++                rich_text: match raw {
++                    CellValue::RichText(runs) => Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect()),
+                     _ => None,
+                 },
+                 style,
+@@ -391,6 +395,47 @@
+         }
+
+         to_js_value(&rows).map_err(JsValue::from)
++    }
++
++    #[wasm_bindgen(skip_typescript, js_name = getAutofitCells)]
++    pub fn get_autofit_cells(&self, axis: &str, index: u32) -> Result<JsValue, JsError> {
++        let wb = self.workbook.borrow();
++        let ws = wb
++            .worksheet(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        let column = match axis {
++            "column" => true,
++            "row" => false,
++            _ => return Err(JsError::new("Invalid autofit axis")),
++        };
++        let on_axis = |row, col| if column { u32::from(col) == index } else { row == index };
++        let merges = ws.merged_regions().iter().filter(|range| {
++            if column {
++                (u32::from(range.start.col)..=u32::from(range.end.col)).contains(&index)
++            } else {
++                (range.start.row..=range.end.row).contains(&index)
++            }
++        }).collect::<Vec<_>>();
++        to_js_value(&collect_sizing_rows(ws, on_axis, false, merges))
++    }
++
++    #[wasm_bindgen(skip_typescript, js_name = getAutoHeightCells)]
++    pub fn get_auto_height_cells(&self, row_count: u32, col_count: u32) -> Result<JsValue, JsError> {
++        let wb = self.workbook.borrow();
++        let ws = wb
++            .worksheet(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        let fits_auto_height_range = |row, col| {
++            row < row_count
++                && u32::from(col) < col_count
++                && !ws.custom_row_heights().contains_key(&row)
++                && !ws.is_row_hidden(row)
++                && !ws.is_column_hidden(col)
++        };
++        let merges = ws.merged_regions().iter()
++            .filter(|range| range.start.row < row_count && u32::from(range.start.col) < col_count)
++            .collect::<Vec<_>>();
++        to_js_value(&collect_sizing_rows(ws, fits_auto_height_range, true, merges))
+     }
+
+     #[wasm_bindgen(getter, js_name = defaultRowHeight)]
+@@ -920,3 +965,88 @@
+     }
+
+ }
++
++fn formatted_display_value(view: &CellView<'_>, raw: &CellValue) -> String {
++    if view.value().is_spill_target() && !raw.is_empty() {
++        return raw.to_string();
++    }
++    view.formatted()
++}
++
++fn numeric_display_value(raw: &CellValue) -> Option<f64> {
++    match raw.effective_value() {
++        CellValue::Number(value) => Some(*value),
++        _ => None,
++    }
++}
++
++fn general_alignment(raw: &CellValue) -> &'static str {
++    match raw.effective_value() {
++        CellValue::Number(_) => "right",
++        CellValue::Boolean(_) | CellValue::Error(_) => "center",
++        _ => "left",
++    }
++}
++
++fn collect_sizing_rows(
++    ws: &CoreWorksheet,
++    matches: impl Fn(u32, u16) -> bool,
++    wrapped_only: bool,
++    merges: Vec<&duke_sheets_core::CellRange>,
++) -> Vec<WasmRow> {
++    let coords: BTreeSet<_> = ws
++        .iter_cells()
++        .map(|(row, col, _)| (row, col))
++        .chain(ws.formula_cells().map(|(row, col, _)| (row, col)))
++        .filter(|&(row, col)| matches(row, col))
++        .collect();
++    let mut rows = std::collections::BTreeMap::<u32, Vec<WasmRowCell>>::new();
++
++    for (row, col) in coords {
++        let view = ws.cell_view_at(row, col);
++        let raw = ws.get_value_at_ref(row, col);
++        let value = formatted_display_value(&view, raw);
++        let numeric_value = numeric_display_value(raw);
++        // Keep numeric operands available for conditional styles even when their
++        // number format hides the value. Empty text does not affect measurement.
++        if value.is_empty() && (wrapped_only || numeric_value.is_none()) {
++            continue;
++        }
++        if wrapped_only
++            && !value.contains(['\r', '\n'])
++            && !view.style().is_some_and(|style| style.alignment.wrap_text)
++        {
++            continue;
++        }
++
++        let address = duke_sheets_core::CellAddress::new(row, col);
++        let merge = merges.iter().find(|range| range.contains(&address));
++        if merge.is_some_and(|range| range.start != address) {
++            continue;
++        }
++        rows.entry(row).or_default().push(WasmRowCell {
++            col: u32::from(col),
++            value,
++            numeric_value,
++            general_alignment: (!wrapped_only).then(|| general_alignment(raw)),
++            rich_text: match raw.effective_value() {
++                CellValue::RichText(runs) if !wrapped_only => {
++                    Some(runs.iter().map(crate::types::WasmRichTextRun::from).collect())
++                }
++                _ => None,
++            },
++            style: view.style().map(WasmStyle::from),
++            merge_span: merge.map(|range| WasmMergeSpan {
++                row_span: range.end.row - row + 1,
++                col_span: u32::from(range.end.col - col) + 1,
++            }),
++            is_merged_secondary: None,
++            hyperlink: if wrapped_only { None } else { ws.hyperlink_at(row, col).map(WasmHyperlink::from) },
++            comment: None,
++            formula: if wrapped_only { None } else { ws.get_formula_at(row, col).map(str::to_string) },
++            image: None,
++        });
++    }
++
++    rows.into_iter().map(|(index, cells)| WasmRow { index, cells }).collect()
++}

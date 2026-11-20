@@ -10,6 +10,8 @@ declare global {
 export interface JsRowCell {
     col: number;
     value: string;
+    numericValue?: number;
+    generalAlignment?: "left" | "center" | "right";
     richText?: Array<{ text: string; font?: FontStyleInput | null }>;
     style?: any;
     mergeSpan?: JsMergeSpan;
@@ -633,6 +635,8 @@ export interface FormControlInteractionResult {
 }
 
 export interface Worksheet {
+    getAutofitCells(axis: "column" | "row", index: number): JsRow[];
+    getAutoHeightCells(rowCount: number, colCount: number): JsRow[];
     iterateRows(opts?: JsRowsOptions): RowIterator;
     setCellStyle(address: string, style: StyleInput): void;
     setCellStyleAt(row: number, col: number, style: StyleInput): void;
@@ -935,6 +939,8 @@ export interface InitOutput {
     readonly worksheet_formulaCells: (a: number) => [number, number, number];
     readonly worksheet_formulaCount: (a: number) => [number, number, number];
     readonly worksheet_freezePanes: (a: number) => [number, number, number];
+    readonly worksheet_getAutoHeightCells: (a: number, b: number, c: number) => [number, number, number];
+    readonly worksheet_getAutofitCells: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly worksheet_getCellStyle: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_getCellStyleAt: (a: number, b: number, c: number) => [number, number, number];
     readonly worksheet_getColumnOutlineLevel: (a: number, b: number) => [number, number, number];

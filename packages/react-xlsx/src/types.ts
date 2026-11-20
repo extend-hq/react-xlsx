@@ -1313,6 +1313,10 @@ export interface XlsxViewerController extends XlsxViewerPivots {
   pasteDrawingFromClipboard: (data?: string | Blob) => Promise<boolean>;
   changeChartType: (id: string, type: string) => Promise<boolean>;
   getRowsBatchAsync?: (workbookSheetIndex: number, startRow: number, rowCount: number) => Promise<unknown[] | null>;
+  /** Reads the populated cells for a single worksheet axis. Used by worker-backed viewers. */
+  getAutofitCellsAsync?: (workbookSheetIndex: number, axis: "column" | "row", index: number) => Promise<unknown[]>;
+  /** Whether the controller permits grid resizing after applying read-only size limits. */
+  canResize?: boolean;
   tables: XlsxTable[];
   tabs: XlsxWorkbookTab[];
   undo: () => void;

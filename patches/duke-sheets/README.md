@@ -10,4 +10,6 @@ The patch exposes rich-text runs, preserves the archive entries inflated by the 
 
 Editable workbooks cross the worker boundary as a binary model snapshot. Restoring that model does not reopen or parse the source spreadsheet. Snapshots include the native model and round-trip style/theme state; they are internal to this exact runtime build and are not a persistent interchange format. Export runs in the worker, including merging original drawing parts and edited XML. Browser rendering and editing of the hydrated model remain on the main thread.
 
+`z-worksheet-autofit.patch` adds sparse reads for resizing. The viewer can fetch one row or column for autofit, or just the wrapped and multiline cells needed by automatic row height. The batches include the numeric values used to localize already formatted display text.
+
 To update upstream, update the commit in `scripts/duke-sheets-provenance.mjs`, rebase the patch, rebuild, and validate workbook features, rich-text rendering, editing, undo, and export before publishing. Generated bindings, WASM, provenance, and the upstream license are checked in together.

@@ -1045,6 +1045,32 @@ export class Worksheet {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * @param {number} row_count
+     * @param {number} col_count
+     * @returns {any}
+     */
+    getAutoHeightCells(row_count, col_count) {
+        const ret = wasm.worksheet_getAutoHeightCells(this.__wbg_ptr, row_count, col_count);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @param {string} axis
+     * @param {number} index
+     * @returns {any}
+     */
+    getAutofitCells(axis, index) {
+        const ptr0 = passStringToWasm0(axis, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.worksheet_getAutofitCells(this.__wbg_ptr, ptr0, len0, index);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * @param {string} address
      * @returns {CellValue}
      */

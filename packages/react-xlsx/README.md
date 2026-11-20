@@ -1083,6 +1083,10 @@ Common source and loading props:
 - `showHiddenSheets?: boolean`
 - `skipXmlParsing?: boolean`
 
+Double-click the divider at the right edge of a column header to fit its contents. Double-click the divider at the bottom of a row header to fit its contents at the current column widths, including wrapped text. Autofit includes offscreen cells and skips hidden cells and merges that span the axis being resized.
+
+`allowResizeInReadOnly` enables autofit and drag resizing in a read-only viewer. When supplying your own controller, set this option on both `useXlsxViewerController` (or `XlsxViewerProvider`) and `XlsxViewer`. Workbooks forced into read-only mode by `readOnlyAboveBytes` remain locked. Autofit uses the selected row or column, so it can evaluate conditional styles whose operands are literals or cells on that axis.
+
 Common rendering props:
 
 - `height?: React.CSSProperties["height"]`

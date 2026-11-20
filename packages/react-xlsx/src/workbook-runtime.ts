@@ -8,12 +8,12 @@ import type { Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import { strFromU8, strToU8 } from "fflate";
 import { hydrateWorkbookChartStyles, loadWorkbookChartAssets } from "./charts";
 import { buildThemePaletteFromHex } from "./colors";
-import { getCellGeneralAlignment } from "./cell-alignment";
 import { getColumnFontMeasurements, getUnmeasuredWorkbookFont, restoreColumnFontMeasurements, collectWorkbookFormControls, mergeWorkbookImageAssets, revokeWorkbookImageAssets, type WorkbookImageAssets, resolveSheetColumnWidthPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetMergeMetadata } from "./images";
 import type { WorkbookStructureAssets } from "./images";
 import { safeCalculate } from "./safe-calculate";
 import { pivotWorkbook, readPivotTables } from "./pivots";
 import { getSheetsWasmModule } from "./wasm";
+import { readWorksheetAutofitCells } from "./worksheet-autofit";
 import type { XlsxChart, XlsxChartsheet, XlsxCellAddress, XlsxCellRange, XlsxDataValidation, XlsxFormControl, XlsxFreezePanes, XlsxSheetData, XlsxSheetVisibility, XlsxTable, XlsxThemePalette, XlsxWorkbookTab } from "./types";
 
 const DEFAULT_ROW_HEIGHT = 24;
@@ -735,6 +735,16 @@ export function createWorkbookRuntime() {
           formula: worksheet.getFormulaAt(message.payload.row, message.payload.col) ?? ""
         };
       }
+      case "getAutofitCells": {
+        if (!workbook) return [];
+        const { workbookSheetIndex, axis, index, locale } = message.payload;
+        const worksheet = workbook.getSheet(workbookSheetIndex);
+        try {
+          return readWorksheetAutofitCells(worksheet, axis, index, locale);
+        } finally {
+          worksheet.free();
+        }
+      }
       case "getRowsBatch": {
         if (!workbook) {
           return null;
@@ -753,15 +763,8 @@ export function createWorkbookRuntime() {
           includeMergeInfo: true,
           includeStyles: true,
           useFormattedValues: true
-        }) as Array<{ index: number; cells: Array<{ col: number; isMergedSecondary?: boolean; generalAlignment?: string }> }> | null;
-        for (const row of rows ?? []) {
-          for (const cell of row.cells) {
-            if (!cell.isMergedSecondary) {
-              cell.generalAlignment = getCellGeneralAlignment(worksheet, row.index, cell.col);
-            }
-          }
-        }
-        localizeRows(worksheet, rows, message.payload.locale);
+        });
+        localizeRows(rows, message.payload.locale);
         return rows;
       }
       default:
