@@ -124,14 +124,16 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
      }
 
      #[wasm_bindgen(getter, js_name = defaultRowHeight)]
-@@ -920,3 +965,88 @@
+@@ -920,3 +965,91 @@
      }
 
  }
 +
 +fn formatted_display_value(view: &CellView<'_>, raw: &CellValue) -> String {
-+    if view.value().is_spill_target() && !raw.is_empty() {
-+        return raw.to_string();
++    // A spill target stores no value of its own: format the value resolved
++    // from its source formula with the target cell's number format.
++    if view.value().is_spill_target() {
++        return view.format_value(raw);
 +    }
 +    view.formatted()
 +}
@@ -157,9 +159,10 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
 +    wrapped_only: bool,
 +    merges: Vec<&duke_sheets_core::CellRange>,
 +) -> Vec<WasmRow> {
++    // Filter the unsorted cell map and let the set do the only sort.
 +    let coords: BTreeSet<_> = ws
-+        .iter_cells()
-+        .map(|(row, col, _)| (row, col))
++        .cells_map_in_range(0, u32::MAX)
++        .map(|(&(row, col), _)| (row, col))
 +        .chain(ws.formula_cells().map(|(row, col, _)| (row, col)))
 +        .filter(|&(row, col)| matches(row, col))
 +        .collect();
@@ -213,3 +216,19 @@ diff --git a/bindings/wasm/src/worksheet_read.rs b/bindings/wasm/src/worksheet_r
 +
 +    rows.into_iter().map(|(index, cells)| WasmRow { index, cells }).collect()
 +}
+diff --git a/crates/duke-sheets-core/src/cell/view.rs b/crates/duke-sheets-core/src/cell/view.rs
+--- a/crates/duke-sheets-core/src/cell/view.rs
++++ b/crates/duke-sheets-core/src/cell/view.rs
+@@ -74,6 +74,12 @@
+             self.locale,
+         )
+     }
++
++    /// Format another value with this cell's number format, such as the
++    /// value a spill target displays from its source formula.
++    pub fn format_value(&self, value: &CellValue) -> String {
++        format_cell_value_inner(value, self.number_format(), self.date_1904, self.locale)
++    }
+ }
+
+ /// Format a cell value using the given number format, date system, and locale.

@@ -66,6 +66,28 @@ test("includes calculated spill values in autofit and viewport batches", () => {
   }
 });
 
+test("formats spill values with the spill target's number format", () => {
+  const workbook = new Workbook();
+  const sheet = workbook.getSheet(0);
+  try {
+    sheet.setFormula("A1", "=SEQUENCE(1,3,0.5,0.25)");
+    workbook.calculate();
+    sheet.setCellStyle("B1", { numberFormat: { formatString: "0%" } });
+
+    const rows = readWorksheetAutofitCells(sheet, "row", 0, "en-US");
+    assert.deepEqual(rows[0].cells.map(({ col, value, numericValue }) => [col, value, numericValue]), [
+      [0, "0.5", 0.5],
+      [1, "75%", 0.75],
+      [2, "1", 1]
+    ]);
+    const viewport = getFormattedViewportRows(sheet);
+    assert.equal(viewport[0].cells.find(cell => cell.col === 1)?.value, "75%");
+  } finally {
+    sheet.free();
+    workbook.free();
+  }
+});
+
 test("projects only cells that can affect automatic row height", () => {
   const workbook = new Workbook();
   const sheet = workbook.getSheet(0);

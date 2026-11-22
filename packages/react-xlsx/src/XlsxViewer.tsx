@@ -37,6 +37,7 @@ import { resolvePicturePaintRect } from "./picture-paint";
 import {
   emuToPixels,
   resizeImageRect,
+  resolveContentSheetAxisPixels,
   resolveOfficeColumnWidthPixels,
   resolveRenderedSheetAxisPixels,
   resolveSheetColumnWidthPixels,
@@ -121,6 +122,7 @@ const SELECTION_DRAG_THRESHOLD_PX = 4;
 const IMAGE_MIN_SIZE_PX = 16;
 const IMAGE_HANDLE_SIZE_PX = 10;
 const CANVAS_RESIZE_HIT_SLOP_PX = 8;
+const RESIZE_DRAG_THRESHOLD_PX = 3;
 const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
 const CANVAS_SCROLL_BUFFER_PX = 480;
 const CANVAS_DEFERRED_VIEWPORT_SYNC_THRESHOLD_PX = CANVAS_SCROLL_BUFFER_PX - 96;
@@ -5634,7 +5636,9 @@ function layoutRichCellLines(
       ? run.text.split(/(\r\n?|\n|[^\S\r\n]+|[^\s]+)/).filter(Boolean)
       : splitLines ? run.text.split(/(\r\n?|\n)/) : [run.text];
     for (const part of parts) {
-      if ((splitLines || wrapWidth !== undefined) && /^(?:\r\n?|\n)$/.test(part)) {
+      // Without splitting, a part is a whole run, so a run that is only a
+      // line break still starts a new line (rotated rich text relies on this).
+      if (/^(?:\r\n?|\n)$/.test(part)) {
         lines.push([]);
         width = 0;
         continue;
@@ -11745,10 +11749,17 @@ function XlsxGrid({
         return;
       }
 
+      const delta = (state.type === "column" ? event.clientX : event.clientY) - state.startPosition;
+      // A click or double-click on a divider is not a drag: ignore pointer
+      // jitter until the pointer has clearly moved, so it commits no resize.
+      if (!pendingResizePreviewRef.current && Math.abs(delta) < RESIZE_DRAG_THRESHOLD_PX) {
+        return;
+      }
+
       const size =
         state.type === "column"
-          ? Math.max(displayDefaultColWidth / 2, state.initialPx + (event.clientX - state.startPosition))
-          : Math.max(displayDefaultRowHeight / 1.5, state.initialPx + (event.clientY - state.startPosition));
+          ? Math.max(displayDefaultColWidth / 2, state.initialPx + delta)
+          : Math.max(displayDefaultRowHeight / 1.5, state.initialPx + delta);
       pendingResizePreviewRef.current = {
         actualIndex: state.actualIndex,
         size,
@@ -12608,9 +12619,13 @@ function XlsxGrid({
       stickyTopByRow
     ]
   );
+  // Read through a ref so a host that passes a new getCellStyle on every render
+  // does not cancel an autofit that is still measuring.
+  const getCellStyleRef = React.useRef(getCellStyle);
+  getCellStyleRef.current = getCellStyle;
   React.useLayoutEffect(() => () => {
     autofitRequestRef.current += 1;
-  }, [activeSheet, canResizeHeaders, experimentalCanvas, getAutofitCellsAsync, getCellStyle, locale, palette, revision, worksheet, zoomFactor]);
+  }, [activeSheet, canResizeHeaders, experimentalCanvas, getAutofitCellsAsync, locale, palette, revision, worksheet, zoomFactor]);
 
   const autofit = React.useCallback(async (axis: AutofitAxis, index: number) => {
     if (!canResizeHeaders || !activeSheet || (!getAutofitCellsAsync && !worksheet)) {
@@ -12625,7 +12640,7 @@ function XlsxGrid({
 
     const isRow = axis === "row";
     const precomputedColumnWidths = new Map<number, number>();
-    if (isRow && !activeSheet.officeLayout) {
+    if (!activeSheet.officeLayout) {
       for (let offset = 0; offset < activeSheet.visibleCols.length; offset += 1) {
         precomputedColumnWidths.set(activeSheet.visibleCols[offset], activeSheet.colWidths[offset]);
       }
@@ -12690,7 +12705,7 @@ function XlsxGrid({
         generalAlignment: cell.generalAlignment,
         showGridLines: activeSheet.showGridLines
       }), zoomFactor);
-      const overrides = getCellStyle?.({
+      const overrides = getCellStyleRef.current?.({
         cell: address,
         hasChartHighlight: Boolean(resolveCellChartHighlight(address, activeSheetChartHighlights)),
         hasConditionalFormat: matchingVisualRules.length > 0,
@@ -12721,8 +12736,9 @@ function XlsxGrid({
       }
       const useDomMeasurement = !experimentalCanvas && overrides
         && domAutofitTextProperties.some(property => overrides[property] !== undefined);
-      const wraps = style.whiteSpace === "pre-wrap" || /[\r\n]/.test(cell.value)
-        || (useDomMeasurement && (style.whiteSpace === "normal" || style.whiteSpace === "pre-line" || style.whiteSpace === "break-spaces"));
+      const wrapsByStyle = style.whiteSpace === "pre-wrap"
+        || Boolean(useDomMeasurement && (style.whiteSpace === "normal" || style.whiteSpace === "pre-line" || style.whiteSpace === "break-spaces"));
+      const wraps = wrapsByStyle || /[\r\n]/.test(cell.value);
       let wrapWidth: number | undefined;
       if (isRow && !rotation && wraps) {
         let cellWidth = 0;
@@ -12736,7 +12752,19 @@ function XlsxGrid({
       const bounds = useDomMeasurement
         ? measureDomAutofitCell(cell.value, richText, style, rotation, locale, wrapWidth)
         : measureAutofitCell(cell.value, richText, style, rotation, zoomFactor, wrapWidth);
-      largest = Math.max(largest, (isRow ? bounds.height + vertical : bounds.width + horizontal) / zoomFactor);
+      let cellSize = (isRow ? bounds.height + vertical : bounds.width + horizontal) / zoomFactor;
+      if (!isRow && !rotation && wrapsByStyle) {
+        // A wrap-text cell never widens its column to put the whole text on
+        // one line: it asks for its unwrapped width, capped at the width the
+        // column already has. The cap leaves room for the slack added to the
+        // fitted size below, so fitting again gives the same width.
+        const columnWidth = getColumnWidth(col);
+        const contentWidth = activeSheet.officeLayout
+          ? columnWidth
+          : resolveContentSheetAxisPixels(columnWidth, activeSheet.showGridLines);
+        cellSize = Math.min(cellSize, Math.max(0, Math.floor(contentWidth) - 1));
+      }
+      largest = Math.max(largest, cellSize);
       if (largest >= maxSize) break;
 
       if (performance.now() - frameStart > 12) {
@@ -12757,9 +12785,13 @@ function XlsxGrid({
     }
   }, [
     activeSheet, activeSheetChartHighlights, actualColWidths, canResizeHeaders, controller, effectiveTables,
-    experimentalCanvas, getAutofitCellsAsync, getCellStyle, hiddenColSet, hiddenRowSet, locale, palette,
+    experimentalCanvas, getAutofitCellsAsync, hiddenColSet, hiddenRowSet, locale, palette,
     pivotControlInsets, sparklinesByCell, worksheet, zoomFactor
   ]);
+  // Rows are memoized on handler identity, and autofit changes whenever the
+  // controller does (every selection change), so rows call it through a ref.
+  const autofitRef = React.useRef(autofit);
+  autofitRef.current = autofit;
 
   const resolveCanvasColumnResizeTarget = React.useCallback((clientX: number) => {
     if (!canResizeHeaders) {
@@ -12830,8 +12862,8 @@ function XlsxGrid({
     }
   }, [autofit, resolveCanvasRowResizeTarget]);
   const handleRowResizeDoubleClick = React.useCallback((row: number) => {
-    void autofit("row", row).catch(() => {});
-  }, [autofit]);
+    void autofitRef.current("row", row).catch(() => {});
+  }, []);
   const resolveCanvasRowHeaderTarget = React.useCallback((clientY: number) => {
     const scrollerRect = scrollRef.current?.getBoundingClientRect();
     if (!scrollerRect) {
