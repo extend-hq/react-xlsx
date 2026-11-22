@@ -1,6 +1,7 @@
 import type { Worksheet } from "./duke-sheets/generated/duke_sheets_wasm.js";
 
 const separators = new Map<string, { decimal: string; group: string }>();
+type DisplayNumberFormat = { isDateFormat?: boolean; formatString?: string };
 
 export function parseLocaleNumber(text: string, locale: string): number | undefined {
   if (locale === "en-US") return undefined;
@@ -26,10 +27,13 @@ export function localizeCellNumber(worksheet: Worksheet, row: number, col: numbe
     value.free();
   }
   const style = worksheet.getCellStyleAt(row, col) as {
-    numberFormat?: { isDateFormat?: boolean; formatString?: string };
+    numberFormat?: DisplayNumberFormat;
   } | null;
-  const format = style?.numberFormat;
-  if (format?.isDateFormat) return text;
+  return localizeFormattedNumber(text, style?.numberFormat, locale);
+}
+
+export function localizeFormattedNumber(text: string, format: DisplayNumberFormat | undefined, locale: string) {
+  if (locale === "en-US" || !text || format?.isDateFormat) return text;
 
   let symbols = separators.get(locale);
   if (!symbols) {
@@ -71,18 +75,15 @@ export function localizeCellNumber(worksheet: Worksheet, row: number, col: numbe
   );
 }
 
-export function localizeRows(worksheet: Worksheet, rows: unknown, locale = "en-US"): void {
+export function localizeRows(rows: unknown, locale = "en-US"): void {
   if (locale === "en-US" || !Array.isArray(rows)) return;
   for (const row of rows) {
     for (const cell of row.cells ?? []) {
-      if (!cell.isMergedSecondary && typeof cell.value === "string") {
-        const value = worksheet.getCalculatedValueAt(row.index, cell.col);
-        try {
-          cell.numericValue = value.is_number ? value.asNumber() : null;
-        } finally {
-          value.free();
-        }
-        cell.value = localizeCellNumber(worksheet, row.index, cell.col, cell.value, locale);
+      if (cell.isMergedSecondary || typeof cell.value !== "string") continue;
+      if (typeof cell.numericValue === "number") {
+        cell.value = localizeFormattedNumber(cell.value, cell.style?.numberFormat, locale);
+      } else {
+        cell.numericValue = null;
       }
     }
   }

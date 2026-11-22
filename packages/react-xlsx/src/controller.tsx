@@ -1369,7 +1369,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const drawingMutationEpoch = React.useRef(0);
   const drawingMutationState = React.useRef({ workbook, revision, readOnly, activeCell, activeSheetIndex });
   drawingMutationState.current = { workbook, revision, readOnly, activeCell, activeSheetIndex };
-  const canResizeReadOnly = requestedReadOnly && allowResizeInReadOnly && !forcedReadOnly;
+  const canResize = !readOnly || (requestedReadOnly && allowResizeInReadOnly && !forcedReadOnly);
   const shouldForceReadOnlyForBuffer = React.useCallback((bufferByteLength: number) => (
     !requestedReadOnly && readOnlyAboveBytes > 0 && bufferByteLength > readOnlyAboveBytes
   ), [readOnlyAboveBytes, requestedReadOnly]);
@@ -1906,6 +1906,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     return getWorkerClient().getRowsBatch(workbookSheetIndex, startRow, rowCount, locale);
   }, [getWorkerClient, isWorkerBacked, locale]);
+
+  const getAutofitCellsAsync = React.useCallback((workbookSheetIndex: number, axis: "column" | "row", index: number) => (
+    getWorkerClient().getAutofitCells(workbookSheetIndex, axis, index, locale)
+  ), [getWorkerClient, locale]);
 
   const visibleSheetIndexByWorkbookSheetIndex = React.useMemo(
     () => new Map(sheets.map((sheet, index) => [sheet.workbookSheetIndex, index])),
@@ -3140,7 +3144,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [activeSheet]);
 
   const resizeColumn = React.useCallback((col: number, widthPx: number) => {
-    if ((readOnly && !canResizeReadOnly) || !activeSheet) {
+    if (!canResize || !activeSheet) {
       return;
     }
 
@@ -3159,22 +3163,24 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       col,
       activeSheet.officeLayout
         ? pxToOfficeColumnWidth(widthPx, activeSheet.officeLayout.columnDigitWidthPt)
-        : pxToSheetColumnWidth(resolveContentSheetAxisPixels(widthPx, activeSheet.showGridLines))
+        : pxToSheetColumnWidth(
+            resolveContentSheetAxisPixels(widthPx, activeSheet.showGridLines),
+            activeSheet.columnWidthCharacterWidthPx
+          )
     );
     refreshWorkbookState(workbook);
   }, [
     activeSheet,
     applyReadOnlyResizeOverride,
-    canResizeReadOnly,
+    canResize,
     isWorkerBacked,
-    readOnly,
     recordHistoryBeforeMutation,
     refreshWorkbookState,
     workbook
   ]);
 
   const resizeRow = React.useCallback((row: number, heightPx: number) => {
-    if ((readOnly && !canResizeReadOnly) || !activeSheet) {
+    if (!canResize || !activeSheet) {
       return;
     }
 
@@ -3199,9 +3205,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [
     activeSheet,
     applyReadOnlyResizeOverride,
-    canResizeReadOnly,
+    canResize,
     isWorkerBacked,
-    readOnly,
     recordHistoryBeforeMutation,
     refreshWorkbookState,
     workbook
@@ -4565,6 +4570,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       canDownload: Boolean(file ?? src),
       canExport: Boolean(workbook),
       canLoadDeferred,
+      canResize,
       canUndo,
       canZoomIn,
       canZoomOut,
@@ -4626,6 +4632,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       getCellSnapshotAsync: isWorkerBacked ? getCellSnapshotAsync : undefined,
       getActiveWorksheet,
       getRowsBatchAsync: isWorkerBacked ? getRowsBatchAsync : undefined,
+      getAutofitCellsAsync: isWorkerBacked ? getAutofitCellsAsync : undefined,
       images,
       isLoadDeferred,
       isLoading,
@@ -4709,6 +4716,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       addSheet,
       canLoadDeferred,
       canRedo,
+      canResize,
       canUndo,
       canZoomIn,
       canZoomOut,
@@ -4829,6 +4837,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       sortState,
       sortTable,
       src,
+      getAutofitCellsAsync,
       getRowsBatchAsync,
       tabs,
       tables,
