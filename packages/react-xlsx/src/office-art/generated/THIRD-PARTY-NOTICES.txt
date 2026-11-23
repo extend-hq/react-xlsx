@@ -2072,7 +2072,7 @@ SOFTWARE.
 
 --------------------
 
-duke-odf 0.3.2
+duke-odf 0.4.0
 MIT
 https://github.com/extend-hq/duke-office
 
@@ -2101,7 +2101,7 @@ SOFTWARE.
 
 --------------------
 
-duke-office-art 0.2.2
+duke-office-art 0.3.0
 MIT AND Apache-2.0 AND OFL-1.1
 https://github.com/extend-hq/duke-office
 

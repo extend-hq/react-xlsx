@@ -82,6 +82,6 @@
     "@tanstack/react-virtual": "^3.13.23",
     "preact": "^10.29.8",
     "@extend-ai/office-fonts": "https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.2.0/extend-ai-office-fonts-0.2.0.tgz",
-    "@extend-ai/duke-office-charts": "https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.11/extend-ai-duke-office-charts-0.3.11.tgz"
+    "@extend-ai/duke-office-charts": "https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.12/extend-ai-duke-office-charts-0.3.12.tgz"
   }
 }
