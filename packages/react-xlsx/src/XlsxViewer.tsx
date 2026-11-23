@@ -7803,6 +7803,7 @@ function XlsxGrid({
         actualIndex: number;
         initialPx: number;
         pointerId: number;
+        restoreUserSelect: () => void;
         startPosition: number;
         type: "column" | "row";
       }
@@ -8527,6 +8528,42 @@ function XlsxGrid({
       scrollRef.current.style.cursor = "";
     }
   }, []);
+  const clearResizeDrag = React.useCallback(() => {
+    resizeStateRef.current?.restoreUserSelect();
+    resizeStateRef.current = null;
+    pendingResizePreviewRef.current = null;
+    columnPreviewRef.current = null;
+    rowPreviewRef.current = null;
+    clearGlobalCursor();
+    if (resizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = null;
+    }
+  }, [clearGlobalCursor]);
+  React.useEffect(() => clearResizeDrag, [clearResizeDrag]);
+  const previousResizeSheetRef = React.useRef(activeSheet);
+  React.useLayoutEffect(() => {
+    const sheetChanged = previousResizeSheetRef.current !== activeSheet;
+    previousResizeSheetRef.current = activeSheet;
+    if (sheetChanged && resizeStateRef.current) {
+      clearResizeDrag();
+      setInteractionMode("idle");
+      setResizeGuide(null);
+    }
+  }, [activeSheet, clearResizeDrag, setInteractionMode]);
+
+  function suppressResizeTextSelection() {
+    const { style } = document.body;
+    const value = style.getPropertyValue("user-select");
+    const priority = style.getPropertyPriority("user-select");
+    style.setProperty("user-select", "none", priority);
+    return () => {
+      if (style.getPropertyValue("user-select") === "none" && style.getPropertyPriority("user-select") === priority) {
+        style.setProperty("user-select", value, priority);
+      }
+    };
+  }
+
   const getBodyBlitBufferCanvas = React.useCallback((pane: FrozenDrawingPane) => {
     let bufferCanvas = bodyBlitBufferCanvasRef.current[pane];
     if (!bufferCanvas && typeof document !== "undefined") {
@@ -9972,11 +10009,8 @@ function XlsxGrid({
     fillDragRef.current = null;
     chartInteractionRef.current = null;
     imageInteractionRef.current = null;
-    pendingResizePreviewRef.current = null;
-    columnPreviewRef.current = null;
-    rowPreviewRef.current = null;
+    clearResizeDrag();
     setResizeGuide(null);
-    clearGlobalCursor();
     editingCellRef.current = null;
     setEditingCell(null);
     setEditingValue("");
@@ -9987,7 +10021,7 @@ function XlsxGrid({
     setImagePreviewRect(null);
     selectionPreviewRangeRef.current = null;
     setInteractionMode("idle");
-  }, [activeSheetIndex, clearGlobalCursor, revision]);
+  }, [activeSheetIndex, clearResizeDrag, revision]);
 
   const focusGridElement = React.useCallback((element: HTMLDivElement, options?: FocusOptions) => {
     if (document.activeElement !== element) {
@@ -11804,19 +11838,9 @@ function XlsxGrid({
       if (resizeStateRef.current?.pointerId === event.pointerId) {
         const resizeState = resizeStateRef.current;
         const preview = pendingResizePreviewRef.current;
-        resizeStateRef.current = null;
-        pendingResizePreviewRef.current = null;
-        columnPreviewRef.current = null;
-        rowPreviewRef.current = null;
+        clearResizeDrag();
         setInteractionMode("idle");
         setResizeGuide(null);
-        clearGlobalCursor();
-        document.body.style.userSelect = "";
-
-        if (resizeFrameRef.current !== null) {
-          window.cancelAnimationFrame(resizeFrameRef.current);
-          resizeFrameRef.current = null;
-        }
 
         if (preview && preview.actualIndex === resizeState.actualIndex && preview.type === resizeState.type) {
           if (preview.type === "column") {
@@ -11829,13 +11853,14 @@ function XlsxGrid({
     }
 
     window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
+    // A resize can end over host elements that stop event propagation.
+    window.addEventListener("pointerup", handlePointerUp, true);
+    window.addEventListener("pointercancel", handlePointerUp, true);
 
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerUp);
+      window.removeEventListener("pointerup", handlePointerUp, true);
+      window.removeEventListener("pointercancel", handlePointerUp, true);
       clearGlobalCursor();
       if (resizeFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeFrameRef.current);
@@ -11845,6 +11870,7 @@ function XlsxGrid({
   }, [
     applyPreviewOverlay,
     clearGlobalCursor,
+    clearResizeDrag,
     controller,
     displayDefaultColWidth,
     displayDefaultRowHeight,
@@ -16143,6 +16169,7 @@ function XlsxGrid({
       actualIndex: actualCol,
       initialPx: widthPx,
       pointerId,
+      restoreUserSelect: resizeStateRef.current?.restoreUserSelect ?? suppressResizeTextSelection(),
       startPosition: startX,
       type: "column"
     };
@@ -16152,7 +16179,6 @@ function XlsxGrid({
     setResizeGuide(position === null ? null : { position, type: "column" });
     setInteractionMode("select");
     setGlobalCursor("col-resize");
-    document.body.style.userSelect = "none";
   }
 
   function startRowResize(pointerId: number, actualRow: number, heightPx: number, startY: number) {
@@ -16165,6 +16191,7 @@ function XlsxGrid({
       actualIndex: actualRow,
       initialPx: heightPx,
       pointerId,
+      restoreUserSelect: resizeStateRef.current?.restoreUserSelect ?? suppressResizeTextSelection(),
       startPosition: startY,
       type: "row"
     };
@@ -16174,7 +16201,6 @@ function XlsxGrid({
     setResizeGuide(position === null ? null : { position, type: "row" });
     setInteractionMode("select");
     setGlobalCursor("row-resize");
-    document.body.style.userSelect = "none";
   }
 
   function startCellSelection(
