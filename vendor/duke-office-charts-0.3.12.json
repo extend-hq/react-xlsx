@@ -1,0 +1,13 @@
+{
+  "name": "@extend-ai/duke-office-charts",
+  "version": "0.3.12",
+  "archive": "extend-ai-duke-office-charts-0.3.12.tgz",
+  "sha256": "44bacd0eded783fdabdc6f280acd6fcd08a67849a62838b0b468a44d0d0e0b4d",
+  "integrity": "sha512-PsMUbyMldJoh/lCC9OxbSwwr95HRlijG249DhwJj8r0oyAN+gZTY41wWLL1xDQwV+fkrK6ht311dz93JrHC2PQ==",
+  "sourceRevision": "1f888771a96c856ecd5619e4c015a1258f6811c8",
+  "sourceHasUncommittedChanges": false,
+  "sourceDigest": "e327232b1be1b516512c076d7a8bb994083d59f49b2b33972637269c940fa5cd",
+  "coreWasmSha256": "7fb6dc9b284dc4a7a0f973cac24880c3bb18f07145711fdcd2b428bf269d28f1",
+  "fullWasmSha256": "bdd2dc259505758988b41fedf71d874d365a3685073238aa38e59fd1bdbdc6ed",
+  "releaseUrl": "https://github.com/extend-hq/duke-office/releases/download/charts-browser-v0.3.12/extend-ai-duke-office-charts-0.3.12.tgz"
+}

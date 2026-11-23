@@ -88,9 +88,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "duke-odf"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d33ff3c471ec7060af818515246eee83fd4c007853b3a9ad0106d30f7eed3b6"
+checksum = "e5797292051a029cbf9277e0c0d7744654013d98545936cb537c559e5a01842b"
 dependencies = [
  "base64",
  "encoding_rs",
@@ -102,9 +102,9 @@ dependencies = [
 
 [[package]]
 name = "duke-office-art"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "716210e2f4f8cbdd2776532f69f9efce4ea9b28fe241614bd2d2d90d3b9c95ca"
+checksum = "2f13cee69241da4eefc3adf844d86e9f548901bd0651fba9f67d43329788182a"
 dependencies = [
  "base64",
  "duke-odf",
