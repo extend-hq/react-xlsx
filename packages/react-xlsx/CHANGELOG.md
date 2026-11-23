@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.23.2
+
+- Double-click a row or column header divider to fit its contents, including offscreen cells. Row autofit accounts for wrapped text at the current column widths.
+- Restore the page’s text selection setting when a resize ends, the worksheet changes, or the viewer unmounts during a drag.
+- Update the bundled Duke Office Charts browser runtime to 0.3.12 and Duke Office Art to 0.3.0.
+
 ## 0.23.1
 
 - Update artwork rendering to Duke Office Art 0.2.2 and use the smaller Duke Office Charts 0.3.11 browser bundles.
