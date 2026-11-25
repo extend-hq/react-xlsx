@@ -123,6 +123,8 @@ type ViewerSource =
   | null;
 
 type PlaygroundSettings = {
+  allowFreezeInReadOnly: boolean;
+  allowHideInReadOnly: boolean;
   allowResizeInReadOnly: boolean;
   bandedRows: boolean;
   customHighlightStyle: boolean;
@@ -268,12 +270,12 @@ function useStyleActions() {
     [canEdit, selectionRanges, setRangeStyle, setSelectedCellStyle],
   );
 
-  return { applyStyle, canEdit, canMerge: selectionRanges.length === 1 && canEdit, isReadOnly };
+  return { applyStyle, canEdit, canMerge: selectionRanges.length === 1 && canEdit, hasSelection: selectionRanges.length > 0, isReadOnly };
 }
 
 function HomeRibbon() {
-  const { hideRows, unhideRows, hideColumns, unhideColumns } = useXlsxViewerLayout();
-  const { applyStyle, canEdit, canMerge, isReadOnly } = useStyleActions();
+  const { canChangeVisibility, hideRows, unhideRows, hideColumns, unhideColumns } = useXlsxViewerLayout();
+  const { applyStyle, canEdit, canMerge, hasSelection } = useStyleActions();
   const { canRedo, canUndo, mergeSelection, redo, undo, unmergeSelection } = useXlsxViewerEditing();
   const [fontFamily, setFontFamily] = React.useState<string>("Aptos");
   const [fontSize, setFontSize] = React.useState("11");
@@ -493,7 +495,7 @@ function HomeRibbon() {
       </RibbonGroup>
       <RibbonGroup>
         <Menu>
-          <MenuTrigger disabled={!canEdit} render={<RibbonMenuButton label="Format" />} />
+          <MenuTrigger disabled={!canChangeVisibility || !hasSelection} render={<RibbonMenuButton label="Format" />} />
           <MenuPopup>
             <MenuSub>
               <MenuSubTrigger>Hide &amp; Unhide</MenuSubTrigger>
@@ -659,16 +661,16 @@ function ReviewRibbon({ onLoadHighlightSample }: { onLoadHighlightSample: (autoS
 
 function ViewRibbon() {
   const settings = useSettings();
-  const { activeSheet, activeSheetIndex, readOnly, setActiveSheetIndex, sheets } = useXlsxViewer();
+  const { activeSheetIndex, setActiveSheetIndex, sheets } = useXlsxViewer();
   const { canZoomIn, canZoomOut, setZoomScale, zoomIn, zoomOut } = useXlsxViewerZoom();
-  const { canFreezePanes, freezePanes, frozenPanes, unfreezePanes } = useXlsxViewerLayout();
+  const { canChangeFreezePanes, canFreezePanes, freezePanes, frozenPanes, unfreezePanes } = useXlsxViewerLayout();
   const hasWorkbook = sheets.length > 0;
 
   return (
     <>
       <RibbonGroup>
         <Menu>
-          <MenuTrigger disabled={!activeSheet || readOnly || settings.readOnly} render={<RibbonMenuButton label="Freeze Panes" />} />
+          <MenuTrigger disabled={!canChangeFreezePanes} render={<RibbonMenuButton label="Freeze Panes" />} />
           <MenuPopup>
             {frozenPanes
               ? <MenuItem onClick={unfreezePanes}>Unfreeze Panes</MenuItem>
@@ -753,6 +755,8 @@ function DeveloperRibbon() {
     <>
       <RibbonGroup>
         <ToggleRow checked={settings.useWorker} label="Use web workers" onCheckedChange={(value) => settings.set("useWorker", value)} />
+        <ToggleRow checked={settings.allowFreezeInReadOnly} label="Freeze when read-only" onCheckedChange={value => settings.set("allowFreezeInReadOnly", value)} />
+        <ToggleRow checked={settings.allowHideInReadOnly} label="Hide and unhide when read-only" onCheckedChange={value => settings.set("allowHideInReadOnly", value)} />
         <ToggleRow
           checked={settings.allowResizeInReadOnly}
           label="Resize when read-only"
@@ -1137,6 +1141,8 @@ function EmptyWorkbook({ onLoadSample, onOpenFile }: { onLoadSample: () => void;
 /* -------------------------------------------------------------------------- */
 
 const DEFAULT_SETTINGS: PlaygroundSettings = {
+  allowFreezeInReadOnly: true,
+  allowHideInReadOnly: false,
   allowResizeInReadOnly: false,
   bandedRows: false,
   customHighlightStyle: false,
@@ -1175,6 +1181,8 @@ export function App() {
   );
 
   const sharedOptions = {
+    allowFreezeInReadOnly: settings.allowFreezeInReadOnly,
+    allowHideInReadOnly: settings.allowHideInReadOnly,
     allowResizeInReadOnly: settings.allowResizeInReadOnly,
     locale: settings.locale,
     readOnly: settings.readOnly,

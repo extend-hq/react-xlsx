@@ -77,7 +77,7 @@
               <button class="btn" type="button" data-style="comma" aria-label="Comma style" data-tooltip="Comma style" data-keep data-edit style="font-size: 11px; font-weight: 500">,000</button>
             </div>
             <div class="group" role="group">
-              <button class="btn btn-label" id="visibility" type="button" data-edit disabled>Hide &amp; Unhide<i data-icon="chevron-down" class="chevron"></i></button>
+              <button class="btn btn-label" id="visibility" type="button" disabled>Hide &amp; Unhide<i data-icon="chevron-down" class="chevron"></i></button>
             </div>
           </div>
 
@@ -107,6 +107,10 @@
           </div>
 
           <div role="tabpanel" data-panel="Developer" hidden>
+            <div class="group" role="group">
+              <label class="toggle"><input id="read-only-freeze" type="checkbox" checked /><span class="switch"></span>Freeze when read-only</label>
+              <label class="toggle"><input id="read-only-hide" type="checkbox" /><span class="switch"></span>Hide and unhide when read-only</label>
+            </div>
             <div class="group" role="group">
               <button class="btn btn-label" id="load-sample" type="button"><i data-icon="sparkles"></i>Load sample</button>
             </div>

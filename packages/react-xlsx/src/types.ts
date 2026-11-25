@@ -1043,6 +1043,10 @@ export interface UseXlsxViewerControllerOptions {
    * @default false
    */
   allowResizeInReadOnly?: boolean;
+  /** Allow session-only freeze and unfreeze in read-only mode. Defaults to false. */
+  allowFreezeInReadOnly?: boolean;
+  /** Allow session-only hiding and unhiding of rows and columns in read-only mode. Defaults to false. */
+  allowHideInReadOnly?: boolean;
   /**
    * Defers loading until `continueDeferredLoad()` is called when the file is larger than this byte threshold.
    * Set to `0` to parse immediately.
@@ -1125,7 +1129,11 @@ export interface UseXlsxViewerControllerOptions {
 export interface XlsxViewerLayout {
   /** Frozen row and column counts on the active worksheet, or null when unfrozen. */
   frozenPanes: XlsxFreezePanes | null;
-  /** Whether the current selection provides a usable freeze boundary on an editable worksheet. */
+  /** Whether freeze and unfreeze are available on the active worksheet. */
+  canChangeFreezePanes?: boolean;
+  /** Whether rows and columns can be hidden or revealed on the active worksheet. */
+  canChangeVisibility?: boolean;
+  /** Whether the current selection can be used as a freeze boundary. */
   canFreezePanes: boolean;
   /** Hide selected rows, or an inclusive, zero-based row interval. */
   hideRows: (start?: number, end?: number) => void;

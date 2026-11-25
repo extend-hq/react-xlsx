@@ -1,4 +1,5 @@
 import { addSelectionRange, bandIndices, clipboardBands, resolveFreezePanesCell } from "./selection-ranges";
+import { applyReadOnlyLayout, changedVisibilityRanges, nextVisibleIndex, type ReadOnlySheetLayout } from "./read-only-layout";
 import { createMergedRangeLookup } from "./merged-range-lookup";
 import { findIntersectingPivot, pivotWorkbook, readPivotTables } from "./pivots";
 import type { XlsxPivotChartInput, XlsxPivotSource, XlsxPivotTable, XlsxPivotTableInput, XlsxPivotToggle } from "./pivot-types";
@@ -1298,6 +1299,8 @@ function downloadUrl(src: string, fileName: string) {
 
 export function useXlsxViewerController(options: UseXlsxViewerControllerOptions): XlsxViewerController {
   const {
+    allowFreezeInReadOnly = false,
+    allowHideInReadOnly = false,
     allowResizeInReadOnly = false,
     deferLoadingAboveBytes = DEFAULT_DEFER_LOADING_ABOVE_BYTES,
     file,
@@ -1316,7 +1319,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [isLoading, setIsLoading] = React.useState(Boolean(file ?? src));
   const [error, setError] = React.useState<Error | null>(null);
   const [workbook, setWorkbook] = React.useState<Workbook | null>(null);
-  const [sheets, setSheets] = React.useState<XlsxSheetData[]>([]);
+  const [readOnlyLayouts, setReadOnlyLayouts] = React.useState<Record<number, ReadOnlySheetLayout>>({});
+  const [workbookSheets, setSheets] = React.useState<XlsxSheetData[]>([]);
   const [chartsByWorkbookSheetIndex, setChartsByWorkbookSheetIndex] = React.useState<XlsxChart[][]>([]);
   const [chartsheets, setChartsheets] = React.useState<XlsxChartsheet[]>([]);
   const [tabs, setTabs] = React.useState<XlsxWorkbookTab[]>([]);
@@ -1371,6 +1375,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const displayFileName = React.useMemo(() => resolveDisplayFileName(src, fileName), [fileName, src]);
   const shouldDeferLoading = deferLoadingAboveBytes > 0;
   const readOnly = requestedReadOnly || forcedReadOnly;
+  const sheets = React.useMemo(() => readOnly
+    ? workbookSheets.map(sheet => applyReadOnlyLayout(sheet, readOnlyLayouts[sheet.workbookSheetIndex]))
+    : workbookSheets, [readOnly, readOnlyLayouts, workbookSheets]);
   const drawingMutationEpoch = React.useRef(0);
   const drawingMutationState = React.useRef({ workbook, revision, readOnly, activeCell, activeSheetIndex });
   drawingMutationState.current = { workbook, revision, readOnly, activeCell, activeSheetIndex };
@@ -1556,6 +1563,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   React.useEffect(() => {
     loadGenerationRef.current += 1;
+    setReadOnlyLayouts({});
     if (!file && !src) {
       disposeWorkerClient();
       setForcedReadOnly(false);
@@ -3115,34 +3123,61 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setRevision(current => current + 1);
   }, [activeSheet]);
 
+  const canChangeVisibility = Boolean(activeSheet && !isLoading && (readOnly ? allowHideInReadOnly : workbook));
+  const canChangeFreezePanes = Boolean(activeSheet && !isLoading && (readOnly ? allowFreezeInReadOnly : workbook));
+  const activeLayout = activeSheet && readOnly ? readOnlyLayouts[activeSheet.workbookSheetIndex] : undefined;
+
+  React.useEffect(() => {
+    if (!activeCell || !activeLayout) return;
+    const { hiddenRows, hiddenCols } = activeLayout;
+    const row = hiddenRows?.has(activeCell.row)
+      ? nextVisibleIndex(activeCell.row, XLSX_MAX_ROWS, index => hiddenRows.has(index)) : activeCell.row;
+    const col = hiddenCols?.has(activeCell.col)
+      ? nextVisibleIndex(activeCell.col, XLSX_MAX_COLUMNS, index => hiddenCols.has(index)) : activeCell.col;
+    if (row === activeCell.row && col === activeCell.col) return;
+    const cell = row < 0 || col < 0 ? null : { row, col };
+    setActiveCell(cell);
+    setSelection(cell && { start: cell, end: cell });
+    selectionAnchorRef.current = cell;
+  }, [activeCell, activeLayout, setSelection]);
+
   const setAxisHidden = React.useCallback((
     axis: "row" | "col", hidden: boolean, start?: number, end = start
   ) => {
-    if (readOnly || !workbook || !activeSheet) return;
+    if (!canChangeVisibility || !activeSheet) return;
     const limit = axis === "row" ? XLSX_MAX_ROWS : XLSX_MAX_COLUMNS;
-    const ranges = start === undefined && end === undefined
+    const fromSelection = start === undefined && end === undefined;
+    const ranges = fromSelection
       ? selectionRanges.map(area => ({ start: area.start[axis], end: area.end[axis] }))
       : [{ start: start ?? -1, end: end ?? -1 }];
     if (!ranges.length || ranges.some(range => !Number.isInteger(range.start) || !Number.isInteger(range.end)
       || range.start < 0 || range.end < range.start || range.end >= limit)) return;
 
-    const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
+    const sheetIndex = activeSheet.workbookSheetIndex;
+    if (readOnly) {
+      const key = axis === "row" ? "hiddenRows" : "hiddenCols";
+      setReadOnlyLayouts(current => {
+        const layout = current[sheetIndex];
+        const existing = layout?.[key] ?? new Set(activeSheet[key]);
+        const changes = changedVisibilityRanges(existing, ranges, hidden, fromSelection);
+        if (!changes.length) return current;
+        const next = new Set(existing);
+        for (const range of changes) {
+          for (let index = range.start; index <= range.end; index++) {
+            if (hidden) next.add(index);
+            else next.delete(index);
+          }
+        }
+        return { ...current, [sheetIndex]: { ...layout, [key]: next } };
+      });
+      return;
+    }
+
+    if (!workbook) return;
+    const worksheet = workbook.getSheet(sheetIndex);
     try {
       const existing = new Set(axis === "row" ? worksheet.hiddenRows : worksheet.hiddenColumns);
-      if (!hidden && !existing.size) return;
-      if (!hidden && start === undefined && existing.has(0)) {
-        let firstVisible = 0;
-        while (existing.has(firstVisible)) firstVisible++;
-        for (const range of ranges) {
-          if (range.start === firstVisible) range.start = 0;
-        }
-      }
-      const changes = ranges.filter(range => {
-        for (let index = range.start; index <= range.end; index++) {
-          if (existing.has(index) !== hidden) return true;
-        }
-        return false;
-      });
+      const changes = changedVisibilityRanges(existing, ranges, hidden, fromSelection);
       if (!changes.length) return;
       recordHistoryBeforeMutation();
       for (const range of changes) {
@@ -3150,13 +3185,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         else worksheet.setColumnsHidden(range.start, range.end, hidden);
       }
       if (hidden && activeCell && changes.some(range => range.start <= activeCell[axis] && activeCell[axis] <= range.end)) {
-        const isHidden = (index: number) => axis === "row" ? worksheet.isRowHidden(index) : worksheet.isColumnHidden(index);
-        let index = activeCell[axis];
-        while (index < limit && isHidden(index)) index++;
-        if (index === limit) {
-          index = activeCell[axis] - 1;
-          while (index >= 0 && isHidden(index)) index--;
-        }
+        const index = nextVisibleIndex(activeCell[axis], limit,
+          value => axis === "row" ? worksheet.isRowHidden(value) : worksheet.isColumnHidden(value));
         if (index >= 0) {
           const cell = { ...activeCell, [axis]: index };
           setActiveCell(cell);
@@ -3168,7 +3198,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     } finally {
       worksheet.free();
     }
-  }, [activeCell, activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selectionRanges, setSelection, workbook]);
+  }, [activeCell, activeSheet, canChangeVisibility, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selectionRanges, setSelection, workbook]);
 
   const hideRows = React.useCallback((start?: number, end?: number) => setAxisHidden("row", true, start, end), [setAxisHidden]);
   const unhideRows = React.useCallback((start?: number, end?: number) => setAxisHidden("row", false, start, end), [setAxisHidden]);
@@ -3176,11 +3206,18 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const unhideColumns = React.useCallback((start?: number, end?: number) => setAxisHidden("col", false, start, end), [setAxisHidden]);
 
   const setFreezeBoundary = React.useCallback((cell: XlsxCellAddress) => {
-    if (readOnly || !workbook || !activeSheet) return;
+    if (!canChangeFreezePanes || !activeSheet) return;
     const { row, col } = cell;
     if (!Number.isInteger(row) || row < 0 || row >= XLSX_MAX_ROWS
       || !Number.isInteger(col) || col < 0 || col >= XLSX_MAX_COLUMNS) return;
-    const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
+    const sheetIndex = activeSheet.workbookSheetIndex;
+    if (readOnly) {
+      const freezePanes = row || col ? { row, col } : null;
+      setReadOnlyLayouts(current => ({ ...current, [sheetIndex]: { ...current[sheetIndex], freezePanes } }));
+      return;
+    }
+    if (!workbook) return;
+    const worksheet = workbook.getSheet(sheetIndex);
     try {
       const current = parseWorksheetFreezePanes(worksheet);
       if (row === (current?.row ?? 0) && col === (current?.col ?? 0)) return;
@@ -3190,10 +3227,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     } finally {
       worksheet.free();
     }
-  }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+  }, [activeSheet, canChangeFreezePanes, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
   const freezeCell = resolveFreezePanesCell(activeCell, selection);
-  const canFreezePanes = Boolean(!readOnly && workbook && activeSheet && freezeCell && (freezeCell.row > 0 || freezeCell.col > 0));
+  const canFreezePanes = Boolean(canChangeFreezePanes && freezeCell && (freezeCell.row > 0 || freezeCell.col > 0));
   const freezePanes = React.useCallback((cell = freezeCell) => {
     if (cell) setFreezeBoundary(cell);
   }, [freezeCell, setFreezeBoundary]);
@@ -4688,6 +4725,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeChartBy,
       resizeImageBy,
       frozenPanes: activeSheet?.freezePanes ?? null,
+      canChangeFreezePanes,
+      canChangeVisibility,
       canFreezePanes,
       hideRows,
       unhideRows,
@@ -4840,6 +4879,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       revision,
       resizeChartBy,
       resizeImageBy,
+      canChangeFreezePanes,
+      canChangeVisibility,
       canFreezePanes,
       hideRows,
       unhideRows,

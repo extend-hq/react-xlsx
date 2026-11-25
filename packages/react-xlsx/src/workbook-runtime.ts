@@ -311,6 +311,18 @@ function buildSheetList(
 
     const hiddenRows = Array.from(worksheet.hiddenRows);
     const hiddenCols = Array.from(worksheet.hiddenColumns);
+    const rowHeightOverridesPx = sheetState?.rowHeightOverridesPx ?? {};
+    const colWidthOverridesPx = sheetState?.colWidthOverridesPx ?? {};
+    if (!sheetState) {
+      for (const row of hiddenRows) {
+        const height = resolveRowHeightPx(row);
+        if (height !== defaultRowHeightPx) rowHeightOverridesPx[row] = height;
+      }
+      for (const col of hiddenCols) {
+        const width = resolveColumnWidthPx(col);
+        if (width !== defaultColWidthPx) colWidthOverridesPx[col] = width;
+      }
+    }
     const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
     if (!usedRange) {
       sheetsByWorkbookSheetIndex.push({
@@ -319,7 +331,7 @@ function buildSheetList(
         columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
         colCount: 0,
         colStyleIds: sheetState?.colStyleIds ?? {},
-        colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
+        colWidthOverridesPx,
         colWidths: [],
         conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
         dataValidations: parseWorksheetDataValidations(worksheet),
@@ -342,7 +354,7 @@ function buildSheetList(
         visibility,
         namedCellStyleByName: structureAssets?.namedCellStyleByName ?? {},
         rowCount: 0,
-        rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
+        rowHeightOverridesPx,
         rowHeights: [],
         rowStyleIds: sheetState?.rowStyleIds ?? {},
         cellStyleIds: sheetState?.cellStyleIds ?? {},
@@ -380,7 +392,7 @@ function buildSheetList(
       columnWidthCharacterWidthPx: sheetState?.columnWidthCharacterWidthPx,
       colCount: visibleCols.length,
       colStyleIds: sheetState?.colStyleIds ?? {},
-      colWidthOverridesPx: sheetState?.colWidthOverridesPx ?? {},
+      colWidthOverridesPx,
       colWidths: visibleCols.map(resolveColumnWidthPx),
       conditionalFormatRules: sheetState?.conditionalFormatRules ?? [],
       dataValidations: parseWorksheetDataValidations(worksheet),
@@ -403,7 +415,7 @@ function buildSheetList(
       visibility,
       namedCellStyleByName: structureAssets?.namedCellStyleByName ?? {},
       rowCount: visibleRows.length,
-      rowHeightOverridesPx: sheetState?.rowHeightOverridesPx ?? {},
+      rowHeightOverridesPx,
       rowHeights: visibleRows.map(resolveRowHeightPx),
       rowStyleIds: sheetState?.rowStyleIds ?? {},
       cellStyleIds: sheetState?.cellStyleIds ?? {},

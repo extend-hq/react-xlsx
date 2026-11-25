@@ -8636,7 +8636,7 @@ function XlsxGrid({
 
       if (worksheet) {
         for (let col = 0; col < displayColLimit; col += 1) {
-          if (worksheet.isColumnHidden(col)) {
+          if (hiddenColSet.has(col)) {
             continue;
           }
 
@@ -8754,7 +8754,7 @@ function XlsxGrid({
         }
 
         for (let row = 0; row < displayRowLimit; row += 1) {
-          if (worksheet.isRowHidden(row)) continue;
+          if (hiddenRowSet.has(row)) continue;
           const height = worksheet.getRowHeight(row);
           if (height !== undefined && height !== null) {
             heights[row] = Math.max(
@@ -16610,7 +16610,7 @@ function XlsxGrid({
       return;
     }
 
-    if (!readOnly && !selectedChart && !selectedImage && event.ctrlKey && !event.metaKey && !event.altKey) {
+    if ((controller.canChangeVisibility ?? !readOnly) && !selectedChart && !selectedImage && event.ctrlKey && !event.metaKey && !event.altKey) {
       if (event.code === "Digit9" || event.code === "Digit0") {
         event.preventDefault();
         if (event.code === "Digit9") {
@@ -18077,10 +18077,10 @@ export function useXlsxViewerSelection(): XlsxViewerSelection {
 }
 
 export function useXlsxViewerLayout(): XlsxViewerLayout {
-  const { canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes } = useXlsxViewer();
+  const { canChangeFreezePanes, canChangeVisibility, canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes } = useXlsxViewer();
   return React.useMemo(
-    () => ({ canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes }),
-    [canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes]
+    () => ({ canChangeFreezePanes, canChangeVisibility, canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes }),
+    [canChangeFreezePanes, canChangeVisibility, canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes]
   );
 }
 
@@ -18681,7 +18681,7 @@ export function useXlsxViewerThumbnails(
         hiddenColSet
       );
       const resolveColumnWidthPx = (actualCol: number) => {
-        if (worksheet && !worksheet.isColumnHidden(actualCol)) {
+        if (worksheet && !hiddenColSet.has(actualCol)) {
           const width = worksheet.getColumnWidth(actualCol);
           if (width !== undefined && width !== null) {
             return Math.max(
@@ -18700,7 +18700,7 @@ export function useXlsxViewerThumbnails(
         );
       };
       const resolveRowHeightPx = (actualRow: number) => {
-        if (worksheet && !worksheet.isRowHidden(actualRow)) {
+        if (worksheet && !hiddenRowSet.has(actualRow)) {
           const height = worksheet.getRowHeight(actualRow);
           if (height !== undefined && height !== null) {
             return Math.max(

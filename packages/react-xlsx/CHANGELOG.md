@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.24.1
+
+- Allow read-only viewers to opt into freezing panes and hiding or unhiding rows and columns independently. These per-sheet view changes last for the session and stay out of workbook exports.
+
 ## 0.24.0
 
 - Add `useXlsxViewerLayout()` and matching controller commands to hide or unhide rows and columns and freeze or unfreeze panes. Layout edits support undo, redo, and XLSX export.
