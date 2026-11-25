@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.24.2
+
+- Show hidden rows and columns with a line centered on the header divider. Click the line to unhide the range in editable viewers and in read-only viewers with session visibility changes enabled.
+- Customize hidden-range indicators with `renderHiddenRangeMarker` in React and vanilla JavaScript.
+- Keep row and column context menus on the clicked header when a merged cell crosses the selection.
+
 ## 0.24.1
 
 - Allow read-only viewers to opt into freezing panes and hiding or unhiding rows and columns independently. These per-sheet view changes last for the session and stay out of workbook exports.
