@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.24.3
+
+- Right-click a hidden row or column marker and choose **Unhide** to reveal its range without moving the current selection.
+
 ## 0.24.2
 
 - Show hidden rows and columns with a line centered on the header divider. Click the line to unhide the range in editable viewers and in read-only viewers with session visibility changes enabled.

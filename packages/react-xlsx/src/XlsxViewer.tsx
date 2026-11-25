@@ -7674,6 +7674,7 @@ function XlsxGrid({
   ), [formControls, getFormControlItems]);
   const [contextMenu, setContextMenu] = React.useState<{
     context: XlsxContextMenuContext;
+    hiddenRange?: { start: number; end: number; anchorSelection: XlsxCellRange | null };
     sizeAxis?: "row" | "column";
     position: { x: number; y: number };
   } | null>(null);
@@ -7684,6 +7685,7 @@ function XlsxGrid({
     if (contextMenu && (contextMenu.context.chart
       ? contextMenu.context.chart.id !== selectedChartId
       : contextMenu.context.image ? contextMenu.context.image.id !== selectedImageId
+      : contextMenu.hiddenRange ? selection !== contextMenu.hiddenRange.anchorSelection
       : !selection || !rangesEqual(normalizeRange(selection), contextMenu.context.selection))) {
       setContextMenu(null);
     }
@@ -12305,6 +12307,20 @@ function XlsxGrid({
     } });
   }
 
+  function openHiddenRangeContextMenu(kind: "row" | "column", start: number, end: number, position: { x: number; y: number }) {
+    if (!activeSheet) return;
+    const range = getContextExtent(kind, {
+      start: { row: start, col: start },
+      end: { row: end, col: end }
+    });
+    setOpenTableMenu(null);
+    setContextMenu({
+      context: { kind, cell: range.start, selection: range, selectionRanges: [range], sheetIndex: activeSheetIndex, sheetName: activeSheet.name, readOnly },
+      hiddenRange: { start, end, anchorSelection: selection },
+      position
+    });
+  }
+
   const handleCellDoubleClick = React.useCallback((cell: XlsxCellAddress) => {
     startEditing(cell, undefined, "double-click");
   }, [startEditing]);
@@ -14910,6 +14926,7 @@ function XlsxGrid({
         axis={axis} start={start} end={end} position={position} readOnly={readOnly} canUnhide={canUnhide}
         label={formatMessage(template, { range })} color={selectionStroke} zoomFactor={zoomFactor}
         onUnhide={row ? controller.unhideRows : controller.unhideColumns}
+        openContextMenu={enableContextMenu ? openHiddenRangeContextMenu : undefined}
         render={renderHiddenRangeMarker}
       />;
     }

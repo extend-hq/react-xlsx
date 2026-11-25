@@ -66,9 +66,10 @@ export function resolveMenuPaletteStyle(palette: ViewerPalette): React.CSSProper
 
 export function XlsxContextMenu({
   context, position, controller, palette, closeMenu, editCell, selectExtent, canResize, editSize,
-  renderContextMenu, contextMenuClassName, contextMenuStyle
+  renderContextMenu, contextMenuClassName, contextMenuStyle, hiddenRange
 }: Pick<XlsxViewerProps, "renderContextMenu" | "contextMenuClassName" | "contextMenuStyle"> & {
   context: XlsxContextMenuContext;
+  hiddenRange?: { start: number; end: number };
   position: { x: number; y: number };
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -109,6 +110,8 @@ export function XlsxContextMenu({
   const clearContents: XlsxContextMenuAction = { id: "clearContents", label: messages.clearContents, destructive: true, disabled: touchesPivot };
   const isHeader = context.kind === "row" || context.kind === "column";
   const row = context.kind === "row";
+  const canChangeVisibility = controller.canChangeVisibility ?? !controller.readOnly;
+  const unhide: XlsxContextMenuAction = { id: row ? "unhideRows" : "unhideColumns", label: messages.unhide };
   const headerActions: XlsxContextMenuAction[] = [
     ...cutCopy,
     ...(!controller.readOnly ? [paste, clearContents] : []),
@@ -117,9 +120,9 @@ export function XlsxContextMenu({
       label: `${row ? messages.rowHeight : messages.columnWidth}…`,
       separatorBefore: true
     }] : []),
-    ...((controller.canChangeVisibility ?? !controller.readOnly) ? [
+    ...(canChangeVisibility ? [
       { id: row ? "hideRows" as const : "hideColumns" as const, label: messages.hide, separatorBefore: !canResize },
-      { id: row ? "unhideRows" as const : "unhideColumns" as const, label: messages.unhide }
+      unhide
     ] : [])
   ];
   const cellActions: XlsxContextMenuAction[] = [
@@ -179,7 +182,7 @@ export function XlsxContextMenu({
         { id: "sendBackward", label: "Send Backward", disabled: drawingDisabled || drawing.zIndex <= minOrder }
       ] },
 
-  ] : isHeader ? headerActions : cellActions;
+  ] : hiddenRange ? (canChangeVisibility ? [unhide] : []) : isHeader ? headerActions : cellActions;
   const findAction = (items: XlsxContextMenuAction[], id: XlsxContextMenuActionId): XlsxContextMenuAction | undefined => {
     for (const item of items) {
       if (item.disabled) continue;
@@ -297,10 +300,12 @@ export function XlsxContextMenu({
           editSize(id === "rowHeight" ? "row" : "column");
           return true;
         case "hideRows":
-        case "unhideRows":
         case "hideColumns":
-        case "unhideColumns":
           controller[id]();
+          break;
+        case "unhideRows":
+        case "unhideColumns":
+          controller[id](hiddenRange?.start, hiddenRange?.end);
           break;
         case "selectRow": selectExtent("row"); break;
         case "selectColumn": selectExtent("column"); break;

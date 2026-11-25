@@ -539,7 +539,7 @@ Read `canChangeVisibility` and `canChangeFreezePanes` to enable layout menus. Us
 
 ### Hidden row and column markers
 
-The row and column headers mark each contiguous hidden range with a thick line in the selection border color. Click the line to reveal that range. In read-only mode, `allowHideInReadOnly` enables clicking for the current session. Otherwise, the line is a visual indicator.
+The row and column headers mark each contiguous hidden range with a thick line in the selection border color. Click the line or right-click it and choose **Unhide** to reveal that range. In read-only mode, `allowHideInReadOnly` enables unhiding for the current session. Otherwise, the line is a visual indicator.
 
 Use `renderHiddenRangeMarker` to replace the line. It receives the `axis` (`"row"` or `"column"`), inclusive zero-based `start` and `end`, a localized `label`, `readOnly`, `canUnhide`, and an `unhide()` action for that range. React also supplies `defaultNode`. Return `null` to omit a marker. Vanilla JavaScript accepts the same option and can return a DOM node or text.
 

@@ -33,10 +33,11 @@ type MarkerProps = Omit<XlsxHiddenRangeMarkerRenderProps, "defaultNode" | "unhid
   color: string;
   zoomFactor: number;
   onUnhide: (start: number, end: number) => void;
+  openContextMenu?: (axis: "row" | "column", start: number, end: number, position: { x: number; y: number }) => void;
   render?: XlsxViewerProps["renderHiddenRangeMarker"];
 };
 
-export function HiddenRangeMarker({ axis, start, end, label, position, color, readOnly, canUnhide, onUnhide, render, zoomFactor }: MarkerProps) {
+export function HiddenRangeMarker({ axis, start, end, label, position, color, readOnly, canUnhide, onUnhide, openContextMenu, render, zoomFactor }: MarkerProps) {
   const action = React.useRef(onUnhide);
   action.current = onUnhide;
   const unhide = React.useCallback(() => {
@@ -69,6 +70,12 @@ export function HiddenRangeMarker({ axis, start, end, label, position, color, re
   if (content == null || content === false) return null;
   return <span
     data-xlsx-hidden-range-marker={axis}
+    onContextMenu={openContextMenu && canUnhide ? event => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openContextMenu(axis, start, end, { x: event.clientX, y: event.clientY });
+    } : undefined}
     onPointerDown={event => event.stopPropagation()}
     onKeyDown={event => event.stopPropagation()}
     style={{
