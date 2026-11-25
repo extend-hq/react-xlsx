@@ -530,10 +530,10 @@ Exports contain native pivot definitions, cache definitions/records, relationshi
 | --- | --- | --- |
 | `hideRows()` / `unhideRows()` | Rows covered by the current selection, including separate areas | One zero-based row index or two inclusive indices, as in `hideRows(2, 4)` |
 | `hideColumns()` / `unhideColumns()` | Columns covered by the current selection, including separate areas | One zero-based column index or two inclusive indices, as in `unhideColumns(1)` |
-| `freezePanes()` | Rows above and columns to the left of the active cell | A zero-based cell address. `freezePanes({ row: 2, col: 1 })` keeps rows 1–2 and column A visible |
+| `freezePanes()` | Rows above the selected row header, columns to the left of the selected column header, or both axes at the active cell | A zero-based cell address. `freezePanes({ row: 2, col: 1 })` keeps rows 1–2 and column A visible |
 | `unfreezePanes()` | The active worksheet | — |
 
-Read `frozenPanes` for the current row and column counts, or `null` when unfrozen. To unhide a block from the grid, select headers on both sides and choose **Unhide**. For hidden leading rows or columns, select the first visible header.
+Read `canFreezePanes` to enable a freeze command for the current selection and `frozenPanes` for the current row and column counts, or `null` when unfrozen. To unhide a block from the grid, select headers on both sides and choose **Unhide**. For hidden leading rows or columns, select the first visible header.
 
 ## Merging Cells
 

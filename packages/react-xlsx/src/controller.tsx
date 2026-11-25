@@ -1,4 +1,4 @@
-import { addSelectionRange, bandIndices, clipboardBands } from "./selection-ranges";
+import { addSelectionRange, bandIndices, clipboardBands, resolveFreezePanesCell } from "./selection-ranges";
 import { createMergedRangeLookup } from "./merged-range-lookup";
 import { findIntersectingPivot, pivotWorkbook, readPivotTables } from "./pivots";
 import type { XlsxPivotChartInput, XlsxPivotSource, XlsxPivotTable, XlsxPivotTableInput, XlsxPivotToggle } from "./pivot-types";
@@ -3192,9 +3192,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
   }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
 
-  const freezePanes = React.useCallback((cell = activeCell) => {
+  const freezeCell = resolveFreezePanesCell(activeCell, selection);
+  const canFreezePanes = Boolean(!readOnly && workbook && activeSheet && freezeCell && (freezeCell.row > 0 || freezeCell.col > 0));
+  const freezePanes = React.useCallback((cell = freezeCell) => {
     if (cell) setFreezeBoundary(cell);
-  }, [activeCell, setFreezeBoundary]);
+  }, [freezeCell, setFreezeBoundary]);
   const unfreezePanes = React.useCallback(() => setFreezeBoundary({ row: 0, col: 0 }), [setFreezeBoundary]);
 
   const resizeAxis = React.useCallback((
@@ -4686,6 +4688,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       resizeChartBy,
       resizeImageBy,
       frozenPanes: activeSheet?.freezePanes ?? null,
+      canFreezePanes,
       hideRows,
       unhideRows,
       hideColumns,
@@ -4837,6 +4840,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       revision,
       resizeChartBy,
       resizeImageBy,
+      canFreezePanes,
       hideRows,
       unhideRows,
       hideColumns,

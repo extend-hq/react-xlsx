@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addSelectionRange, bandIndices, clipboardBands, selectionCoversRange, subtractRange } from "./selection-ranges.ts";
+import { addSelectionRange, bandIndices, clipboardBands, resolveFreezePanesCell, selectionCoversRange, subtractRange } from "./selection-ranges.ts";
 
 const rows = (start: number, end = start) => ({ start: { row: start, col: 0 }, end: { row: end, col: 9 } });
 const cols = (start: number, end = start) => ({ start: { row: 0, col: start }, end: { row: 9, col: end } });
+
+test("freezing at a header inside a merge uses the selected row or column", () => {
+  const anchor = { row: 0, col: 0 };
+  assert.deepEqual(resolveFreezePanesCell(anchor, rows(2)), { row: 2, col: 0 });
+  assert.deepEqual(resolveFreezePanesCell(anchor, cols(2)), { row: 0, col: 2 });
+  const cell = { row: 3, col: 2 };
+  assert.deepEqual(resolveFreezePanesCell(cell, { start: anchor, end: cell }), cell);
+  assert.deepEqual(resolveFreezePanesCell(anchor, { start: anchor, end: cell }), anchor);
+  assert.equal(resolveFreezePanesCell(null, null), null);
+});
 
 test("removing a header splits the selected band and preserves other areas", () => {
   const areas = [rows(1), rows(3, 7)];

@@ -1125,6 +1125,8 @@ export interface UseXlsxViewerControllerOptions {
 export interface XlsxViewerLayout {
   /** Frozen row and column counts on the active worksheet, or null when unfrozen. */
   frozenPanes: XlsxFreezePanes | null;
+  /** Whether the current selection provides a usable freeze boundary on an editable worksheet. */
+  canFreezePanes: boolean;
   /** Hide selected rows, or an inclusive, zero-based row interval. */
   hideRows: (start?: number, end?: number) => void;
   /** Reveal hidden rows in the selection or an inclusive, zero-based row interval. */
@@ -1133,7 +1135,7 @@ export interface XlsxViewerLayout {
   hideColumns: (start?: number, end?: number) => void;
   /** Reveal hidden columns in the selection or an inclusive, zero-based column interval. */
   unhideColumns: (start?: number, end?: number) => void;
-  /** Freeze rows above and columns left of the given cell, defaulting to the active cell. */
+  /** Freeze rows above and columns left of the given cell, defaulting to the selected header or active cell. */
   freezePanes: (cell?: XlsxCellAddress) => void;
   /** Remove the freeze boundary on the active worksheet. */
   unfreezePanes: () => void;

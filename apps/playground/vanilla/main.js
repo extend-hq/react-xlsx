@@ -132,10 +132,7 @@ setupMenu(byId("visibility"), [
   { label: "Unhide Columns", onSelect: () => current()?.unhideColumns() },
 ]);
 setupMenu(byId("freeze-panes"), [
-  { label: "Freeze Panes", onSelect: () => current()?.freezePanes(), disabled: () => {
-    const cell = current()?.activeCell;
-    return !cell || (!cell.row && !cell.col) || Boolean(current()?.frozenPanes);
-  } },
+  { label: "Freeze Panes", onSelect: () => current()?.freezePanes(), disabled: () => !current()?.canFreezePanes || Boolean(current()?.frozenPanes) },
   { label: "Freeze Top Row", onSelect: () => current()?.freezePanes({ row: 1, col: 0 }) },
   { label: "Freeze First Column", onSelect: () => current()?.freezePanes({ row: 0, col: 1 }) },
   { label: "Unfreeze Panes", onSelect: () => current()?.unfreezePanes(), disabled: () => !current()?.frozenPanes },

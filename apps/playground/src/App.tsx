@@ -659,9 +659,9 @@ function ReviewRibbon({ onLoadHighlightSample }: { onLoadHighlightSample: (autoS
 
 function ViewRibbon() {
   const settings = useSettings();
-  const { activeCell, activeSheet, activeSheetIndex, readOnly, setActiveSheetIndex, sheets } = useXlsxViewer();
+  const { activeSheet, activeSheetIndex, readOnly, setActiveSheetIndex, sheets } = useXlsxViewer();
   const { canZoomIn, canZoomOut, setZoomScale, zoomIn, zoomOut } = useXlsxViewerZoom();
-  const { freezePanes, frozenPanes, unfreezePanes } = useXlsxViewerLayout();
+  const { canFreezePanes, freezePanes, frozenPanes, unfreezePanes } = useXlsxViewerLayout();
   const hasWorkbook = sheets.length > 0;
 
   return (
@@ -672,7 +672,7 @@ function ViewRibbon() {
           <MenuPopup>
             {frozenPanes
               ? <MenuItem onClick={unfreezePanes}>Unfreeze Panes</MenuItem>
-              : <MenuItem disabled={!activeCell || (activeCell.row === 0 && activeCell.col === 0)} onClick={() => freezePanes()}>Freeze Panes</MenuItem>}
+              : <MenuItem disabled={!canFreezePanes} onClick={() => freezePanes()}>Freeze Panes</MenuItem>}
             <MenuItem onClick={() => freezePanes({ row: 1, col: 0 })}>Freeze Top Row</MenuItem>
             <MenuItem onClick={() => freezePanes({ row: 0, col: 1 })}>Freeze First Column</MenuItem>
           </MenuPopup>

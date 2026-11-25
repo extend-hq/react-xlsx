@@ -1,4 +1,12 @@
-import type { XlsxCellRange } from "./types";
+import type { XlsxCellAddress, XlsxCellRange } from "./types";
+
+export function resolveFreezePanesCell(activeCell: XlsxCellAddress | null, selection: XlsxCellRange | null) {
+  // A header selection can begin inside a merged cell whose anchor lies outside the selection.
+  if (activeCell && selection && (activeCell.row < selection.start.row || activeCell.col < selection.start.col)) {
+    return selection.start;
+  }
+  return activeCell;
+}
 
 export function subtractRange(area: XlsxCellRange, cut: XlsxCellRange): XlsxCellRange[] {
   const top = Math.max(area.start.row, cut.start.row);

@@ -124,7 +124,7 @@ const OPEN_GRID_HORIZONTAL_EDGE_PX = 480;
 const SELECTION_DRAG_THRESHOLD_PX = 4;
 const IMAGE_MIN_SIZE_PX = 16;
 const IMAGE_HANDLE_SIZE_PX = 10;
-const CANVAS_RESIZE_HIT_SLOP_PX = 8;
+const HEADER_RESIZE_HANDLE_PX = 8;
 const RESIZE_DRAG_THRESHOLD_PX = 3;
 const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
 const CANVAS_SCROLL_BUFFER_PX = 480;
@@ -7133,7 +7133,7 @@ function GridRow({
           style={{
             bottom: 0,
             cursor: "row-resize",
-            height: CANVAS_RESIZE_HIT_SLOP_PX,
+            height: HEADER_RESIZE_HANDLE_PX,
             left: 0,
             position: "absolute",
             width: "100%",
@@ -12805,7 +12805,7 @@ function XlsxGrid({
 
     const localX = clientX - scrollerRect.left;
     for (const column of canvasColumnHeaderCells) {
-      if (Math.abs(localX - (column.left + column.width)) <= CANVAS_RESIZE_HIT_SLOP_PX) {
+      if (Math.abs(localX - (column.left + column.width)) <= HEADER_RESIZE_HANDLE_PX / 2) {
         return { actualCol: column.actualCol, width: column.width };
       }
     }
@@ -12847,7 +12847,7 @@ function XlsxGrid({
 
     const localY = clientY - scrollerRect.top;
     for (const row of canvasRowHeaderCells) {
-      if (Math.abs(localY - (row.top + row.height)) <= CANVAS_RESIZE_HIT_SLOP_PX) {
+      if (Math.abs(localY - (row.top + row.height)) <= HEADER_RESIZE_HANDLE_PX / 2) {
         return { actualRow: row.actualRow, height: row.height };
       }
     }
@@ -14884,7 +14884,7 @@ function XlsxGrid({
     position: "absolute",
     right: 0,
     top: 0,
-    width: CANVAS_RESIZE_HIT_SLOP_PX,
+    width: HEADER_RESIZE_HANDLE_PX,
     height: "100%",
     zIndex: 5
   }, zoomFactor);
@@ -18077,10 +18077,10 @@ export function useXlsxViewerSelection(): XlsxViewerSelection {
 }
 
 export function useXlsxViewerLayout(): XlsxViewerLayout {
-  const { frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes } = useXlsxViewer();
+  const { canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes } = useXlsxViewer();
   return React.useMemo(
-    () => ({ frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes }),
-    [frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes]
+    () => ({ canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes }),
+    [canFreezePanes, frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes]
   );
 }
 
