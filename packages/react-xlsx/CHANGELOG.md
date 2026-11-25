@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.24.0
+
+- Add `useXlsxViewerLayout()` and matching controller commands to hide or unhide rows and columns and freeze or unfreeze panes. Layout edits support undo, redo, and XLSX export.
+- Freeze panes at a selected row or column header even when the header intersects a merged cell.
+- Add Excel-style row and column header menus with sizing and visibility commands. Both playgrounds include worksheet layout controls.
+- Select multiple ranges with `selectRanges()` and read them through `selectionRanges`. Apply formatting across selected areas or resize multiple rows or columns in one undo step.
+
 ## 0.23.2
 
 - Double-click a row or column header divider to fit its contents, including offscreen cells. Row autofit accounts for wrapped text at the current column widths.
