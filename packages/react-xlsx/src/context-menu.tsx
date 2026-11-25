@@ -117,7 +117,7 @@ export function XlsxContextMenu({
       label: `${row ? messages.rowHeight : messages.columnWidth}…`,
       separatorBefore: true
     }] : []),
-    ...(!controller.readOnly ? [
+    ...((controller.canChangeVisibility ?? !controller.readOnly) ? [
       { id: row ? "hideRows" as const : "hideColumns" as const, label: messages.hide, separatorBefore: !canResize },
       { id: row ? "unhideRows" as const : "unhideColumns" as const, label: messages.unhide }
     ] : [])

@@ -524,7 +524,9 @@ Exports contain native pivot definitions, cache definitions/records, relationshi
 
 ## Worksheet Layout
 
-`useXlsxViewerLayout()` and the viewer controller expose the same commands for the active worksheet. Layout edits participate in undo and redo and persist in XLSX exports. They require an editable workbook.
+`useXlsxViewerLayout()` and the viewer controller expose the same commands for the active worksheet. In editing mode, layout changes participate in undo and redo and persist in XLSX exports.
+
+In read-only mode, set `allowFreezeInReadOnly` to allow freezing and unfreezing or `allowHideInReadOnly` to allow hiding and unhiding rows and columns. Both options default to `false` and also apply when `readOnlyAboveBytes` activates read-only mode. Set them on the controller when supplying your own. Each worksheet keeps its view until the workbook is reloaded. Exports and edit history retain the workbook layout.
 
 | Command | Default target | Explicit target |
 | --- | --- | --- |
@@ -533,7 +535,7 @@ Exports contain native pivot definitions, cache definitions/records, relationshi
 | `freezePanes()` | Rows above the selected row header, columns to the left of the selected column header, or both axes at the active cell | A zero-based cell address. `freezePanes({ row: 2, col: 1 })` keeps rows 1–2 and column A visible |
 | `unfreezePanes()` | The active worksheet | — |
 
-Read `canFreezePanes` to enable a freeze command for the current selection and `frozenPanes` for the current row and column counts, or `null` when unfrozen. To unhide a block from the grid, select headers on both sides and choose **Unhide**. For hidden leading rows or columns, select the first visible header.
+Read `canChangeVisibility` and `canChangeFreezePanes` to enable layout menus. Use `canFreezePanes` to enable a freeze command for the current selection and `frozenPanes` for the current row and column counts, or `null` when unfrozen. To unhide a block from the grid, select headers on both sides and choose **Unhide**. For hidden leading rows or columns, select the first visible header.
 
 ## Merging Cells
 
@@ -736,7 +738,7 @@ Right-click a chart, image, worksheet cell, row header, column header, or the to
 
 Viewer mode (`readOnly`) offers Copy and selection actions. Editor mode also offers Cut, Paste, Edit cell, Clear contents, Undo/Redo, Merge/Unmerge, and sorting when the target belongs to a table. Actions use the existing controller and undo history. Row and column selections span the displayed grid, matching header selection. Worker-backed viewers copy tab-separated text; editable workbooks also preserve structured cell data when the browser supports custom clipboard formats. Clipboard commands require browser clipboard access; failed operations display an error and Cut only clears cells after copying succeeds.
 
-Row and column headers have their own menus. In editing mode they offer Cut, Copy, Paste, Clear Contents, Row Height or Column Width, Hide, and Unhide. Sizing uses logical pixels and applies to all selected headers in one undo step. Read-only headers offer Copy and optionally sizing when `allowResizeInReadOnly` is enabled. Shift+F10 opens the same menu for a header selection.
+Row and column headers have their own menus. In editing mode they offer Cut, Copy, Paste, Clear Contents, Row Height or Column Width, Hide, and Unhide. Sizing uses logical pixels and applies to all selected headers in one undo step. Read-only headers offer Copy and optionally sizing with `allowResizeInReadOnly` and Hide and Unhide with `allowHideInReadOnly`. Shift+F10 opens the same menu for a header selection.
 
 Chart and image menus start with Undo and Redo, followed by a separator. Drawing Cut and Copy are not offered; copying worksheet cells remains supported. Bring to Front and Send to Back contain the one-step layer commands. Charts also have a nested Change Chart Type menu, grouped by family; options that require a different series count are disabled. Drawing positions, sizes, layer order, and chart types participate in undo/redo and are preserved by `download()` and `exportXlsx()`.
 
@@ -1101,7 +1103,7 @@ Common source and loading props:
 
 Double-click the divider at the right edge of a column header to fit its contents. Double-click the divider at the bottom of a row header to fit its contents at the current column widths, including wrapped text. Autofit includes offscreen cells and skips hidden cells and merges that span the axis being resized.
 
-`allowResizeInReadOnly` enables autofit and drag resizing in a read-only viewer. When supplying your own controller, set this option on both `useXlsxViewerController` (or `XlsxViewerProvider`) and `XlsxViewer`. Workbooks forced into read-only mode by `readOnlyAboveBytes` remain locked. Autofit uses the selected row or column, so it can evaluate conditional styles whose operands are literals or cells on that axis.
+`allowResizeInReadOnly` enables autofit and drag resizing in a read-only viewer. When supplying your own controller, set this option on both `useXlsxViewerController` (or `XlsxViewerProvider`) and `XlsxViewer`. Workbooks forced into read-only mode by `readOnlyAboveBytes` keep their original row and column sizes. Autofit uses the selected row or column, so it can evaluate conditional styles whose operands are literals or cells on that axis.
 
 Common rendering props:
 
@@ -1116,6 +1118,8 @@ Common rendering props:
 - `experimentalCanvas?: boolean`
 - `enableGestureZoom?: boolean`
 - `enableCanvasSelectionAnimation?: boolean`
+- `allowFreezeInReadOnly?: boolean`
+- `allowHideInReadOnly?: boolean`
 - `allowResizeInReadOnly?: boolean`
 - `highlightedRanges?: string | readonly string[] | null`
 - `autoScrollToHighlightedRanges?: boolean`

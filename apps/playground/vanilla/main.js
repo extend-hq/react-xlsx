@@ -95,6 +95,8 @@ const viewer = createXlsxViewer(byId("viewer"), {
   rounded: false,
   showDefaultToolbar: false,
   selectionColor: "#107C41",
+  allowFreezeInReadOnly: byId("read-only-freeze").checked,
+  allowHideInReadOnly: byId("read-only-hide").checked,
   readOnlyAboveBytes: 5 * 1024 * 1024,
   emptyState: createEmptyState(),
   loadingState: createLoadingState(),
@@ -271,7 +273,8 @@ function render(controller) {
   byId("undo").disabled = !controller.canUndo;
   byId("redo").disabled = !controller.canRedo;
   for (const element of document.querySelectorAll("[data-edit]")) element.disabled = !editable;
-  byId("freeze-panes").disabled = !controller.activeSheet || readOnly;
+  byId("freeze-panes").disabled = !controller.canChangeFreezePanes;
+  byId("visibility").disabled = !controller.canChangeVisibility || !controller.selectionRanges.length;
   byId("merge").disabled = controller.selectionRanges.length !== 1 || readOnly;
 
   // Formula bar
@@ -369,5 +372,7 @@ byId("highlight-form").addEventListener("submit", (event) => {
 });
 byId("clear-highlights").addEventListener("click", () => current()?.clearHighlightedRanges());
 
+byId("read-only-freeze").addEventListener("change", event => viewer.setOptions({ allowFreezeInReadOnly: event.target.checked }));
+byId("read-only-hide").addEventListener("change", event => viewer.setOptions({ allowHideInReadOnly: event.target.checked }));
 readOnlyInput.addEventListener("change", () => viewer.setOptions({ readOnly: readOnlyInput.checked }));
 darkSheetInput.addEventListener("change", () => viewer.setOptions({ isDark: darkSheetInput.checked }));
