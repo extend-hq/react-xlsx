@@ -14,6 +14,7 @@ import {
 import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
 import { growScrollDisplayLimit, minimumVisibleExtent } from "./scroll-display-limit";
+import { resolveFrozenAxisLayout } from "./frozen-axis-layout";
 import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffset } from "./range-highlight";
 import { CellEditor } from "./cell-editor";
 import { CellEditorOverlay } from "./cell-editor-overlay";
@@ -1547,18 +1548,6 @@ function sumPrefixRange(prefixSums: number[], startIndex: number, endIndex: numb
   return (prefixSums[endIndex + 1] ?? 0) - (prefixSums[startIndex] ?? 0);
 }
 
-function buildStickyOffsets(actualIndices: number[], sizesByActualIndex: number[], leadingOffset: number) {
-  const offsets = new Map<number, number>();
-  let nextOffset = leadingOffset;
-
-  for (const actualIndex of actualIndices) {
-    offsets.set(actualIndex, nextOffset);
-    nextOffset += sizesByActualIndex[actualIndex] ?? 0;
-  }
-
-  return offsets;
-}
-
 function findIndexForOffsetPrefix(prefixSums: number[], offset: number) {
   const count = prefixSums.length - 1;
   if (count <= 0) {
@@ -1856,39 +1845,9 @@ type DrawingViewport = {
 
 function resolveFrozenDrawingPane(
   rect: XlsxImageRect,
-  frozenRows: number[],
-  frozenCols: number[],
-  actualRowHeights: number[],
-  actualColWidths: number[],
-  freezePanes: XlsxSheetData["freezePanes"] | null,
-  stickyTopByRow: Map<number, number>,
-  stickyLeftByCol: Map<number, number>,
-  options?: {
-    defaultColWidth?: number;
-    defaultRowHeight?: number;
-    headerHeight?: number;
-    rowHeaderWidth?: number;
-  }
+  frozenPaneBottom: number | null,
+  frozenPaneRight: number | null
 ): FrozenDrawingPane {
-  const headerHeight = options?.headerHeight ?? HEADER_HEIGHT;
-  const rowHeaderWidth = options?.rowHeaderWidth ?? ROW_HEADER_WIDTH;
-  const defaultRowHeight = options?.defaultRowHeight ?? DEFAULT_ROW_HEIGHT;
-  const defaultColWidth = options?.defaultColWidth ?? DEFAULT_COL_WIDTH;
-  const frozenPaneBottom =
-    freezePanes?.row && freezePanes.row > 0 && frozenRows.length > 0
-      ? frozenRows.reduce(
-          (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? headerHeight) + (actualRowHeights[row] ?? defaultRowHeight)),
-          headerHeight
-        )
-      : null;
-  const frozenPaneRight =
-    freezePanes?.col && freezePanes.col > 0 && frozenCols.length > 0
-      ? frozenCols.reduce(
-          (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? rowHeaderWidth) + (actualColWidths[col] ?? defaultColWidth)),
-          rowHeaderWidth
-        )
-      : null;
-
   const freezeTop = frozenPaneBottom !== null && rect.top + rect.height <= frozenPaneBottom + 0.5;
   const freezeLeft = frozenPaneRight !== null && rect.left + rect.width <= frozenPaneRight + 0.5;
 
@@ -8610,22 +8569,6 @@ function XlsxGrid({
       hiddenColSet
     );
   }, [activeSheet?.maxUsedCol, activeSheet?.visibleCols, displayColLimit, hiddenColSet]);
-  const frozenRows = React.useMemo(() => {
-    const freezeRow = activeSheet?.freezePanes?.row ?? 0;
-    if (freezeRow <= 0) {
-      return [];
-    }
-
-    return visibleRows.filter((row) => row < freezeRow);
-  }, [activeSheet?.freezePanes?.row, visibleRows]);
-  const frozenCols = React.useMemo(() => {
-    const freezeCol = activeSheet?.freezePanes?.col ?? 0;
-    if (freezeCol <= 0) {
-      return [];
-    }
-
-    return visibleCols.filter((col) => col < freezeCol);
-  }, [activeSheet?.freezePanes?.col, visibleCols]);
   const actualColWidths = React.useMemo(
     () => {
       const office = activeSheet?.officeLayout;
@@ -8868,35 +8811,23 @@ function XlsxGrid({
   const colPrefixSums = React.useMemo(() => buildPrefixSums(displayEffectiveColWidths), [displayEffectiveColWidths]);
   const actualRowPrefixSums = React.useMemo(() => buildPrefixSums(displayActualRowHeights), [displayActualRowHeights]);
   const actualColPrefixSums = React.useMemo(() => buildPrefixSums(displayActualColWidths), [displayActualColWidths]);
-  const stickyTopByRow = React.useMemo(
-    () => buildStickyOffsets(frozenRows, displayActualRowHeights, displayHeaderHeight),
-    [displayActualRowHeights, displayHeaderHeight, frozenRows]
+  const freezeRow = activeSheet?.freezePanes?.row ?? 0;
+  const freezeCol = activeSheet?.freezePanes?.col ?? 0;
+  const {
+    frozenIndices: frozenRows,
+    stickyOffsets: stickyTopByRow,
+    endOffset: frozenPaneBottom
+  } = React.useMemo(
+    () => resolveFrozenAxisLayout(visibleRows, displayEffectiveRowHeights, freezeRow, displayHeaderHeight, drawingViewport.height),
+    [visibleRows, displayEffectiveRowHeights, freezeRow, displayHeaderHeight, drawingViewport.height]
   );
-  const stickyLeftByCol = React.useMemo(
-    () => buildStickyOffsets(frozenCols, displayActualColWidths, displayRowHeaderWidth),
-    [displayActualColWidths, displayRowHeaderWidth, frozenCols]
-  );
-  const frozenPaneBottom = React.useMemo(
-    () => (
-      frozenRows.length > 0
-        ? frozenRows.reduce(
-            (max, row) => Math.max(max, (stickyTopByRow.get(row) ?? displayHeaderHeight) + (displayActualRowHeights[row] ?? displayDefaultRowHeight)),
-            displayHeaderHeight
-          )
-        : displayHeaderHeight
-    ),
-    [displayActualRowHeights, displayDefaultRowHeight, displayHeaderHeight, frozenRows, stickyTopByRow]
-  );
-  const frozenPaneRight = React.useMemo(
-    () => (
-      frozenCols.length > 0
-        ? frozenCols.reduce(
-            (max, col) => Math.max(max, (stickyLeftByCol.get(col) ?? displayRowHeaderWidth) + (displayActualColWidths[col] ?? displayDefaultColWidth)),
-            displayRowHeaderWidth
-          )
-        : displayRowHeaderWidth
-    ),
-    [displayActualColWidths, displayDefaultColWidth, displayRowHeaderWidth, frozenCols, stickyLeftByCol]
+  const {
+    frozenIndices: frozenCols,
+    stickyOffsets: stickyLeftByCol,
+    endOffset: frozenPaneRight
+  } = React.useMemo(
+    () => resolveFrozenAxisLayout(visibleCols, displayEffectiveColWidths, freezeCol, displayRowHeaderWidth, drawingViewport.width),
+    [visibleCols, displayEffectiveColWidths, freezeCol, displayRowHeaderWidth, drawingViewport.width]
   );
   canvasLayoutMetricsRef.current = {
     displayHeaderHeight,
@@ -15100,19 +15031,8 @@ function XlsxGrid({
 
     return resolveFrozenDrawingPane(
       rect,
-      frozenRows,
-      frozenCols,
-      displayActualRowHeights,
-      displayActualColWidths,
-      activeSheet?.freezePanes ?? null,
-      stickyTopByRow,
-      stickyLeftByCol,
-      {
-        defaultColWidth: displayDefaultColWidth,
-        defaultRowHeight: displayDefaultRowHeight,
-        headerHeight: displayHeaderHeight,
-        rowHeaderWidth: displayRowHeaderWidth
-      }
+      frozenRows.length > 0 ? frozenPaneBottom : null,
+      frozenCols.length > 0 ? frozenPaneRight : null
     ) === pane;
   }
 
