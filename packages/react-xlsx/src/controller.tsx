@@ -3810,7 +3810,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSelectedImageId(null);
     selectionAnchorRef.current = active?.start ?? null;
     const cell = active?.[activeCorner];
-    setActiveCell(cell ? findSelectionMerge(cell)?.start ?? cell : null);
+    const mergeAnchor = cell && findSelectionMerge(cell)?.start;
+    setActiveCell(mergeAnchor && active && rangeContainsCell(active, mergeAnchor) ? mergeAnchor : cell ?? null);
     setSelectionRanges(areas);
   }, [findSelectionMerge]);
 

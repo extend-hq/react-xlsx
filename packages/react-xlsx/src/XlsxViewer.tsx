@@ -9826,15 +9826,14 @@ function XlsxGrid({
     return null;
   }, []);
 
-  const resolvePointerCellFromClient = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
-    const geometryCell = resolvePointerCellFromGeometry(clientX, clientY);
-    if (geometryCell) {
-      return resolveMergeAnchorCell(geometryCell);
-    }
+  const pointerAddress = React.useCallback((clientX: number, clientY: number) =>
+    resolvePointerCellFromGeometry(clientX, clientY) ?? resolvePointerCellFromHitTest(clientX, clientY),
+    [resolvePointerCellFromGeometry, resolvePointerCellFromHitTest]);
 
-    const resolvedCell = resolvePointerCellFromHitTest(clientX, clientY);
+  const resolvePointerCellFromClient = React.useCallback((clientX: number, clientY: number): XlsxCellAddress | null => {
+    const resolvedCell = pointerAddress(clientX, clientY);
     return resolvedCell ? resolveMergeAnchorCell(resolvedCell) : null;
-  }, [resolveMergeAnchorCell, resolvePointerCellFromGeometry, resolvePointerCellFromHitTest]);
+  }, [pointerAddress, resolveMergeAnchorCell]);
 
   const resolveDraggedSelectionCell = React.useCallback((
     dragState: {
@@ -14905,7 +14904,7 @@ function XlsxGrid({
       return <HiddenRangeMarker
         key={`${activeSheet?.workbookSheetIndex}:${axis}:${start}`}
         axis={axis} start={start} end={end} position={position} readOnly={readOnly} canUnhide={canUnhide}
-        label={formatMessage(template, { range })} zoomFactor={zoomFactor}
+        label={formatMessage(template, { range })} color={selectionStroke} zoomFactor={zoomFactor}
         onUnhide={row ? controller.unhideRows : controller.unhideColumns}
         render={renderHiddenRangeMarker}
       />;
@@ -16868,7 +16867,7 @@ function XlsxGrid({
       const isRowHeader = event.clientX - rect.left < displayRowHeaderWidth;
       const isColumnHeader = event.clientY - rect.top < displayHeaderHeight;
       const kind = isRowHeader && isColumnHeader ? "sheet" : isRowHeader ? "row" : isColumnHeader ? "column" : "cell";
-      const cell = resolvePointerCellFromClient(event.clientX, event.clientY) ??
+      const cell = pointerAddress(event.clientX, event.clientY) ??
         (kind === "sheet" ? { row: firstVisibleRow ?? 0, col: firstVisibleCol ?? 0 } : null);
       if (!cell) return;
       event.preventDefault();
