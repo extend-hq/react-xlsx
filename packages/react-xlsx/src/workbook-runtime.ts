@@ -309,6 +309,8 @@ function buildSheetList(
       return sheetState?.rowHeightOverridesPx?.[row] ?? defaultRowHeightPx;
     };
 
+    const hiddenRows = Array.from(worksheet.hiddenRows);
+    const hiddenCols = Array.from(worksheet.hiddenColumns);
     const usedRange = worksheet.usedRange() as [number, number, number, number] | null;
     if (!usedRange) {
       sheetsByWorkbookSheetIndex.push({
@@ -330,8 +332,8 @@ function buildSheetList(
         maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
         maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
         mergedRanges: mergeMetadata.mergedRanges,
-        hiddenCols: sheetState?.hiddenCols ?? [],
-        hiddenRows: sheetState?.hiddenRows ?? [],
+        hiddenCols,
+        hiddenRows,
         minUsedCol: -1,
         minUsedRow: -1,
         maxUsedCol: -1,
@@ -359,21 +361,15 @@ function buildSheetList(
 
     const [minRow, minCol, maxRow, maxCol] = resolveSheetDisplayUsedRange(usedRange, effectiveSheetState);
     const visibleRows: number[] = [];
-    const hiddenRows: number[] = [];
     for (let row = 0; row <= maxRow; row += 1) {
-      if (worksheet.isRowHidden(row)) {
-        hiddenRows.push(row);
-      } else {
+      if (!worksheet.isRowHidden(row)) {
         visibleRows.push(row);
       }
     }
 
     const visibleCols: number[] = [];
-    const hiddenCols: number[] = [];
     for (let col = 0; col <= maxCol; col += 1) {
-      if (worksheet.isColumnHidden(col)) {
-        hiddenCols.push(col);
-      } else {
+      if (!worksheet.isColumnHidden(col)) {
         visibleCols.push(col);
       }
     }

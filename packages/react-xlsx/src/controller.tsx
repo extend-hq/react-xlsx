@@ -1,3 +1,4 @@
+import { addSelectionRange, bandIndices, clipboardBands } from "./selection-ranges";
 import { createMergedRangeLookup } from "./merged-range-lookup";
 import { findIntersectingPivot, pivotWorkbook, readPivotTables } from "./pivots";
 import type { XlsxPivotChartInput, XlsxPivotSource, XlsxPivotTable, XlsxPivotTableInput, XlsxPivotToggle } from "./pivot-types";
@@ -17,9 +18,9 @@ export { XlsxFileSizeLimitExceededError } from "./errors";
 import type { DrawingAnchor as DukeDrawingAnchor, DrawingColor as DukeDrawingColor, DrawingInput as DukeDrawingInput, DrawingRunFont as DukeDrawingRunFont, DrawingText as DukeDrawingText, FormControlDrawing as DukeFormControlDrawing, FormControlKind as DukeFormControlKind, FormControlKindInput as DukeFormControlKindInput, Workbook } from "./duke-sheets/generated/duke_sheets_wasm.js";
 import { applyChartSeriesFormula, buildChartSeriesFormula, refreshChartRenderSource, loadWorkbookChartAssets, updateWorkbookChartAnchor, updateWorkbookChartDefinition, type WorkbookChartAssets } from "./charts";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
-import { pxToOfficeColumnWidth, pxToSheetColumnWidth, rectToImageAnchor, refreshWorkbookFormControls, resolveContentSheetAxisPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetHiddenCols, resolveWorksheetHiddenRows, resolveWorksheetMergeMetadata, resolveSheetColumnWidthPixels, resolveRenderedSheetAxisPixels, resolveSheetRowHeightPixels, resizeImageRect, revokeWorkbookImageAssets, updateWorkbookImageAnchor, xlsxAnchorToDukeDrawingAnchor, type WorkbookImageAssets, type WorkbookImageSheetOrigin } from "./images";
+import { pxToOfficeColumnWidth, pxToSheetColumnWidth, rectToImageAnchor, refreshWorkbookFormControls, resolveContentSheetAxisPixels, resolveWorksheetDefaultColumnWidthPixels, resolveWorksheetDefaultRowHeightPixels, resolveWorksheetMergeMetadata, resolveSheetColumnWidthPixels, resolveRenderedSheetAxisPixels, resolveSheetRowHeightPixels, resizeImageRect, revokeWorkbookImageAssets, updateWorkbookImageAnchor, xlsxAnchorToDukeDrawingAnchor, type WorkbookImageAssets, type WorkbookImageSheetOrigin } from "./images";
 import { safeCalculate, tryRecalculate } from "./safe-calculate";
-import { parseXlsxRange } from "./range-reference";
+import { parseXlsxRange, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { expandHighlightedRange } from "./range-highlight";
 import { getSheetsWasmModule } from "./wasm";
 import { XlsxWorkerClient } from "./worker-client";
@@ -98,7 +99,7 @@ type SnapshotHistoryEntry = {
   bytes: Uint8Array;
   assets: WorkbookImageAssets | null;
   origins: Array<WorkbookImageSheetOrigin | null>;
-  selection: XlsxCellRange | null;
+  selectionRanges: XlsxCellRange[];
   sortState: XlsxTableSortState | null;
 };
 
@@ -116,8 +117,8 @@ type CellEditHistoryEntry = {
   after: CellMutationState;
   before: CellMutationState;
   cell: XlsxCellAddress;
-  selectionAfter: XlsxCellRange | null;
-  selectionBefore: XlsxCellRange | null;
+  selectionAfter: XlsxCellRange[];
+  selectionBefore: XlsxCellRange[];
   sheetIndex: number;
 };
 
@@ -132,8 +133,8 @@ type RangeEditHistoryEntry = {
   activeCellAfter: XlsxCellAddress | null;
   activeCellBefore: XlsxCellAddress | null;
   mutations: RangeCellMutation[];
-  selectionAfter: XlsxCellRange | null;
-  selectionBefore: XlsxCellRange | null;
+  selectionAfter: XlsxCellRange[];
+  selectionBefore: XlsxCellRange[];
   sheetIndex: number;
   sortStateAfter: XlsxTableSortState | null;
   sortStateBefore: XlsxTableSortState | null;
@@ -362,8 +363,8 @@ function buildSheetList(
         maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
         maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
         mergedRanges: mergeMetadata.mergedRanges,
-        hiddenCols: [],
-        hiddenRows: [],
+        hiddenCols: Array.from(worksheet.hiddenColumns),
+        hiddenRows: Array.from(worksheet.hiddenRows),
         minUsedCol: -1,
         minUsedRow: -1,
         maxUsedCol: -1,
@@ -464,8 +465,8 @@ function buildSheetList(
       maxHorizontalMergeEndCol: mergeMetadata.maxHorizontalMergeEndCol,
       maxVerticalMergeEndRow: mergeMetadata.maxVerticalMergeEndRow,
       mergedRanges: mergeMetadata.mergedRanges,
-      hiddenCols: resolveWorksheetHiddenCols(worksheet, maxCol),
-      hiddenRows: resolveWorksheetHiddenRows(worksheet, maxRow),
+      hiddenCols: Array.from(worksheet.hiddenColumns),
+      hiddenRows: Array.from(worksheet.hiddenRows),
       minUsedCol: minCol,
       minUsedRow: minRow,
       maxUsedCol: maxCol,
@@ -1335,7 +1336,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   const [activeTabIndex, setActiveTabIndexState] = React.useState(0);
   const [zoomScaleOverridesByTabId, setZoomScaleOverridesByTabId] = React.useState<Record<string, number>>({});
   const [activeCell, setActiveCell] = React.useState<XlsxCellAddress | null>(null);
-  const [selection, setSelection] = React.useState<XlsxCellRange | null>(null);
+  const [selectionRanges, setSelectionRanges] = React.useState<XlsxCellRange[]>([]);
+  const selection = selectionRanges.at(-1) ?? null;
+  const setSelection = React.useCallback((range: XlsxCellRange | null) => {
+    setSelectionRanges(range ? [range] : []);
+  }, []);
   const [highlightedRanges, setHighlightedRanges] = React.useState<XlsxRangeHighlight[]>([]);
   const [selectedChartId, setSelectedChartId] = React.useState<string | null>(null);
   const [selectedChartElement, setSelectedChartElement] = React.useState<XlsxChartElementSelection | null>(null);
@@ -2219,26 +2224,23 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const getClipboardData = React.useCallback((): XlsxClipboardData | null => {
     const worksheet = getActiveWorksheet();
-    const targetRange = selection ?? (activeCell ? { start: activeCell, end: activeCell } : null);
-    if (!worksheet || !targetRange) {
-      return null;
-    }
+    const bands = clipboardBands(selectionRanges);
+    if (!worksheet || !bands) return null;
 
-    const normalized = normalizeRange(targetRange);
     const rows: string[] = [];
     const htmlRows: string[] = [];
     const payload: ClipboardPayload = {
       cells: [],
-      cols: normalized.end.col - normalized.start.col + 1,
+      cols: bands.cols.reduce((total, band) => total + band.end - band.start + 1, 0),
       merges: [],
-      rows: normalized.end.row - normalized.start.row + 1
+      rows: bands.rows.reduce((total, band) => total + band.end - band.start + 1, 0)
     };
 
-    for (let row = normalized.start.row; row <= normalized.end.row; row += 1) {
+    for (const { index: row, offset: rowOffset, remaining: rowsRemaining } of bandIndices(bands.rows)) {
       const textCells: string[] = [];
       const htmlCells: string[] = [];
 
-      for (let col = normalized.start.col; col <= normalized.end.col; col += 1) {
+      for (const { index: col, offset: colOffset, remaining: colsRemaining } of bandIndices(bands.cols)) {
         if (worksheet.isMergedSecondary(row, col)) {
           textCells.push("");
           continue;
@@ -2316,21 +2318,21 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
           cellStyles.push(`border-left:${mapBorder(border.left as { color?: { hex?: string }; style: string })}`);
         }
 
-        const rowSpan = Math.min(merge?.rowSpan ?? 1, normalized.end.row - row + 1);
-        const colSpan = Math.min(merge?.colSpan ?? 1, normalized.end.col - col + 1);
+        const rowSpan = Math.min(merge?.rowSpan ?? 1, rowsRemaining);
+        const colSpan = Math.min(merge?.colSpan ?? 1, colsRemaining);
 
         payload.cells.push({
-          colOffset: col - normalized.start.col,
+          colOffset,
           formula,
-          rowOffset: row - normalized.start.row,
+          rowOffset,
           value
         });
 
         if (rowSpan > 1 || colSpan > 1) {
           payload.merges.push({
-            colOffset: col - normalized.start.col,
+            colOffset,
             colSpan,
-            rowOffset: row - normalized.start.row,
+            rowOffset,
             rowSpan
           });
         }
@@ -2350,7 +2352,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       structured: JSON.stringify(payload),
       text: rows.join("\n")
     };
-  }, [activeCell, getActiveWorksheet, getCellDisplayValue, selection]);
+  }, [activeSheet, getActiveWorksheet, getCellDisplayValue, selectionRanges]);
 
   React.useEffect(() => {
     if (!isWorkerBacked || !deferredMetadataSheet || !deferredMetadataCell) {
@@ -2390,7 +2392,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
   }, [deferredMetadataCell, deferredMetadataSheet, getCellSnapshotAsync, isWorkerBacked, locale]);
 
   const activeCellAddress = React.useMemo(() => (activeCell ? cellAddressToA1(activeCell) : null), [activeCell]);
-  const selectedRangeAddress = React.useMemo(() => (selection ? rangeToA1(selection) : null), [selection]);
+  const selectedRangeAddress = React.useMemo(() => selectionRanges.map(rangeToA1).join(",") || null, [selectionRanges]);
   const selectedValue = React.useMemo(
     () => getCellDisplayValue(deferredMetadataCell),
     [deferredMetadataCell, getCellDisplayValue, revision, workerCellSnapshotRevision]
@@ -2453,10 +2455,10 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       bytes: workbook.exportSnapshot(),
       assets: imageAssetsRef.current ? structuredClone(imageAssetsRef.current) : null,
       origins: structuredClone(sheetOriginsRef.current),
-      selection,
+      selectionRanges,
       sortState
     };
-  }, [activeCell, activeSheetIndex, selection, sortState, workbook]);
+  }, [activeCell, activeSheetIndex, selectionRanges, sortState, workbook]);
 
   const captureCellMutationState = React.useCallback((cell: XlsxCellAddress): CellMutationState | null => {
     const worksheet = getActiveWorksheet();
@@ -2502,9 +2504,9 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveTabIndexState(nextTabIndex);
     }
     setActiveCell(entry.activeCell);
-    setSelection(entry.selection);
+    setSelectionRanges(entry.selectionRanges);
     setSortState(entry.sortState);
-    selectionAnchorRef.current = entry.selection ? normalizeRange(entry.selection).start : entry.activeCell;
+    selectionAnchorRef.current = entry.selectionRanges.at(-1)?.start ?? entry.activeCell;
     setRevision((current) => current + 1);
   }, [setChartAssets, setImageAssets]);
 
@@ -2531,8 +2533,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveSheetIndexState(visibleSheetIndex);
     }
     setActiveCell(nextActiveCell);
-    setSelection(nextSelection);
-    selectionAnchorRef.current = nextSelection ? normalizeRange(nextSelection).start : nextActiveCell;
+    setSelectionRanges(nextSelection);
+    selectionAnchorRef.current = nextSelection.at(-1)?.start ?? nextActiveCell;
     isApplyingHistoryRef.current = false;
   }, [maybeRecalculateWorkbook, refreshWorkbookState, sheets, workbook]);
 
@@ -2561,8 +2563,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       setActiveSheetIndexState(visibleSheetIndex);
     }
     setActiveCell(nextActiveCell);
-    setSelection(nextSelection);
-    selectionAnchorRef.current = nextSelection ? normalizeRange(nextSelection).start : nextActiveCell;
+    setSelectionRanges(nextSelection);
+    selectionAnchorRef.current = nextSelection.at(-1)?.start ?? nextActiveCell;
     isApplyingHistoryRef.current = false;
   }, [maybeRecalculateWorkbook, refreshWorkbookState, sheets, workbook]);
 
@@ -2880,17 +2882,17 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       after,
       before,
       cell,
-      selectionAfter: { start: cell, end: cell },
-      selectionBefore: selection,
+      selectionAfter: [{ start: cell, end: cell }],
+      selectionBefore: selectionRanges,
       sheetIndex: activeSheet.workbookSheetIndex
     });
     redoStackRef.current = [];
     setHistoryRevision((current) => current + 1);
-  }, [activeCell, activeSheet, selection]);
+  }, [activeCell, activeSheet, selectionRanges]);
 
   const recordRangeEditHistory = React.useCallback((
     mutations: RangeCellMutation[],
-    selectionAfter: XlsxCellRange | null,
+    selectionAfter: XlsxCellRange[],
     activeCellAfter: XlsxCellAddress | null,
     sortStateAfter: XlsxTableSortState | null = sortState
   ) => {
@@ -2904,14 +2906,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       activeCellBefore: activeCell,
       mutations,
       selectionAfter,
-      selectionBefore: selection,
+      selectionBefore: selectionRanges,
       sheetIndex: activeSheet.workbookSheetIndex,
       sortStateAfter,
       sortStateBefore: sortState
     });
     redoStackRef.current = [];
     setHistoryRevision((current) => current + 1);
-  }, [activeCell, activeSheet, selection, sortState]);
+  }, [activeCell, activeSheet, selectionRanges, sortState]);
 
   const sortTable = React.useCallback((tableName: string, columnIndex: number, direction: XlsxTableSortDirection) => {
     const worksheet = getActiveWorksheet();
@@ -2989,7 +2991,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
         return;
       }
       setSortState(nextSortState);
-      recordRangeEditHistory([], selection, activeCell, nextSortState);
+      recordRangeEditHistory([], selectionRanges, activeCell, nextSortState);
       return;
     }
 
@@ -3022,7 +3024,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
     setSortState(nextSortState);
-    recordRangeEditHistory(mutations, selection, activeCell, nextSortState);
+    recordRangeEditHistory(mutations, selectionRanges, activeCell, nextSortState);
   }, [
     intersectsPivot,
     activeCell,
@@ -3032,7 +3034,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     readOnly,
     recordRangeEditHistory,
     refreshWorkbookState,
-    selection,
+    selectionRanges,
     sortState,
     tables,
     workbook
@@ -3092,125 +3094,144 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const applyReadOnlyResizeOverride = React.useCallback((
     axis: "column" | "row",
-    actualIndex: number,
+    indices: readonly number[],
     sizePx: number
   ) => {
-    if (!activeSheet) {
-      return;
-    }
-
+    if (!activeSheet) return;
     const contentSizePx = activeSheet.officeLayout ? sizePx : resolveContentSheetAxisPixels(sizePx, activeSheet.showGridLines);
-    const targetWorkbookSheetIndex = activeSheet.workbookSheetIndex;
-    setSheets((currentSheets) => currentSheets.map((sheet) => {
-      if (sheet.workbookSheetIndex !== targetWorkbookSheetIndex) {
-        return sheet;
-      }
-
-      if (axis === "column") {
-        const nextColWidthOverridesPx = {
-          ...sheet.colWidthOverridesPx,
-          [actualIndex]: contentSizePx
-        };
-        const nextColWidths = [...sheet.colWidths];
-        const visibleColIndex = sheet.visibleCols.indexOf(actualIndex);
-        if (visibleColIndex >= 0) {
-          nextColWidths[visibleColIndex] = contentSizePx;
-        }
-
-        return {
-          ...sheet,
-          colWidthOverridesPx: nextColWidthOverridesPx,
-          colWidths: nextColWidths
-        };
-      }
-
-      const nextRowHeightOverridesPx = {
-        ...sheet.rowHeightOverridesPx,
-        [actualIndex]: contentSizePx
-      };
-      const nextRowHeights = [...sheet.rowHeights];
-      const visibleRowIndex = sheet.visibleRows.indexOf(actualIndex);
-      if (visibleRowIndex >= 0) {
-        nextRowHeights[visibleRowIndex] = contentSizePx;
-      }
-
-      return {
-        ...sheet,
-        rowHeightOverridesPx: nextRowHeightOverridesPx,
-        rowHeights: nextRowHeights
-      };
+    const selected = new Set(indices);
+    setSheets(current => current.map(sheet => {
+      if (sheet.workbookSheetIndex !== activeSheet.workbookSheetIndex) return sheet;
+      const isRow = axis === "row";
+      const overrides = { ...(isRow ? sheet.rowHeightOverridesPx : sheet.colWidthOverridesPx) };
+      for (const index of selected) overrides[index] = contentSizePx;
+      const visible = isRow ? sheet.visibleRows : sheet.visibleCols;
+      const sizes = (isRow ? sheet.rowHeights : sheet.colWidths).map((size, offset) =>
+        selected.has(visible[offset]) ? contentSizePx : size);
+      return isRow
+        ? { ...sheet, rowHeightOverridesPx: overrides, rowHeights: sizes }
+        : { ...sheet, colWidthOverridesPx: overrides, colWidths: sizes };
     }));
-    setRevision((current) => current + 1);
+    setRevision(current => current + 1);
   }, [activeSheet]);
 
-  const resizeColumn = React.useCallback((col: number, widthPx: number) => {
-    if (!canResize || !activeSheet) {
-      return;
-    }
+  const setAxisHidden = React.useCallback((
+    axis: "row" | "col", hidden: boolean, start?: number, end = start
+  ) => {
+    if (readOnly || !workbook || !activeSheet) return;
+    const limit = axis === "row" ? XLSX_MAX_ROWS : XLSX_MAX_COLUMNS;
+    const ranges = start === undefined && end === undefined
+      ? selectionRanges.map(area => ({ start: area.start[axis], end: area.end[axis] }))
+      : [{ start: start ?? -1, end: end ?? -1 }];
+    if (!ranges.length || ranges.some(range => !Number.isInteger(range.start) || !Number.isInteger(range.end)
+      || range.start < 0 || range.end < range.start || range.end >= limit)) return;
 
-    if (isWorkerBacked) {
-      applyReadOnlyResizeOverride("column", col, widthPx);
-      return;
-    }
-
-    if (!workbook) {
-      return;
-    }
-
-    recordHistoryBeforeMutation();
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
-    worksheet.setColumnWidth(
-      col,
-      activeSheet.officeLayout
-        ? pxToOfficeColumnWidth(widthPx, activeSheet.officeLayout.columnDigitWidthPt)
-        : pxToSheetColumnWidth(
-            resolveContentSheetAxisPixels(widthPx, activeSheet.showGridLines),
-            activeSheet.columnWidthCharacterWidthPx
-          )
-    );
-    refreshWorkbookState(workbook);
-  }, [
-    activeSheet,
-    applyReadOnlyResizeOverride,
-    canResize,
-    isWorkerBacked,
-    recordHistoryBeforeMutation,
-    refreshWorkbookState,
-    workbook
-  ]);
-
-  const resizeRow = React.useCallback((row: number, heightPx: number) => {
-    if (!canResize || !activeSheet) {
-      return;
+    try {
+      const existing = new Set(axis === "row" ? worksheet.hiddenRows : worksheet.hiddenColumns);
+      if (!hidden && !existing.size) return;
+      if (!hidden && start === undefined && existing.has(0)) {
+        let firstVisible = 0;
+        while (existing.has(firstVisible)) firstVisible++;
+        for (const range of ranges) {
+          if (range.start === firstVisible) range.start = 0;
+        }
+      }
+      const changes = ranges.filter(range => {
+        for (let index = range.start; index <= range.end; index++) {
+          if (existing.has(index) !== hidden) return true;
+        }
+        return false;
+      });
+      if (!changes.length) return;
+      recordHistoryBeforeMutation();
+      for (const range of changes) {
+        if (axis === "row") worksheet.setRowsHidden(range.start, range.end, hidden);
+        else worksheet.setColumnsHidden(range.start, range.end, hidden);
+      }
+      if (hidden && activeCell && changes.some(range => range.start <= activeCell[axis] && activeCell[axis] <= range.end)) {
+        const isHidden = (index: number) => axis === "row" ? worksheet.isRowHidden(index) : worksheet.isColumnHidden(index);
+        let index = activeCell[axis];
+        while (index < limit && isHidden(index)) index++;
+        if (index === limit) {
+          index = activeCell[axis] - 1;
+          while (index >= 0 && isHidden(index)) index--;
+        }
+        if (index >= 0) {
+          const cell = { ...activeCell, [axis]: index };
+          setActiveCell(cell);
+          setSelection({ start: cell, end: cell });
+          selectionAnchorRef.current = cell;
+        }
+      }
+      refreshWorkbookState(workbook);
+    } finally {
+      worksheet.free();
     }
+  }, [activeCell, activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selectionRanges, setSelection, workbook]);
 
-    if (isWorkerBacked) {
-      applyReadOnlyResizeOverride("row", row, heightPx);
-      return;
-    }
+  const hideRows = React.useCallback((start?: number, end?: number) => setAxisHidden("row", true, start, end), [setAxisHidden]);
+  const unhideRows = React.useCallback((start?: number, end?: number) => setAxisHidden("row", false, start, end), [setAxisHidden]);
+  const hideColumns = React.useCallback((start?: number, end?: number) => setAxisHidden("col", true, start, end), [setAxisHidden]);
+  const unhideColumns = React.useCallback((start?: number, end?: number) => setAxisHidden("col", false, start, end), [setAxisHidden]);
 
-    if (!workbook) {
-      return;
-    }
-
-    recordHistoryBeforeMutation();
+  const setFreezeBoundary = React.useCallback((cell: XlsxCellAddress) => {
+    if (readOnly || !workbook || !activeSheet) return;
+    const { row, col } = cell;
+    if (!Number.isInteger(row) || row < 0 || row >= XLSX_MAX_ROWS
+      || !Number.isInteger(col) || col < 0 || col >= XLSX_MAX_COLUMNS) return;
     const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
-    worksheet.setRowHeight(
-      row,
-      activeSheet.officeLayout
-        ? Math.max(heightPx, MIN_ROW_HEIGHT_PX) * (3 / 4)
-        : pxToSheetRowHeight(resolveContentSheetAxisPixels(heightPx, activeSheet.showGridLines))
-    );
-    refreshWorkbookState(workbook);
-  }, [
-    activeSheet,
-    applyReadOnlyResizeOverride,
-    canResize,
-    isWorkerBacked,
-    recordHistoryBeforeMutation,
-    refreshWorkbookState,
-    workbook
-  ]);
+    try {
+      const current = parseWorksheetFreezePanes(worksheet);
+      if (row === (current?.row ?? 0) && col === (current?.col ?? 0)) return;
+      recordHistoryBeforeMutation();
+      worksheet.setFreezePanes(row, col);
+      refreshWorkbookState(workbook);
+    } finally {
+      worksheet.free();
+    }
+  }, [activeSheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+
+  const freezePanes = React.useCallback((cell = activeCell) => {
+    if (cell) setFreezeBoundary(cell);
+  }, [activeCell, setFreezeBoundary]);
+  const unfreezePanes = React.useCallback(() => setFreezeBoundary({ row: 0, col: 0 }), [setFreezeBoundary]);
+
+  const resizeAxis = React.useCallback((
+    axis: "row" | "column", target: number | readonly number[], sizePx: number
+  ) => {
+    if (!canResize || !activeSheet || !Number.isFinite(sizePx)) return;
+    const indices = typeof target === "number" ? [target] : target;
+    const limit = axis === "row" ? XLSX_MAX_ROWS : XLSX_MAX_COLUMNS;
+    if (!indices.length || indices.some(index => !Number.isInteger(index) || index < 0 || index >= limit)) return;
+    if (isWorkerBacked) {
+      applyReadOnlyResizeOverride(axis, indices, sizePx);
+      return;
+    }
+    if (!workbook) return;
+    const worksheet = workbook.getSheet(activeSheet.workbookSheetIndex);
+    try {
+      recordHistoryBeforeMutation();
+      const contentPx = resolveContentSheetAxisPixels(sizePx, activeSheet.showGridLines);
+      if (axis === "row") {
+        const points = activeSheet.officeLayout ? Math.max(sizePx, MIN_ROW_HEIGHT_PX) * 3 / 4 : pxToSheetRowHeight(contentPx);
+        for (const index of indices) worksheet.setRowHeight(index, points);
+      } else {
+        const width = activeSheet.officeLayout
+          ? pxToOfficeColumnWidth(sizePx, activeSheet.officeLayout.columnDigitWidthPt)
+          : pxToSheetColumnWidth(contentPx, activeSheet.columnWidthCharacterWidthPx);
+        for (const index of indices) worksheet.setColumnWidth(index, width);
+      }
+      refreshWorkbookState(workbook);
+    } finally {
+      worksheet.free();
+    }
+  }, [activeSheet, applyReadOnlyResizeOverride, canResize, isWorkerBacked, recordHistoryBeforeMutation, refreshWorkbookState, workbook]);
+
+  const resizeColumn = React.useCallback<XlsxViewerController["resizeColumn"]>((col, widthPx) =>
+    resizeAxis("column", col, widthPx), [resizeAxis]);
+  const resizeRow = React.useCallback<XlsxViewerController["resizeRow"]>((row, heightPx) =>
+    resizeAxis("row", row, heightPx), [resizeAxis]);
 
   const resolveAnchoredObjectRect = React.useCallback((
     anchor: XlsxImage["anchor"],
@@ -3741,15 +3762,22 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSelection(merged ?? { start: cell, end: cell });
   }, [activeSheet?.mergedRanges, findSelectionMerge]);
 
-  const selectRange = React.useCallback((range: XlsxCellRange) => {
-    const normalized = expandHighlightedRange(normalizeRange(range), activeSheet?.mergedRanges ?? []);
+  const selectRanges = React.useCallback((ranges: readonly XlsxCellRange[], activeCorner: "start" | "end" = "end") => {
+    const areas = ranges.reduce<XlsxCellRange[]>((previous, range) =>
+      addSelectionRange(previous, normalizeRange(range)), []);
+    const active = areas.at(-1);
     setSelectedChartId(null);
     setSelectedChartElement(null);
     setSelectedImageId(null);
-    selectionAnchorRef.current = normalized.start;
-    setActiveCell(findSelectionMerge(normalized.end)?.start ?? normalized.end);
-    setSelection(normalized);
-  }, [activeSheet?.mergedRanges, findSelectionMerge]);
+    selectionAnchorRef.current = active?.start ?? null;
+    const cell = active?.[activeCorner];
+    setActiveCell(cell ? findSelectionMerge(cell)?.start ?? cell : null);
+    setSelectionRanges(areas);
+  }, [findSelectionMerge]);
+
+  const selectRange = React.useCallback((range: XlsxCellRange) => {
+    selectRanges([expandHighlightedRange(normalizeRange(range), activeSheet?.mergedRanges ?? [])]);
+  }, [activeSheet?.mergedRanges, selectRanges]);
 
   const clearSelection = React.useCallback(() => {
     selectionAnchorRef.current = null;
@@ -3762,42 +3790,38 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
   const clearSelectedCells = React.useCallback(() => {
     const worksheet = getActiveWorksheet();
-    const targetRange = selection ?? (activeCell ? { start: activeCell, end: activeCell } : null);
-    if (readOnly || !worksheet || !workbook || !targetRange) {
-      return;
-    }
-
-    if (intersectsPivot(targetRange)) return;
-    const normalized = normalizeRange(targetRange);
+    if (readOnly || !worksheet || !workbook || !selectionRanges.length || selectionRanges.some(intersectsPivot)) return;
     const mutations: RangeCellMutation[] = [];
-    for (let row = normalized.start.row; row <= normalized.end.row; row += 1) {
-      for (let col = normalized.start.col; col <= normalized.end.col; col += 1) {
-        if (worksheet.isMergedSecondary(row, col)) {
-          continue;
-        }
+    for (const area of selectionRanges) {
+      for (let row = area.start.row; row <= area.end.row; row += 1) {
+        for (let col = area.start.col; col <= area.end.col; col += 1) {
+          if (worksheet.isMergedSecondary(row, col)) {
+            continue;
+          }
 
-        const cell = { row, col };
-        const before = captureCellMutationState(cell);
-        if (!before) {
-          continue;
-        }
+          const cell = { row, col };
+          const before = captureCellMutationState(cell);
+          if (!before) {
+            continue;
+          }
 
-        worksheet.setCell(cellAddressToA1({ row, col }), "");
-        const after = captureCellMutationState(cell);
-        if (!after) {
-          continue;
+          worksheet.setCell(cellAddressToA1({ row, col }), "");
+          const after = captureCellMutationState(cell);
+          if (!after) {
+            continue;
+          }
+          mutations.push({
+            after,
+            before,
+            cell
+          });
         }
-        mutations.push({
-          after,
-          before,
-          cell
-        });
       }
     }
 
     maybeRecalculateWorkbook(workbook);
     refreshWorkbookState(workbook);
-    recordRangeEditHistory(mutations, normalized, activeCell ?? normalized.start);
+    recordRangeEditHistory(mutations, selectionRanges, activeCell);
   }, [
     intersectsPivot,
     activeCell,
@@ -3807,7 +3831,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     readOnly,
     recordRangeEditHistory,
     refreshWorkbookState,
-    selection,
+    selectionRanges,
     workbook
   ]);
 
@@ -3903,8 +3927,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       if (after) mutations.push({ cell, before, after });
     }
     refreshWorkbookState(workbook);
-    recordRangeEditHistory(mutations, selection, activeCell);
-  }, [activeCell, captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+    recordRangeEditHistory(mutations, selectionRanges, activeCell);
+  }, [activeCell, captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selectionRanges, workbook]);
 
   const setSelectedCellValue = React.useCallback((value: string) => {
     if (!activeCell) {
@@ -3943,25 +3967,27 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setCellStyle(activeCell, style);
   }, [activeCell, setCellStyle]);
 
-  const setRangeStyle = React.useCallback((range: XlsxCellRange, style: XlsxCellStyleInput) => {
+  const setRangeStyle = React.useCallback((range: XlsxCellRange | readonly XlsxCellRange[], style: XlsxCellStyleInput) => {
     const worksheet = getActiveWorksheet();
     if (readOnly || !worksheet || !workbook) {
       return;
     }
 
-    const normalized = normalizeRange(range);
+    const areas = "start" in range ? [normalizeRange(range)] : range.map(normalizeRange);
     const beforeStates: Array<{ before: CellMutationState; cell: XlsxCellAddress }> = [];
-    for (let row = normalized.start.row; row <= normalized.end.row; row += 1) {
-      for (let col = normalized.start.col; col <= normalized.end.col; col += 1) {
-        const cell = { row, col };
-        const before = captureCellMutationState(cell);
-        if (!before) {
-          continue;
+    for (const area of areas) {
+      for (let row = area.start.row; row <= area.end.row; row += 1) {
+        for (let col = area.start.col; col <= area.end.col; col += 1) {
+          const cell = { row, col };
+          const before = captureCellMutationState(cell);
+          if (!before) {
+            continue;
+          }
+          beforeStates.push({
+            before,
+            cell
+          });
         }
-        beforeStates.push({
-          before,
-          cell
-        });
       }
     }
 
@@ -3969,7 +3995,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    worksheet.setRangeStyle(rangeToA1(normalized), style);
+    for (const area of areas) worksheet.setRangeStyle(rangeToA1(area), style);
     const mutations: RangeCellMutation[] = [];
     for (const mutation of beforeStates) {
       const after = captureCellMutationState(mutation.cell);
@@ -3984,12 +4010,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     }
 
     refreshWorkbookState(workbook);
-    recordRangeEditHistory(mutations, selection, activeCell);
-  }, [activeCell, captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+    recordRangeEditHistory(mutations, selectionRanges, activeCell);
+  }, [activeCell, captureCellMutationState, getActiveWorksheet, readOnly, recordRangeEditHistory, refreshWorkbookState, selectionRanges, workbook]);
 
   const fillSelection = React.useCallback((targetRange: XlsxCellRange) => {
     const worksheet = getActiveWorksheet();
-    if (readOnly || !worksheet || !workbook || !selection) {
+    if (readOnly || !worksheet || !workbook || !selection || selectionRanges.length > 1) {
       return;
     }
 
@@ -4049,12 +4075,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSelection(nextRange);
     setActiveCell(nextRange.end);
     selectionAnchorRef.current = nextRange.start;
-    recordRangeEditHistory(mutations, nextRange, nextRange.end);
-  }, [intersectsPivot, captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+    recordRangeEditHistory(mutations, [nextRange], nextRange.end);
+  }, [intersectsPivot, captureCellMutationState, getActiveWorksheet, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, selectionRanges, workbook]);
 
   const mergeSelection = React.useCallback((mode: XlsxMergeMode = "cells") => {
     const worksheet = getActiveWorksheet();
-    if (readOnly || !worksheet || !selection || !workbook) {
+    if (readOnly || !worksheet || !selection || selectionRanges.length > 1 || !workbook) {
       return;
     }
 
@@ -4090,11 +4116,11 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     selectionAnchorRef.current = range.start;
     setSelection(range);
     setActiveCell(range.start);
-  }, [intersectsPivot, getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
+  }, [intersectsPivot, getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, selectionRanges, workbook]);
 
   const unmergeSelection = React.useCallback(() => {
     const worksheet = getActiveWorksheet();
-    if (readOnly || !worksheet || !selection || !workbook) {
+    if (readOnly || !worksheet || !selection || selectionRanges.length > 1 || !workbook) {
       return;
     }
 
@@ -4110,7 +4136,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       worksheet.unmergeCells(rangeToA1(merged));
     }
     refreshWorkbookState(workbook);
-  }, [intersectsPivot, getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, workbook]);
+  }, [intersectsPivot, getActiveWorksheet, readOnly, recordHistoryBeforeMutation, refreshWorkbookState, selection, selectionRanges, workbook]);
 
   const addSheet = React.useCallback((name?: string) => {
     if (readOnly || !workbook) {
@@ -4209,7 +4235,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return;
     }
 
-    const targetRange = range ?? selection;
+    const targetRange = range ?? (selectionRanges.length === 1 ? selection : null);
     if (!targetRange) {
       return;
     }
@@ -4217,12 +4243,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     recordHistoryBeforeMutation();
     workbook.defineName(trimmed, rangeToA1(targetRange));
     setRevision((current) => current + 1);
-  }, [readOnly, recordHistoryBeforeMutation, selection, workbook]);
+  }, [readOnly, recordHistoryBeforeMutation, selection, selectionRanges, workbook]);
 
   const pasteText = React.useCallback((text: string) => {
     const worksheet = getActiveWorksheet();
     const targetCell = activeCell ?? selection?.start ?? null;
-    if (readOnly || !worksheet || !workbook || !targetCell || !text) {
+    if (readOnly || !worksheet || !workbook || !targetCell || selectionRanges.length > 1 || !text) {
       return false;
     }
 
@@ -4289,14 +4315,14 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setActiveCell(targetCell);
     setSelection(nextRange);
     selectionAnchorRef.current = targetCell;
-    recordRangeEditHistory(mutations, nextRange, targetCell);
+    recordRangeEditHistory(mutations, [nextRange], targetCell);
     return true;
-  }, [intersectsPivot, activeCell, captureCellMutationState, getActiveWorksheet, locale, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, workbook]);
+  }, [intersectsPivot, activeCell, captureCellMutationState, getActiveWorksheet, locale, maybeRecalculateWorkbook, readOnly, recordRangeEditHistory, refreshWorkbookState, selection, selectionRanges, workbook]);
 
   const pasteStructuredClipboardData = React.useCallback((serializedPayload: string) => {
     const worksheet = getActiveWorksheet();
     const targetCell = activeCell ?? selection?.start ?? null;
-    if (readOnly || !worksheet || !workbook || !targetCell || !serializedPayload) {
+    if (readOnly || !worksheet || !workbook || !targetCell || selectionRanges.length > 1 || !serializedPayload) {
       return false;
     }
 
@@ -4393,7 +4419,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     setSelection(nextRange);
     selectionAnchorRef.current = targetCell;
     if (!hasMergeOperations) {
-      recordRangeEditHistory(mutations, nextRange, targetCell);
+      recordRangeEditHistory(mutations, [nextRange], targetCell);
     }
     return true;
   }, [
@@ -4407,6 +4433,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
     recordRangeEditHistory,
     refreshWorkbookState,
     selection,
+    selectionRanges,
     workbook
   ]);
 
@@ -4415,27 +4442,30 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       return false;
     }
 
-    if (isWorkerBacked && activeSheet && selection) {
-      const range = normalizeRange(selection);
+    if (isWorkerBacked && activeSheet) {
+      const bands = clipboardBands(selectionRanges);
+      if (!bands) return false;
       const textPromise = (async () => {
         const lines: string[] = [];
-        for (let startRow = range.start.row; startRow <= range.end.row; startRow += 128) {
-          const count = Math.min(128, range.end.row - startRow + 1);
-          const batch = await getRowsBatchAsync(activeSheet.workbookSheetIndex, startRow, count);
-          if (!batch) throw new Error("Unable to read the selected cells.");
-          const values = new Map<string, string>();
-          for (const entry of batch as Array<{ index: number; cells?: Array<{ col: number; value?: unknown; formula?: string; isMergedSecondary?: boolean }> }>) {
-            for (const cell of entry.cells ?? []) {
-              if (cell.col < range.start.col || cell.col > range.end.col || cell.isMergedSecondary) continue;
-              const value = String(cell.value ?? "");
-              const cached = cell.formula ? activeSheet.cachedFormulaValues[cellAddressToA1({ row: entry.index, col: cell.col })] : undefined;
-              values.set(`${entry.index}:${cell.col}`, decodeHtmlEntities(cached !== undefined && value.startsWith("#") ? cached : value));
+        for (const band of bands.rows) {
+          for (let startRow = band.start; startRow <= band.end; startRow += 128) {
+            const count = Math.min(128, band.end - startRow + 1);
+            const batch = await getRowsBatchAsync(activeSheet.workbookSheetIndex, startRow, count);
+            if (!batch) throw new Error("Unable to read the selected cells.");
+            const values = new Map<string, string>();
+            for (const entry of batch as Array<{ index: number; cells?: Array<{ col: number; value?: unknown; formula?: string; isMergedSecondary?: boolean }> }>) {
+              for (const cell of entry.cells ?? []) {
+                if (cell.isMergedSecondary) continue;
+                const value = String(cell.value ?? "");
+                const cached = cell.formula ? activeSheet.cachedFormulaValues[cellAddressToA1({ row: entry.index, col: cell.col })] : undefined;
+                values.set(`${entry.index}:${cell.col}`, decodeHtmlEntities(cached !== undefined && value.startsWith("#") ? cached : value));
+              }
             }
-          }
-          for (let row = startRow; row < startRow + count; row++) {
-            const cells: string[] = [];
-            for (let col = range.start.col; col <= range.end.col; col++) cells.push(values.get(`${row}:${col}`) ?? "");
-            lines.push(cells.join("\t"));
+            for (let row = startRow; row < startRow + count; row++) {
+              const cells: string[] = [];
+              for (const { index: col } of bandIndices(bands.cols)) cells.push(values.get(`${row}:${col}`) ?? "");
+              lines.push(cells.join("\t"));
+            }
           }
         }
         return lines.join("\n");
@@ -4477,7 +4507,7 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
 
     await navigator.clipboard.writeText(clipboardData.text);
     return true;
-  }, [activeSheet, getClipboardData, getRowsBatchAsync, isWorkerBacked, selection]);
+  }, [activeSheet, getClipboardData, getRowsBatchAsync, isWorkerBacked, selectionRanges]);
 
   const pasteFromClipboard = React.useCallback<XlsxViewerController["pasteFromClipboard"]>(async (clipboardData) => {
     if (readOnly) return false;
@@ -4655,6 +4685,13 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       revision,
       resizeChartBy,
       resizeImageBy,
+      frozenPanes: activeSheet?.freezePanes ?? null,
+      hideRows,
+      unhideRows,
+      hideColumns,
+      unhideColumns,
+      freezePanes,
+      unfreezePanes,
       resizeColumn,
       resizeRow,
       setCellFormula,
@@ -4683,6 +4720,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       selectChartElement,
       selectImage,
       selectRange,
+      selectRanges,
+      selectionRanges,
       selection,
       setActiveSheetIndex,
       setActiveTabIndex,
@@ -4798,6 +4837,12 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       revision,
       resizeChartBy,
       resizeImageBy,
+      hideRows,
+      unhideRows,
+      hideColumns,
+      unhideColumns,
+      freezePanes,
+      unfreezePanes,
       resizeColumn,
       resizeRow,
       setCellFormula,
@@ -4826,6 +4871,8 @@ export function useXlsxViewerController(options: UseXlsxViewerControllerOptions)
       selectChartElement,
       selectImage,
       selectRange,
+      selectRanges,
+      selectionRanges,
       selection,
       setActiveSheetIndex,
       setActiveTabIndex,

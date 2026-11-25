@@ -399,7 +399,8 @@ export function ControlledWorkbook({ file }: { file: ArrayBuffer }) {
 These hooks work inside `XlsxViewer` or `XlsxViewerProvider` context.
 
 - `useXlsxViewer()` for full controller access
-- `useXlsxViewerSelection()` for active cell and range state
+- `useXlsxViewerSelection()` for active cell and range state. ⌘-click (Ctrl-click on Windows) adds or removes row and column headers. `selectionRanges` contains all selected areas in selection order, and `selection` is the active area.
+- `useXlsxViewerLayout()` for row and column visibility and freeze panes
 - `useXlsxViewerZoom()` for zoom controls and limits
 - `useXlsxViewerEditing()` for editing, persisted style writes, formulas, undo/redo, fill, merge, clipboard, and export actions
 - `useXlsxViewerTables()` for table metadata and table sorting
@@ -520,6 +521,19 @@ Vanilla viewers access the same pivot methods through `viewer.getController()`. 
 This targets worksheet-backed XLSX pivots. Data Model/OLAP/external connections and unsupported native slicer/timeline dependencies are preserved without editing and reported in `unsupportedFeatures`. Visual member/date filters edit pivot filters; they do not create standalone Excel slicer/timeline objects. Pivot styles approximate Excel palettes, and exact Excel visual parity is not established. Refresh dependent reports in source order; refresh-all does not automatically sort dependency chains.
 
 Exports contain native pivot definitions, cache definitions/records, relationships, and PivotChart associations. See [pivot table APIs and compatibility](https://github.com/extend-hq/react-xlsx/blob/main/docs/pivot-tables.md) for calculation limits and the detailed compatibility boundary.
+
+## Worksheet Layout
+
+`useXlsxViewerLayout()` and the viewer controller expose the same commands for the active worksheet. Layout edits participate in undo and redo and persist in XLSX exports. They require an editable workbook.
+
+| Command | Default target | Explicit target |
+| --- | --- | --- |
+| `hideRows()` / `unhideRows()` | Rows covered by the current selection, including separate areas | One zero-based row index or two inclusive indices, as in `hideRows(2, 4)` |
+| `hideColumns()` / `unhideColumns()` | Columns covered by the current selection, including separate areas | One zero-based column index or two inclusive indices, as in `unhideColumns(1)` |
+| `freezePanes()` | Rows above and columns to the left of the active cell | A zero-based cell address. `freezePanes({ row: 2, col: 1 })` keeps rows 1–2 and column A visible |
+| `unfreezePanes()` | The active worksheet | — |
+
+Read `frozenPanes` for the current row and column counts, or `null` when unfrozen. To unhide a block from the grid, select headers on both sides and choose **Unhide**. For hidden leading rows or columns, select the first visible header.
 
 ## Merging Cells
 
@@ -721,6 +735,8 @@ Try the experimental editor with cell formatting, formulas, undo/redo, and expor
 Right-click a chart, image, worksheet cell, row header, column header, or the top-left corner to open the context menu. Right-clicking inside a selection preserves the range. Shift+F10 or the context-menu key opens it at the active cell; arrow keys navigate and Escape dismisses it.
 
 Viewer mode (`readOnly`) offers Copy and selection actions. Editor mode also offers Cut, Paste, Edit cell, Clear contents, Undo/Redo, Merge/Unmerge, and sorting when the target belongs to a table. Actions use the existing controller and undo history. Row and column selections span the displayed grid, matching header selection. Worker-backed viewers copy tab-separated text; editable workbooks also preserve structured cell data when the browser supports custom clipboard formats. Clipboard commands require browser clipboard access; failed operations display an error and Cut only clears cells after copying succeeds.
+
+Row and column headers have their own menus. In editing mode they offer Cut, Copy, Paste, Clear Contents, Row Height or Column Width, Hide, and Unhide. Sizing uses logical pixels and applies to all selected headers in one undo step. Read-only headers offer Copy and optionally sizing when `allowResizeInReadOnly` is enabled. Shift+F10 opens the same menu for a header selection.
 
 Chart and image menus start with Undo and Redo, followed by a separator. Drawing Cut and Copy are not offered; copying worksheet cells remains supported. Bring to Front and Send to Back contain the one-step layer commands. Charts also have a nested Change Chart Type menu, grouped by family; options that require a different series count are disabled. Drawing positions, sizes, layer order, and chart types participate in undo/redo and are preserved by `download()` and `exportXlsx()`.
 

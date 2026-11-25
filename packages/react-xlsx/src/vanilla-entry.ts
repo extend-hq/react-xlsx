@@ -35,6 +35,7 @@ export type {
   XlsxConditionalFormatRule,
   XlsxDataValidation,
   XlsxFreezePanes,
+  XlsxViewerLayout,
   XlsxSheetVisibility,
   XlsxSheetData,
   XlsxCellAddress,

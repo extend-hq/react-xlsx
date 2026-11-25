@@ -12,4 +12,6 @@ Editable workbooks cross the worker boundary as a binary model snapshot. Restori
 
 `z-worksheet-autofit.patch` adds sparse reads for resizing. The viewer can fetch one row or column for autofit, or just the wrapped and multiline cells needed by automatic row height. The batches include the numeric values used to localize already formatted display text.
 
+`zz-worksheet-layout.patch` exposes sparse hidden row and column indices, range visibility edits, and freeze boundaries. Hiding a column preserves its custom or inherited width through export.
+
 To update upstream, update the commit in `scripts/duke-sheets-provenance.mjs`, rebase the patch, rebuild, and validate workbook features, rich-text rendering, editing, undo, and export before publishing. Generated bindings, WASM, provenance, and the upstream license are checked in together.

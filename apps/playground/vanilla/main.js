@@ -112,7 +112,7 @@ function canEdit(controller = current()) {
 function applyStyle(style) {
   const controller = current();
   if (!controller || !canEdit(controller)) return;
-  if (controller.selection) controller.setRangeStyle(controller.selection, style);
+  if (controller.selectionRanges.length) controller.setRangeStyle(controller.selectionRanges, style);
   else controller.setSelectedCellStyle(style);
 }
 
@@ -124,7 +124,24 @@ fontSizeSelect.addEventListener("change", () => applyStyle({ font: { size: Numbe
 byId("undo").addEventListener("click", () => current()?.undo());
 byId("redo").addEventListener("click", () => current()?.redo());
 
-const mergeDisabled = () => !current()?.selection || readOnlyInput.checked || Boolean(current()?.readOnly);
+setupMenu(byId("visibility"), [
+  { label: "Hide Rows", onSelect: () => current()?.hideRows() },
+  { label: "Hide Columns", onSelect: () => current()?.hideColumns() },
+  "separator",
+  { label: "Unhide Rows", onSelect: () => current()?.unhideRows() },
+  { label: "Unhide Columns", onSelect: () => current()?.unhideColumns() },
+]);
+setupMenu(byId("freeze-panes"), [
+  { label: "Freeze Panes", onSelect: () => current()?.freezePanes(), disabled: () => {
+    const cell = current()?.activeCell;
+    return !cell || (!cell.row && !cell.col) || Boolean(current()?.frozenPanes);
+  } },
+  { label: "Freeze Top Row", onSelect: () => current()?.freezePanes({ row: 1, col: 0 }) },
+  { label: "Freeze First Column", onSelect: () => current()?.freezePanes({ row: 0, col: 1 }) },
+  { label: "Unfreeze Panes", onSelect: () => current()?.unfreezePanes(), disabled: () => !current()?.frozenPanes },
+]);
+
+const mergeDisabled = () => current()?.selectionRanges.length !== 1 || readOnlyInput.checked || Boolean(current()?.readOnly);
 setupMenu(byId("merge"), [
   { label: "Merge &amp; Center", onSelect: () => current()?.mergeSelection("center"), disabled: mergeDisabled },
   { label: "Merge Across", onSelect: () => current()?.mergeSelection("across"), disabled: mergeDisabled },
@@ -257,7 +274,8 @@ function render(controller) {
   byId("undo").disabled = !controller.canUndo;
   byId("redo").disabled = !controller.canRedo;
   for (const element of document.querySelectorAll("[data-edit]")) element.disabled = !editable;
-  byId("merge").disabled = !controller.selection || readOnly;
+  byId("freeze-panes").disabled = !controller.activeSheet || readOnly;
+  byId("merge").disabled = controller.selectionRanges.length !== 1 || readOnly;
 
   // Formula bar
   const target = controller.selectedFormulaTarget;

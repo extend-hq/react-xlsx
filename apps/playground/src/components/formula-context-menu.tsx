@@ -32,7 +32,7 @@ export function FormulaContextMenu({ menu, controller, onPreview }: {
     <div ref={setHost} className={menu.isDark ? "dark" : undefined} style={{ width: 1, height: 1 }} onKeyDown={event => event.stopPropagation()}>
       <ContextMenu open={host !== null} onOpenChange={open => { if (!open) menu.closeMenu(); }}>
         <ContextMenuPopup anchor={host} positionMethod="fixed" portalProps={{ container: host }} side="bottom" sideOffset={0} align="start" finalFocus={false} className="w-56">
-          {!menu.context.readOnly && !menu.context.chart && !menu.context.image && !controller.getPivotTableAtCell(menu.context.cell, menu.context.sheetName) && (
+          {menu.context.kind === "cell" && !menu.context.readOnly && !controller.getPivotTableAtCell(menu.context.cell, menu.context.sheetName) && (
             <>
               <ContextMenuSub open={assistantOpen} onOpenChange={setAssistantOpen}>
                 <ContextMenuSubTrigger className="[&_svg]:size-4"><Sparkles className="size-4" />Generate formula</ContextMenuSubTrigger>

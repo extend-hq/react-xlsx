@@ -1417,6 +1417,30 @@ export class Worksheet {
         return ret[0] !== 0;
     }
     /**
+     * @returns {Uint32Array}
+     */
+    get hiddenColumns() {
+        const ret = wasm.worksheet_hiddenColumns(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @returns {Uint32Array}
+     */
+    get hiddenRows() {
+        const ret = wasm.worksheet_hiddenRows(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * @returns {number}
      */
     get hyperlinkCount() {
@@ -1785,6 +1809,17 @@ export class Worksheet {
         }
     }
     /**
+     * @param {number} start
+     * @param {number} end
+     * @param {boolean} hidden
+     */
+    setColumnsHidden(start, end, hidden) {
+        const ret = wasm.worksheet_setColumnsHidden(this.__wbg_ptr, start, end, hidden);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Replace a top-level drawing or nested group child.
      * @param {any} path
      * @param {any} input
@@ -1825,6 +1860,16 @@ export class Worksheet {
         }
     }
     /**
+     * @param {number} row
+     * @param {number} col
+     */
+    setFreezePanes(row, col) {
+        const ret = wasm.worksheet_setFreezePanes(this.__wbg_ptr, row, col);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {any} ranges
      */
     setProtectedRanges(ranges) {
@@ -1860,6 +1905,17 @@ export class Worksheet {
      */
     setRowHeight(row, height) {
         const ret = wasm.worksheet_setRowHeight(this.__wbg_ptr, row, height);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} start
+     * @param {number} end
+     * @param {boolean} hidden
+     */
+    setRowsHidden(start, end, hidden) {
+        const ret = wasm.worksheet_setRowsHidden(this.__wbg_ptr, start, end, hidden);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }

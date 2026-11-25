@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { growScrollDisplayLimit } from "./scroll-display-limit.ts";
+import { growScrollDisplayLimit, minimumVisibleExtent } from "./scroll-display-limit.ts";
 
 for (const { axis, initial, growth, maximum } of [
   { axis: "rows", initial: 200, growth: 200, maximum: 450 },
@@ -27,4 +27,11 @@ test("an expanded read-only grid holds its limit instead of shrinking", () => {
 
 test("read-only rows keep a drawing anchored below the populated range in view", () => {
   assert.equal(growScrollDisplayLimit(546, 200, 221, true), 546);
+});
+
+test("opening a worksheet with hidden leading rows still exposes visible headers", () => {
+  assert.equal(minimumVisibleExtent(3, [0, 1, 2, 3, 5, 10], 20), 8);
+  assert.equal(minimumVisibleExtent(3, [3, 4], 20), 3);
+  assert.equal(minimumVisibleExtent(3, [0, 1, 2, 3], 5), 5);
+  assert.equal(minimumVisibleExtent(3, [0, 1, 2, 3, 4], 5), 3);
 });

@@ -13,10 +13,11 @@ import {
 } from "@tanstack/react-virtual";
 import { resolveBuiltinTableStyle } from "./builtin-table-styles";
 import { resolveCellTextClipOverscan } from "./cell-text-clip";
-import { growScrollDisplayLimit } from "./scroll-display-limit";
+import { growScrollDisplayLimit, minimumVisibleExtent } from "./scroll-display-limit";
 import { expandHighlightedRange, getHighlightAxisExtent, getHighlightScrollOffset } from "./range-highlight";
 import { CellEditor } from "./cell-editor";
 import { CellEditorOverlay } from "./cell-editor-overlay";
+import { selectionCoversRange, subtractRange } from "./selection-ranges";
 import { SelectionPopover } from "./selection-popover";
 import { useCellEditorSession } from "./cell-editor-session";
 import { getFormulaReferences, type FormulaReference } from "./formula-references";
@@ -25,6 +26,7 @@ import { getCellGeneralAlignment, type CellGeneralAlignment } from "./cell-align
 import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
+import { HeaderSizeDialog } from "./header-size-dialog";
 import { menuStyles, resolveMenuPaletteStyle, XlsxContextMenu } from "./context-menu";
 import { PivotGroupControls } from "./pivot-controls";
 import { PivotHeaderControls } from "./pivot-header-controls";
@@ -77,6 +79,7 @@ import type {
   XlsxViewerTables,
   XlsxViewerController,
   XlsxViewerEditing,
+  XlsxViewerLayout,
   XlsxViewerImages,
   XlsxViewerProps,
   XlsxViewerProviderProps,
@@ -157,9 +160,13 @@ const CANVAS_TEXT_MEASURE_CACHE_LIMIT = 20000;
 const CANVAS_TEXT_TRUNCATE_CACHE_LIMIT = 4096;
 const CANVAS_TEXT_WRAP_CACHE_LIMIT = 2048;
 const CANVAS_PATH2D_CACHE_LIMIT = 512;
+const EMPTY_SELECTION_RANGES: XlsxCellRange[] = [];
 const EMPTY_VIRTUAL_ITEMS: VirtualItem[] = [];
 
+type HeaderSelectionGesture = { anchor: number; base: readonly XlsxCellRange[]; remove: boolean };
+
 type SelectionDragState = {
+  headerGesture?: HeaderSelectionGesture;
   anchor: XlsxCellAddress;
   axis: "cell" | "column" | "row";
   contentScaleX: number;
@@ -1599,24 +1606,10 @@ function buildVisibleAxisIndices(
     return [];
   }
 
-  if (precomputed.length === 0) {
-    const visible: number[] = [];
-    const usedLimit = Math.min(displayLimit, Math.max(0, maxUsedIndex + 1));
-    for (let index = 0; index < usedLimit; index += 1) {
-      if (!hiddenIndices?.has(index)) {
-        visible.push(index);
-      }
-    }
-    for (let index = usedLimit; index < displayLimit; index += 1) {
-      visible.push(index);
-    }
-    return visible;
-  }
-
-  const visible = precomputed.filter((value) => value < displayLimit);
-  const appendStart = Math.max(0, maxUsedIndex + 1);
-  for (let index = appendStart; index < displayLimit; index += 1) {
-    visible.push(index);
+  const visible = precomputed.filter(index => index < displayLimit);
+  const appendStart = precomputed.length ? Math.max(0, maxUsedIndex + 1) : 0;
+  for (let index = appendStart; index < displayLimit; index++) {
+    if (!hiddenIndices?.has(index)) visible.push(index);
   }
   return visible;
 }
@@ -7648,6 +7641,8 @@ function XlsxGrid({
     selectChartElement,
     selectImage,
     selectRange,
+    selectRanges,
+    selectionRanges,
     selection,
     setActiveSheetIndex,
     setChartRect,
@@ -7677,6 +7672,7 @@ function XlsxGrid({
   ), [formControls, getFormControlItems]);
   const [contextMenu, setContextMenu] = React.useState<{
     context: XlsxContextMenuContext;
+    sizeAxis?: "row" | "column";
     position: { x: number; y: number };
   } | null>(null);
   React.useEffect(() => {
@@ -7760,8 +7756,6 @@ function XlsxGrid({
   const activeCellRef = React.useRef<XlsxCellAddress | null>(activeCell);
   const selectedChartIdRef = React.useRef<string | null>(selectedChartId);
   const selectedImageIdRef = React.useRef<string | null>(selectedImageId);
-  const pendingSelectionCommitRef = React.useRef<XlsxCellRange | null>(null);
-  const selectionCommitFrameRef = React.useRef<number | null>(null);
   const selectionRef = React.useRef<XlsxCellRange | null>(null);
   const editingCellRef = React.useRef<XlsxCellAddress | null>(null);
   const editingOriginalValueRef = React.useRef<string | null>(null);
@@ -8023,6 +8017,12 @@ function XlsxGrid({
     [activeSheet?.mergedRanges, activeSheet?.workbookSheetIndex, highlightedRanges, mergedRegions]
   );
   const normalizedSelection = React.useMemo(() => (selection ? normalizeRange(selection) : null), [selection]);
+  const secondaryRanges = React.useMemo(() => selectionRanges.length > 1 ? selectionRanges.slice(0, -1) : EMPTY_SELECTION_RANGES, [selectionRanges]);
+  const selectionRangesRef = React.useRef(selectionRanges);
+  React.useLayoutEffect(() => {
+    selectionRangesRef.current = selectionRanges;
+  }, [selectionRanges]);
+
   const zoomFactor = React.useMemo(() => Math.max(0.1, zoomScale / 100), [zoomScale]);
   const previousZoomFactorRef = React.useRef(zoomFactor);
   const effectiveTables = tables;
@@ -8685,6 +8685,7 @@ function XlsxGrid({
       }
 
       for (let col = Math.max(0, (activeSheet?.maxUsedCol ?? -1) + 1); col < displayColLimit; col += 1) {
+        if (hiddenColSet.has(col)) continue;
         const overrideWidth = activeSheet?.colWidthOverridesPx[col];
         widths[col] = overrideWidth === undefined
           ? fallbackWidth
@@ -8799,6 +8800,7 @@ function XlsxGrid({
       }
 
       for (let row = Math.max(0, (activeSheet?.maxUsedRow ?? -1) + 1); row < displayRowLimit; row += 1) {
+        if (hiddenRowSet.has(row)) continue;
         const overrideHeight = activeSheet?.rowHeightOverridesPx[row];
         heights[row] = overrideHeight === undefined
           ? fallbackHeight
@@ -8894,6 +8896,21 @@ function XlsxGrid({
   const lastVisibleRow = visibleRows[visibleRows.length - 1];
   const firstVisibleCol = visibleCols[0];
   const lastVisibleCol = visibleCols[visibleCols.length - 1];
+  const previousGridExtent = React.useRef({ activeTabIndex, lastVisibleRow, lastVisibleCol });
+  React.useLayoutEffect(() => {
+    const previous = previousGridExtent.current;
+    previousGridExtent.current = { activeTabIndex, lastVisibleRow, lastVisibleCol };
+    if (previous.activeTabIndex !== activeTabIndex || !axisSelectionRef.current) return;
+    const growRows = lastVisibleRow !== undefined && previous.lastVisibleRow !== undefined && lastVisibleRow > previous.lastVisibleRow;
+    const growCols = lastVisibleCol !== undefined && previous.lastVisibleCol !== undefined && lastVisibleCol > previous.lastVisibleCol;
+    if (!growRows && !growCols) return;
+    const areas = selectionRanges.map(area => {
+      const row = growRows && area.start.row === firstVisibleRow && area.end.row === previous.lastVisibleRow ? lastVisibleRow : area.end.row;
+      const col = growCols && area.start.col === firstVisibleCol && area.end.col === previous.lastVisibleCol ? lastVisibleCol : area.end.col;
+      return row === area.end.row && col === area.end.col ? area : { start: area.start, end: { row, col } };
+    });
+    if (areas.some((area, i) => area !== selectionRanges[i])) selectRanges(areas, "start");
+  }, [activeTabIndex, firstVisibleCol, firstVisibleRow, lastVisibleCol, lastVisibleRow, selectionRanges, selectRanges]);
   const displayedSelection = fillPreviewRange ?? normalizedSelection;
   const toLogicalRect = React.useCallback((rect: XlsxImageRect): XlsxImageRect => ({
     height: rect.height / zoomFactor,
@@ -9152,10 +9169,6 @@ function XlsxGrid({
   }, [imagePreviewRect]);
 
   React.useEffect(() => () => {
-    if (selectionCommitFrameRef.current !== null) {
-      window.cancelAnimationFrame(selectionCommitFrameRef.current);
-      selectionCommitFrameRef.current = null;
-    }
     if (liveGestureZoomFrameRef.current !== null) {
       window.cancelAnimationFrame(liveGestureZoomFrameRef.current);
       liveGestureZoomFrameRef.current = null;
@@ -9322,28 +9335,30 @@ function XlsxGrid({
   React.useEffect(() => {
     const selectionEndRow = normalizedSelection?.end.row ?? -1;
     const selectionEndCol = normalizedSelection?.end.col ?? -1;
+    const rowPadding = axisSelectionRef.current?.axis === "column" ? 0 : OPEN_GRID_ROW_PADDING;
+    const colPadding = axisSelectionRef.current?.axis === "row" ? 0 : OPEN_GRID_COL_PADDING;
     const nextRowLimit = Math.max(
       resolveInitialDisplayExtent(
         activeSheet?.maxUsedRow ?? -1,
-        MIN_OPEN_GRID_ROWS,
+        minimumVisibleExtent(MIN_OPEN_GRID_ROWS, activeSheet?.hiddenRows, XLSX_MAX_ROWS),
         OPEN_GRID_ROW_PADDING,
         false,
         INITIAL_WORKER_GRID_ROWS
       ),
-      (activeCell?.row ?? -1) + OPEN_GRID_ROW_PADDING + 1,
-      selectionEndRow + OPEN_GRID_ROW_PADDING + 1,
+      (activeCell?.row ?? -1) + rowPadding + 1,
+      selectionEndRow + rowPadding + 1,
       drawingExtents.maxRow + OPEN_GRID_ROW_PADDING + 1
     );
     const nextColLimit = Math.max(
       resolveInitialDisplayExtent(
         activeSheet?.maxUsedCol ?? -1,
-        MIN_OPEN_GRID_COLS,
+        minimumVisibleExtent(MIN_OPEN_GRID_COLS, activeSheet?.hiddenCols, XLSX_MAX_COLUMNS),
         OPEN_GRID_COL_PADDING,
         false,
         INITIAL_WORKER_GRID_COLS
       ),
-      (activeCell?.col ?? -1) + OPEN_GRID_COL_PADDING + 1,
-      selectionEndCol + OPEN_GRID_COL_PADDING + 1,
+      (activeCell?.col ?? -1) + colPadding + 1,
+      selectionEndCol + colPadding + 1,
       drawingExtents.maxCol + OPEN_GRID_COL_PADDING + 1
     );
 
@@ -9351,6 +9366,8 @@ function XlsxGrid({
     setDisplayColLimit((current) => (current < nextColLimit ? nextColLimit : current));
   }, [
     activeCell,
+    activeSheet?.hiddenRows,
+    activeSheet?.hiddenCols,
     activeSheet?.maxUsedCol,
     activeSheet?.maxUsedRow,
     drawingExtents.maxCol,
@@ -10242,7 +10259,6 @@ function XlsxGrid({
   }, [commitEditing]);
 
   const [, startBatchTransition] = React.useTransition();
-  const [, startSelectionTransition] = React.useTransition();
   const [asyncViewportRowBatch, setAsyncViewportRowBatch] = React.useState<WorksheetBatchWindow | null>(null);
   const viewportRequest = React.useMemo(() => {
     const rowIndices = experimentalCanvas
@@ -10814,34 +10830,23 @@ function XlsxGrid({
     conditionalFormatMetricsCacheRef.current.clear();
   }, [activeSheet?.conditionalFormatRules, activeSheet?.workbookSheetIndex, revision]);
 
-  const selectionOverlay = React.useMemo(() => {
-    if (!displayedSelection) {
+  const getSelectionOverlay = React.useCallback((range: XlsxCellRange | null) => {
+    if (!range) {
       return null;
     }
 
-    const normalized = normalizeRange(displayedSelection);
-    const startRowIndex = rowIndexByActual.get(normalized.start.row);
-    const endRowIndex = rowIndexByActual.get(normalized.end.row);
-    const startColIndex = colIndexByActual.get(normalized.start.col);
-    const endColIndex = colIndexByActual.get(normalized.end.col);
-
-    if (
-      startRowIndex === undefined ||
-      endRowIndex === undefined ||
-      startColIndex === undefined ||
-      endColIndex === undefined
-    ) {
-      return null;
-    }
-
+    const rows = getHighlightAxisExtent(visibleRows, rowPrefixSums, range.start.row, range.end.row);
+    const cols = getHighlightAxisExtent(visibleCols, colPrefixSums, range.start.col, range.end.col);
+    if (!rows || !cols) return null;
     return {
-      height: sumPrefixRange(rowPrefixSums, startRowIndex, endRowIndex),
-      left: displayRowHeaderWidth + sumPrefixRange(colPrefixSums, 0, startColIndex - 1),
-      top: displayHeaderHeight + sumPrefixRange(rowPrefixSums, 0, startRowIndex - 1),
-      width: sumPrefixRange(colPrefixSums, startColIndex, endColIndex)
+      height: rows.end - rows.start,
+      left: displayRowHeaderWidth + cols.start,
+      top: displayHeaderHeight + rows.start,
+      width: cols.end - cols.start
     };
-  }, [colIndexByActual, colPrefixSums, displayHeaderHeight, displayRowHeaderWidth, displayedSelection, rowIndexByActual, rowPrefixSums]);
-  const resolvedSelectionOverlay = selectionOverlay;
+  }, [colPrefixSums, displayHeaderHeight, displayRowHeaderWidth, rowPrefixSums, visibleRows, visibleCols]);
+  const resolvedSelectionOverlay = React.useMemo(() => getSelectionOverlay(displayedSelection), [displayedSelection, getSelectionOverlay]);
+  const secondaryOverlays = React.useMemo(() => secondaryRanges.map(getSelectionOverlay), [secondaryRanges, getSelectionOverlay]);
   const rangeHighlightRects = React.useMemo(() => highlightedCellRanges.map(({ highlight, index, range }) => {
     const rows = getHighlightAxisExtent(visibleRows, rowPrefixSums, range.start.row, range.end.row);
     const cols = getHighlightAxisExtent(visibleCols, colPrefixSums, range.start.col, range.end.col);
@@ -11550,6 +11555,11 @@ function XlsxGrid({
     return () => observer.disconnect();
   }, [contextMenuClassName, contextMenuStyle, displayRowHeaderWidth, openTableMenuState, renderTableHeaderMenu, zoomFactor]);
 
+  const headerIsSelected = React.useCallback((axis: "row" | "col", index: number, active: XlsxCellRange | null) => (
+    Boolean(active && index >= active.start[axis] && index <= active.end[axis])
+    || secondaryRanges.some(area => index >= area.start[axis] && index <= area.end[axis])
+  ), [secondaryRanges]);
+
   const applyHeaderSelection = React.useCallback((range: XlsxCellRange | null) => {
     if (experimentalCanvas) {
       return;
@@ -11558,17 +11568,17 @@ function XlsxGrid({
     const normalized = range ? normalizeRange(range) : null;
 
     rowHeaderCellRefs.current.forEach((element, actualRow) => {
-      element.style.backgroundColor = normalized && actualRow >= normalized.start.row && actualRow <= normalized.end.row
+      element.style.backgroundColor = headerIsSelected("row", actualRow, normalized)
         ? "var(--xlsx-selection-header)"
         : palette.rowHeaderSurface;
     });
 
     colHeaderCellRefs.current.forEach((element, actualCol) => {
-      element.style.backgroundColor = normalized && actualCol >= normalized.start.col && actualCol <= normalized.end.col
+      element.style.backgroundColor = headerIsSelected("col", actualCol, normalized)
         ? "var(--xlsx-selection-header)"
         : palette.headerSurface;
     });
-  }, [experimentalCanvas, palette.headerSurface, palette.rowHeaderSurface]);
+  }, [experimentalCanvas, headerIsSelected, palette.headerSurface, palette.rowHeaderSurface]);
 
   const setRowHeaderRef = React.useCallback((actualRow: number, element: HTMLTableCellElement | null) => {
     if (experimentalCanvas) {
@@ -11579,14 +11589,14 @@ function XlsxGrid({
     if (element) {
       rowHeaderCellRefs.current.set(actualRow, element);
       const range = selectionPreviewRangeRef.current ?? displayedSelectionRef.current;
-      element.style.backgroundColor = range && actualRow >= range.start.row && actualRow <= range.end.row
+      element.style.backgroundColor = headerIsSelected("row", actualRow, range)
         ? "var(--xlsx-selection-header)"
         : palette.rowHeaderSurface;
       return;
     }
 
     rowHeaderCellRefs.current.delete(actualRow);
-  }, [experimentalCanvas, palette.rowHeaderSurface]);
+  }, [experimentalCanvas, headerIsSelected, palette.rowHeaderSurface]);
 
   const setColHeaderRef = React.useCallback((actualCol: number, element: HTMLTableCellElement | null) => {
     if (experimentalCanvas) {
@@ -11597,14 +11607,14 @@ function XlsxGrid({
     if (element) {
       colHeaderCellRefs.current.set(actualCol, element);
       const range = selectionPreviewRangeRef.current ?? displayedSelectionRef.current;
-      element.style.backgroundColor = range && actualCol >= range.start.col && actualCol <= range.end.col
+      element.style.backgroundColor = headerIsSelected("col", actualCol, range)
         ? "var(--xlsx-selection-header)"
         : palette.headerSurface;
       return;
     }
 
     colHeaderCellRefs.current.delete(actualCol);
-  }, [experimentalCanvas, palette.headerSurface]);
+  }, [experimentalCanvas, headerIsSelected, palette.headerSurface]);
 
   const applyPreviewOverlay = React.useCallback((
     range: XlsxCellRange | null,
@@ -11716,7 +11726,7 @@ function XlsxGrid({
     gridKeyboardActiveRef.current = true;
     const normalized = normalizeRange(range);
     if (
-      selectionRef.current &&
+      selectionRangesRef.current.length === 1 && selectionRef.current &&
       rangesEqual(selectionRef.current, normalized) &&
       isSameCell(activeCellRef.current, normalized.end) &&
       selectedChartIdRef.current === null &&
@@ -11725,34 +11735,9 @@ function XlsxGrid({
       return;
     }
 
-    pendingSelectionCommitRef.current = normalized;
-    if (selectionCommitFrameRef.current !== null) {
-      return;
-    }
-
-    selectionCommitFrameRef.current = window.requestAnimationFrame(() => {
-      selectionCommitFrameRef.current = null;
-      const pendingRange = pendingSelectionCommitRef.current;
-      pendingSelectionCommitRef.current = null;
-      if (!pendingRange) {
-        return;
-      }
-
-      if (
-        selectionRef.current &&
-        rangesEqual(selectionRef.current, pendingRange) &&
-        isSameCell(activeCellRef.current, pendingRange.end) &&
-        selectedChartIdRef.current === null &&
-        selectedImageIdRef.current === null
-      ) {
-        return;
-      }
-
-      startSelectionTransition(() => {
-        selectRange(pendingRange);
-      });
-    });
-  }, [selectRange, startSelectionTransition]);
+    selectionRangesRef.current = [normalized];
+    selectRange(normalized);
+  }, [selectRange]);
 
   const refreshOverlayFromCurrentSelection = React.useCallback(() => {
     if (displayedSelectionRef.current) {
@@ -11908,6 +11893,30 @@ function XlsxGrid({
     return resolveCellSelectionRange({ start: dragState.anchor, end: cell });
   }
 
+  function commitHeaderSelection(gesture: HeaderSelectionGesture, range: XlsxCellRange, axis: "column" | "row") {
+    const areas = gesture.remove
+      ? gesture.base.flatMap(area => subtractRange(area, range))
+      : [...gesture.base, range];
+    const active = areas.at(-1);
+    axisSelectionRef.current = null;
+    if (active) {
+      const isFullRow = active.start.col === firstVisibleCol && active.end.col === lastVisibleCol;
+      const isFullColumn = active.start.row === firstVisibleRow && active.end.row === lastVisibleRow;
+      if (isFullRow && (axis === "row" || !isFullColumn)) {
+        const startRow = gesture.remove ? active.start.row : gesture.anchor;
+        axisSelectionRef.current = { axis: "row", startRow, endRow: startRow === active.start.row ? active.end.row : active.start.row };
+      } else if (isFullColumn) {
+        const startCol = gesture.remove ? active.start.col : gesture.anchor;
+        axisSelectionRef.current = { axis: "column", startCol, endCol: startCol === active.start.col ? active.end.col : active.start.col };
+      }
+    }
+    selectionPreviewRangeRef.current = null;
+    displayedSelectionRef.current = active ?? null;
+    selectionRangesRef.current = areas;
+    gridKeyboardActiveRef.current = true;
+    selectRanges(areas, "start");
+  }
+
   function updateSelectionDragPreview(clientX: number, clientY: number) {
     const dragState = selectionDragRef.current;
     if (!dragState) {
@@ -11925,6 +11934,10 @@ function XlsxGrid({
     }
 
     dragState.previewRange = nextRange;
+    if (dragState.headerGesture && dragState.axis !== "cell") {
+      commitHeaderSelection(dragState.headerGesture, nextRange, dragState.axis);
+      return;
+    }
     selectionPreviewRangeRef.current = nextRange;
     displayedSelectionRef.current = nextRange;
     applyPreviewOverlay(nextRange);
@@ -11955,8 +11968,10 @@ function XlsxGrid({
     cachedScrollerRectRef.current = scrollRef.current?.getBoundingClientRect() ?? null;
     pendingState.didDrag = true;
     selectionDragRef.current = pendingState;
-    selectionPreviewRangeRef.current = pendingState.previewRange;
-    displayedSelectionRef.current = pendingState.previewRange;
+    if (!pendingState.headerGesture) {
+      selectionPreviewRangeRef.current = pendingState.previewRange;
+      displayedSelectionRef.current = pendingState.previewRange;
+    }
     setInteractionMode("select");
     document.body.style.userSelect = "none";
     installSelectionDragListeners(pendingState.pointerId);
@@ -12088,26 +12103,14 @@ function XlsxGrid({
 
       selectionDragRef.current = null;
       cachedScrollerRectRef.current = null;
-      if (nextRange && (dragState?.didDrag || !dragState?.committedOnPointerDown)) {
+      if (nextRange && dragState?.headerGesture && dragState.axis !== "cell") {
+        if (!rangesEqual(nextRange, dragState.previewRange)) {
+          commitHeaderSelection(dragState.headerGesture, nextRange, dragState.axis);
+        }
+      } else if (nextRange && (dragState?.didDrag || !dragState?.committedOnPointerDown)) {
         selectionPreviewRangeRef.current = nextRange;
         displayedSelectionRef.current = nextRange;
-        if (dragState?.axis === "column") {
-          const normalized = normalizeRange(nextRange);
-          axisSelectionRef.current = {
-            axis: "column",
-            startCol: normalized.start.col,
-            endCol: normalized.end.col
-          };
-        } else if (dragState?.axis === "row") {
-          const normalized = normalizeRange(nextRange);
-          axisSelectionRef.current = {
-            axis: "row",
-            startRow: normalized.start.row,
-            endRow: normalized.end.row
-          };
-        } else {
-          axisSelectionRef.current = null;
-        }
+        axisSelectionRef.current = null;
         commitSelectionRange(nextRange);
       } else if (!nextRange) {
         selectionPreviewRangeRef.current = null;
@@ -12250,7 +12253,7 @@ function XlsxGrid({
       : kind === "column"
         ? { axis: "column", startCol: nextRange.start.col, endCol: nextRange.end.col }
         : null;
-    selectRange(nextRange);
+    selectRanges([nextRange], "start");
   }
 
   function openContextMenu(cell: XlsxCellAddress, kind: "cell" | "row" | "column" | "sheet", position: { x: number; y: number }) {
@@ -12258,20 +12261,21 @@ function XlsxGrid({
     if (kind === "cell") cell = resolveMergeAnchorCell(cell);
     if (editingCellRef.current) commitEditingRef.current();
     const current = normalizedSelection;
-    const inside = current && cell.row >= current.start.row && cell.row <= current.end.row &&
-      cell.col >= current.start.col && cell.col <= current.end.col;
-    let range = inside ? current : { start: cell, end: cell };
-    if (kind !== "cell") {
-      const sameAxis = axisSelectionRef.current?.axis === kind;
-      range = getContextExtent(kind, sameAxis && inside ? range : { start: cell, end: cell });
+    const inside = selectionRanges.some(area => isCellInRange(cell, area));
+    const target = { start: cell, end: cell };
+    const extent = kind === "cell" ? target : getContextExtent(kind, target);
+    const preserve = kind === "cell" ? inside : selectionCoversRange(selectionRanges, extent);
+    let range = preserve && current ? current : target;
+    if (kind !== "cell" && !preserve) {
+      range = extent;
       selectContextExtent(kind, range);
-    } else if (!inside) {
+    } else if (!preserve) {
       axisSelectionRef.current = null;
       selectCell(cell);
     }
     setOpenTableMenu(null);
     setContextMenu({
-      context: { kind, cell, selection: range, sheetIndex: activeSheetIndex, sheetName: activeSheet.name, readOnly },
+      context: { kind, cell, selection: range, selectionRanges: preserve ? selectionRanges : [range], sheetIndex: activeSheetIndex, sheetName: activeSheet.name, readOnly },
       position
     });
   }
@@ -12373,82 +12377,52 @@ function XlsxGrid({
     resolvePointerCellFromGeometry
   ]);
 
-  const handleRowPointerDown = React.useCallback((
-    event: React.PointerEvent<HTMLTableCellElement>,
-    actualRow: number
-  ) => {
-    if (event.button !== 0 || firstVisibleCol === undefined || lastVisibleCol === undefined) {
-      return;
-    }
-
+  function startHeaderSelection(
+    event: React.PointerEvent<HTMLElement>,
+    axis: "row" | "column",
+    index: number,
+    pointerOrigin: ReturnType<typeof resolveRowPointerOrigin>
+  ) {
+    const first = axis === "row" ? firstVisibleCol : firstVisibleRow;
+    const last = axis === "row" ? lastVisibleCol : lastVisibleRow;
+    if (!pointerOrigin || first === undefined || last === undefined) return;
+    if (event.ctrlKey && /Mac|iPad|iPhone/.test(navigator.platform)) return;
     event.preventDefault();
     focusGrid();
-    const currentSelection = selectionRef.current;
-    const anchorRow = event.shiftKey && currentSelection ? currentSelection.start.row : actualRow;
-    const initialRange = normalizeRange({
-      start: { row: anchorRow, col: firstVisibleCol },
-      end: { row: actualRow, col: lastVisibleCol }
-    });
-    const pointerOrigin = resolveRowPointerOrigin(actualRow, event.currentTarget.getBoundingClientRect(), event.clientY);
-    if (!pointerOrigin) {
-      return;
+    if (editingCellRef.current) commitEditingRef.current();
+    const areas = selectionRangesRef.current;
+    const coordinate = axis === "row" ? "row" : "col";
+    const activeAxis = axisSelectionRef.current;
+    const active = areas.at(-1);
+    let anchorIndex = index;
+    if (event.shiftKey && active) {
+      anchorIndex = active.start[coordinate];
+      if (activeAxis?.axis === "row" && axis === "row") anchorIndex = activeAxis.startRow;
+      if (activeAxis?.axis === "column" && axis === "column") anchorIndex = activeAxis.startCol;
     }
+    const cell = (along: number, across: number) => axis === "row"
+      ? { row: along, col: across } : { row: across, col: along };
+    const range = normalizeRange({ start: cell(anchorIndex, first), end: cell(index, last) });
+    const additive = event.metaKey || event.ctrlKey;
+    const base = additive ? areas : event.shiftKey ? areas.slice(0, -1) : [];
+    const headerGesture = { anchor: anchorIndex, base, remove: additive && !event.shiftKey && selectionCoversRange(base, range) };
+    startCellSelection(event.currentTarget, event.pointerId, cell(anchorIndex, first), axis,
+      cell(index, first), pointerOrigin, null, true, range, event.clientX, event.clientY, headerGesture);
+  }
 
-    startCellSelection(
-      event.currentTarget,
-      event.pointerId,
-      { row: anchorRow, col: firstVisibleCol },
-      "row",
-      { row: actualRow, col: firstVisibleCol },
-      pointerOrigin,
-      null,
-      true,
-      initialRange,
-      event.clientX,
-      event.clientY
-    );
-    axisSelectionRef.current = { axis: "row", startRow: anchorRow, endRow: actualRow };
-    commitSelectionRange(initialRange);
-  }, [commitSelectionRange, firstVisibleCol, focusGrid, lastVisibleCol, resolveRowPointerOrigin]);
+  const startHeaderSelectionRef = React.useRef(startHeaderSelection);
+  startHeaderSelectionRef.current = startHeaderSelection;
+  const handleRowPointerDown = React.useCallback((event: React.PointerEvent<HTMLTableCellElement>, actualRow: number) => {
+    if (event.button !== 0) return;
+    startHeaderSelectionRef.current(event, "row", actualRow,
+      resolveRowPointerOrigin(actualRow, event.currentTarget.getBoundingClientRect(), event.clientY));
+  }, [resolveRowPointerOrigin]);
 
-  const handleColumnPointerDown = React.useCallback((
-    event: React.PointerEvent<HTMLTableCellElement>,
-    actualCol: number
-  ) => {
-    if (event.button !== 0 || firstVisibleRow === undefined || lastVisibleRow === undefined) {
-      return;
-    }
-
-    event.preventDefault();
-    focusGrid();
-    const currentSelection = selectionRef.current;
-    const anchorCol =
-      event.shiftKey && currentSelection ? currentSelection.start.col : actualCol;
-    const initialRange = normalizeRange({
-      start: { row: firstVisibleRow, col: anchorCol },
-      end: { row: lastVisibleRow, col: actualCol }
-    });
-    const pointerOrigin = resolveColumnPointerOrigin(actualCol, event.currentTarget.getBoundingClientRect(), event.clientX);
-    if (!pointerOrigin) {
-      return;
-    }
-
-    startCellSelection(
-      event.currentTarget,
-      event.pointerId,
-      { row: firstVisibleRow, col: anchorCol },
-      "column",
-      { row: firstVisibleRow, col: actualCol },
-      pointerOrigin,
-      null,
-      true,
-      initialRange,
-      event.clientX,
-      event.clientY
-    );
-    axisSelectionRef.current = { axis: "column", startCol: anchorCol, endCol: actualCol };
-    commitSelectionRange(initialRange);
-  }, [commitSelectionRange, firstVisibleRow, focusGrid, lastVisibleRow, resolveColumnPointerOrigin]);
+  const handleColumnPointerDown = (event: React.PointerEvent<HTMLTableCellElement>, actualCol: number) => {
+    if (event.button !== 0) return;
+    startHeaderSelection(event, "column", actualCol,
+      resolveColumnPointerOrigin(actualCol, event.currentTarget.getBoundingClientRect(), event.clientX));
+  };
 
   const handleRowResizePointerDown = React.useCallback((
     event: React.PointerEvent<HTMLDivElement>,
@@ -13043,7 +13017,7 @@ function XlsxGrid({
     startEditing(cell, undefined, "double-click");
   }, [readOnly, resolvePointerCellFromClient, startEditing]);
 
-  const handleCanvasColumnHeaderPointerDown = React.useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+  const handleCanvasColumnHeaderPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || firstVisibleRow === undefined || lastVisibleRow === undefined) {
       return;
     }
@@ -13061,53 +13035,17 @@ function XlsxGrid({
       return;
     }
 
-    event.preventDefault();
-    focusGrid();
-    const currentSelection = selectionRef.current;
-    const anchorCol = event.shiftKey && currentSelection ? currentSelection.start.col : actualCol;
-    const initialRange = normalizeRange({
-      start: { row: firstVisibleRow, col: anchorCol },
-      end: { row: lastVisibleRow, col: actualCol }
+    const index = colIndexByActual.get(actualCol);
+    if (index === undefined) return;
+    startHeaderSelection(event, "column", actualCol, {
+      contentScaleX: 1,
+      contentScaleY: 1,
+      originContentX: colPrefixSums[index] ?? 0,
+      originContentY: rowPrefixSums[0] ?? 0
     });
-    const anchorColIndex = colIndexByActual.get(anchorCol);
-    if (anchorColIndex === undefined) {
-      return;
-    }
+  };
 
-    startCellSelection(
-      event.currentTarget,
-      event.pointerId,
-      { row: firstVisibleRow, col: anchorCol },
-      "column",
-      { row: firstVisibleRow, col: actualCol },
-      {
-        contentScaleX: 1,
-        contentScaleY: 1,
-        originContentX: colPrefixSums[anchorColIndex] ?? 0,
-        originContentY: rowPrefixSums[0] ?? 0
-      },
-      null,
-      true,
-      initialRange,
-      event.clientX,
-      event.clientY
-    );
-    axisSelectionRef.current = { axis: "column", startCol: anchorCol, endCol: actualCol };
-    commitSelectionRange(initialRange);
-  }, [
-    colIndexByActual,
-    colPrefixSums,
-    commitSelectionRange,
-    firstVisibleRow,
-    focusGrid,
-    lastVisibleRow,
-    resolveCanvasColumnHeaderTarget,
-    resolveCanvasColumnResizeTarget,
-    rowPrefixSums,
-    startCellSelection
-  ]);
-
-  const handleCanvasRowHeaderPointerDown = React.useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+  const handleCanvasRowHeaderPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.button !== 0 || firstVisibleCol === undefined || lastVisibleCol === undefined) {
       return;
     }
@@ -13125,51 +13063,15 @@ function XlsxGrid({
       return;
     }
 
-    event.preventDefault();
-    focusGrid();
-    const currentSelection = selectionRef.current;
-    const anchorRow = event.shiftKey && currentSelection ? currentSelection.start.row : actualRow;
-    const initialRange = normalizeRange({
-      start: { row: anchorRow, col: firstVisibleCol },
-      end: { row: actualRow, col: lastVisibleCol }
+    const index = rowIndexByActual.get(actualRow);
+    if (index === undefined) return;
+    startHeaderSelection(event, "row", actualRow, {
+      contentScaleX: 1,
+      contentScaleY: 1,
+      originContentX: colPrefixSums[0] ?? 0,
+      originContentY: rowPrefixSums[index] ?? 0
     });
-    const anchorRowIndex = rowIndexByActual.get(anchorRow);
-    if (anchorRowIndex === undefined) {
-      return;
-    }
-
-    startCellSelection(
-      event.currentTarget,
-      event.pointerId,
-      { row: anchorRow, col: firstVisibleCol },
-      "row",
-      { row: actualRow, col: firstVisibleCol },
-      {
-        contentScaleX: 1,
-        contentScaleY: 1,
-        originContentX: colPrefixSums[0] ?? 0,
-        originContentY: rowPrefixSums[anchorRowIndex] ?? 0
-      },
-      null,
-      true,
-      initialRange,
-      event.clientX,
-      event.clientY
-    );
-    axisSelectionRef.current = { axis: "row", startRow: anchorRow, endRow: actualRow };
-    commitSelectionRange(initialRange);
-  }, [
-    colPrefixSums,
-    commitSelectionRange,
-    firstVisibleCol,
-    focusGrid,
-    lastVisibleCol,
-    resolveCanvasRowHeaderTarget,
-    resolveCanvasRowResizeTarget,
-    rowIndexByActual,
-    rowPrefixSums,
-    startCellSelection
-  ]);
+  };
 
   const getCanvasImage = React.useCallback((image: XlsxImage) => {
     if (typeof Image === "undefined") {
@@ -13274,7 +13176,7 @@ function XlsxGrid({
     const rowHeaderWidth = Math.min(displayRowHeaderWidth, bodyWidth);
     const visibleRange = selectionPreviewRangeRef.current ?? displayedSelection;
     const normalizedVisibleRange = visibleRange ? normalizeRange(visibleRange) : null;
-    const rangeSignature = buildRangeSignature(normalizedVisibleRange);
+    const rangeSignature = [...secondaryRanges, normalizedVisibleRange].map(buildRangeSignature).join("|");
     const nextBodyCanvasSignature: PaintedBodyCanvasSignature = {
       activeSheet: activeSheet ?? null,
       bakedDrawingSignature: bakedCanvasDrawingSignature,
@@ -14468,10 +14370,7 @@ function XlsxGrid({
           continue;
         }
 
-        const selected =
-          normalizedVisibleRange
-          && column.actualCol >= normalizedVisibleRange.start.col
-          && column.actualCol <= normalizedVisibleRange.end.col;
+        const selected = headerIsSelected("col", column.actualCol, normalizedVisibleRange);
         paneContext.fillStyle = selected ? selectionHeaderSurface : palette.headerSurface;
         paneContext.fillRect(column.localLeft, 0, column.width, column.height);
         paneContext.strokeStyle = palette.border;
@@ -14528,10 +14427,7 @@ function XlsxGrid({
           continue;
         }
 
-        const selected =
-          normalizedVisibleRange
-          && row.actualRow >= normalizedVisibleRange.start.row
-          && row.actualRow <= normalizedVisibleRange.end.row;
+        const selected = headerIsSelected("row", row.actualRow, normalizedVisibleRange);
         paneContext.fillStyle = selected ? selectionHeaderSurface : palette.rowHeaderSurface;
         paneContext.fillRect(0, row.localTop, rowHeaderWidth, row.height);
         paneContext.beginPath();
@@ -14622,6 +14518,8 @@ function XlsxGrid({
     rowIndexByActual,
     rowPrefixSums,
     selectionHeaderSurface,
+    headerIsSelected,
+    secondaryRanges,
     sortState,
     shouldBakeCanvasStaticDrawings,
     stickyLeftByCol,
@@ -16219,11 +16117,13 @@ function XlsxGrid({
     committedOnPointerDown: boolean,
     initialRange: XlsxCellRange,
     startClientX: number,
-    startClientY: number
+    startClientY: number,
+    headerGesture?: HeaderSelectionGesture
   ) {
     clearPendingSelectionDrag();
     const previewRange = normalizeRange(initialRange);
     pendingSelectionDragRef.current = {
+      headerGesture,
       anchor,
       axis,
       contentScaleX: pointerOrigin.contentScaleX,
@@ -16239,9 +16139,13 @@ function XlsxGrid({
       startClientX,
       startClientY
     };
-    selectionPreviewRangeRef.current = previewRange;
-    displayedSelectionRef.current = previewRange;
-    applyPreviewOverlay(previewRange);
+    if (headerGesture && axis !== "cell") {
+      commitHeaderSelection(headerGesture, previewRange, axis);
+    } else {
+      selectionPreviewRangeRef.current = previewRange;
+      displayedSelectionRef.current = previewRange;
+      applyPreviewOverlay(previewRange);
+    }
     installPendingSelectionDragListeners(pointerId, target);
   }
 
@@ -16695,9 +16599,27 @@ function XlsxGrid({
         };
         if (selectedChart) openDrawingContextMenu("chart", selectedChart, position);
         else if (selectedImage) openDrawingContextMenu("image", selectedImage, position);
-        else openContextMenu(cell, "cell", position);
+        else {
+          const axis = axisSelectionRef.current?.axis;
+          const kind = axis && selectionCoversRange(selectionRanges, getContextExtent(axis, { start: cell, end: cell })) ? axis : "cell";
+          if (kind === "row") position.x = rect.left + displayRowHeaderWidth;
+          if (kind === "column") position.y = rect.top + displayHeaderHeight;
+          openContextMenu(cell, kind, position);
+        }
       }
       return;
+    }
+
+    if (!readOnly && !selectedChart && !selectedImage && event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.code === "Digit9" || event.code === "Digit0") {
+        event.preventDefault();
+        if (event.code === "Digit9") {
+          if (event.shiftKey) controller.unhideRows();
+          else controller.hideRows();
+        } else if (event.shiftKey) controller.unhideColumns();
+        else controller.hideColumns();
+        return;
+      }
     }
 
     if (!readOnly && (event.metaKey || event.ctrlKey) && !event.altKey) {
@@ -16926,6 +16848,10 @@ function XlsxGrid({
       const clipboard = event.clipboardData;
       const clipboardData = getClipboardData();
       if (!clipboardData) {
+        if (controller.isWorkerBacked) {
+          event.preventDefault();
+          void copySelectionToClipboard().catch(() => {});
+        }
         return;
       }
 
@@ -17065,6 +16991,12 @@ function XlsxGrid({
   function renderSelectionOverlay(pane?: FrozenDrawingPane) {
     return (
       <div style={{ display: editingCell ? "none" : "contents" }}>
+        {secondaryOverlays.map((rect, i) => rect && (
+          <div key={buildRangeSignature(secondaryRanges[i])} data-xlsx-selection-area="" style={{
+            ...rect, backgroundColor: selectionFill, boxShadow: `inset 0 0 0 ${selectionBorderWidth}px ${selectionStroke}`,
+            pointerEvents: "none", position: "absolute", zIndex: 24
+          }} />
+        ))}
         <div
           ref={pane ? (element) => {
             if (element) {
@@ -17115,7 +17047,7 @@ function XlsxGrid({
             boxSizing: "border-box",
             contain: "layout paint",
             cursor: "crosshair",
-            display: !readOnly && resolvedSelectionOverlay ? "block" : "none",
+            display: !readOnly && !secondaryRanges.length && resolvedSelectionOverlay ? "block" : "none",
             height: 8,
             left: resolvedSelectionOverlay ? resolvedSelectionOverlay.left + resolvedSelectionOverlay.width - 4 : 0,
             pointerEvents: "auto",
@@ -17807,7 +17739,7 @@ function XlsxGrid({
       {renderScroller
         ? renderScroller({ children: scrollerContent, viewportProps: scrollerViewportProps })
         : <div key={activeTabIndex} {...scrollerViewportProps}>{scrollerContent}</div>}
-      {renderSelectionPopover && normalizedSelection && activeCell && !isLoading && interactionMode === "idle" && !contextMenu && (
+      {renderSelectionPopover && !secondaryRanges.length && normalizedSelection && activeCell && !isLoading && interactionMode === "idle" && !contextMenu && (
         <SelectionPopover
           key={`${activeSheetIndex}:${readOnly}:${activeCell.row}:${activeCell.col}:${normalizedSelection.start.row}:${normalizedSelection.start.col}:${normalizedSelection.end.row}:${normalizedSelection.end.col}`}
           context={{ cell: resolveMergeAnchorCell(activeCell), selection: normalizedSelection, sheetIndex: activeSheetIndex, sheetName: activeSheet?.name ?? "", readOnly }}
@@ -17848,20 +17780,37 @@ function XlsxGrid({
           onExit={exitEditorScope}
         />
       )}
-      {enableContextMenu && contextMenu && (
+      {enableContextMenu && contextMenu && (contextMenu.sizeAxis ? (
+        <HeaderSizeDialog
+          axis={contextMenu.sizeAxis}
+          context={contextMenu.context}
+          sizes={contextMenu.sizeAxis === "row" ? actualRowHeights : actualColWidths}
+          maxSize={contextMenu.sizeAxis === "row" ? MAX_AUTOFIT_ROW_HEIGHT_PX
+            : activeSheet?.officeLayout
+              ? resolveOfficeColumnWidthPixels(MAX_COLUMN_WIDTH_CHARACTERS, activeSheet.officeLayout.columnDigitWidthPt)
+              : resolveSheetColumnWidthPixels(MAX_COLUMN_WIDTH_CHARACTERS, activeSheet?.columnWidthCharacterWidthPx)}
+          messages={messages}
+          locale={locale}
+          palette={palette}
+          close={closeContextMenu}
+          resize={contextMenu.sizeAxis === "row" ? controller.resizeRow : controller.resizeColumn}
+        />
+      ) : (
         <XlsxContextMenu
           key={`${contextMenu.position.x}:${contextMenu.position.y}`}
           {...contextMenu}
           controller={controller}
           palette={palette}
           closeMenu={closeContextMenu}
+          canResize={canResizeHeaders}
+          editSize={axis => setContextMenu({ ...contextMenu, sizeAxis: axis })}
           editCell={() => startEditing(contextMenu.context.cell, undefined, "context-menu")}
           selectExtent={(kind) => selectContextExtent(kind, contextMenu.context.selection)}
           renderContextMenu={renderContextMenu}
           contextMenuClassName={contextMenuClassName}
           contextMenuStyle={contextMenuStyle}
         />
-      )}
+      ))}
     </div>
   );
 }
@@ -18106,6 +18055,8 @@ export function useXlsxViewerSelection(): XlsxViewerSelection {
     selectedRangeAddress,
     selectCell,
     selectRange,
+    selectRanges,
+    selectionRanges,
     selection
   } = useXlsxViewer();
 
@@ -18117,9 +18068,19 @@ export function useXlsxViewerSelection(): XlsxViewerSelection {
       selectedRangeAddress,
       selectCell,
       selectRange,
+      selectRanges,
+      selectionRanges,
       selection
     }),
-    [activeCell, activeCellAddress, clearSelection, selectedRangeAddress, selectCell, selectRange, selection]
+    [activeCell, activeCellAddress, clearSelection, selectedRangeAddress, selectCell, selectRange, selectRanges, selectionRanges, selection]
+  );
+}
+
+export function useXlsxViewerLayout(): XlsxViewerLayout {
+  const { frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes } = useXlsxViewer();
+  return React.useMemo(
+    () => ({ frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes }),
+    [frozenPanes, hideRows, unhideRows, hideColumns, unhideColumns, freezePanes, unfreezePanes]
   );
 }
 

@@ -46,6 +46,7 @@ import {
   useXlsxViewer,
   useXlsxViewerController,
   useXlsxViewerEditing,
+  useXlsxViewerLayout,
   useXlsxViewerSelection,
   useXlsxViewerThumbnails,
   useXlsxViewerZoom,
@@ -65,7 +66,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "@/components/ui/menu";
+import { Menu, MenuGroupLabel, MenuItem, MenuPopup, MenuSeparator, MenuSub, MenuSubPopup, MenuSubTrigger, MenuTrigger } from "@/components/ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
@@ -253,7 +254,7 @@ function TitleBar({ onOpenFile }: { onOpenFile: () => void }) {
 
 function useStyleActions() {
   const { readOnly } = useSettings();
-  const { activeCellAddress, selection } = useXlsxViewerSelection();
+  const { activeCellAddress, selectionRanges } = useXlsxViewerSelection();
   const { readOnly: viewerReadOnly, setRangeStyle, setSelectedCellStyle } = useXlsxViewerEditing();
   const isReadOnly = readOnly || viewerReadOnly;
   const canEdit = Boolean(activeCellAddress) && !isReadOnly;
@@ -261,17 +262,18 @@ function useStyleActions() {
   const applyStyle = React.useCallback(
     (style: XlsxCellStyleInput) => {
       if (!canEdit) return;
-      if (selection) setRangeStyle(selection, style);
+      if (selectionRanges.length) setRangeStyle(selectionRanges, style);
       else setSelectedCellStyle(style);
     },
-    [canEdit, selection, setRangeStyle, setSelectedCellStyle],
+    [canEdit, selectionRanges, setRangeStyle, setSelectedCellStyle],
   );
 
-  return { applyStyle, canEdit, hasSelection: Boolean(selection), isReadOnly };
+  return { applyStyle, canEdit, canMerge: selectionRanges.length === 1 && canEdit, isReadOnly };
 }
 
 function HomeRibbon() {
-  const { applyStyle, canEdit, hasSelection, isReadOnly } = useStyleActions();
+  const { hideRows, unhideRows, hideColumns, unhideColumns } = useXlsxViewerLayout();
+  const { applyStyle, canEdit, canMerge, isReadOnly } = useStyleActions();
   const { canRedo, canUndo, mergeSelection, redo, undo, unmergeSelection } = useXlsxViewerEditing();
   const [fontFamily, setFontFamily] = React.useState<string>("Aptos");
   const [fontSize, setFontSize] = React.useState("11");
@@ -425,7 +427,7 @@ function HomeRibbon() {
         </RibbonButton>
         <Menu>
           <MenuTrigger
-            render={<RibbonMenuButton disabled={!hasSelection || isReadOnly} icon={<TableCellsMerge />} label="Merge" />}
+            render={<RibbonMenuButton disabled={!canMerge} icon={<TableCellsMerge />} label="Merge" />}
           />
           <MenuPopup align="start" className="w-44">
             <MenuItem onClick={() => mergeSelection("center")}>Merge &amp; Center</MenuItem>
@@ -486,6 +488,23 @@ function HomeRibbon() {
             <MenuItem className="mx-1 mb-1 font-semibold text-[#44546A]" onClick={() => applyStyle(HEADING_STYLE)}>
               <span className="border-b-2 border-[#4472C4]">Heading 1</span>
             </MenuItem>
+          </MenuPopup>
+        </Menu>
+      </RibbonGroup>
+      <RibbonGroup>
+        <Menu>
+          <MenuTrigger disabled={!canEdit} render={<RibbonMenuButton label="Format" />} />
+          <MenuPopup>
+            <MenuSub>
+              <MenuSubTrigger>Hide &amp; Unhide</MenuSubTrigger>
+              <MenuSubPopup>
+                <MenuItem onClick={() => hideRows()}>Hide Rows</MenuItem>
+                <MenuItem onClick={() => hideColumns()}>Hide Columns</MenuItem>
+                <MenuSeparator />
+                <MenuItem onClick={() => unhideRows()}>Unhide Rows</MenuItem>
+                <MenuItem onClick={() => unhideColumns()}>Unhide Columns</MenuItem>
+              </MenuSubPopup>
+            </MenuSub>
           </MenuPopup>
         </Menu>
       </RibbonGroup>
@@ -553,14 +572,14 @@ function InsertRibbon({
 
 function FormulasRibbon() {
   const { canExport, recalculate } = useXlsxViewer();
-  const { selection } = useXlsxViewerSelection();
+  const { selectionRanges } = useXlsxViewerSelection();
   const { defineNamedRange } = useXlsxViewerEditing();
   const { isReadOnly } = useStyleActions();
   const [name, setName] = React.useState("");
   const define = () => {
     const trimmed = name.trim();
-    if (!trimmed || !selection) return;
-    defineNamedRange(trimmed, selection);
+    if (!trimmed || selectionRanges.length !== 1) return;
+    defineNamedRange(trimmed, selectionRanges[0]);
     setName("");
   };
 
@@ -587,7 +606,7 @@ function FormulasRibbon() {
             size="sm"
             value={name}
           />
-          <RibbonButton disabled={!selection || !name.trim() || isReadOnly} label="Define name" showLabel type="submit">
+          <RibbonButton disabled={selectionRanges.length !== 1 || !name.trim() || isReadOnly} label="Define name" showLabel type="submit">
             <Tag />
           </RibbonButton>
         </form>
@@ -640,12 +659,25 @@ function ReviewRibbon({ onLoadHighlightSample }: { onLoadHighlightSample: (autoS
 
 function ViewRibbon() {
   const settings = useSettings();
-  const { activeSheetIndex, setActiveSheetIndex, sheets } = useXlsxViewer();
+  const { activeCell, activeSheet, activeSheetIndex, readOnly, setActiveSheetIndex, sheets } = useXlsxViewer();
   const { canZoomIn, canZoomOut, setZoomScale, zoomIn, zoomOut } = useXlsxViewerZoom();
+  const { freezePanes, frozenPanes, unfreezePanes } = useXlsxViewerLayout();
   const hasWorkbook = sheets.length > 0;
 
   return (
     <>
+      <RibbonGroup>
+        <Menu>
+          <MenuTrigger disabled={!activeSheet || readOnly || settings.readOnly} render={<RibbonMenuButton label="Freeze Panes" />} />
+          <MenuPopup>
+            {frozenPanes
+              ? <MenuItem onClick={unfreezePanes}>Unfreeze Panes</MenuItem>
+              : <MenuItem disabled={!activeCell || (activeCell.row === 0 && activeCell.col === 0)} onClick={() => freezePanes()}>Freeze Panes</MenuItem>}
+            <MenuItem onClick={() => freezePanes({ row: 1, col: 0 })}>Freeze Top Row</MenuItem>
+            <MenuItem onClick={() => freezePanes({ row: 0, col: 1 })}>Freeze First Column</MenuItem>
+          </MenuPopup>
+        </Menu>
+      </RibbonGroup>
       <RibbonGroup>
         <RibbonButton disabled={!hasWorkbook || !canZoomOut} label="Zoom out" onClick={zoomOut}>
           <Minus />

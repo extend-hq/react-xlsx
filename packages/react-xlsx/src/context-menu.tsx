@@ -1,3 +1,4 @@
+import { clipboardBands } from "./selection-ranges";
 import * as React from "react";
 import { createPortal } from "react-dom";
 import type {
@@ -64,7 +65,7 @@ export function resolveMenuPaletteStyle(palette: ViewerPalette): React.CSSProper
 }
 
 export function XlsxContextMenu({
-  context, position, controller, palette, closeMenu, editCell, selectExtent,
+  context, position, controller, palette, closeMenu, editCell, selectExtent, canResize, editSize,
   renderContextMenu, contextMenuClassName, contextMenuStyle
 }: Pick<XlsxViewerProps, "renderContextMenu" | "contextMenuClassName" | "contextMenuStyle"> & {
   context: XlsxContextMenuContext;
@@ -73,6 +74,8 @@ export function XlsxContextMenu({
   palette: ViewerPalette;
   closeMenu: (restoreFocus?: boolean) => void;
   editCell: () => void;
+  canResize: boolean;
+  editSize: (axis: "row" | "column") => void;
   selectExtent: (kind: "row" | "column" | "sheet") => void;
 }) {
   const { messages } = controller;
@@ -93,15 +96,38 @@ export function XlsxContextMenu({
     context.cell.col >= start.col && context.cell.col <= end.col);
   const range = expandHighlightedRange(context.selection, controller.activeSheet?.mergedRanges ?? []);
   const multiple = range.start.row !== range.end.row || range.start.col !== range.end.col;
-  const touchesPivot = Boolean(findIntersectingPivot(controller.pivotTables, controller.activeSheet?.name, range));
+  const areas = context.selectionRanges ?? [range];
+  const multiArea = areas.length > 1;
+  const canCopy = !multiArea || Boolean(clipboardBands(areas));
+  const touchesPivot = areas.some(area => findIntersectingPivot(controller.pivotTables, controller.activeSheet?.name, area));
   const pivot = controller.getPivotTableAtCell(context.cell);
+  const cutCopy: XlsxContextMenuAction[] = [
+    ...(!controller.readOnly ? [{ id: "cut" as const, label: messages.cut, shortcut: `${modifier}X`, disabled: !canCopy || touchesPivot }] : []),
+    { id: "copy", label: messages.copy, shortcut: `${modifier}C`, disabled: !canCopy }
+  ];
+  const paste: XlsxContextMenuAction = { id: "paste", label: messages.paste, shortcut: `${modifier}V`, disabled: multiArea || touchesPivot };
+  const clearContents: XlsxContextMenuAction = { id: "clearContents", label: messages.clearContents, destructive: true, disabled: touchesPivot };
+  const isHeader = context.kind === "row" || context.kind === "column";
+  const row = context.kind === "row";
+  const headerActions: XlsxContextMenuAction[] = [
+    ...cutCopy,
+    ...(!controller.readOnly ? [paste, clearContents] : []),
+    ...(canResize ? [{
+      id: row ? "rowHeight" as const : "columnWidth" as const,
+      label: `${row ? messages.rowHeight : messages.columnWidth}…`,
+      separatorBefore: true
+    }] : []),
+    ...(!controller.readOnly ? [
+      { id: row ? "hideRows" as const : "hideColumns" as const, label: messages.hide, separatorBefore: !canResize },
+      { id: row ? "unhideRows" as const : "unhideColumns" as const, label: messages.unhide }
+    ] : [])
+  ];
   const cellActions: XlsxContextMenuAction[] = [
-    ...(!controller.readOnly ? [{ id: "cut" as const, label: messages.cut, shortcut: `${modifier}X`, disabled: touchesPivot }] : []),
-    { id: "copy", label: messages.copy, shortcut: `${modifier}C` },
+    ...cutCopy,
     ...(!controller.readOnly ? [
       { id: "undo" as const, label: messages.undo, shortcut: `${modifier}Z`, disabled: !controller.canUndo },
       { id: "redo" as const, label: messages.redo, shortcut: `${modifier}⇧Z`, disabled: !controller.canRedo },
-      { id: "paste" as const, label: messages.paste, shortcut: `${modifier}V`, separatorBefore: true, disabled: touchesPivot }
+      { ...paste, separatorBefore: true }
     ] : []),
     ...(pivot ? [{ id: "togglePivotFieldList" as const, label: controller.pivotFieldListVisible ? messages.hidePivotFieldList : messages.showPivotFieldList, checked: controller.pivotFieldListVisible }] : []),
     ...(pivot && !controller.readOnly ? [
@@ -109,12 +135,12 @@ export function XlsxContextMenu({
       { id: "showPivotDetails" as const, label: messages.showPivotDetails, disabled: pivot.unsupportedFeatures.length > 0 }
     ] : []),
     ...(!controller.readOnly ? [
-      { id: "editCell" as const, label: messages.editCell, shortcut: "F2", separatorBefore: true, disabled: touchesPivot },
-      { id: "clearContents" as const, label: messages.clearContents, destructive: true, disabled: touchesPivot },
-      { id: "mergeAndCenter" as const, label: messages.mergeAndCenter, separatorBefore: true, disabled: !multiple || touchesPivot },
-      { id: "mergeAcross" as const, label: messages.mergeAcross, disabled: range.start.col === range.end.col || touchesPivot },
-      { id: "mergeCells" as const, label: messages.mergeCells, disabled: !multiple || touchesPivot },
-      { id: "unmergeCells" as const, label: messages.unmergeCells, disabled: touchesPivot },
+      { id: "editCell" as const, label: messages.editCell, shortcut: "F2", separatorBefore: true, disabled: multiArea || touchesPivot },
+      clearContents,
+      { id: "mergeAndCenter" as const, label: messages.mergeAndCenter, separatorBefore: true, disabled: multiArea || !multiple || touchesPivot },
+      { id: "mergeAcross" as const, label: messages.mergeAcross, disabled: multiArea || range.start.col === range.end.col || touchesPivot },
+      { id: "mergeCells" as const, label: messages.mergeCells, disabled: multiArea || !multiple || touchesPivot },
+      { id: "unmergeCells" as const, label: messages.unmergeCells, disabled: multiArea || touchesPivot },
       ...(table ? [
         { id: "sortAscending" as const, label: messages.sortAscending, separatorBefore: true },
         { id: "sortDescending" as const, label: messages.sortDescending }
@@ -153,7 +179,7 @@ export function XlsxContextMenu({
         { id: "sendBackward", label: "Send Backward", disabled: drawingDisabled || drawing.zIndex <= minOrder }
       ] },
 
-  ] : cellActions;
+  ] : isHeader ? headerActions : cellActions;
   const findAction = (items: XlsxContextMenuAction[], id: XlsxContextMenuActionId): XlsxContextMenuAction | undefined => {
     for (const item of items) {
       if (item.disabled) continue;
@@ -265,6 +291,16 @@ export function XlsxContextMenu({
         case "sortAscending":
         case "sortDescending":
           if (table) controller.sortTable(table.name, context.cell.col - table.start.col, id === "sortAscending" ? "ascending" : "descending");
+          break;
+        case "rowHeight":
+        case "columnWidth":
+          editSize(id === "rowHeight" ? "row" : "column");
+          return true;
+        case "hideRows":
+        case "unhideRows":
+        case "hideColumns":
+        case "unhideColumns":
+          controller[id]();
           break;
         case "selectRow": selectExtent("row"); break;
         case "selectColumn": selectExtent("column"); break;

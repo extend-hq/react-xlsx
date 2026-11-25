@@ -1122,7 +1122,24 @@ export interface UseXlsxViewerControllerOptions {
   useWorker?: boolean;
 }
 
-export interface XlsxViewerController extends XlsxViewerPivots {
+export interface XlsxViewerLayout {
+  /** Frozen row and column counts on the active worksheet, or null when unfrozen. */
+  frozenPanes: XlsxFreezePanes | null;
+  /** Hide selected rows, or an inclusive, zero-based row interval. */
+  hideRows: (start?: number, end?: number) => void;
+  /** Reveal hidden rows in the selection or an inclusive, zero-based row interval. */
+  unhideRows: (start?: number, end?: number) => void;
+  /** Hide selected columns, or an inclusive, zero-based column interval. */
+  hideColumns: (start?: number, end?: number) => void;
+  /** Reveal hidden columns in the selection or an inclusive, zero-based column interval. */
+  unhideColumns: (start?: number, end?: number) => void;
+  /** Freeze rows above and columns left of the given cell, defaulting to the active cell. */
+  freezePanes: (cell?: XlsxCellAddress) => void;
+  /** Remove the freeze boundary on the active worksheet. */
+  unfreezePanes: () => void;
+}
+
+export interface XlsxViewerController extends XlsxViewerPivots, XlsxViewerLayout {
   activeCell: XlsxCellAddress | null;
   activeCellAddress: string | null;
   activeSheet: XlsxSheetData | null;
@@ -1217,8 +1234,8 @@ export interface XlsxViewerController extends XlsxViewerPivots {
     deltaX: number,
     deltaY: number
   ) => void;
-  resizeColumn: (col: number, widthPx: number) => void;
-  resizeRow: (row: number, heightPx: number) => void;
+  resizeColumn: (col: number | readonly number[], widthPx: number) => void;
+  resizeRow: (row: number | readonly number[], heightPx: number) => void;
   redo: () => void;
   /** Reads browser clipboard representations. Pass paste-event data to retain image and text fallbacks. */
   pasteFromClipboard: (clipboardData?: DataTransfer) => Promise<boolean>;
@@ -1270,12 +1287,15 @@ export interface XlsxViewerController extends XlsxViewerPivots {
    * @param range Zero-based cell range in the active worksheet.
    * @param style Partial Excel style patch to apply to the target range.
    */
-  setRangeStyle: (range: XlsxCellRange, style: XlsxCellStyleInput) => void;
+  setRangeStyle: (range: XlsxCellRange | readonly XlsxCellRange[], style: XlsxCellStyleInput) => void;
   setZoomScale: (zoomScale: number) => void;
   selectCell: (cell: XlsxCellAddress, options?: { extend?: boolean }) => void;
   selectChart: (id: string | null) => void;
   selectChartElement: (selection: XlsxChartElementSelection | null) => void;
   selectRange: (range: XlsxCellRange) => void;
+  selectRanges: (ranges: readonly XlsxCellRange[], activeCorner?: "start" | "end") => void;
+  /** Selected areas in selection order. The last area is the active selection. */
+  selectionRanges: readonly XlsxCellRange[];
   selection: XlsxCellRange | null;
   setActiveSheetIndex: (index: number) => void;
   setActiveTabIndex: (index: number) => void;
@@ -1339,6 +1359,9 @@ export interface XlsxViewerSelection {
   selectedRangeAddress: string | null;
   selectCell: (cell: XlsxCellAddress, options?: { extend?: boolean }) => void;
   selectRange: (range: XlsxCellRange) => void;
+  selectRanges: (ranges: readonly XlsxCellRange[], activeCorner?: "start" | "end") => void;
+  /** Selected areas in selection order. The last area is the active selection. */
+  selectionRanges: readonly XlsxCellRange[];
   selection: XlsxCellRange | null;
 }
 
@@ -1363,6 +1386,7 @@ export type XlsxContextMenuActionId =
   | "undo" | "redo" | "mergeCells" | "mergeAndCenter" | "mergeAcross" | "unmergeCells"
   | "sortAscending" | "sortDescending"
   | "refreshPivotTable" | "showPivotDetails" | "togglePivotFieldList"
+  | "rowHeight" | "columnWidth" | "hideRows" | "unhideRows" | "hideColumns" | "unhideColumns"
   | "selectRow" | "selectColumn" | "selectAll";
 
 export interface XlsxContextMenuAction {
@@ -1384,6 +1408,7 @@ export interface XlsxContextMenuContext {
   chart?: XlsxChart;
   cell: XlsxCellAddress;
   selection: XlsxCellRange;
+  selectionRanges?: readonly XlsxCellRange[];
   sheetIndex: number;
   sheetName: string;
   readOnly: boolean;
@@ -1467,7 +1492,7 @@ export interface XlsxViewerEditing {
    * @param range Zero-based cell range in the active worksheet.
    * @param style Partial Excel style patch to apply to the target range.
    */
-  setRangeStyle: (range: XlsxCellRange, style: XlsxCellStyleInput) => void;
+  setRangeStyle: (range: XlsxCellRange | readonly XlsxCellRange[], style: XlsxCellStyleInput) => void;
   setSelectedFormula: (formula: string) => boolean;
   setSelectedCellFormula: (formula: string) => void;
   /**

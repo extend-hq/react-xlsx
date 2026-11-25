@@ -168,34 +168,6 @@ export function resolveWorksheetDefaultRowHeightPixels(
     : fallbackPx;
 }
 
-export function resolveWorksheetHiddenRows(worksheet: DukeWorksheet, maxRow: number) {
-  if (!Number.isFinite(maxRow) || maxRow < 0 || typeof worksheet.isRowHidden !== "function") {
-    return [] as number[];
-  }
-
-  const hiddenRows: number[] = [];
-  for (let row = 0; row <= maxRow; row += 1) {
-    if (worksheet.isRowHidden(row)) {
-      hiddenRows.push(row);
-    }
-  }
-  return hiddenRows;
-}
-
-export function resolveWorksheetHiddenCols(worksheet: DukeWorksheet, maxCol: number) {
-  if (!Number.isFinite(maxCol) || maxCol < 0 || typeof worksheet.isColumnHidden !== "function") {
-    return [] as number[];
-  }
-
-  const hiddenCols: number[] = [];
-  for (let col = 0; col <= maxCol; col += 1) {
-    if (worksheet.isColumnHidden(col)) {
-      hiddenCols.push(col);
-    }
-  }
-  return hiddenCols;
-}
-
 export function resolveWorksheetMergeMetadata(worksheet: DukeWorksheet) {
   const mergeMetadata = {
     hasHorizontalMerges: false,

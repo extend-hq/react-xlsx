@@ -1,0 +1,99 @@
+diff --git a/bindings/wasm/src/lib.rs b/bindings/wasm/src/lib.rs
+index 29fe195..cb3e9d0 100644
+--- a/bindings/wasm/src/lib.rs
++++ b/bindings/wasm/src/lib.rs
+@@ -1128,4 +1128,72 @@ impl Worksheet {
+     }
+ 
++    #[wasm_bindgen(getter, js_name = hiddenRows)]
++    pub fn hidden_rows(&self) -> Result<Vec<u32>, JsError> {
++        let wb = self.workbook.borrow();
++        let ws = wb.worksheet(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        Ok(ws.hidden_rows().keys().copied().collect())
++    }
++
++    #[wasm_bindgen(js_name = setRowsHidden)]
++    pub fn set_rows_hidden(&self, start: u32, end: u32, hidden: bool) -> Result<(), JsError> {
++        if start > end || end >= duke_sheets_core::MAX_ROWS {
++            return Err(JsError::new("Invalid row range"));
++        }
++        let mut wb = self.workbook.borrow_mut();
++        let ws = wb.worksheet_mut(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        for row in start..=end {
++            ws.set_row_hidden(row, hidden);
++        }
++        Ok(())
++    }
++
++    #[wasm_bindgen(getter, js_name = hiddenColumns)]
++    pub fn hidden_columns(&self) -> Result<Vec<u32>, JsError> {
++        let wb = self.workbook.borrow();
++        let ws = wb.worksheet(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        Ok(ws.hidden_columns().keys().map(|&index| u32::from(index)).collect())
++    }
++
++    #[wasm_bindgen(js_name = setColumnsHidden)]
++    pub fn set_columns_hidden(&self, start: u32, end: u32, hidden: bool) -> Result<(), JsError> {
++        if start > end || end >= u32::from(duke_sheets_core::MAX_COLS) {
++            return Err(JsError::new("Invalid column range"));
++        }
++        let mut wb = self.workbook.borrow_mut();
++        let ws = wb.worksheet_mut(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        for column in start..=end {
++            ws.set_column_hidden(column as u16, hidden);
++        }
++        Ok(())
++    }
++
++    #[wasm_bindgen(js_name = setFreezePanes)]
++    pub fn set_freeze_panes(&self, row: u32, col: u32) -> Result<(), JsError> {
++        if row >= duke_sheets_core::MAX_ROWS || col >= u32::from(duke_sheets_core::MAX_COLS) {
++            return Err(JsError::new("Invalid freeze pane boundary"));
++        }
++        let mut wb = self.workbook.borrow_mut();
++        let ws = wb.worksheet_mut(self.sheet_index)
++            .ok_or_else(|| JsError::new("Worksheet no longer exists"))?;
++        let boundary = ws.freeze_panes().map(|p| (p.row, u32::from(p.col))).unwrap_or((0, 0));
++        if boundary != (row, col) {
++            let mut selection = ws.selections().last().cloned();
++            ws.set_freeze_panes(row, col as u16);
++            if row == 0 && col == 0 {
++                if let Some(selection) = &mut selection {
++                    selection.pane = None;
++                }
++                ws.set_selections(selection.into_iter().collect());
++            } else {
++                ws.set_selections(Vec::new());
++            }
++        }
++        Ok(())
++    }
++
+     #[wasm_bindgen(js_name = setRowHeight)]
+     pub fn set_row_height(&self, row: u32, height: f64) -> Result<(), JsError> {
+diff --git a/crates/duke-sheets-xlsx/src/writer/mod.rs b/crates/duke-sheets-xlsx/src/writer/mod.rs
+index c904b2f..598bdda 100644
+--- a/crates/duke-sheets-xlsx/src/writer/mod.rs
++++ b/crates/duke-sheets-xlsx/src/writer/mod.rs
+@@ -2425,6 +2425,4 @@ impl XlsxWriter {
+         for col in cols_to_write {
+             let col1 = (col as u32 + 1).to_string();
+-            let width = col_widths.get(&col).copied().unwrap_or(8.43);
+-            let width_s = format!("{:.2}", width);
+             let hidden = col_hidden.get(&col).copied().unwrap_or(false);
+             let outline_level = col_outline.get(&col).copied().unwrap_or(0);
+@@ -2434,6 +2432,8 @@ impl XlsxWriter {
+             el.push_attribute(("min", col1.as_str()));
+             el.push_attribute(("max", col1.as_str()));
+-            el.push_attribute(("width", width_s.as_str()));
+-            el.push_attribute(("customWidth", "1"));
++            if let Some(width) = col_widths.get(&col) {
++                el.push_attribute(("width", width.to_string().as_str()));
++                el.push_attribute(("customWidth", "1"));
++            }
+             if hidden {
+                 el.push_attribute(("hidden", "1"));
