@@ -14898,12 +14898,13 @@ function XlsxGrid({
       const first = row ? String(start + 1) : columnLabel(start);
       const last = row ? String(end + 1) : columnLabel(end);
       const range = first === last ? first : `${first}–${last}`;
+      const canUnhide = controller.canChangeVisibility ?? !readOnly;
       const template = row
-        ? (readOnly ? messages.hiddenRowRange : messages.unhideRowRange)
-        : (readOnly ? messages.hiddenColumnRange : messages.unhideColumnRange);
+        ? (canUnhide ? messages.unhideRowRange : messages.hiddenRowRange)
+        : (canUnhide ? messages.unhideColumnRange : messages.hiddenColumnRange);
       return <HiddenRangeMarker
         key={`${activeSheet?.workbookSheetIndex}:${axis}:${start}`}
-        axis={axis} start={start} end={end} position={position} readOnly={readOnly}
+        axis={axis} start={start} end={end} position={position} readOnly={readOnly} canUnhide={canUnhide}
         label={formatMessage(template, { range })} zoomFactor={zoomFactor}
         onUnhide={row ? controller.unhideRows : controller.unhideColumns}
         render={renderHiddenRangeMarker}

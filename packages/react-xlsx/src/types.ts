@@ -1430,6 +1430,8 @@ export interface XlsxHiddenRangeMarkerRenderProps {
   start: number;
   end: number;
   readOnly: boolean;
+  /** Whether this range can be revealed, including session-only changes. */
+  canUnhide: boolean;
   label: string;
   unhide: () => void;
   defaultNode: React.ReactNode;

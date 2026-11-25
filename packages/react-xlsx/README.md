@@ -539,18 +539,18 @@ Read `canChangeVisibility` and `canChangeFreezePanes` to enable layout menus. Us
 
 ### Hidden row and column markers
 
-The row and column headers show one caret for each contiguous hidden range. Click the caret to reveal that range. In read-only mode the caret is a visual indicator.
+The row and column headers show one caret for each contiguous hidden range. Click the caret to reveal that range. In read-only mode, `allowHideInReadOnly` enables clicking for the current session. Otherwise, the caret is a visual indicator.
 
-Use `renderHiddenRangeMarker` to replace the caret. It receives the `axis` (`"row"` or `"column"`), inclusive zero-based `start` and `end`, a localized `label`, `readOnly`, and an `unhide()` action for that range. React also supplies `defaultNode`. Return `null` to omit a marker. Vanilla JavaScript accepts the same option and can return a DOM node or text.
+Use `renderHiddenRangeMarker` to replace the caret. It receives the `axis` (`"row"` or `"column"`), inclusive zero-based `start` and `end`, a localized `label`, `readOnly`, `canUnhide`, and an `unhide()` action for that range. React also supplies `defaultNode`. Return `null` to omit a marker. Vanilla JavaScript accepts the same option and can return a DOM node or text.
 
 ```tsx
 import type { XlsxHiddenRangeMarkerRenderProps } from "@extend-ai/react-xlsx";
 
-function renderMarker({ axis, label, readOnly, unhide }: XlsxHiddenRangeMarkerRenderProps) {
+function renderMarker({ axis, label, canUnhide, unhide }: XlsxHiddenRangeMarkerRenderProps) {
   const icon = axis === "row" ? "↕" : "↔";
-  return readOnly
-    ? <span role="img" aria-label={label}>{icon}</span>
-    : <button type="button" aria-label={label} onClick={unhide}>{icon}</button>;
+  return canUnhide
+    ? <button type="button" aria-label={label} onClick={unhide}>{icon}</button>
+    : <span role="img" aria-label={label}>{icon}</span>;
 }
 
 <XlsxViewer src={url} renderHiddenRangeMarker={renderMarker} />
