@@ -7011,7 +7011,6 @@ type RenderedColumn = {
 
 type GridRowProps = {
   actualRow: number;
-  hiddenMarkers: React.ReactNode;
   editingCell: XlsxCellAddress | null;
   editingValue: string;
   formulaReferences: FormulaReference[];
@@ -7051,7 +7050,6 @@ type GridRowProps = {
 
 function GridRow({
   actualRow,
-  hiddenMarkers,
   editingCell,
   editingValue,
   formulaReferences,
@@ -7127,7 +7125,6 @@ function GridRow({
             {actualRow + 1}
           </span>
         </div>
-        {hiddenMarkers}
         <div
           onDoubleClick={(event) => {
             event.stopPropagation();
@@ -7499,7 +7496,6 @@ function GridRow({
 const MemoGridRow = React.memo(GridRow, (prev, next) => {
   if (
     prev.actualRow !== next.actualRow ||
-    prev.hiddenMarkers !== next.hiddenMarkers ||
     prev.rowHeight !== next.rowHeight ||
     prev.headerLabelLiveScale !== next.headerLabelLiveScale ||
     prev.palette !== next.palette ||
@@ -7738,6 +7734,7 @@ function XlsxGrid({
   const selectionOverlayRef = React.useRef<HTMLDivElement>(null);
   const selectionPaneContentRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
   const tableHeaderPaneContentRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
+  const markerPaneRefs = React.useRef(new Map<string, HTMLDivElement>());
   const cellOverlayContentRefs = React.useRef(new Map<FrozenDrawingPane, HTMLDivElement>());
   const [cellOverlayHosts, setCellOverlayHosts] = React.useState<Partial<Record<FrozenDrawingPane, HTMLDivElement>>>({});
   const cellOverlayHostRefs = React.useMemo(() => Object.fromEntries(
@@ -8171,6 +8168,13 @@ function XlsxGrid({
         shouldTransform ? "transform" : ""
       );
     };
+    for (const [pane, element] of markerPaneRefs.current) {
+      const scrollX = pane === "column-scroll";
+      const scrollY = pane === "row-scroll";
+      applyCanvasTransform(element,
+        scrollX ? -nextLiveViewport.left : 0, scrollY ? -nextLiveViewport.top : 0,
+        0, 0, scrollX ? liveZoomAnchorX : 0, scrollY ? liveZoomAnchorY : 0);
+    }
     const applyOverlayTransform = (
       pane: FrozenDrawingPane,
       element: HTMLDivElement | null,
@@ -8251,7 +8255,7 @@ function XlsxGrid({
     );
 
     applyCanvasTransform(
-      topScrollHeaderCanvasRef.current?.parentElement ?? null,
+      topScrollHeaderCanvasRef.current,
       scrollDeltaX,
       0,
       liveScrollBodyCanvasLeft,
@@ -8260,7 +8264,7 @@ function XlsxGrid({
       0
     );
     applyCanvasTransform(
-      topFrozenHeaderCanvasRef.current?.parentElement ?? null,
+      topFrozenHeaderCanvasRef.current,
       0,
       0,
       liveDisplayRowHeaderWidth,
@@ -8269,7 +8273,7 @@ function XlsxGrid({
       0
     );
     applyCanvasTransform(
-      leftScrollHeaderCanvasRef.current?.parentElement ?? null,
+      leftScrollHeaderCanvasRef.current,
       0,
       scrollDeltaY,
       0,
@@ -8278,7 +8282,7 @@ function XlsxGrid({
       liveZoomAnchorY
     );
     applyCanvasTransform(
-      leftFrozenHeaderCanvasRef.current?.parentElement ?? null,
+      leftFrozenHeaderCanvasRef.current,
       0,
       0,
       0,
@@ -14862,10 +14866,10 @@ function XlsxGrid({
     ...charts.map((chart) => drawingLayer(chart.zIndex) + 22)
   );
   const rowHeaderOverlayZIndex = Math.max(35, maxDrawingOverlayZIndex + 1);
-  const canvasHeaderOverlayZIndex = Math.max(50, rowHeaderOverlayZIndex + 1);
+  const frozenRowHeaderOverlayZIndex = rowHeaderOverlayZIndex + 1;
+  const canvasHeaderOverlayZIndex = Math.max(50, frozenRowHeaderOverlayZIndex + 1);
   const stickyHeaderOverlayZIndex = canvasHeaderOverlayZIndex + 1;
   const cornerHeaderOverlayZIndex = canvasHeaderOverlayZIndex + 2;
-  const frozenRowHeaderOverlayZIndex = rowHeaderOverlayZIndex;
   const headerCellStyle = scaleCssProperties({
     backgroundColor: palette.headerSurface,
     borderBottom: "none",
@@ -14885,7 +14889,7 @@ function XlsxGrid({
     whiteSpace: "nowrap",
     zIndex: canvasHeaderOverlayZIndex
   }, zoomFactor);
-  function headerMarkers(axis: "row" | "column", index: number, offset = 0, size?: number) {
+  function headerMarkers(axis: "row" | "column", index: number, offset: number, size: number) {
     const row = axis === "row";
     const ends = row ? hiddenRowEnds : hiddenColEnds;
     if (!ends.size) return null;
@@ -14893,7 +14897,7 @@ function XlsxGrid({
     const trailingEnd = ends.get(index + 1);
     if (leadingEnd !== index - 1 && trailingEnd === undefined) return null;
 
-    function marker(start: number, end: number, position: number | string) {
+    function marker(start: number, end: number, position: number) {
       const first = row ? String(start + 1) : columnLabel(start);
       const last = row ? String(end + 1) : columnLabel(end);
       const range = first === last ? first : `${first}–${last}`;
@@ -14912,7 +14916,7 @@ function XlsxGrid({
 
     const markers = [];
     if (leadingEnd === index - 1) markers.push(marker(0, leadingEnd, offset));
-    if (trailingEnd !== undefined) markers.push(marker(index + 1, trailingEnd, size === undefined ? "100%" : offset + size));
+    if (trailingEnd !== undefined) markers.push(marker(index + 1, trailingEnd, offset + size));
     return markers;
   }
 
@@ -17221,6 +17225,46 @@ function XlsxGrid({
     </div>
   ) : null;
 
+  function markerPanes(axis: "row" | "column") {
+    const row = axis === "row";
+    const ends = row ? hiddenRowEnds : hiddenColEnds;
+    if (!ends.size) return null;
+    const items = row ? canvasVisibleRowItems : canvasVisibleColItems;
+    const indices = row ? visibleRows : visibleCols;
+    const sticky = row ? stickyTopByRow : stickyLeftByCol;
+    const gutter = row ? displayHeaderHeight : displayRowHeaderWidth;
+    const frozenEdge = row ? frozenPaneBottom : frozenPaneRight;
+    const panes: Record<"scroll" | "frozen", React.ReactElement[]> = { scroll: [], frozen: [] };
+    for (const item of items) {
+      const index = indices[item.index];
+      const fixedOffset = sticky.get(index);
+      const markers = headerMarkers(axis, index, fixedOffset ?? gutter + item.start, item.size);
+      if (markers) panes[fixedOffset === undefined ? "scroll" : "frozen"].push(...markers);
+    }
+    return (["scroll", "frozen"] as const).map(pane => {
+      if (!panes[pane].length) return null;
+      const key = `${axis}-${pane}`;
+      // Leave room for a leading marker to straddle the corner divider.
+      const clipStart = pane === "frozen" ? 0 : frozenEdge - (!sticky.size && ends.has(0) ? 5 : 0);
+      const scroll = liveDrawingViewportRef.current;
+      return <div key={key} style={{
+        position: "absolute", left: 0, top: 0, pointerEvents: "none",
+        width: row ? displayRowHeaderWidth : drawingViewport.width,
+        height: row ? drawingViewport.height : displayHeaderHeight,
+        clipPath: row ? `inset(${clipStart}px 0 0)` : `inset(0 0 0 ${clipStart}px)`
+      }}>
+        <div ref={element => {
+          if (element) markerPaneRefs.current.set(key, element);
+          else markerPaneRefs.current.delete(key);
+        }} style={{
+          position: "absolute", inset: 0, transformOrigin: "0 0",
+          transform: pane === "frozen" ? undefined : row ? `translateY(${-scroll.top}px)` : `translateX(${-scroll.left}px)`,
+          color: palette.headerText
+        }}>{panes[pane]}</div>
+      </div>;
+    });
+  }
+
   const scrollerContent = (
     <div
           style={{
@@ -17260,6 +17304,12 @@ function XlsxGrid({
             {selectionOverlayPanes}
             {tableHeaderOverlayPanes}
             {cellOverlayPanes}
+            {(hiddenRowEnds.size > 0 || hiddenColEnds.size > 0) && (
+              <div style={{ ...canvasHeaderViewportLayerStyle, zIndex: cornerHeaderOverlayZIndex + 1 }}>
+                {markerPanes("column")}
+                {markerPanes("row")}
+              </div>
+            )}
             {experimentalCanvas ? (
               <>
                 <div style={canvasBodyViewportLayerStyle}>
@@ -17299,21 +17349,14 @@ function XlsxGrid({
                     { row: true, frozen: true, ref: leftFrozenHeaderCanvasRef, style: canvasLeftFrozenHeaderStyle },
                     { row: true, frozen: false, ref: leftScrollHeaderCanvasRef, style: canvasLeftScrollHeaderStyle }
                   ].map(({ row, frozen, ref, style }) => (
-                    <div key={`${row}-${frozen}`} style={{ ...style, overflow: "hidden", color: palette.headerText }}>
-                      <canvas
-                        ref={ref}
-                        onDoubleClick={row ? handleCanvasRowHeaderDoubleClick : handleCanvasColumnHeaderDoubleClick}
-                        onPointerLeave={handleCanvasHeaderPointerLeave}
-                        onPointerMove={row ? handleCanvasRowHeaderPointerMove : handleCanvasColumnHeaderPointerMove}
-                        onPointerDown={row ? handleCanvasRowHeaderPointerDown : handleCanvasColumnHeaderPointerDown}
-                        style={{ display: "block", maxWidth: "none" }}
-                      />
-                      {row
-                        ? hiddenRowEnds.size > 0 && canvasRowHeaderCells.flatMap(cell => cell.isFrozen === frozen
-                          ? headerMarkers("row", cell.actualRow, cell.localTop, cell.height) ?? [] : [])
-                        : hiddenColEnds.size > 0 && canvasColumnHeaderCells.flatMap(cell => cell.isFrozen === frozen
-                          ? headerMarkers("column", cell.actualCol, cell.localLeft, cell.width) ?? [] : [])}
-                    </div>
+                    <canvas key={`${row}-${frozen}`}
+                      ref={ref}
+                      onDoubleClick={row ? handleCanvasRowHeaderDoubleClick : handleCanvasColumnHeaderDoubleClick}
+                      onPointerLeave={handleCanvasHeaderPointerLeave}
+                      onPointerMove={row ? handleCanvasRowHeaderPointerMove : handleCanvasColumnHeaderPointerMove}
+                      onPointerDown={row ? handleCanvasRowHeaderPointerDown : handleCanvasColumnHeaderPointerDown}
+                      style={{ ...style, maxWidth: "none" }}
+                    />
                   ))}
                   <canvas ref={cornerHeaderCanvasRef} style={canvasCornerHeaderStyle} />
                 </div>
@@ -17491,7 +17534,6 @@ function XlsxGrid({
                             {columnLabel(column.actualCol)}
                           </span>
                         </div>
-                        {headerMarkers("column", column.actualCol)}
                         <div
                           onDoubleClick={(event) => {
                             event.stopPropagation();
@@ -17537,7 +17579,6 @@ function XlsxGrid({
                       ) : null,
                       <MemoGridRow
                         actualRow={actualRow}
-                        hiddenMarkers={headerMarkers("row", actualRow)}
                         editingCell={editingCell}
                         editingValue={editingValue}
                         editorRef={editorElementRef}

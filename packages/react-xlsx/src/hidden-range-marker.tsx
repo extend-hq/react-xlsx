@@ -29,7 +29,7 @@ export function hiddenRangeEnds(hidden: Set<number>) {
 }
 
 type MarkerProps = Omit<XlsxHiddenRangeMarkerRenderProps, "defaultNode" | "unhide"> & {
-  position: number | string;
+  position: number;
   color: string;
   zoomFactor: number;
   onUnhide: (start: number, end: number) => void;
@@ -42,30 +42,29 @@ export function HiddenRangeMarker({ axis, start, end, label, position, color, re
   const unhide = React.useCallback(() => {
     if (canUnhide) action.current(start, end);
   }, [start, end, canUnhide]);
-  const leading = start === 0;
   const row = axis === "row";
   const content = React.useMemo(() => {
-    const edge = row ? (leading ? "borderTop" : "borderBottom") : (leading ? "borderLeft" : "borderRight");
     const hitSize = "max(6px, 0.8em)";
     const style: React.CSSProperties = {
-      display: "block",
+      display: "grid",
+      placeItems: "center",
       boxSizing: "border-box",
       width: row ? "100%" : hitSize,
       height: row ? hitSize : "100%",
       background: "transparent",
       border: 0,
-      [edge]: `3px solid ${color}`,
       borderRadius: 0,
       margin: 0,
       padding: 0,
       fontSize: "inherit",
       outlineOffset: -2
     };
+    const line = <span aria-hidden="true" style={{ width: row ? "100%" : 3, height: row ? 3 : "100%", backgroundColor: color }} />;
     const defaultNode = canUnhide
-      ? <button type="button" aria-label={label} title={label} onClick={unhide} style={{ ...style, cursor: row ? ROW_RESIZE_CURSOR : COLUMN_RESIZE_CURSOR }} />
-      : <span role="img" aria-label={label} title={label} style={style} />;
+      ? <button type="button" aria-label={label} title={label} onClick={unhide} style={{ ...style, cursor: row ? ROW_RESIZE_CURSOR : COLUMN_RESIZE_CURSOR }}>{line}</button>
+      : <span role="img" aria-label={label} title={label} style={style}>{line}</span>;
     return render ? render({ axis, start, end, readOnly, canUnhide, label, unhide, defaultNode }) : defaultNode;
-  }, [axis, start, end, label, leading, row, color, readOnly, canUnhide, render, unhide]);
+  }, [axis, start, end, label, row, color, readOnly, canUnhide, render, unhide]);
 
   if (content == null || content === false) return null;
   return <span
@@ -79,11 +78,11 @@ export function HiddenRangeMarker({ axis, start, end, label, position, color, re
       fontSize: 10 * zoomFactor,
       zIndex: 6,
       pointerEvents: "none",
-      left: row ? 0 : position,
+      left: row ? 0 : position - 0.5,
       right: row ? 0 : undefined,
-      top: row ? position : 0,
+      top: row ? position - 0.5 : 0,
       bottom: row ? undefined : 0,
-      transform: leading ? undefined : row ? "translateY(-100%)" : "translateX(-100%)"
+      transform: row ? "translateY(-50%)" : "translateX(-50%)"
     }}
   >
     <span style={{ display: "contents", pointerEvents: canUnhide || render ? "auto" : "none" }}>
