@@ -51,6 +51,7 @@ export type {
   XlsxContextMenuActionId,
   XlsxContextMenuContext,
   XlsxContextMenuRenderProps,
+  XlsxHiddenRangeMarkerRenderProps,
   XlsxParsedRange,
   XlsxHighlightRangeOptions,
   XlsxRangeHighlight,

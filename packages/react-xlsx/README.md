@@ -274,7 +274,7 @@ viewer.destroy();
 
 `subscribe` also exposes `isLoadDeferred` and `continueDeferredLoad()` for deferred workbooks.
 
-`XlsxVanillaViewerOptions` supports the non-React viewer options, including `getCellStyle`, form-control events, themes, worker settings, and highlighting. `toolbar`, loading/empty/error states, and the `renderActiveCellOverlay`, `renderCellEditorOverlay`, `renderSelectionPopover`, `renderChartLoading`, `renderContextMenu`, `renderFormControl`, and `renderImage` callbacks accept text or DOM nodes. Their vanilla callback props omit React's `defaultNode`. React-specific custom scroller, image-selection, and table-header render callbacks are not available through this entry point.
+`XlsxVanillaViewerOptions` supports the non-React viewer options, including `getCellStyle`, form-control events, themes, worker settings, and highlighting. `toolbar`, loading/empty/error states, and the `renderActiveCellOverlay`, `renderCellEditorOverlay`, `renderSelectionPopover`, `renderChartLoading`, `renderContextMenu`, `renderHiddenRangeMarker`, `renderFormControl`, and `renderImage` callbacks accept text or DOM nodes. Their vanilla callback props omit React's `defaultNode`. React-specific custom scroller, image-selection, and table-header render callbacks are not available through this entry point.
 
 The vanilla entry also exports `setWasmSource`, `initWasm`, `parseXlsxRange`, and workbook types. The same WASM, worker, font, and chart assets need to be served as in the React integration.
 
@@ -536,6 +536,27 @@ In read-only mode, set `allowFreezeInReadOnly` to allow freezing and unfreezing 
 | `unfreezePanes()` | The active worksheet | — |
 
 Read `canChangeVisibility` and `canChangeFreezePanes` to enable layout menus. Use `canFreezePanes` to enable a freeze command for the current selection and `frozenPanes` for the current row and column counts, or `null` when unfrozen. To unhide a block from the grid, select headers on both sides and choose **Unhide**. For hidden leading rows or columns, select the first visible header.
+
+### Hidden row and column markers
+
+The row and column headers show one caret for each contiguous hidden range. Click the caret to reveal that range. In read-only mode the caret is a visual indicator.
+
+Use `renderHiddenRangeMarker` to replace the caret. It receives the `axis` (`"row"` or `"column"`), inclusive zero-based `start` and `end`, a localized `label`, `readOnly`, and an `unhide()` action for that range. React also supplies `defaultNode`. Return `null` to omit a marker. Vanilla JavaScript accepts the same option and can return a DOM node or text.
+
+```tsx
+import type { XlsxHiddenRangeMarkerRenderProps } from "@extend-ai/react-xlsx";
+
+function renderMarker({ axis, label, readOnly, unhide }: XlsxHiddenRangeMarkerRenderProps) {
+  const icon = axis === "row" ? "↕" : "↔";
+  return readOnly
+    ? <span role="img" aria-label={label}>{icon}</span>
+    : <button type="button" aria-label={label} onClick={unhide}>{icon}</button>;
+}
+
+<XlsxViewer src={url} renderHiddenRangeMarker={renderMarker} />
+```
+
+Both grid modes mount markers alongside virtualized headers. Keep the renderer reference stable to reuse its content while scrolling or changing the selection.
 
 ## Merging Cells
 

@@ -12,6 +12,7 @@ import type {
   XlsxContextMenuAction,
   XlsxContextMenuActionId,
   XlsxContextMenuContext,
+  XlsxHiddenRangeMarkerRenderProps,
   XlsxFormControl,
   XlsxFormControlActionEvent,
   XlsxFormControlChangeEvent,
@@ -29,6 +30,8 @@ export interface XlsxVanillaChartLoadingRenderProps {
   rect: XlsxImageRect;
   stage?: "metadata" | "renderer" | "map";
 }
+
+export type XlsxVanillaHiddenRangeMarkerRenderProps = Omit<XlsxHiddenRangeMarkerRenderProps, "defaultNode">;
 
 export interface XlsxVanillaContextMenuRenderProps {
   context: XlsxContextMenuContext;
@@ -108,6 +111,7 @@ export interface XlsxVanillaViewerOptions extends UseXlsxViewerControllerOptions
   onFormControlAction?: (event: XlsxFormControlActionEvent) => void;
   onFormControlChange?: (event: XlsxFormControlChangeEvent) => void;
   renderChartLoading?: (props: XlsxVanillaChartLoadingRenderProps) => XlsxVanillaContent;
+  renderHiddenRangeMarker?: (props: XlsxVanillaHiddenRangeMarkerRenderProps) => XlsxVanillaContent;
   renderContextMenu?: (props: XlsxVanillaContextMenuRenderProps) => XlsxVanillaContent;
   enableContextMenu?: boolean;
   contextMenuClassName?: string;

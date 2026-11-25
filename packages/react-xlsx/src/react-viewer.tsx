@@ -105,7 +105,8 @@ function renderOptions(
   props: XlsxViewerProps,
   controller: XlsxViewerController,
   slots: SlotStore,
-  owner: Document
+  owner: Document,
+  renderHiddenRangeMarker: XlsxViewerProps["renderHiddenRangeMarker"]
 ): XlsxViewerProps {
   const slot = (key: string, node: React.ReactNode) => slots.render(key, node, owner);
   const runtime = (node: React.ReactNode) => <RuntimeContent content={node} />;
@@ -119,6 +120,7 @@ function renderOptions(
   return {
     ...other,
     controller,
+    renderHiddenRangeMarker,
     emptyState: emptyState === undefined ? undefined : slot("empty", emptyState),
     loadingComponent: loadingComponent === undefined ? undefined : slot("loading-component", loadingComponent) as React.ReactElement,
     loadingState: loadingState === undefined ? undefined : slot("loading", loadingState),
@@ -186,6 +188,17 @@ function BoundViewer({ props, controller: sourceController }: { props: XlsxViewe
   const hostRef = React.useRef<HTMLDivElement>(null);
   const viewerRef = React.useRef<ReturnType<typeof __createControlledViewer> | null>(null);
   const slots = React.useMemo(() => new SlotStore(), []);
+  const markerRenderer = props.renderHiddenRangeMarker;
+  const markerSheetIndex = controller.activeSheet?.workbookSheetIndex;
+  const renderHiddenRangeMarker = React.useMemo<XlsxViewerProps["renderHiddenRangeMarker"]>(() => {
+    if (!markerRenderer) return undefined;
+    return ({ defaultNode, ...range }) => {
+      const content = markerRenderer({ ...range, defaultNode: <RuntimeContent content={defaultNode} /> });
+      if (content == null || content === false) return null;
+      const host = hostRef.current;
+      return host ? slots.render(`hidden:${markerSheetIndex}:${range.axis}:${range.start}`, content, host.ownerDocument) : null;
+    };
+  }, [markerRenderer, markerSheetIndex, slots]);
   React.useSyncExternalStore(slots.subscribe, slots.getSnapshot, slots.getServerSnapshot);
 
   React.useLayoutEffect(() => {
@@ -203,8 +216,8 @@ function BoundViewer({ props, controller: sourceController }: { props: XlsxViewe
 
   React.useLayoutEffect(() => {
     const host = hostRef.current;
-    if (host) viewerRef.current?.update(renderOptions(props, controller, slots, host.ownerDocument));
-  }, [controller, props, slots]);
+    if (host) viewerRef.current?.update(renderOptions(props, controller, slots, host.ownerDocument, renderHiddenRangeMarker));
+  }, [controller, props, slots, renderHiddenRangeMarker]);
 
   return (
     <ViewerAppearanceContext.Provider value={{

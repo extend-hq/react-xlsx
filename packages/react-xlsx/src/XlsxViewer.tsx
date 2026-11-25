@@ -26,6 +26,7 @@ import { getCellGeneralAlignment, type CellGeneralAlignment } from "./cell-align
 import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from "./range-reference";
 import { resolveWorkbookColor, resolveWorkbookFillStyle } from "./colors";
 import { useXlsxViewerController, XlsxFileSizeLimitExceededError } from "./controller";
+import { HiddenRangeMarker, hiddenRangeEnds } from "./hidden-range-marker";
 import { HeaderSizeDialog } from "./header-size-dialog";
 import { menuStyles, resolveMenuPaletteStyle, XlsxContextMenu } from "./context-menu";
 import { PivotGroupControls } from "./pivot-controls";
@@ -7010,6 +7011,7 @@ type RenderedColumn = {
 
 type GridRowProps = {
   actualRow: number;
+  hiddenMarkers: React.ReactNode;
   editingCell: XlsxCellAddress | null;
   editingValue: string;
   formulaReferences: FormulaReference[];
@@ -7049,6 +7051,7 @@ type GridRowProps = {
 
 function GridRow({
   actualRow,
+  hiddenMarkers,
   editingCell,
   editingValue,
   formulaReferences,
@@ -7124,6 +7127,7 @@ function GridRow({
             {actualRow + 1}
           </span>
         </div>
+        {hiddenMarkers}
         <div
           onDoubleClick={(event) => {
             event.stopPropagation();
@@ -7495,6 +7499,7 @@ function GridRow({
 const MemoGridRow = React.memo(GridRow, (prev, next) => {
   if (
     prev.actualRow !== next.actualRow ||
+    prev.hiddenMarkers !== next.hiddenMarkers ||
     prev.rowHeight !== next.rowHeight ||
     prev.headerLabelLiveScale !== next.headerLabelLiveScale ||
     prev.palette !== next.palette ||
@@ -7554,6 +7559,7 @@ function XlsxGrid({
   onFormControlChange,
   renderChartLoading,
   renderContextMenu,
+  renderHiddenRangeMarker,
   enableContextMenu = true,
   contextMenuClassName,
   contextMenuStyle,
@@ -7578,7 +7584,7 @@ function XlsxGrid({
   showImages = true
 }: Pick<
   XlsxViewerProps,
-  "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "experimentalOfficeCharts" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderPivotTableHeaderMenu" | "pivotTableHighlightColor" | "renderActiveCellOverlay" | "renderCellEditorOverlay" | "renderSelectionPopover" | "cellEditorStyle" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
+  "renderHiddenRangeMarker" | "renderContextMenu" | "enableContextMenu" | "contextMenuClassName" | "contextMenuStyle" | "allowResizeInReadOnly" | "emptyState" | "enableCanvasSelectionAnimation" | "enableGestureZoom" | "errorState" | "experimentalCanvas" | "experimentalOfficeCharts" | "fileTooLargeState" | "getCellStyle" | "highlightClassName" | "loadingComponent" | "loadingState" | "onFormControlAction" | "onFormControlChange" | "renderChartLoading" | "renderFormControl" | "renderImage" | "renderImageSelection" | "renderScroller" | "renderTableHeaderMenu" | "renderPivotTableHeaderMenu" | "pivotTableHighlightColor" | "renderActiveCellOverlay" | "renderCellEditorOverlay" | "renderSelectionPopover" | "cellEditorStyle" | "selectionColor" | "selectionFillColor" | "selectionHeaderColor" | "showImages"
 > & {
   controller: XlsxViewerController;
   palette: ViewerPalette;
@@ -8056,6 +8062,8 @@ function XlsxGrid({
   );
   const hiddenRowSet = React.useMemo(() => new Set(activeSheet?.hiddenRows ?? []), [activeSheet?.hiddenRows]);
   const hiddenColSet = React.useMemo(() => new Set(activeSheet?.hiddenCols ?? []), [activeSheet?.hiddenCols]);
+  const hiddenRowEnds = React.useMemo(() => hiddenRangeEnds(hiddenRowSet), [hiddenRowSet]);
+  const hiddenColEnds = React.useMemo(() => hiddenRangeEnds(hiddenColSet), [hiddenColSet]);
   const displayDefaultRowHeight = DEFAULT_ROW_HEIGHT * zoomFactor;
   const displayDefaultColWidth = DEFAULT_COL_WIDTH * zoomFactor;
   const displayHeaderHeight = HEADER_HEIGHT * zoomFactor;
@@ -8146,7 +8154,7 @@ function XlsxGrid({
       + ((anchor - origin) * (1 - liveZoomScale))
     );
     const applyCanvasTransform = (
-      canvas: HTMLCanvasElement | null,
+      canvas: HTMLElement | null,
       baseTranslateX: number,
       baseTranslateY: number,
       originX: number,
@@ -8243,7 +8251,7 @@ function XlsxGrid({
     );
 
     applyCanvasTransform(
-      topScrollHeaderCanvasRef.current,
+      topScrollHeaderCanvasRef.current?.parentElement ?? null,
       scrollDeltaX,
       0,
       liveScrollBodyCanvasLeft,
@@ -8252,7 +8260,7 @@ function XlsxGrid({
       0
     );
     applyCanvasTransform(
-      topFrozenHeaderCanvasRef.current,
+      topFrozenHeaderCanvasRef.current?.parentElement ?? null,
       0,
       0,
       liveDisplayRowHeaderWidth,
@@ -8261,7 +8269,7 @@ function XlsxGrid({
       0
     );
     applyCanvasTransform(
-      leftScrollHeaderCanvasRef.current,
+      leftScrollHeaderCanvasRef.current?.parentElement ?? null,
       0,
       scrollDeltaY,
       0,
@@ -8270,7 +8278,7 @@ function XlsxGrid({
       liveZoomAnchorY
     );
     applyCanvasTransform(
-      leftFrozenHeaderCanvasRef.current,
+      leftFrozenHeaderCanvasRef.current?.parentElement ?? null,
       0,
       0,
       0,
@@ -14878,6 +14886,36 @@ function XlsxGrid({
     whiteSpace: "nowrap",
     zIndex: canvasHeaderOverlayZIndex
   }, zoomFactor);
+  function headerMarkers(axis: "row" | "column", index: number, offset = 0, size?: number) {
+    const row = axis === "row";
+    const ends = row ? hiddenRowEnds : hiddenColEnds;
+    if (!ends.size) return null;
+    const leadingEnd = ends.get(0);
+    const trailingEnd = ends.get(index + 1);
+    if (leadingEnd !== index - 1 && trailingEnd === undefined) return null;
+
+    function marker(start: number, end: number, position: number | string) {
+      const first = row ? String(start + 1) : columnLabel(start);
+      const last = row ? String(end + 1) : columnLabel(end);
+      const range = first === last ? first : `${first}–${last}`;
+      const template = row
+        ? (readOnly ? messages.hiddenRowRange : messages.unhideRowRange)
+        : (readOnly ? messages.hiddenColumnRange : messages.unhideColumnRange);
+      return <HiddenRangeMarker
+        key={`${activeSheet?.workbookSheetIndex}:${axis}:${start}`}
+        axis={axis} start={start} end={end} position={position} readOnly={readOnly}
+        label={formatMessage(template, { range })} zoomFactor={zoomFactor}
+        onUnhide={row ? controller.unhideRows : controller.unhideColumns}
+        render={renderHiddenRangeMarker}
+      />;
+    }
+
+    const markers = [];
+    if (leadingEnd === index - 1) markers.push(marker(0, leadingEnd, offset));
+    if (trailingEnd !== undefined) markers.push(marker(index + 1, trailingEnd, size === undefined ? "100%" : offset + size));
+    return markers;
+  }
+
   const columnResizeHandleStyle = scaleCssProperties({
     backgroundColor: "transparent",
     cursor: "col-resize",
@@ -17255,38 +17293,28 @@ function XlsxGrid({
                   />
                 </div>
                 <div style={canvasHeaderViewportLayerStyle}>
-                  <canvas
-                    ref={topFrozenHeaderCanvasRef}
-                    onDoubleClick={handleCanvasColumnHeaderDoubleClick}
-                    onPointerLeave={handleCanvasHeaderPointerLeave}
-                    onPointerMove={handleCanvasColumnHeaderPointerMove}
-                    onPointerDown={handleCanvasColumnHeaderPointerDown}
-                    style={canvasTopFrozenHeaderStyle}
-                  />
-                  <canvas
-                    ref={topScrollHeaderCanvasRef}
-                    onDoubleClick={handleCanvasColumnHeaderDoubleClick}
-                    onPointerLeave={handleCanvasHeaderPointerLeave}
-                    onPointerMove={handleCanvasColumnHeaderPointerMove}
-                    onPointerDown={handleCanvasColumnHeaderPointerDown}
-                    style={canvasTopScrollHeaderStyle}
-                  />
-                  <canvas
-                    ref={leftFrozenHeaderCanvasRef}
-                    onDoubleClick={handleCanvasRowHeaderDoubleClick}
-                    onPointerLeave={handleCanvasHeaderPointerLeave}
-                    onPointerMove={handleCanvasRowHeaderPointerMove}
-                    onPointerDown={handleCanvasRowHeaderPointerDown}
-                    style={canvasLeftFrozenHeaderStyle}
-                  />
-                  <canvas
-                    ref={leftScrollHeaderCanvasRef}
-                    onDoubleClick={handleCanvasRowHeaderDoubleClick}
-                    onPointerLeave={handleCanvasHeaderPointerLeave}
-                    onPointerMove={handleCanvasRowHeaderPointerMove}
-                    onPointerDown={handleCanvasRowHeaderPointerDown}
-                    style={canvasLeftScrollHeaderStyle}
-                  />
+                  {[
+                    { row: false, frozen: true, ref: topFrozenHeaderCanvasRef, style: canvasTopFrozenHeaderStyle },
+                    { row: false, frozen: false, ref: topScrollHeaderCanvasRef, style: canvasTopScrollHeaderStyle },
+                    { row: true, frozen: true, ref: leftFrozenHeaderCanvasRef, style: canvasLeftFrozenHeaderStyle },
+                    { row: true, frozen: false, ref: leftScrollHeaderCanvasRef, style: canvasLeftScrollHeaderStyle }
+                  ].map(({ row, frozen, ref, style }) => (
+                    <div key={`${row}-${frozen}`} style={{ ...style, overflow: "hidden", color: palette.headerText }}>
+                      <canvas
+                        ref={ref}
+                        onDoubleClick={row ? handleCanvasRowHeaderDoubleClick : handleCanvasColumnHeaderDoubleClick}
+                        onPointerLeave={handleCanvasHeaderPointerLeave}
+                        onPointerMove={row ? handleCanvasRowHeaderPointerMove : handleCanvasColumnHeaderPointerMove}
+                        onPointerDown={row ? handleCanvasRowHeaderPointerDown : handleCanvasColumnHeaderPointerDown}
+                        style={{ display: "block", maxWidth: "none" }}
+                      />
+                      {row
+                        ? hiddenRowEnds.size > 0 && canvasRowHeaderCells.flatMap(cell => cell.isFrozen === frozen
+                          ? headerMarkers("row", cell.actualRow, cell.localTop, cell.height) ?? [] : [])
+                        : hiddenColEnds.size > 0 && canvasColumnHeaderCells.flatMap(cell => cell.isFrozen === frozen
+                          ? headerMarkers("column", cell.actualCol, cell.localLeft, cell.width) ?? [] : [])}
+                    </div>
+                  ))}
                   <canvas ref={cornerHeaderCanvasRef} style={canvasCornerHeaderStyle} />
                 </div>
                 {editingCell && editingOverlayRect ? (() => {
@@ -17463,6 +17491,7 @@ function XlsxGrid({
                             {columnLabel(column.actualCol)}
                           </span>
                         </div>
+                        {headerMarkers("column", column.actualCol)}
                         <div
                           onDoubleClick={(event) => {
                             event.stopPropagation();
@@ -17508,6 +17537,7 @@ function XlsxGrid({
                       ) : null,
                       <MemoGridRow
                         actualRow={actualRow}
+                        hiddenMarkers={headerMarkers("row", actualRow)}
                         editingCell={editingCell}
                         editingValue={editingValue}
                         editorRef={editorElementRef}
@@ -17841,6 +17871,7 @@ function XlsxViewerInner({
   onFormControlChange,
   renderChartLoading,
   renderContextMenu,
+  renderHiddenRangeMarker,
   enableContextMenu = true,
   contextMenuClassName,
   contextMenuStyle,
@@ -17969,6 +18000,7 @@ function XlsxViewerInner({
                   onFormControlChange={onFormControlChange}
                   palette={palette}
                   renderChartLoading={renderChartLoading}
+                  renderHiddenRangeMarker={renderHiddenRangeMarker}
                   renderContextMenu={renderContextMenu}
                   enableContextMenu={enableContextMenu}
                   contextMenuClassName={contextMenuClassName}

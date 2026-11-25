@@ -11,6 +11,7 @@ export type {
   XlsxVanillaChartLoadingRenderProps,
   XlsxVanillaContent,
   XlsxVanillaContextMenuRenderProps,
+  XlsxVanillaHiddenRangeMarkerRenderProps,
   XlsxVanillaFileTooLargeRenderProps,
   XlsxVanillaFormControlRenderProps,
   XlsxVanillaImageRenderProps,

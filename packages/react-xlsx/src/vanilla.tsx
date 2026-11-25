@@ -43,6 +43,7 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
     renderPivotTableHeaderMenu,
     renderChartLoading,
     renderContextMenu,
+    renderHiddenRangeMarker,
     renderFormControl,
     renderImage,
     toolbar,
@@ -76,6 +77,9 @@ function toReactOptions(options: XlsxVanillaViewerOptions): XlsxViewerProps {
       : undefined,
     renderChartLoading: renderChartLoading
       ? ({ defaultNode: _defaultNode, ...props }) => toReactContent(renderChartLoading(props))
+      : undefined,
+    renderHiddenRangeMarker: renderHiddenRangeMarker
+      ? ({ defaultNode: _defaultNode, ...props }) => toReactContent(renderHiddenRangeMarker(props))
       : undefined,
     renderContextMenu: renderContextMenu
       ? ({ defaultNode: _defaultNode, ...props }) => toReactContent(renderContextMenu(props))

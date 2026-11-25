@@ -1424,6 +1424,17 @@ export interface XlsxContextMenuContext {
   readOnly: boolean;
 }
 
+export interface XlsxHiddenRangeMarkerRenderProps {
+  axis: "row" | "column";
+  /** Inclusive, zero-based worksheet indices. */
+  start: number;
+  end: number;
+  readOnly: boolean;
+  label: string;
+  unhide: () => void;
+  defaultNode: React.ReactNode;
+}
+
 export interface XlsxContextMenuRenderProps {
   context: XlsxContextMenuContext;
   actions: XlsxContextMenuAction[];
@@ -1889,6 +1900,8 @@ export interface XlsxViewerProps extends UseXlsxViewerControllerOptions {
   renderChartLoading?: (props: XlsxChartLoadingRenderProps) => React.ReactNode;
   /** Replaces menu contents. Use runAction for built-in commands and closeMenu after custom commands. */
   renderContextMenu?: (props: XlsxContextMenuRenderProps) => React.ReactNode;
+  /** Replaces the header caret for a contiguous hidden range. Return null to omit it. */
+  renderHiddenRangeMarker?: (props: XlsxHiddenRangeMarkerRenderProps) => React.ReactNode;
   /** Enables cell and drawing right-click and keyboard context menus. Defaults to true. */
   enableContextMenu?: boolean;
   /** Class applied to the portaled menu container. */
